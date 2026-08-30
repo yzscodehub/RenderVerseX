@@ -681,7 +681,13 @@ namespace RVX
         froxelDesc.debugName = "FroxelVolumetricIntegrated";
         const RGTextureHandle integrated = featureBuilder.CreateTexture(froxelDesc);
         RHITextureDesc resolvedDesc = *sourceDesc;
-        resolvedDesc.usage = RHITextureUsage::ShaderResource |
+        // The volumetric composite becomes the canonical late HDR surface.
+        // Preserve every legal downstream role of the source while adding
+        // UAV access for this compute write; WBOIT and sorted transparency
+        // must still be able to bind the result as an in-place render target.
+        resolvedDesc.usage = sourceDesc->usage |
+                             RHITextureUsage::RenderTarget |
+                             RHITextureUsage::ShaderResource |
                              RHITextureUsage::UnorderedAccess;
         resolvedDesc.debugName = "FroxelVolumetricOpaqueComposite";
         const RGTextureHandle resolved = featureBuilder.CreateTexture(resolvedDesc);

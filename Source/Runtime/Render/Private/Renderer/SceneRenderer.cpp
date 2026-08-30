@@ -2191,10 +2191,10 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
             transparentStats.additiveDrawCount;
         diagnostics.transparentThinTransmissionDrawCount =
             transparentStats.thinTransmissionDrawCount;
-        diagnostics.transparentOpaqueSceneSnapshotReady =
-            transparentStats.opaqueSceneSnapshotReady;
-        diagnostics.transparentOpaqueSceneSnapshotCopied =
-            transparentStats.opaqueSceneSnapshotCopied;
+        diagnostics.transparentOpaqueSceneColorPyramidReady =
+            transparentStats.opaqueSceneColorPyramidReady;
+        diagnostics.transparentOpaqueSceneColorPyramidBuilt =
+            transparentStats.opaqueSceneColorPyramidBuilt;
         diagnostics.transparentReactiveMaskAttachmentBound =
             transparentStats.reactiveMaskAttachmentBound;
         diagnostics.transparentReactiveMaskWriteDrawCount =

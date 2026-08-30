@@ -76,7 +76,7 @@ TEST(WeightedBlendedOITContractValidation,
 }
 
 TEST(WeightedBlendedOITContractValidation,
-     RequiredMissingIndependentBlendFailsClosedWithoutFallbackRoute)
+      RequiredMissingIndependentBlendFailsClosedWithoutFallbackRoute)
 {
     RVX::TranslucencyFramePlanRequest request = MakeMixedRequest();
     request.weightedBlendedReadiness.independentBlendSupported = false;
@@ -92,4 +92,20 @@ TEST(WeightedBlendedOITContractValidation,
                       RVX::TranslucencyRoute::SortedRefraction));
     EXPECT_EQ(3u, result.plan.GetSummary().GetItemCount(
                       RVX::TranslucencyRoute::Unsupported));
+}
+
+TEST(WeightedBlendedOITContractValidation,
+     ScissorUsesExplicitFullViewportFallbackWithoutProjectedBoundsContract)
+{
+    constexpr RVX::RenderOutputExtent extent{2560u, 1440u};
+    const RVX::WeightedBlendedOITScissor scissor =
+        RVX::ResolveWeightedBlendedOITScissor(extent);
+
+    EXPECT_EQ(RVX::WeightedBlendedOITScissorPolicy::FullViewportFallback,
+              scissor.policy);
+    EXPECT_TRUE(scissor.IsValidFor(extent));
+    EXPECT_EQ(0u, scissor.x);
+    EXPECT_EQ(0u, scissor.y);
+    EXPECT_EQ(extent.width, scissor.width);
+    EXPECT_EQ(extent.height, scissor.height);
 }

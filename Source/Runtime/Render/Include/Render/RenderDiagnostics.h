@@ -757,8 +757,8 @@ namespace RVX
         uint32 premultipliedDrawCount = 0;
         uint32 additiveDrawCount = 0;
         uint32 thinTransmissionDrawCount = 0;
-        bool opaqueSceneSnapshotReady = false;
-        bool opaqueSceneSnapshotCopied = false;
+        bool opaqueSceneColorPyramidReady = false;
+        bool opaqueSceneColorPyramidBuilt = false;
         bool reactiveMaskAttachmentBound = false;
         uint32 reactiveMaskWriteDrawCount = 0;
         uint32 translucencyPriorityBucketCount = 0;
@@ -1198,7 +1198,7 @@ namespace RVX
         bool graphPassScheduled = false;
         bool drawSubmitted = false;
         bool uploadPublished = false;
-        bool opaqueSceneSnapshotReady = false;
+        bool opaqueSceneColorPyramidReady = false;
         bool depthSnapshotReady = false;
         bool depthLinearizationReady = false;
         bool layeredNormalsEvaluated = false;

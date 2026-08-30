@@ -803,7 +803,7 @@ namespace
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(
-            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(
@@ -969,7 +969,7 @@ namespace
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
         frameSetDesc.BindTexture(
-            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             sourceTextureView.Get());
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitLocalShadowAtlasBinding,

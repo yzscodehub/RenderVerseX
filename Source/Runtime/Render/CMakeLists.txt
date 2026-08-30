@@ -321,6 +321,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Features/AmbientOcclusionFeatureAdapter.cpp
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
+    Private/Features/OpaqueSceneColorPyramidBuilder.cpp
     Private/Features/SceneDepthSnapshotBuilder.cpp
     Private/Features/ReflectionFeatureAdapter.cpp
     Private/Features/TranslucencyFeatureAdapter.cpp

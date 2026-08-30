@@ -78,9 +78,8 @@ void BloomPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* vi
     }
 
     if (!m_pipelineCache->GetBloomPipeline() ||
-        !m_pipelineCache->GetBloomAdditivePipeline(m_pipelineCache->GetPostProcessIntermediateFormat()) ||
-        !m_pipelineCache->GetExposurePostProcessLayout() ||
-        !m_pipelineCache->GetExposurePostProcessSetLayout())
+        !m_pipelineCache->GetBloomLayout() ||
+        !m_pipelineCache->GetBloomSetLayout())
     {
         MarkUnsupported("Bloom fullscreen pipeline resources are not available");
         return;
@@ -144,11 +143,9 @@ void BloomPass::AddToGraphWithExposure(RenderGraph& graph,
                           input,
                           exposureState,
                           exposureStateContentHash,
-                          output,
-                          PassMode::CopyScene,
-                          false,
-                          RHILoadOp::DontCare,
-                          0.0f,
+                           output,
+                           PassMode::CopyScene,
+                           0.0f,
                           0.0f,
                           0.0f);
         return;
@@ -182,9 +179,7 @@ void BloomPass::AddToGraphWithExposure(RenderGraph& graph,
                       exposureStateContentHash,
                       pyramid[0],
                       PassMode::Extract,
-                      false,
-                      RHILoadOp::DontCare,
-                      m_threshold,
+                       m_threshold,
                       1.0f,
                       m_radius);
     AddFullscreenPass(graph,
@@ -194,8 +189,6 @@ void BloomPass::AddToGraphWithExposure(RenderGraph& graph,
                       exposureStateContentHash,
                       pyramid[1],
                       PassMode::Downsample,
-                      false,
-                      RHILoadOp::DontCare,
                       0.0f,
                       1.0f,
                       m_radius);
@@ -206,61 +199,15 @@ void BloomPass::AddToGraphWithExposure(RenderGraph& graph,
                       exposureStateContentHash,
                       pyramid[2],
                       PassMode::Downsample,
-                      false,
-                      RHILoadOp::DontCare,
                       0.0f,
                       1.0f,
                       m_radius);
-    AddFullscreenPass(graph,
-                      "BloomCopyScene",
-                      input,
-                      exposureState,
-                      exposureStateContentHash,
-                      output,
-                      PassMode::CopyScene,
-                      false,
-                      RHILoadOp::DontCare,
-                      0.0f,
-                      0.0f,
-                      0.0f);
-
-    constexpr float compositeWeights[RVX_BLOOM_PYRAMID_LEVEL_COUNT] = {0.45f, 0.35f, 0.20f};
-    AddFullscreenPass(graph,
-                      "BloomComposite2",
-                      pyramid[2],
-                      exposureState,
-                      exposureStateContentHash,
-                      output,
-                      PassMode::CompositeAdditive,
-                      true,
-                      RHILoadOp::Load,
-                      0.0f,
-                      m_intensity * compositeWeights[2],
-                      m_radius);
-    AddFullscreenPass(graph,
-                      "BloomComposite1",
-                      pyramid[1],
-                      exposureState,
-                      exposureStateContentHash,
-                      output,
-                      PassMode::CompositeAdditive,
-                      true,
-                      RHILoadOp::Load,
-                      0.0f,
-                      m_intensity * compositeWeights[1],
-                      m_radius);
-    AddFullscreenPass(graph,
-                      "BloomComposite0",
-                      pyramid[0],
-                      exposureState,
-                      exposureStateContentHash,
-                      output,
-                      PassMode::CompositeAdditive,
-                      true,
-                      RHILoadOp::Load,
-                      0.0f,
-                      m_intensity * compositeWeights[0],
-                      m_radius);
+    AddCompositePyramidPass(graph,
+                            input,
+                            pyramid,
+                            exposureState,
+                            exposureStateContentHash,
+                            output);
 }
 
 void BloomPass::AddFullscreenPass(RenderGraph& graph,
@@ -268,11 +215,9 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                                   RGTextureHandle input,
                                   RGBufferHandle exposureState,
                                   uint64 exposureStateContentHash,
-                                  RGTextureHandle output,
-                                  PassMode mode,
-                                  bool additive,
-                                  RHILoadOp outputLoadOp,
-                                  float threshold,
+                                   RGTextureHandle output,
+                                   PassMode mode,
+                                   float threshold,
                                   float intensity,
                                   float radius)
 {
@@ -289,15 +234,13 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
         float radius;
         float softKnee;
         PassMode mode;
-        bool additive;
-        RHILoadOp outputLoadOp;
         uint64 exposureStateContentHash = 0;
     };
 
     graph.AddPass<BloomData>(
         passName,
         RenderGraphPassType::Graphics,
-        [input, exposureState, exposureStateContentHash, output, mode, additive, outputLoadOp,
+        [input, exposureState, exposureStateContentHash, output, mode,
          threshold, intensity, radius, this](
             RenderGraphBuilder& builder,
             BloomData& data)
@@ -332,27 +275,20 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 viewDesc.dimension = outputDesc->dimension;
                 viewDesc.subresourceRange = RHISubresourceRange::All();
                 viewDesc.type = RHITextureViewType::RenderTarget;
-                viewDesc.debugName = additive
-                    ? "BloomAdditiveOutputRTV" : "BloomOutputRTV";
+                viewDesc.debugName = "BloomOutputRTV";
                 RGTextureViewHandle outputView =
                     builder.CreateTextureView(output, viewDesc);
                 const RGAccessDesc outputAccess = MakeRGAccessDesc(
                     RHIResourceState::RenderTarget,
                     RHIShaderStage::Pixel,
-                    outputLoadOp == RHILoadOp::Load
-                        ? RHIDiscardIntent::Preserve
-                        : RHIDiscardIntent::Discard);
-                data.outputView = additive
-                    ? builder.ReadWrite(outputView, outputAccess)
-                    : builder.Write(outputView, outputAccess);
+                    RHIDiscardIntent::Discard);
+                data.outputView = builder.Write(outputView, outputAccess);
             }
             data.threshold = threshold;
             data.intensity = intensity;
             data.radius = radius;
             data.softKnee = m_softKnee;
             data.mode = mode;
-            data.additive = additive;
-            data.outputLoadOp = outputLoadOp;
             data.exposureStateContentHash = exposureStateContentHash;
         },
         [this](const BloomData& data, RenderGraphPassContext& context)
@@ -364,11 +300,10 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 return;
             }
 
-            RHIPipeline* pipeline = data.additive ?
-                m_pipelineCache->GetBloomAdditivePipeline(data.outputFormat) :
+            RHIPipeline* pipeline =
                 m_pipelineCache->GetBloomPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout =
-                m_pipelineCache->GetExposurePostProcessSetLayout();
+                m_pipelineCache->GetBloomSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
             {
@@ -438,7 +373,9 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             descriptorDesc.BindTexture(1, inputView);
             descriptorDesc.BindSampler(2, m_sampler.Get());
             descriptorDesc.BindTexture(3, inputView);
-            descriptorDesc.BindBuffer(4, exposureState);
+            descriptorDesc.BindTexture(4, inputView);
+            descriptorDesc.BindTexture(5, inputView);
+            descriptorDesc.BindBuffer(6, exposureState);
 
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet)
@@ -457,7 +394,8 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             }
 
             RHIRenderPassDesc renderPassDesc;
-            renderPassDesc.AddColorAttachment(outputView, data.outputLoadOp, RHIStoreOp::Store);
+            renderPassDesc.AddColorAttachment(
+                outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
             RHICommandContext& ctx = context.Commands();
@@ -479,6 +417,230 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
 
             ctx.Draw(3, 1, 0, 0);
             ctx.EndRenderPass();
+            m_lastExposureStateContentHash = data.exposureStateContentHash;
+        });
+}
+
+void BloomPass::AddCompositePyramidPass(
+    RenderGraph& graph,
+    RGTextureHandle source,
+    const std::array<RGTextureHandle, 3>& pyramid,
+    RGBufferHandle exposureState,
+    uint64 exposureStateContentHash,
+    RGTextureHandle output)
+{
+    struct BloomCompositeData
+    {
+        RGTextureHandle source{};
+        std::array<RGTextureHandle, RVX_BLOOM_PYRAMID_LEVEL_COUNT> pyramid{};
+        RGBufferHandle exposureState{};
+        RGTextureHandle output{};
+        RGTextureViewHandle sourceView{};
+        std::array<RGTextureViewHandle, RVX_BLOOM_PYRAMID_LEVEL_COUNT>
+            pyramidViews{};
+        RGTextureViewHandle outputView{};
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        uint64 exposureStateContentHash = 0;
+    };
+
+    graph.AddPass<BloomCompositeData>(
+        "BloomCompositePyramid",
+        RenderGraphPassType::Graphics,
+        [source, pyramid, exposureState, exposureStateContentHash, output](
+            RenderGraphBuilder& builder,
+            BloomCompositeData& data)
+        {
+            data.source = source;
+            data.pyramid = pyramid;
+            data.exposureState = builder.Read(
+                exposureState,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.output = output;
+
+            const auto createReadView = [&builder](
+                RGTextureHandle texture,
+                const char* debugName) -> RGTextureViewHandle
+            {
+                const RHITextureDesc* const description =
+                    builder.GetTextureDesc(texture);
+                if (description == nullptr)
+                {
+                    return {};
+                }
+
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = description->format;
+                viewDesc.dimension = description->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = debugName;
+                return builder.Read(
+                    builder.CreateTextureView(texture, viewDesc),
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+            };
+
+            data.sourceView = createReadView(source, "BloomSourceSRV");
+            for (uint32 level = 0; level < RVX_BLOOM_PYRAMID_LEVEL_COUNT;
+                 ++level)
+            {
+                data.pyramidViews[level] = createReadView(
+                    pyramid[level], "BloomPyramidSRV");
+            }
+
+            if (const RHITextureDesc* const outputDesc =
+                    builder.GetTextureDesc(output))
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc outputViewDesc;
+                outputViewDesc.format = outputDesc->format;
+                outputViewDesc.dimension = outputDesc->dimension;
+                outputViewDesc.subresourceRange = RHISubresourceRange::All();
+                outputViewDesc.type = RHITextureViewType::RenderTarget;
+                outputViewDesc.debugName = "BloomCompositePyramidRTV";
+                data.outputView = builder.Write(
+                    builder.CreateTextureView(output, outputViewDesc),
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                     RHIShaderStage::Pixel,
+                                     RHIDiscardIntent::Discard));
+            }
+            data.exposureStateContentHash = exposureStateContentHash;
+        },
+        [this](const BloomCompositeData& data,
+               RenderGraphPassContext& context)
+        {
+            if (m_pipelineCache == nullptr)
+            {
+                context.MarkExecutionFailed(
+                    "Bloom requires an initialized PipelineCache");
+                return;
+            }
+
+            RHIPipeline* const pipeline =
+                m_pipelineCache->GetBloomPipeline(data.outputFormat);
+            RHIDescriptorSetLayout* const setLayout =
+                m_pipelineCache->GetBloomSetLayout();
+            IRHIDevice* const device = m_pipelineCache->GetDevice();
+            if (pipeline == nullptr || setLayout == nullptr || device == nullptr)
+            {
+                context.MarkExecutionFailed(
+                    "Bloom composite fullscreen pipeline resources are unavailable");
+                return;
+            }
+
+            RHITexture* const sourceTexture = context.GetTexture(data.source);
+            RHITexture* const outputTexture = context.GetTexture(data.output);
+            RHIBuffer* const candidateExposure =
+                context.GetBuffer(data.exposureState);
+            if (sourceTexture == nullptr || outputTexture == nullptr ||
+                candidateExposure == nullptr ||
+                data.exposureStateContentHash == 0)
+            {
+                context.MarkExecutionFailed(
+                    "Bloom composite source, output, or exposure state is unavailable");
+                return;
+            }
+
+            RHITextureView* const sourceView =
+                context.GetTextureView(data.sourceView);
+            RHITextureView* const outputView =
+                context.GetTextureView(data.outputView);
+            std::array<RHITextureView*, RVX_BLOOM_PYRAMID_LEVEL_COUNT>
+                pyramidViews{};
+            for (uint32 level = 0; level < RVX_BLOOM_PYRAMID_LEVEL_COUNT;
+                 ++level)
+            {
+                pyramidViews[level] = context.GetTextureView(
+                    data.pyramidViews[level]);
+            }
+            if (sourceView == nullptr || outputView == nullptr ||
+                std::any_of(pyramidViews.begin(), pyramidViews.end(),
+                            [](const RHITextureView* view)
+                            {
+                                return view == nullptr;
+                            }))
+            {
+                context.MarkExecutionFailed(
+                    "Bloom composite failed to resolve source or pyramid views");
+                return;
+            }
+
+            if (!EnsureRuntimeResources())
+            {
+                context.MarkExecutionFailed(
+                    "Bloom runtime resources are unavailable");
+                return;
+            }
+
+            RHIBufferRef passConstants = CreatePassConstants(
+                sourceTexture->GetWidth(),
+                sourceTexture->GetHeight(),
+                0.0f,
+                m_intensity,
+                m_radius,
+                m_softKnee,
+                PassMode::CompositePyramid);
+            if (!passConstants ||
+                !context.RetainSubmissionResource(
+                    Ref<RefCounted>(passConstants)))
+            {
+                context.MarkExecutionFailed(
+                    "Bloom composite failed to retain immutable pass constants");
+                return;
+            }
+
+            RHIDescriptorSetDesc descriptorDesc;
+            descriptorDesc.layout = setLayout;
+            descriptorDesc.debugName = "BloomCompositePyramidDescriptorSet";
+            descriptorDesc.BindBuffer(
+                0,
+                passConstants.Get(),
+                0,
+                AlignPostProcessConstantBufferSize(sizeof(BloomGPUConstants)));
+            descriptorDesc.BindTexture(1, sourceView);
+            descriptorDesc.BindSampler(2, m_sampler.Get());
+            descriptorDesc.BindTexture(3, pyramidViews[0]);
+            descriptorDesc.BindTexture(4, pyramidViews[1]);
+            descriptorDesc.BindTexture(5, pyramidViews[2]);
+            descriptorDesc.BindBuffer(6, candidateExposure);
+
+            RHIDescriptorSetRef descriptorSet =
+                device->CreateDescriptorSet(descriptorDesc);
+            if (!descriptorSet ||
+                !context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
+            {
+                context.MarkExecutionFailed(
+                    "Bloom composite failed to create or retain its descriptor set");
+                return;
+            }
+
+            RHIRenderPassDesc renderPassDesc;
+            renderPassDesc.AddColorAttachment(
+                outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
+            renderPassDesc.SetRenderArea(
+                0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
+
+            RHICommandContext& commandContext = context.Commands();
+            commandContext.BeginRenderPass(renderPassDesc);
+            commandContext.SetPipeline(pipeline);
+            commandContext.SetDescriptorSet(0, descriptorSet.Get());
+
+            RHIViewport viewport;
+            viewport.width = static_cast<float>(outputTexture->GetWidth());
+            viewport.height = static_cast<float>(outputTexture->GetHeight());
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            commandContext.SetViewport(viewport);
+
+            RHIRect scissor;
+            scissor.width = outputTexture->GetWidth();
+            scissor.height = outputTexture->GetHeight();
+            commandContext.SetScissor(scissor);
+
+            commandContext.Draw(3, 1, 0, 0);
+            commandContext.EndRenderPass();
             m_lastExposureStateContentHash = data.exposureStateContentHash;
         });
 }

@@ -1,13 +1,12 @@
-// Resolve graph-owned weighted-blended translucency into a distinct scene-HDR
-// target. Inputs are integer loaded so the descriptor ABI needs no sampler and
-// cannot accidentally filter across render-target texels.
+// Resolve graph-owned weighted-blended translucency by attachment-load blending
+// directly into scene HDR. Inputs are integer loaded so the descriptor ABI
+// needs no sampler and cannot accidentally filter across render-target texels.
 
 #include "../Include/FullscreenTriangle.hlsli"
 #include "WeightedBlendedOIT.hlsli"
 
-Texture2D<float4> SourceSceneHDR : register(t0, space0);
-Texture2D<float4> OITAccumulation : register(t1, space0);
-Texture2D<float> OITRevealage : register(t2, space0);
+Texture2D<float4> OITAccumulation : register(t0, space0);
+Texture2D<float> OITRevealage : register(t1, space0);
 
 struct CompositeVSOutput
 {
@@ -33,11 +32,10 @@ CompositeOutput PSMain(CompositeVSOutput input)
 {
     uint width;
     uint height;
-    SourceSceneHDR.GetDimensions(width, height);
+    OITAccumulation.GetDimensions(width, height);
     const uint2 extent = max(uint2(width, height), uint2(1u, 1u));
     const uint2 pixel = min(uint2(input.Position.xy), extent - 1u);
 
-    const float4 source = SourceSceneHDR.Load(int3(pixel, 0));
     const float4 accumulation = OITAccumulation.Load(int3(pixel, 0));
     const float revealage = saturate(OITRevealage.Load(int3(pixel, 0)));
     const float coverage = 1.0f - revealage;
@@ -49,9 +47,11 @@ CompositeOutput PSMain(CompositeVSOutput input)
         RVX_WEIGHTED_OIT_MAX_HDR_CHANNEL.xxx);
 
     CompositeOutput output;
-    output.SceneHDR = float4(
-        source.rgb * revealage + resolved * coverage,
-        source.a);
+    // RT0 uses One / InvSrcAlpha blending with a Load operation, producing
+    // scene.rgb * revealage + resolved * coverage without sampling the same
+    // subresource as both SRV and RTV. Pipeline state preserves destination
+    // alpha separately.
+    output.SceneHDR = float4(resolved * coverage, coverage);
     output.ReactiveMask = coverage;
     return output;
 }

@@ -1,11 +1,11 @@
 // =============================================================================
-// TAA.hlsl - Temporal resolve and history store
+// TAA.hlsl - Temporal resolve with fused history candidates
 // =============================================================================
 //
 // The resolve consumes current HDR color, committed history, current/previous
-// linear depth, velocity and the renderer reactive mask. The history store is
-// deliberately a separate MRT pass so presentation code can commit the
-// candidate only after the exact frame was presented successfully.
+// linear depth, velocity and the renderer reactive mask. The same draw emits
+// post-process output plus immutable color/depth history candidates through
+// MRT; presentation code promotes those candidates only after exact Present.
 // =============================================================================
 
 #include "../Include/FullscreenTriangle.hlsli"
@@ -123,13 +123,22 @@ CurrentColorNeighborhood SampleCurrentColorNeighborhood(float2 uv)
     return neighborhood;
 }
 
-float4 PSResolve(VSOutput input) : SV_TARGET0
+struct TAAResolveOutput
+{
+    float4 ResolvedColor : SV_TARGET0;
+    float4 HistoryColorCandidate : SV_TARGET1;
+    float HistoryDepthCandidate : SV_TARGET2;
+};
+
+TAAResolveOutput PSResolve(VSOutput input)
 {
     const float2 uv = input.TexCoord;
     const CurrentColorNeighborhood neighborhood =
         SampleCurrentColorNeighborhood(uv);
     const float4 currentSample = neighborhood.center;
     const float3 current = SanitizeColor(currentSample.rgb);
+    const float currentDepth = CurrentDepth.SampleLevel(
+        LinearClampSampler, uv, 0.0);
     const float reactive = saturate(ReactiveMask.SampleLevel(LinearClampSampler, uv, 0.0) *
                                       max(ResolveParams.y, 0.0));
     float3 resolved = current;
@@ -145,7 +154,6 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
         const bool previousUVInBounds =
             all(previousUV >= 0.0) && all(previousUV <= 1.0);
 
-        const float currentDepth = CurrentDepth.SampleLevel(LinearClampSampler, uv, 0.0);
         const float previousDepth = HistoryDepth.SampleLevel(
             LinearClampSampler, saturate(previousUV), 0.0);
         const float depthTolerance = max(
@@ -189,21 +197,13 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
         resolved +
             (resolved - neighborhood.axialAverageRGB) * sharpenStrength,
         0.0);
-    return float4(SanitizeColor(resolved), SanitizeScalar(currentSample.a));
-}
-
-struct HistoryStoreOutput
-{
-    float4 Color : SV_TARGET0;
-    float Depth : SV_TARGET1;
-};
-
-HistoryStoreOutput PSStore(VSOutput input)
-{
-    HistoryStoreOutput output;
-    const float4 color = CurrentColor.SampleLevel(LinearClampSampler, input.TexCoord, 0.0);
-    output.Color = float4(SanitizeColor(color.rgb), SanitizeScalar(color.a));
-    const float depth = CurrentDepth.SampleLevel(LinearClampSampler, input.TexCoord, 0.0);
-    output.Depth = (depth == depth && abs(depth) < 1.0e20) ? depth : 0.0;
+    TAAResolveOutput output;
+    output.ResolvedColor = float4(
+        SanitizeColor(resolved), SanitizeScalar(currentSample.a));
+    output.HistoryColorCandidate = output.ResolvedColor;
+    output.HistoryDepthCandidate =
+        (currentDepth == currentDepth && abs(currentDepth) < 1.0e20)
+            ? currentDepth
+            : 0.0;
     return output;
 }

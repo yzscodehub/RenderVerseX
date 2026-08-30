@@ -31,7 +31,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 33;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 34;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -59,6 +59,8 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_RUNTIME_ONLY_COMPOSITION_SCHEMA_VERSION = 31;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_HIZ_REFLECTION_EXECUTION_SCHEMA_VERSION = 32;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_OPAQUE_SCENE_COLOR_PYRAMID_SCHEMA_VERSION = 33;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -434,6 +436,7 @@ namespace RVX
         Vec2 currentJitterPixels = Vec2(0.0f);
         Vec2 previousJitterPixels = Vec2(0.0f);
         uint32 taaResolveGraphPassCount = 0;
+        /** Independent history-store nodes; fused TAA requires zero. */
         uint32 taaHistoryStoreGraphPassCount = 0;
         PostProcessColorDomain inputColorDomain =
             PostProcessColorDomain::Unknown;
@@ -617,7 +620,7 @@ namespace RVX
                    std::isfinite(previousJitterPixels.y) &&
                    currentJitterPixels != previousJitterPixels &&
                    taaResolveGraphPassCount == 1 &&
-                   taaHistoryStoreGraphPassCount == 1;
+                   taaHistoryStoreGraphPassCount == 0;
         }
     };
 
@@ -1146,8 +1149,8 @@ namespace RVX
         uint32 transparentPremultipliedDrawCount = 0;
         uint32 transparentAdditiveDrawCount = 0;
         uint32 transparentThinTransmissionDrawCount = 0;
-        bool transparentOpaqueSceneSnapshotReady = false;
-        bool transparentOpaqueSceneSnapshotCopied = false;
+        bool transparentOpaqueSceneColorPyramidReady = false;
+        bool transparentOpaqueSceneColorPyramidBuilt = false;
         bool transparentReactiveMaskAttachmentBound = false;
         uint32 transparentReactiveMaskWriteDrawCount = 0;
         uint32 transparentPriorityBucketCount = 0;

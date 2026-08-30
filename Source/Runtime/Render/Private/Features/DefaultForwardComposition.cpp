@@ -222,7 +222,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
                 m_pipelineCache.get()),
             "VolumetricLighting") ||
         !registerFeature(
-            std::make_unique<ForwardSpecialFeatureAdapter>(&passBundle),
+            std::make_unique<ForwardSpecialFeatureAdapter>(
+                &passBundle, m_pipelineCache.get()),
             "ForwardSpecial") ||
         !registerFeature(
             std::make_unique<TranslucencyFeatureAdapter>(
@@ -249,7 +250,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
                 "DeferredLighting") ||
             !registerFeature(
                 std::make_unique<DeferredForwardSpecialFeatureAdapter>(
-                    &passBundle),
+                    &passBundle, m_pipelineCache.get()),
                 "DeferredForwardSpecial"))
         {
             m_defaultRenderComposition->ResetFeatures();

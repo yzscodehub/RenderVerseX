@@ -151,9 +151,6 @@ namespace RVX
         Metadata distortionVectorsMetadata{};
         RGBufferHandle exposureState{};
         ExposureStateMetadata exposureStateMetadata{};
-        RGTextureHandle opaqueSceneSnapshot{};
-        Metadata opaqueSceneSnapshotMetadata{};
-
         // Deferred opaque geometry. GBuffer1 carries octahedral normal plus
         // roughness/metallic, while GBuffer3 indexes the material table.
         RGTextureHandle gBuffer0{};
@@ -166,6 +163,34 @@ namespace RVX
         Metadata gBuffer3Metadata{};
         RGBufferHandle materialTable{};
         PostProcessMaterialTableMetadata materialTableMetadata{};
+    };
+
+    /**
+     * @brief Late opaque HDR refraction pyramid shared by Water and
+     *        ThinTransmission.
+     *
+     * One RGBA16F graph texture owns every mip. The logical source extent is
+     * retained independently because High begins at half resolution while
+     * shader screen UVs must continue to address the full scene surface.
+     */
+    struct OpaqueSceneColorPyramid
+    {
+        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 MaxMipCount =
+            RVX_OPAQUE_SCENE_COLOR_PYRAMID_MAX_MIP_COUNT;
+        inline static constexpr SceneTextures::FormatContract FormatContract{
+            RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
+
+        RenderGraphBlackboardProvenance provenance{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        RenderOutputExtent sourceExtent{};
+        RenderOutputExtent baseExtent{};
+        RenderQualityTier quality = RenderQualityTier::Medium;
+        uint32 mipCount = 0;
+        RGTextureHandle texture{};
+        SceneTextures::Metadata textureMetadata{};
+        std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt{};
     };
 
     /**
@@ -590,7 +615,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::PreTranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 2;
+        static constexpr uint32 SchemaVersion = 3;
 
         RenderGraphBlackboardProvenance provenance{};
         RenderFrameIdentity frameIdentity{};
@@ -610,10 +635,7 @@ namespace RVX
         SceneTextures::Metadata velocityMetadata{};
         RGTextureHandle reactiveMask{};
         SceneTextures::Metadata reactiveMaskMetadata{};
-        RGTextureHandle opaqueSceneSnapshot{};
-        SceneTextures::Metadata opaqueSceneSnapshotMetadata{};
-        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt>
-            opaqueSceneSnapshotReceipt{};
+        OpaqueSceneColorPyramid opaqueSceneColorPyramid{};
         RGBufferHandle exposureState{};
         SceneTextures::ExposureStateMetadata exposureStateMetadata{};
         /** Exact froxel result forwarded by the selected special-surface route. */
@@ -635,7 +657,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 5;
+        static constexpr uint32 SchemaVersion = 6;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Exact frozen frame/view that produced these graph resources. */
@@ -668,9 +690,8 @@ namespace RVX
         SceneTextures::Metadata velocityMetadata{};
         RGTextureHandle reactiveMask{};
         SceneTextures::Metadata reactiveMaskMetadata{};
-        /** Immutable HDR copy after Sky and before every translucent writer. */
-        RGTextureHandle opaqueSceneSnapshot{};
-        SceneTextures::Metadata opaqueSceneSnapshotMetadata{};
+        /** Late opaque HDR pyramid retained for refraction-aware consumers. */
+        OpaqueSceneColorPyramid opaqueSceneColorPyramid{};
         RGTextureHandle distortionVectors{};
         SceneTextures::Metadata distortionVectorsMetadata{};
         /** Committed prior-presented state used by all HDR producers. */
@@ -1019,7 +1040,6 @@ namespace RVX
                            entry.roughnessMetallic, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
-                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance) &&
                        HandleMatchesGraph(entry.gBuffer0, provenance) &&
@@ -1096,7 +1116,8 @@ namespace RVX
                            entry.materialParameterTable, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
-                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
+                       HandleMatchesGraph(
+                           entry.opaqueSceneColorPyramid.texture, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance) &&
                        HandleMatchesGraph(
                            entry.integratedScatteringTransmittance,
@@ -1112,7 +1133,8 @@ namespace RVX
                            entry.materialParameterTable, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
-                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
+                       HandleMatchesGraph(
+                           entry.opaqueSceneColorPyramid.texture, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance);
             }
@@ -1273,6 +1295,58 @@ namespace RVX
                        outputs.froxelGrid);
         }
 
+        [[nodiscard]] static uint32 CalculateOpaqueSceneColorPyramidMipCount(
+            RenderOutputExtent baseExtent) noexcept
+        {
+            if (!baseExtent.IsValid())
+            {
+                return 0;
+            }
+
+            uint32 mipCount = 1;
+            uint32 width = baseExtent.width;
+            uint32 height = baseExtent.height;
+            while (mipCount < OpaqueSceneColorPyramid::MaxMipCount &&
+                   (width > 1 || height > 1))
+            {
+                width = std::max(1u, width / 2u);
+                height = std::max(1u, height / 2u);
+                ++mipCount;
+            }
+            return mipCount;
+        }
+
+        [[nodiscard]] static bool HasValidOpaqueSceneColorPyramid(
+            const OpaqueSceneColorPyramid& pyramid,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            if (pyramid.provenance != provenance ||
+                !HasMatchingFrameViewProvenance(
+                    pyramid.frameIdentity, pyramid.viewIdentity, provenance) ||
+                !IsDeclaredRenderQualityTier(pyramid.quality) ||
+                !pyramid.sourceExtent.IsValid())
+            {
+                return false;
+            }
+
+            const RenderOutputExtent expectedBase =
+                pyramid.quality == RenderQualityTier::Ultra
+                    ? pyramid.sourceExtent
+                    : RenderOutputExtent{
+                        std::max(1u, (pyramid.sourceExtent.width + 1u) / 2u),
+                        std::max(1u, (pyramid.sourceExtent.height + 1u) / 2u)};
+            return pyramid.baseExtent == expectedBase &&
+                   pyramid.mipCount ==
+                       CalculateOpaqueSceneColorPyramidMipCount(
+                           pyramid.baseExtent) &&
+                   pyramid.texture.IsValid() &&
+                   MetadataMatches(
+                       pyramid.textureMetadata,
+                       OpaqueSceneColorPyramid::FormatContract) &&
+                   pyramid.textureMetadata.extent == pyramid.baseExtent &&
+                   pyramid.receipt != nullptr;
+        }
+
         [[nodiscard]] static bool HasValidPreTranslucencyOutputs(
             const PreTranslucencyOutputs& outputs,
             const RenderGraphBlackboardProvenance& provenance) noexcept
@@ -1284,14 +1358,10 @@ namespace RVX
                    outputs.hdrSceneColor.IsValid() &&
                    MetadataMatches(outputs.hdrSceneColorMetadata,
                                    SceneTextures::HDRSceneColorContract) &&
-                   outputs.opaqueSceneSnapshot.IsValid() &&
-                   MetadataMatches(outputs.opaqueSceneSnapshotMetadata,
-                                   SceneTextures::HDRSceneColorContract) &&
-                   outputs.opaqueSceneSnapshotMetadata.extent ==
-                       outputs.hdrSceneColorMetadata.extent &&
-                   outputs.opaqueSceneSnapshot.index !=
+                   HasValidOpaqueSceneColorPyramid(
+                       outputs.opaqueSceneColorPyramid, provenance) &&
+                   outputs.opaqueSceneColorPyramid.texture.index !=
                        outputs.hdrSceneColor.index &&
-                   outputs.opaqueSceneSnapshotReceipt != nullptr &&
                    outputs.colorDomain ==
                        PostProcessColorDomain::SceneLinearHDR &&
                    outputs.transfer == PostProcessTransfer::None &&
@@ -1325,12 +1395,9 @@ namespace RVX
                    outputs.hdrSceneColor.IsValid() &&
                    MetadataMatches(outputs.hdrSceneColorMetadata,
                                    SceneTextures::HDRSceneColorContract) &&
-                   outputs.opaqueSceneSnapshot.IsValid() &&
-                   MetadataMatches(outputs.opaqueSceneSnapshotMetadata,
-                                   SceneTextures::HDRSceneColorContract) &&
-                   outputs.opaqueSceneSnapshotMetadata.extent ==
-                       outputs.hdrSceneColorMetadata.extent &&
-                   outputs.opaqueSceneSnapshot.index !=
+                   HasValidOpaqueSceneColorPyramid(
+                       outputs.opaqueSceneColorPyramid, provenance) &&
+                   outputs.opaqueSceneColorPyramid.texture.index !=
                        outputs.hdrSceneColor.index &&
                    outputs.colorDomain ==
                        PostProcessColorDomain::SceneLinearHDR &&

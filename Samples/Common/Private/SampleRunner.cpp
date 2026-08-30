@@ -3693,10 +3693,10 @@ namespace
                 diagnostics.transparent.additiveDrawCount;
             result.transparentThinTransmissionDrawCount =
                 diagnostics.transparent.thinTransmissionDrawCount;
-            result.transparentOpaqueSceneSnapshotReady =
-                diagnostics.transparent.opaqueSceneSnapshotReady;
-            result.transparentOpaqueSceneSnapshotCopied =
-                diagnostics.transparent.opaqueSceneSnapshotCopied;
+            result.transparentOpaqueSceneColorPyramidReady =
+                diagnostics.transparent.opaqueSceneColorPyramidReady;
+            result.transparentOpaqueSceneColorPyramidBuilt =
+                diagnostics.transparent.opaqueSceneColorPyramidBuilt;
             result.transparentReactiveMaskAttachmentBound =
                 diagnostics.transparent.reactiveMaskAttachmentBound;
             result.transparentReactiveMaskWriteDrawCount =
@@ -8290,7 +8290,7 @@ namespace
                             ? "Sample-specific completion contract failed"
                             : validationError;
             }
-            bool succeeded = sampleResultValid &&
+            bool succeeded = error.empty() && sampleResultValid &&
                               diagnostics.backend != RHIBackendType::None &&
                               diagnostics.lastPresentedFrameSequence > 0 &&
                              features.available && features.renderAttempted &&

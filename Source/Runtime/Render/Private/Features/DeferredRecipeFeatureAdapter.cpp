@@ -6,6 +6,7 @@
 #include "Features/DeferredRecipeFeatureAdapter.h"
 
 #include "Features/DefaultRenderPassBundle.h"
+#include "Features/OpaqueSceneColorPyramidBuilder.h"
 #include "Features/SceneDepthSnapshotBuilder.h"
 
 #include "Render/Material/MaterialSystem.h"
@@ -55,62 +56,6 @@ namespace
         return true;
     }
 
-    struct OpaqueSceneSnapshotCopyData
-    {
-        RGTextureHandle source{};
-        RGTextureHandle destination{};
-        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
-    };
-
-    [[nodiscard]] bool AddOpaqueSceneSnapshotCopy(
-        RenderFeatureGraphBuilder& builder,
-        RGTextureHandle source,
-        RGTextureHandle destination,
-        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt)
-    {
-        if (!receipt)
-        {
-            return false;
-        }
-        return builder.AddPass<OpaqueSceneSnapshotCopyData>(
-            "OpaqueSceneSnapshotCopy",
-            // The snapshot is produced by and immediately consumed on the
-            // graphics queue. Keeping this tiny same-frame copy on graphics
-            // avoids an otherwise unnecessary pair of queue-family ownership
-            // transfers on Vulkan.
-            RenderGraphPassType::Graphics,
-            [source, destination, receipt = std::move(receipt)](
-                RenderGraphBuilder& graphBuilder,
-                OpaqueSceneSnapshotCopyData& data)
-            {
-                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
-                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
-                // This snapshot is published through the typed blackboard.
-                // Blackboard handles do not create RenderGraph dependencies,
-                // so preserve the copy as the producer of the shader-readable
-                // frame contract even when no later special surface samples it.
-                graphBuilder.SetExportState(
-                    data.destination, RHIResourceState::ShaderResource);
-                data.receipt = receipt;
-            },
-            [](const OpaqueSceneSnapshotCopyData& data,
-               RenderGraphPassContext& context)
-            {
-                RHITexture* const source = context.GetTexture(data.source);
-                RHITexture* const destination = context.GetTexture(data.destination);
-                if (source == nullptr || destination == nullptr || source == destination)
-                {
-                    context.MarkExecutionFailed("Opaque HDR snapshot copy has invalid aliased resources");
-                    return;
-                }
-                context.Commands().CopyTexture(source, destination);
-                if (data.receipt)
-                {
-                    data.receipt->copied.store(true, std::memory_order_release);
-                }
-            });
-    }
-
     [[nodiscard]] const WaterFeaturePass* FindWaterFeaturePass(
         const DefaultRenderPassBundle& bundle) noexcept
     {
@@ -132,10 +77,11 @@ namespace
             return true;
         }
         const WaterSurfaceRequirements requirements = water->GetRequirements();
-        if (!requirements.opaqueSceneSnapshotRequired ||
-            !context.opaqueSceneSnapshot.IsCompatibleWith(context.identity))
+        if (!requirements.sceneColorPyramidRequired ||
+            !context.opaqueSceneColorPyramid.IsCompatibleWith(context.identity))
         {
-            outFailure = "Water requires the current graph's immutable HDR opaque snapshot";
+            outFailure =
+                "Water requires the current graph's completed opaque-scene color pyramid";
             return false;
         }
         if (!requirements.exposureStateRequired ||
@@ -145,7 +91,7 @@ namespace
             context.view.exposureStateContentHash == 0)
         {
             outFailure =
-                "Water requires the exact committed exposure state paired with the HDR opaque snapshot";
+                "Water requires the exact committed exposure state paired with the opaque-scene color pyramid";
             return false;
         }
         const RHITextureDesc* const depthSnapshotDesc =
@@ -165,7 +111,7 @@ namespace
             return false;
         }
         outInput.identity = context.identity;
-        outInput.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
+        outInput.sceneColorPyramid = context.opaqueSceneColorPyramid;
         outInput.exposureState = context.view.exposureState;
         outInput.exposureStateContentHash = context.view.exposureStateContentHash;
         outInput.depthSnapshot = context.sceneDepthSnapshot;
@@ -1379,8 +1325,10 @@ void DeferredLightingFeatureAdapter::SetCompositionFailure(std::string diagnosti
 }
 
 DeferredForwardSpecialFeatureAdapter::DeferredForwardSpecialFeatureAdapter(
-    DefaultRenderPassBundle* passBundle) noexcept
+    DefaultRenderPassBundle* passBundle,
+    PipelineCache* pipelineCache) noexcept
     : m_passBundle(passBundle)
+    , m_pipelineCache(pipelineCache)
 {
 }
 
@@ -1451,9 +1399,14 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
             OpaqueRasterOutputFamily::ForwardSceneHDR,
             OpaqueRasterSurfaceRoute::ForwardSpecialOpaque);
     }
-    m_readiness.pipelineReady = opaquePipelinePreflight.Succeeded();
+    m_readiness.pipelineReady = opaquePipelinePreflight.Succeeded() &&
+        m_pipelineCache != nullptr &&
+        m_pipelineCache->GetOpaqueSceneColorPyramidPipeline(
+            RHIFormat::RGBA16_FLOAT) != nullptr &&
+        m_pipelineCache->GetOpaqueSceneColorPyramidSetLayout() != nullptr;
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        hasValidLightingPlan && m_passBundle != nullptr && opaquePass != nullptr;
+        hasValidLightingPlan && m_passBundle != nullptr &&
+        m_pipelineCache != nullptr && opaquePass != nullptr;
     if (!m_readiness.hardwareSupported)
     {
         m_readiness.diagnostic =
@@ -1469,7 +1422,8 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
         m_readiness.diagnostic =
             "Deferred forward-special chain requires a valid LightingFramePlan for the current frame and view";
     }
-    else if (m_passBundle == nullptr || opaquePass == nullptr)
+    else if (m_passBundle == nullptr || m_pipelineCache == nullptr ||
+             opaquePass == nullptr)
     {
         m_readiness.diagnostic =
             "Deferred forward-special composition dependencies are unavailable";
@@ -1693,30 +1647,34 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     sceneDepthSnapshot.required = depthDemand.required;
     SceneDepthSnapshotRecordInput sceneDepthSnapshotInput;
 
-    RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
-        m_preparedContext.outputExtent.width,
-        m_preparedContext.outputExtent.height,
-        RHIFormat::RGBA16_FLOAT,
-        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
-    opaqueSnapshotDesc.debugName = "DeferredOpaqueSceneSnapshot";
-    const RGTextureHandle opaqueSceneSnapshot = builder.CreateTexture(
-        opaqueSnapshotDesc);
-    const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> opaqueSnapshotReceipt =
-        std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
-    if (!opaqueSceneSnapshot.IsValid() ||
-        opaqueSceneSnapshot.index == postLightingContext.view.colorTarget.index ||
-        !AddOpaqueSceneSnapshotCopy(
+    OpaqueSceneColorPyramid opaqueSceneColorPyramid;
+    OpaqueSceneColorPyramidRecordInput opaqueSceneColorPyramidInput;
+    std::string opaqueSceneColorPyramidFailure;
+    if (!BuildOpaqueSceneColorPyramid(
             builder,
-            postLightingContext.view.colorTarget,
-            opaqueSceneSnapshot,
-            opaqueSnapshotReceipt))
+            *m_pipelineCache,
+            postLightingContext,
+            m_preparedContext.frameIdentity,
+            m_preparedContext.viewIdentity,
+            m_preparedContext.outputExtent,
+            m_preparedContext.resolvedQuality,
+            opaqueSceneColorPyramid,
+            opaqueSceneColorPyramidInput,
+            opaqueSceneColorPyramidFailure))
     {
-        SetCompositionFailure(
-            "DeferredQuality could not create a distinct post-Sky HDR snapshot");
+        SetCompositionFailure(std::move(opaqueSceneColorPyramidFailure));
         return;
     }
-    ++m_lastPassChainStats.graphPassCount;
-    m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
+    m_lastPassChainStats.graphPassCount += opaqueSceneColorPyramid.mipCount;
+    m_lastPassChainStats.graphPassNames.push_back(
+        "OpaqueSceneColorPyramidBase");
+    for (uint32 mipIndex = 1;
+         mipIndex < opaqueSceneColorPyramid.mipCount;
+         ++mipIndex)
+    {
+        m_lastPassChainStats.graphPassNames.push_back(
+            "OpaqueSceneColorPyramidMip" + std::to_string(mipIndex));
+    }
     if (sceneDepthSnapshot.requested)
     {
         const bool snapshotRequired = sceneDepthSnapshot.required;
@@ -1753,10 +1711,8 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         }
     }
     RenderPassRecordContext translucencyContext = postLightingContext;
-    translucencyContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
-        postLightingContext.identity,
-        opaqueSceneSnapshot,
-        opaqueSnapshotReceipt};
+    translucencyContext.opaqueSceneColorPyramid =
+        opaqueSceneColorPyramidInput;
     translucencyContext.sceneDepthSnapshot = sceneDepthSnapshotInput;
     std::string waterSurfaceFailure;
     if (!BuildWaterSurfaceRecordInput(
@@ -1820,10 +1776,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
-    outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
-    outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
-        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
-    outputs.opaqueSceneSnapshotReceipt = opaqueSnapshotReceipt;
+    outputs.opaqueSceneColorPyramid = std::move(opaqueSceneColorPyramid);
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);

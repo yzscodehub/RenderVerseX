@@ -568,7 +568,7 @@ namespace RVX
                 receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
                 receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
-                receipt.schemaVersion == 12)
+                receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -585,7 +585,8 @@ namespace RVX
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
                 receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
                 receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
+                receipt.schemaVersion == 11 || receipt.schemaVersion == 12 ||
+                receipt.schemaVersion == 13)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -630,7 +631,7 @@ namespace RVX
             if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
                 receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
-                receipt.schemaVersion == 12)
+                receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -658,7 +659,8 @@ namespace RVX
             }
             if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
                 receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
+                receipt.schemaVersion == 11 || receipt.schemaVersion == 12 ||
+                receipt.schemaVersion == 13)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -674,7 +676,7 @@ namespace RVX
                        << receipt.postProcess.taaPassCount;
                 if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
                     receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
-                    receipt.schemaVersion == 12)
+                    receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
                 {
                     stream << ", \"antiAliasingMode\": "
                            << Diagnostics::JsonString(
@@ -722,7 +724,8 @@ namespace RVX
                            << receipt.postProcess.taaHistoryStoreGraphPassCount;
                 }
                 if (receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                    receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
+                    receipt.schemaVersion == 11 || receipt.schemaVersion == 12 ||
+                    receipt.schemaVersion == 13)
                 {
                     stream << ", \"exposureStateContentHash\": "
                            << receipt.postProcess.exposureStateContentHash
@@ -830,7 +833,7 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
-                receipt.schemaVersion == 12)
+                receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
             {
                 const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
                     receipt.ambientOcclusion;
@@ -941,7 +944,8 @@ namespace RVX
                        << Diagnostics::JsonBool(ambientOcclusion.fallbackUsed)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
+            if (receipt.schemaVersion == 11 || receipt.schemaVersion == 12 ||
+                receipt.schemaVersion == 13)
             {
                 const RenderToonLightingExecutionReceipt& toonLighting =
                     receipt.toonLighting;
@@ -1034,7 +1038,7 @@ namespace RVX
                        << Diagnostics::JsonString(toonOutline.diagnostic)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 12)
+            if (receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
             {
                 const RenderHybridRayTracingExecutionReceipt& hybrid =
                     receipt.hybridRayTracing;
@@ -1171,7 +1175,7 @@ namespace RVX
                 // work.  Keep this out of older receipt schemas so their
                 // compatibility shape remains unchanged.
                 if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
-                    receipt.schemaVersion == 12)
+                    receipt.schemaVersion == 12 || receipt.schemaVersion == 13)
                 {
                     stream << "          \"contractCompletedWithoutGraphWork\": "
                            << Diagnostics::JsonBool(
@@ -1535,7 +1539,8 @@ namespace RVX
         result.graphPassScheduled = water.graphPassScheduled;
         result.drawSubmitted = water.drawSubmitted;
         result.uploadPublished = water.uploadPublished;
-        result.opaqueSceneSnapshotReady = water.opaqueSceneSnapshotReady;
+        result.opaqueSceneColorPyramidReady =
+            water.opaqueSceneColorPyramidReady;
         result.depthSnapshotReady = water.depthSnapshotReady;
         result.depthLinearizationReady = water.depthLinearizationReady;
         result.layeredNormalsEvaluated = water.layeredNormalsEvaluated;
@@ -3905,8 +3910,14 @@ namespace RVX
                    << Diagnostics::JsonBool(water.drawSubmitted) << ",\n";
             stream << "      \"uploadPublished\": "
                    << Diagnostics::JsonBool(water.uploadPublished) << ",\n";
-            stream << "      \"opaqueSceneSnapshotReady\": "
-                   << Diagnostics::JsonBool(water.opaqueSceneSnapshotReady)
+            stream << "      \""
+                   << (report.schemaVersion >
+                               RVX_SAMPLE_REPORT_PRE_OPAQUE_SCENE_COLOR_PYRAMID_SCHEMA_VERSION
+                           ? "opaqueSceneColorPyramidReady"
+                           : "opaqueSceneSnapshotReady")
+                   << "\": "
+                   << Diagnostics::JsonBool(
+                          water.opaqueSceneColorPyramidReady)
                    << ",\n";
             stream << "      \"depthSnapshotReady\": "
                    << Diagnostics::JsonBool(water.depthSnapshotReady) << ",\n";
@@ -4000,13 +4011,26 @@ namespace RVX
                    << renderDiagnostics.transparentAdditiveDrawCount << ",\n";
             stream << "    \"transparentThinTransmissionDrawCount\": "
                    << renderDiagnostics.transparentThinTransmissionDrawCount << ",\n";
-            stream << "    \"transparentOpaqueSceneSnapshotReady\": "
+            const bool usesOpaqueSceneColorPyramidNames =
+                report.schemaVersion >
+                RVX_SAMPLE_REPORT_PRE_OPAQUE_SCENE_COLOR_PYRAMID_SCHEMA_VERSION;
+            stream << "    \""
+                   << (usesOpaqueSceneColorPyramidNames
+                           ? "transparentOpaqueSceneColorPyramidReady"
+                           : "transparentOpaqueSceneSnapshotReady")
+                   << "\": "
                    << Diagnostics::JsonBool(
-                          renderDiagnostics.transparentOpaqueSceneSnapshotReady)
+                          renderDiagnostics
+                              .transparentOpaqueSceneColorPyramidReady)
                    << ",\n";
-            stream << "    \"transparentOpaqueSceneSnapshotCopied\": "
+            stream << "    \""
+                   << (usesOpaqueSceneColorPyramidNames
+                           ? "transparentOpaqueSceneColorPyramidBuilt"
+                           : "transparentOpaqueSceneSnapshotCopied")
+                   << "\": "
                    << Diagnostics::JsonBool(
-                          renderDiagnostics.transparentOpaqueSceneSnapshotCopied)
+                          renderDiagnostics
+                              .transparentOpaqueSceneColorPyramidBuilt)
                    << ",\n";
             stream << "    \"transparentReactiveMaskAttachmentBound\": "
                    << Diagnostics::JsonBool(

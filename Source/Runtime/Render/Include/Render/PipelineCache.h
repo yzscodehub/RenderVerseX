@@ -15,6 +15,7 @@
 #include "Core/MathTypes.h"
 #include "Render/Material/MaterialClassification.h"
 #include "Render/Renderer/ShadowConstants.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "RHI/RHI.h"
 
 #include <array>
@@ -313,9 +314,12 @@ namespace RVX
         RHITextureViewRef ambientOcclusionView;
         /** Content identity for ambientOcclusionView; required when a view is supplied. */
         uint64 ambientOcclusionFieldHash = 0;
-        /** Opaque HDR copy produced after Sky and before translucency. */
-        RHITextureViewRef opaqueSceneSnapshotView;
-        RHISamplerRef opaqueSceneSnapshotSampler;
+        /** Late opaque-scene refraction pyramid (all-mip SRV). */
+        RHITextureViewRef opaqueSceneColorPyramidView;
+        RHISamplerRef opaqueSceneColorPyramidSampler;
+        RenderOutputExtent opaqueSceneColorPyramidSourceExtent{};
+        RenderOutputExtent opaqueSceneColorPyramidBaseExtent{};
+        uint32 opaqueSceneColorPyramidMipCount = 0;
         /**
          * Exact graph-owned RGBA16F Texture3D with integrated in-scattering
          * in rgb and transmittance in alpha.  Omission binds the immutable
@@ -357,8 +361,11 @@ namespace RVX
         RHIBufferRef exposureStateBuffer;
         RHITextureViewRef ambientOcclusionView;
         uint64 ambientOcclusionFieldHash = 0;
-        RHITextureViewRef opaqueSceneSnapshotView;
-        RHISamplerRef opaqueSceneSnapshotSampler;
+        RHITextureViewRef opaqueSceneColorPyramidView;
+        RHISamplerRef opaqueSceneColorPyramidSampler;
+        RenderOutputExtent opaqueSceneColorPyramidSourceExtent{};
+        RenderOutputExtent opaqueSceneColorPyramidBaseExtent{};
+        uint32 opaqueSceneColorPyramidMipCount = 0;
         RHITextureViewRef froxelVolumetricLightingView;
         uint64 froxelVolumetricLightingPlanIdentity = 0;
         RHIDescriptorSetLayoutRef frameSetLayout;
@@ -376,7 +383,11 @@ namespace RVX
                    environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
                    environmentIBLSampler && exposureStateBuffer &&
                    ambientOcclusionView && ambientOcclusionFieldHash != 0 &&
-                   opaqueSceneSnapshotView && opaqueSceneSnapshotSampler &&
+                   opaqueSceneColorPyramidView &&
+                   opaqueSceneColorPyramidSampler &&
+                   opaqueSceneColorPyramidSourceExtent.IsValid() &&
+                   opaqueSceneColorPyramidBaseExtent.IsValid() &&
+                   opaqueSceneColorPyramidMipCount != 0 &&
                    froxelVolumetricLightingView &&
                    frameSetLayout && frameDescriptorSet;
         }
@@ -595,6 +606,7 @@ namespace RVX
         uint64 screenSpaceOutlinePipelineHash = 0;
         uint64 screenSpaceOutlineVerifierPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 opaqueSceneColorPyramidPipelineHash = 0;
         uint64 gtaoSurfacePipelineHash = 0;
         uint64 gtaoHorizonPipelineHash = 0;
         uint64 gtaoBilateralHorizontalPipelineHash = 0;
@@ -609,7 +621,6 @@ namespace RVX
         uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 taaResolvePipelineHash = 0;
-        uint64 taaHistoryStorePipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
@@ -923,7 +934,7 @@ namespace RVX
         /** Fixed HDR producer binding ABI for pre-exposure state and GTAO visibility. */
         static constexpr uint32 DefaultLitExposureStateBinding = 14u;
         static constexpr uint32 DefaultLitAmbientOcclusionBinding = 15u;
-        static constexpr uint32 DefaultLitOpaqueSceneSnapshotBinding = 16u;
+        static constexpr uint32 DefaultLitOpaqueSceneColorPyramidBinding = 16u;
         static constexpr uint32 DefaultLitLocalShadowAtlasBinding = 17u;
         /**
          * Immutable froxel-scattering/transmittance Texture3D SRV.  The
@@ -1072,11 +1083,18 @@ namespace RVX
         RHIPipeline* GetScreenSpaceOutlineVerifierPipeline(RHIFormat outputFormat);
 
         /**
-         * @brief Get the fullscreen Bloom post-process pipeline
+         * @brief Get the fullscreen Bloom post-process pipeline.
+         *
+         * Bloom owns a narrow descriptor ABI because its final composite
+         * samples the source HDR plus three pyramid levels. Tone mapping
+         * continues to use the smaller exposure post-process layout.
          */
         RHIPipeline* GetBloomPipeline() const { return m_bloomPipeline.Get(); }
         RHIPipeline* GetBloomPipeline(RHIFormat outputFormat);
-        RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
+
+        /** @brief Build the late opaque-scene color pyramid for refraction. */
+        RHIPipeline* GetOpaqueSceneColorPyramidPipeline(
+            RHIFormat outputFormat = RHIFormat::RGBA16_FLOAT);
 
         /**
          * @brief Get the fail-closed Ground Truth Ambient Occlusion pipeline family.
@@ -1180,12 +1198,6 @@ namespace RVX
         RHIPipeline* GetTAAResolvePipeline() const { return m_taaResolvePipeline.Get(); }
         RHIPipeline* GetTAAResolvePipeline(RHIFormat outputFormat);
 
-        /** @brief Get the dual-target temporal history-store pipeline. */
-        RHIPipeline* GetTAAHistoryStorePipeline() const
-        {
-            return m_taaHistoryStorePipeline.Get();
-        }
-
         /**
          * @brief Get the fullscreen FilmGrain LDR post-process pipeline
          */
@@ -1245,7 +1257,7 @@ namespace RVX
          */
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
-        /** Descriptor ABI: t0 source HDR, t1 accumulation, t2 revealage. */
+        /** Descriptor ABI: t0 accumulation, t1 revealage. */
         RHIPipelineLayout* GetWeightedBlendedOITCompositeLayout() const
         {
             return m_weightedBlendedOITCompositePipelineLayout.Get();
@@ -1257,7 +1269,19 @@ namespace RVX
             return m_exposurePostProcessPipelineLayout.Get();
         }
 
-        /** @brief Layout for the temporal resolve and history-store fullscreen passes. */
+        /** @brief Layout for Bloom source plus the fixed three-level pyramid. */
+        RHIPipelineLayout* GetBloomLayout() const
+        {
+            return m_bloomPipelineLayout.Get();
+        }
+
+        /** @brief Layout for the opaque-scene color pyramid fullscreen pass. */
+        RHIPipelineLayout* GetOpaqueSceneColorPyramidLayout() const
+        {
+            return m_opaqueSceneColorPyramidPipelineLayout.Get();
+        }
+
+        /** @brief Layout for the three-target temporal resolve fullscreen pass. */
         RHIPipelineLayout* GetTAALayout() const { return m_taaPipelineLayout.Get(); }
 
         /** @brief Layout for the five-pass GTAO reconstruction and filtering family. */
@@ -1320,6 +1344,16 @@ namespace RVX
         RHIDescriptorSetLayout* GetExposurePostProcessSetLayout() const
         {
             return m_exposurePostProcessSetLayout.Get();
+        }
+
+        RHIDescriptorSetLayout* GetBloomSetLayout() const
+        {
+            return m_bloomSetLayout.Get();
+        }
+
+        RHIDescriptorSetLayout* GetOpaqueSceneColorPyramidSetLayout() const
+        {
+            return m_opaqueSceneColorPyramidSetLayout.Get();
         }
 
         /** @brief Descriptor layout for current/history/depth/velocity/reactive TAA inputs. */
@@ -1751,7 +1785,7 @@ namespace RVX
             RHISamplerRef environmentIBLSampler;
             RHIBufferRef exposureStateBuffer;
             RHITextureViewRef ambientOcclusionView;
-            RHITextureViewRef opaqueSceneSnapshotView;
+            RHITextureViewRef opaqueSceneColorPyramidView;
             RHITextureViewRef froxelVolumetricLightingView;
             uint64 ambientOcclusionFieldHash = 0;
 
@@ -1766,7 +1800,8 @@ namespace RVX
                        environmentIBLPrefilteredView &&
                        environmentIBLBRDFLUTView && environmentIBLSampler &&
                        exposureStateBuffer && ambientOcclusionView &&
-                       opaqueSceneSnapshotView && froxelVolumetricLightingView &&
+                       opaqueSceneColorPyramidView &&
+                       froxelVolumetricLightingView &&
                        ambientOcclusionFieldHash != 0;
             }
         };
@@ -1789,6 +1824,8 @@ namespace RVX
         bool CreateGPUSceneRasterPipelineLayout();
         bool CreateDeferredLightingPipelineLayout();
         bool CreatePostProcessPipelineLayout();
+        bool CreateBloomPipelineLayout();
+        bool CreateOpaqueSceneColorPyramidPipelineLayout();
         bool CreateWeightedBlendedOITCompositePipelineLayout();
         bool CreateTAAPipelineLayout();
         bool CreateGTAOPipelineLayout();
@@ -1902,7 +1939,8 @@ namespace RVX
         RHIPipelineRef GetOrCreateScreenSpaceOutlineVerifierPipeline(
             RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateOpaqueSceneColorPyramidPipeline(
+            RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateGTAOSurfacePipeline();
         RHIPipelineRef GetOrCreateGTAOHorizonPipeline();
         RHIPipelineRef GetOrCreateGTAOBilateralHorizontalPipeline();
@@ -1946,7 +1984,6 @@ namespace RVX
         RHIPipelineRef GetOrCreateFilmGrainPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateTAAResolvePipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateTAAHistoryStorePipeline();
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
         bool EnsureExposureComputePipelines();
@@ -2023,7 +2060,8 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildScreenSpaceOutlineVerifierPipelineDesc(
             RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildOpaqueSceneColorPyramidPipelineDesc(
+            RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildGTAOPipelineDesc(
             RHIShader* pixelShader,
             const char* debugName,
@@ -2051,7 +2089,6 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildTAAResolvePipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildTAAHistoryStorePipelineDesc() const;
         RHIGraphicsPipelineDesc BuildVignettePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildUIPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
@@ -2159,6 +2196,8 @@ namespace RVX
         RHIShaderRef m_screenSpaceOutlineVerifierPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
+        RHIShaderRef m_opaqueSceneColorPyramidVertexShader;
+        RHIShaderRef m_opaqueSceneColorPyramidPixelShader;
         RHIShaderRef m_gtaoSurfacePixelShader;
         RHIShaderRef m_gtaoHorizonPixelShader;
         RHIShaderRef m_gtaoBilateralHorizontalPixelShader;
@@ -2193,7 +2232,6 @@ namespace RVX
         RHIShaderRef m_fxaaPixelShader;
         RHIShaderRef m_taaVertexShader;
         RHIShaderRef m_taaResolvePixelShader;
-        RHIShaderRef m_taaHistoryStorePixelShader;
         RHIShaderRef m_vignetteVertexShader;
         RHIShaderRef m_vignettePixelShader;
         RHIShaderRef m_uiVertexShader;
@@ -2243,6 +2281,10 @@ namespace RVX
             m_screenSpaceOutlineVerifierPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_opaqueSceneColorPyramidVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_opaqueSceneColorPyramidPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoSurfacePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoHorizonPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralHorizontalPsCompileResult;
@@ -2281,7 +2323,6 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_fxaaPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_taaVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_taaResolvePsCompileResult;
-        std::unique_ptr<ShaderProgramMetadata> m_taaHistoryStorePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_vignetteVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_vignettePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_uiVsCompileResult;
@@ -2306,6 +2347,10 @@ namespace RVX
         RHIPipelineLayoutRef m_exposureComputePipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_bloomSetLayout;
+        RHIPipelineLayoutRef m_bloomPipelineLayout;
+        RHIDescriptorSetLayoutRef m_opaqueSceneColorPyramidSetLayout;
+        RHIPipelineLayoutRef m_opaqueSceneColorPyramidPipelineLayout;
         RHIDescriptorSetLayoutRef m_weightedBlendedOITCompositeSetLayout;
         RHIPipelineLayoutRef m_weightedBlendedOITCompositePipelineLayout;
         RHIDescriptorSetLayoutRef m_exposurePostProcessSetLayout;
@@ -2359,7 +2404,7 @@ namespace RVX
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
-        RHIPipelineRef m_bloomAdditivePipeline;
+        RHIPipelineRef m_opaqueSceneColorPyramidPipeline;
         RHIPipelineRef m_gtaoSurfacePipeline;
         RHIPipelineRef m_gtaoHorizonPipeline;
         RHIPipelineRef m_gtaoBilateralHorizontalPipeline;
@@ -2387,7 +2432,6 @@ namespace RVX
         RHIPipelineRef m_filmGrainPipeline;
         RHIPipelineRef m_fxaaPipeline;
         RHIPipelineRef m_taaResolvePipeline;
-        RHIPipelineRef m_taaHistoryStorePipeline;
         RHIPipelineRef m_vignettePipeline;
         RHIPipelineRef m_uiPipeline;
         RHIPipelineRef m_rayTracedShadowPipeline;

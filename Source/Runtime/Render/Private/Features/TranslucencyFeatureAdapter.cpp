@@ -31,24 +31,23 @@ namespace
         RGTextureHandle revealage{};
         RGTextureViewHandle accumulationView{};
         RGTextureViewHandle revealageView{};
-        RenderOutputExtent extent{};
+        WeightedBlendedOITScissor scissor{};
         std::shared_ptr<WeightedBlendedOITExecutionReceipt> receipt{};
         bool valid = false;
     };
 
     struct WeightedBlendedOITCompositePassData
     {
-        RGTextureHandle sourceSceneHDR{};
         RGTextureHandle accumulation{};
         RGTextureHandle revealage{};
-        RGTextureHandle outputSceneHDR{};
+        /** The existing HDR attachment is loaded and blended in place. */
+        RGTextureHandle sceneHDR{};
         RGTextureHandle reactiveMask{};
-        RGTextureViewHandle sourceSceneHDRView{};
         RGTextureViewHandle accumulationView{};
         RGTextureViewHandle revealageView{};
-        RGTextureViewHandle outputSceneHDRView{};
+        RGTextureViewHandle sceneHDRView{};
         RGTextureViewHandle reactiveMaskView{};
-        RenderOutputExtent extent{};
+        WeightedBlendedOITScissor scissor{};
         PipelineCache* pipelineCache = nullptr;
         std::shared_ptr<WeightedBlendedOITExecutionReceipt> receipt{};
         bool valid = false;
@@ -72,19 +71,19 @@ namespace
         RenderFeatureGraphBuilder& builder,
         RGTextureHandle accumulation,
         RGTextureHandle revealage,
-        RenderOutputExtent extent,
+        WeightedBlendedOITScissor scissor,
         const std::shared_ptr<WeightedBlendedOITExecutionReceipt>& receipt)
     {
         return builder.AddPass<WeightedBlendedOITClearPassData>(
             "WeightedBlendedOITClear",
             RenderGraphPassType::Graphics,
-            [accumulation, revealage, extent, receipt](
+            [accumulation, revealage, scissor, receipt](
                 RenderGraphBuilder& graphBuilder,
                 WeightedBlendedOITClearPassData& data)
             {
                 data.accumulation = accumulation;
                 data.revealage = revealage;
-                data.extent = extent;
+                data.scissor = scissor;
                 data.receipt = receipt;
                 const RHITextureDesc* const accumulationDesc =
                     graphBuilder.GetTextureDesc(accumulation);
@@ -93,10 +92,10 @@ namespace
                 if (accumulationDesc == nullptr || revealageDesc == nullptr ||
                     accumulationDesc->format != RHIFormat::RGBA16_FLOAT ||
                     revealageDesc->format != RHIFormat::R16_FLOAT ||
-                    accumulationDesc->width != extent.width ||
-                    accumulationDesc->height != extent.height ||
-                    revealageDesc->width != extent.width ||
-                    revealageDesc->height != extent.height ||
+                    !data.scissor.IsValidFor(RenderOutputExtent{
+                        accumulationDesc->width, accumulationDesc->height}) ||
+                    revealageDesc->width != accumulationDesc->width ||
+                    revealageDesc->height != accumulationDesc->height ||
                     accumulationDesc->sampleCount != RHISampleCount::Count1 ||
                     revealageDesc->sampleCount != RHISampleCount::Count1)
                 {
@@ -153,7 +152,10 @@ namespace
                     RHIStoreOp::Store,
                     RHIClearColor{1.0f, 1.0f, 1.0f, 1.0f});
                 renderPass.SetRenderArea(
-                    0, 0, data.extent.width, data.extent.height);
+                    data.scissor.x,
+                    data.scissor.y,
+                    data.scissor.width,
+                    data.scissor.height);
                 context.Commands().BeginRenderPass(renderPass);
                 context.Commands().EndRenderPass();
                 data.receipt->cleared.store(
@@ -164,32 +166,25 @@ namespace
     [[nodiscard]] bool RegisterWeightedBlendedOITComposite(
         RenderFeatureGraphBuilder& builder,
         PipelineCache& pipelineCache,
-        RGTextureHandle sourceSceneHDR,
+        RGTextureHandle sceneHDR,
         RGTextureHandle accumulation,
         RGTextureHandle revealage,
-        RGTextureHandle outputSceneHDR,
         RGTextureHandle reactiveMask,
-        RenderOutputExtent extent,
+        WeightedBlendedOITScissor scissor,
         const std::shared_ptr<WeightedBlendedOITExecutionReceipt>& receipt)
     {
         return builder.AddPass<WeightedBlendedOITCompositePassData>(
             "WeightedBlendedOITComposite",
             RenderGraphPassType::Graphics,
             [&pipelineCache,
-             sourceSceneHDR,
+             sceneHDR,
              accumulation,
              revealage,
-             outputSceneHDR,
              reactiveMask,
-             extent,
+             scissor,
              receipt](RenderGraphBuilder& graphBuilder,
                        WeightedBlendedOITCompositePassData& data)
             {
-                data.sourceSceneHDR = graphBuilder.Read(
-                    sourceSceneHDR,
-                    MakeRGAccessDesc(
-                        RHIResourceState::ShaderResource,
-                        RHIShaderStage::Pixel));
                 data.accumulation = graphBuilder.Read(
                     accumulation,
                     MakeRGAccessDesc(
@@ -200,51 +195,40 @@ namespace
                     MakeRGAccessDesc(
                         RHIResourceState::ShaderResource,
                         RHIShaderStage::Pixel));
-                data.outputSceneHDR = outputSceneHDR;
+                data.sceneHDR = sceneHDR;
                 data.reactiveMask = reactiveMask;
-                data.extent = extent;
+                data.scissor = scissor;
                 data.pipelineCache = &pipelineCache;
                 data.receipt = receipt;
 
-                const RHITextureDesc* const sourceDesc =
-                    graphBuilder.GetTextureDesc(sourceSceneHDR);
                 const RHITextureDesc* const accumulationDesc =
                     graphBuilder.GetTextureDesc(accumulation);
                 const RHITextureDesc* const revealageDesc =
                     graphBuilder.GetTextureDesc(revealage);
-                const RHITextureDesc* const outputDesc =
-                    graphBuilder.GetTextureDesc(outputSceneHDR);
+                const RHITextureDesc* const sceneHDRDesc =
+                    graphBuilder.GetTextureDesc(sceneHDR);
                 const RHITextureDesc* const reactiveDesc =
                     graphBuilder.GetTextureDesc(reactiveMask);
-                if (sourceDesc == nullptr || accumulationDesc == nullptr ||
-                    revealageDesc == nullptr || outputDesc == nullptr ||
-                    reactiveDesc == nullptr ||
-                    sourceSceneHDR.index == outputSceneHDR.index ||
-                    sourceDesc->format != RHIFormat::RGBA16_FLOAT ||
+                if (accumulationDesc == nullptr || revealageDesc == nullptr ||
+                    sceneHDRDesc == nullptr || reactiveDesc == nullptr ||
                     accumulationDesc->format != RHIFormat::RGBA16_FLOAT ||
                     revealageDesc->format != RHIFormat::R16_FLOAT ||
-                    outputDesc->format != RHIFormat::RGBA16_FLOAT ||
+                    sceneHDRDesc->format != RHIFormat::RGBA16_FLOAT ||
                     reactiveDesc->format != RHIFormat::R8_UNORM ||
-                    sourceDesc->width != extent.width ||
-                    sourceDesc->height != extent.height ||
-                    accumulationDesc->width != extent.width ||
-                    accumulationDesc->height != extent.height ||
-                    revealageDesc->width != extent.width ||
-                    revealageDesc->height != extent.height ||
-                    outputDesc->width != extent.width ||
-                    outputDesc->height != extent.height ||
-                    reactiveDesc->width != extent.width ||
-                    reactiveDesc->height != extent.height)
+                    !data.scissor.IsValidFor(RenderOutputExtent{
+                        sceneHDRDesc->width, sceneHDRDesc->height}) ||
+                    accumulationDesc->width != sceneHDRDesc->width ||
+                    accumulationDesc->height != sceneHDRDesc->height ||
+                    revealageDesc->width != sceneHDRDesc->width ||
+                    revealageDesc->height != sceneHDRDesc->height ||
+                    reactiveDesc->width != sceneHDRDesc->width ||
+                    reactiveDesc->height != sceneHDRDesc->height ||
+                    !HasFlag(sceneHDRDesc->usage,
+                             RHITextureUsage::RenderTarget))
                 {
                     return;
                 }
 
-                data.sourceSceneHDRView = graphBuilder.CreateTextureView(
-                    data.sourceSceneHDR,
-                    MakeOITTextureViewDesc(
-                        RHIFormat::RGBA16_FLOAT,
-                        RHITextureViewType::ShaderResource,
-                        "WeightedBlendedOITSourceSceneHDRSRV"));
                 data.accumulationView = graphBuilder.CreateTextureView(
                     data.accumulation,
                     MakeOITTextureViewDesc(
@@ -257,23 +241,18 @@ namespace
                         RHIFormat::R16_FLOAT,
                         RHITextureViewType::ShaderResource,
                         "WeightedBlendedOITRevealageSRV"));
-                data.outputSceneHDRView = graphBuilder.CreateTextureView(
-                    data.outputSceneHDR,
+                data.sceneHDRView = graphBuilder.CreateTextureView(
+                    data.sceneHDR,
                     MakeOITTextureViewDesc(
                         RHIFormat::RGBA16_FLOAT,
                         RHITextureViewType::RenderTarget,
-                        "WeightedBlendedOITCompositeHDRRTV"));
+                        "WeightedBlendedOITInPlaceHDRRTV"));
                 data.reactiveMaskView = graphBuilder.CreateTextureView(
                     data.reactiveMask,
                     MakeOITTextureViewDesc(
                         RHIFormat::R8_UNORM,
                         RHITextureViewType::RenderTarget,
                         "WeightedBlendedOITCompositeReactiveRTV"));
-                data.sourceSceneHDRView = graphBuilder.Read(
-                    data.sourceSceneHDRView,
-                    MakeRGAccessDesc(
-                        RHIResourceState::ShaderResource,
-                        RHIShaderStage::Pixel));
                 data.accumulationView = graphBuilder.Read(
                     data.accumulationView,
                     MakeRGAccessDesc(
@@ -284,22 +263,23 @@ namespace
                     MakeRGAccessDesc(
                         RHIResourceState::ShaderResource,
                         RHIShaderStage::Pixel));
-                data.outputSceneHDRView = graphBuilder.Write(
-                    data.outputSceneHDRView,
+                data.sceneHDRView = graphBuilder.ReadWrite(
+                    data.sceneHDRView,
                     MakeRGAccessDesc(
                         RHIResourceState::RenderTarget,
-                        RHIShaderStage::Pixel));
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Preserve));
                 data.reactiveMaskView = graphBuilder.ReadWrite(
                     data.reactiveMaskView,
                     MakeRGAccessDesc(
                         RHIResourceState::RenderTarget,
-                        RHIShaderStage::Pixel));
-                data.valid = data.sourceSceneHDR.IsValid() &&
-                    data.accumulation.IsValid() && data.revealage.IsValid() &&
-                    data.sourceSceneHDRView.IsValid() &&
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Preserve));
+                data.valid = data.accumulation.IsValid() &&
+                    data.revealage.IsValid() &&
                     data.accumulationView.IsValid() &&
                     data.revealageView.IsValid() &&
-                    data.outputSceneHDRView.IsValid() &&
+                    data.sceneHDRView.IsValid() &&
                     data.reactiveMaskView.IsValid();
             },
             [](const WeightedBlendedOITCompositePassData& data,
@@ -314,18 +294,13 @@ namespace
                         "WeightedBlendedOIT composite did not observe its exact clear/graph contract");
                     return;
                 }
-                RHITexture* const source =
-                    context.GetTexture(data.sourceSceneHDR);
-                RHITexture* const output =
-                    context.GetTexture(data.outputSceneHDR);
-                RHITextureView* const sourceView =
-                    context.GetTextureView(data.sourceSceneHDRView);
+                RHITexture* const sceneHDR = context.GetTexture(data.sceneHDR);
                 RHITextureView* const accumulationView =
                     context.GetTextureView(data.accumulationView);
                 RHITextureView* const revealageView =
                     context.GetTextureView(data.revealageView);
-                RHITextureView* const outputView =
-                    context.GetTextureView(data.outputSceneHDRView);
+                RHITextureView* const sceneHDRView =
+                    context.GetTextureView(data.sceneHDRView);
                 RHITextureView* const reactiveView =
                     context.GetTextureView(data.reactiveMaskView);
                 RHIPipeline* const pipeline =
@@ -333,9 +308,8 @@ namespace
                 RHIDescriptorSetLayout* const setLayout =
                     data.pipelineCache->GetWeightedBlendedOITCompositeSetLayout();
                 IRHIDevice* const device = data.pipelineCache->GetDevice();
-                if (source == nullptr || output == nullptr || source == output ||
-                    sourceView == nullptr || accumulationView == nullptr ||
-                    revealageView == nullptr || outputView == nullptr ||
+                if (sceneHDR == nullptr || accumulationView == nullptr ||
+                    revealageView == nullptr || sceneHDRView == nullptr ||
                     reactiveView == nullptr || pipeline == nullptr ||
                     setLayout == nullptr || device == nullptr)
                 {
@@ -348,9 +322,8 @@ namespace
                 descriptorDesc.layout = setLayout;
                 descriptorDesc.debugName =
                     "WeightedBlendedOITCompositeDescriptorSet";
-                descriptorDesc.BindTexture(0, sourceView);
-                descriptorDesc.BindTexture(1, accumulationView);
-                descriptorDesc.BindTexture(2, revealageView);
+                descriptorDesc.BindTexture(0, accumulationView);
+                descriptorDesc.BindTexture(1, revealageView);
                 RHIDescriptorSetRef descriptorSet =
                     device->CreateDescriptorSet(descriptorDesc);
                 if (!descriptorSet ||
@@ -363,25 +336,30 @@ namespace
 
                 RHIRenderPassDesc renderPass;
                 renderPass.AddColorAttachment(
-                    outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
+                    sceneHDRView, RHILoadOp::Load, RHIStoreOp::Store);
                 renderPass.AddColorAttachment(
                     reactiveView, RHILoadOp::Load, RHIStoreOp::Store);
                 renderPass.SetRenderArea(
-                    0, 0, data.extent.width, data.extent.height);
+                    data.scissor.x,
+                    data.scissor.y,
+                    data.scissor.width,
+                    data.scissor.height);
                 RHICommandContext& commands = context.Commands();
                 commands.BeginRenderPass(renderPass);
                 commands.SetPipeline(pipeline);
                 commands.SetDescriptorSet(0, descriptorSet.Get());
                 RHIViewport viewport;
-                viewport.width = static_cast<float32>(data.extent.width);
-                viewport.height = static_cast<float32>(data.extent.height);
+                viewport.width = static_cast<float32>(sceneHDR->GetWidth());
+                viewport.height = static_cast<float32>(sceneHDR->GetHeight());
                 viewport.minDepth = 0.0f;
                 viewport.maxDepth = 1.0f;
                 commands.SetViewport(viewport);
-                RHIRect scissor;
-                scissor.width = data.extent.width;
-                scissor.height = data.extent.height;
-                commands.SetScissor(scissor);
+                RHIRect scissorRect;
+                scissorRect.x = static_cast<int32>(data.scissor.x);
+                scissorRect.y = static_cast<int32>(data.scissor.y);
+                scissorRect.width = data.scissor.width;
+                scissorRect.height = data.scissor.height;
+                commands.SetScissor(scissorRect);
                 commands.Draw(3, 1, 0, 0);
                 commands.EndRenderPass();
                 data.receipt->composited.store(
@@ -689,11 +667,11 @@ void TranslucencyFeatureAdapter::AddPasses(
         inputs->viewIdentity != m_preparedContext.viewIdentity ||
         inputs->lightingPlanIdentity != lightingPlanIdentity ||
         !inputs->hdrSceneColor.IsValid() ||
-        !inputs->opaqueSceneSnapshot.IsValid() ||
-        inputs->opaqueSceneSnapshotReceipt == nullptr)
+        !inputs->opaqueSceneColorPyramid.texture.IsValid() ||
+        inputs->opaqueSceneColorPyramid.receipt == nullptr)
     {
         SetCompositionFailure(
-            "Translucency requires the exact PreTranslucencyOutputs v2");
+            "Translucency requires the exact PreTranslucencyOutputs v3");
         return;
     }
 
@@ -731,10 +709,14 @@ void TranslucencyFeatureAdapter::AddPasses(
         context.rayTracedShadow.identity = context.identity;
     }
     context.ambientOcclusion = {};
-    context.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
+    context.opaqueSceneColorPyramid = OpaqueSceneColorPyramidRecordInput{
         context.identity,
-        inputs->opaqueSceneSnapshot,
-        inputs->opaqueSceneSnapshotReceipt};
+        inputs->opaqueSceneColorPyramid.texture,
+        inputs->opaqueSceneColorPyramid.sourceExtent,
+        inputs->opaqueSceneColorPyramid.baseExtent,
+        inputs->opaqueSceneColorPyramid.quality,
+        inputs->opaqueSceneColorPyramid.mipCount,
+        inputs->opaqueSceneColorPyramid.receipt};
     if (sceneDepthSnapshot->available)
     {
         context.sceneDepthSnapshot = SceneDepthSnapshotRecordInput{
@@ -865,40 +847,41 @@ void TranslucencyFeatureAdapter::AddPasses(
             m_preparedContext.outputExtent.height,
             RHIFormat::R16_FLOAT);
         revealageDesc.debugName = "WeightedBlendedOITRevealage";
-        RHITextureDesc compositeDesc = RHITextureDesc::RenderTarget(
-            m_preparedContext.outputExtent.width,
-            m_preparedContext.outputExtent.height,
-            RHIFormat::RGBA16_FLOAT);
-        compositeDesc.usage = compositeDesc.usage |
-            RHITextureUsage::CopySrc;
-        compositeDesc.debugName = "WeightedBlendedOITCompositeSceneHDR";
 
         const RGTextureHandle accumulation =
             builder.CreateTexture(accumulationDesc);
         const RGTextureHandle revealage =
             builder.CreateTexture(revealageDesc);
-        const RGTextureHandle compositeSceneColor =
-            builder.CreateTexture(compositeDesc);
         if (!accumulation.IsValid() || !revealage.IsValid() ||
-            !compositeSceneColor.IsValid() ||
             accumulation.index == revealage.index ||
-            accumulation.index == compositeSceneColor.index ||
-            revealage.index == compositeSceneColor.index ||
-            compositeSceneColor.index == inputs->hdrSceneColor.index ||
-            compositeSceneColor.index == inputs->reactiveMask.index)
+            accumulation.index == inputs->hdrSceneColor.index ||
+            revealage.index == inputs->hdrSceneColor.index ||
+            accumulation.index == inputs->reactiveMask.index ||
+            revealage.index == inputs->reactiveMask.index)
         {
             SetCompositionFailure(
-                "Weighted-blended translucency could not allocate distinct graph-owned attachments");
+                "Weighted-blended translucency could not allocate distinct accumulation attachments");
             return;
         }
 
+        // No shared projected-bounds contract exists yet for mesh and particle
+        // contributors. Every WBOIT stage therefore uses the exact same full
+        // viewport fallback rather than an unsound partial scissor.
+        const WeightedBlendedOITScissor scissor =
+            ResolveWeightedBlendedOITScissor(m_preparedContext.outputExtent);
+        if (!scissor.IsValidFor(m_preparedContext.outputExtent))
+        {
+            SetCompositionFailure(
+                "Weighted-blended translucency did not resolve a valid conservative scissor policy");
+            return;
+        }
         auto oitReceipt =
             std::make_shared<WeightedBlendedOITExecutionReceipt>();
         if (!RegisterWeightedBlendedOITClear(
                 builder,
                 accumulation,
                 revealage,
-                m_preparedContext.outputExtent,
+                scissor,
                 oitReceipt))
         {
             SetCompositionFailure(
@@ -963,9 +946,8 @@ void TranslucencyFeatureAdapter::AddPasses(
                 inputs->hdrSceneColor,
                 accumulation,
                 revealage,
-                compositeSceneColor,
                 inputs->reactiveMask,
-                m_preparedContext.outputExtent,
+                scissor,
                 oitReceipt))
         {
             SetCompositionFailure(
@@ -973,7 +955,7 @@ void TranslucencyFeatureAdapter::AddPasses(
             return;
         }
         m_lastPassChainStats.compositeRegistered = true;
-        activeSceneColor = compositeSceneColor;
+        activeSceneColor = inputs->hdrSceneColor;
     }
     else if (weightedEntryCount != 0)
     {
@@ -1067,9 +1049,8 @@ void TranslucencyFeatureAdapter::AddPasses(
     outputs.velocityMetadata = inputs->velocityMetadata;
     outputs.reactiveMask = inputs->reactiveMask;
     outputs.reactiveMaskMetadata = inputs->reactiveMaskMetadata;
-    outputs.opaqueSceneSnapshot = inputs->opaqueSceneSnapshot;
-    outputs.opaqueSceneSnapshotMetadata =
-        inputs->opaqueSceneSnapshotMetadata;
+    outputs.opaqueSceneColorPyramid =
+        inputs->opaqueSceneColorPyramid;
     outputs.distortionVectors = context.particleVfx.distortionVectors;
     if (outputs.distortionVectors.IsValid())
     {
@@ -1088,7 +1069,7 @@ void TranslucencyFeatureAdapter::AddPasses(
             std::move(outputs)) != RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "Translucency could not publish TranslucencyOutputs v5");
+            "Translucency could not publish TranslucencyOutputs v6");
     }
 }
 

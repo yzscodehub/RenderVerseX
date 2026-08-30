@@ -3666,11 +3666,14 @@ namespace
         }
     }
 
-    struct TransparentFixtureSnapshotCopyData
+    struct TransparentFixturePyramidMipData
     {
-        RGTextureHandle source{};
         RGTextureHandle destination{};
-        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+        RGTextureViewHandle destinationView{};
+        RenderOutputExtent extent{};
+        uint32 mipIndex = 0;
+        uint32 mipCount = 0;
+        std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt{};
     };
 
     struct TransparentFixtureReactiveMaskInitializationData
@@ -3758,26 +3761,38 @@ namespace
             });
     }
 
-    [[nodiscard]] OpaqueSceneSnapshotRecordInput AddTransparentFixtureSceneTargets(
+    [[nodiscard]] OpaqueSceneColorPyramidRecordInput
+    AddTransparentFixtureSceneTargets(
         RenderGraph& graph,
         ViewData& view,
-        const RenderPassRecordIdentity& identity)
+        const RenderPassRecordIdentity& identity,
+        RenderQualityTier quality = RenderQualityTier::High)
     {
         const RHITextureDesc* const colorDesc =
             graph.GetTextureDesc(view.colorTarget);
-        if (colorDesc == nullptr || colorDesc->format != RHIFormat::RGBA16_FLOAT ||
-            !HasFlag(colorDesc->usage, RHITextureUsage::CopySrc))
+        if (colorDesc == nullptr ||
+            colorDesc->format != RHIFormat::RGBA16_FLOAT)
         {
             return {};
         }
 
-        RHITextureDesc snapshotDesc = RHITextureDesc::Texture2D(
-            colorDesc->width,
-            colorDesc->height,
-            RHIFormat::RGBA16_FLOAT,
-            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
-        snapshotDesc.debugName = "TransparentFixtureOpaqueSceneSnapshot";
-        const RGTextureHandle opaqueSceneSnapshot = graph.CreateTexture(snapshotDesc);
+        const RenderOutputExtent sourceExtent{
+            colorDesc->width, colorDesc->height};
+        const RenderOutputExtent baseExtent =
+            quality == RenderQualityTier::Ultra
+                ? sourceExtent
+                : RenderOutputExtent{
+                    std::max(1u, (sourceExtent.width + 1u) / 2u),
+                    std::max(1u, (sourceExtent.height + 1u) / 2u)};
+        const uint32 mipCount =
+            CalculateOpaqueSceneColorPyramidMipCount(baseExtent);
+        RHITextureDesc pyramidDesc = RHITextureDesc::RenderTarget(
+            baseExtent.width, baseExtent.height, RHIFormat::RGBA16_FLOAT);
+        pyramidDesc.usage = pyramidDesc.usage | RHITextureUsage::ShaderResource;
+        pyramidDesc.mipLevels = mipCount;
+        pyramidDesc.debugName = "TransparentFixtureOpaqueSceneColorPyramid";
+        const RGTextureHandle opaqueSceneColorPyramid =
+            graph.CreateTexture(pyramidDesc);
         if (!view.reactiveMaskTarget.IsValid())
         {
             RHITextureDesc reactiveDesc = RHITextureDesc::Texture2D(
@@ -3788,51 +3803,106 @@ namespace
             reactiveDesc.debugName = "TransparentFixtureReactiveMask";
             view.reactiveMaskTarget = graph.CreateTexture(reactiveDesc);
         }
-        if (!opaqueSceneSnapshot.IsValid() ||
+        if (!opaqueSceneColorPyramid.IsValid() ||
             !view.reactiveMaskTarget.IsValid() ||
-            opaqueSceneSnapshot.index == view.colorTarget.index)
+            opaqueSceneColorPyramid.index == view.colorTarget.index)
         {
             return {};
         }
 
-        OpaqueSceneSnapshotRecordInput snapshotInput;
-        snapshotInput.identity = identity;
-        snapshotInput.texture = opaqueSceneSnapshot;
-        snapshotInput.receipt = std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
-        const RGTextureHandle source = view.colorTarget;
-        const RGTextureHandle destination = snapshotInput.texture;
-        const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt =
-            snapshotInput.receipt;
-        graph.AddPass<TransparentFixtureSnapshotCopyData>(
-            "TransparentFixtureOpaqueSceneSnapshotCopy",
-            RenderGraphPassType::Graphics,
-            [source, destination, receipt](RenderGraphBuilder& builder,
-                                           TransparentFixtureSnapshotCopyData& data)
+        OpaqueSceneColorPyramidRecordInput pyramidInput;
+        pyramidInput.identity = identity;
+        pyramidInput.texture = opaqueSceneColorPyramid;
+        pyramidInput.sourceExtent = sourceExtent;
+        pyramidInput.baseExtent = baseExtent;
+        pyramidInput.quality = quality;
+        pyramidInput.mipCount = mipCount;
+        pyramidInput.receipt =
+            std::make_shared<OpaqueSceneColorPyramidBuildReceipt>();
+        for (uint32 mipIndex = 0; mipIndex < mipCount; ++mipIndex)
+        {
+            RenderOutputExtent mipExtent = baseExtent;
+            for (uint32 priorMip = 0; priorMip < mipIndex; ++priorMip)
             {
-                data.source = builder.Read(source, RHIResourceState::CopySource);
-                data.destination = builder.Write(
-                    destination, RHIResourceState::CopyDest);
-                data.receipt = receipt;
-            },
-            [](const TransparentFixtureSnapshotCopyData& data,
-               RenderGraphPassContext& context)
-            {
-                RHITexture* const source = context.GetTexture(data.source);
-                RHITexture* const destination = context.GetTexture(data.destination);
-                if (source == nullptr || destination == nullptr || source == destination ||
-                    !data.receipt)
+                mipExtent.width = std::max(1u, mipExtent.width / 2u);
+                mipExtent.height = std::max(1u, mipExtent.height / 2u);
+            }
+            const RGTextureHandle destination =
+                opaqueSceneColorPyramid.Subresource(mipIndex);
+            const std::string passName =
+                "TransparentFixtureOpaqueSceneColorPyramidMip" +
+                std::to_string(mipIndex);
+            const std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt =
+                pyramidInput.receipt;
+            graph.AddPass<TransparentFixturePyramidMipData>(
+                passName.c_str(),
+                RenderGraphPassType::Graphics,
+                [destination, mipExtent, mipIndex, mipCount, receipt](
+                    RenderGraphBuilder& builder,
+                    TransparentFixturePyramidMipData& data)
                 {
-                    context.MarkExecutionFailed(
-                        "Transparent fixture HDR snapshot copy has invalid resources");
-                    return;
-                }
-                context.Commands().CopyTexture(source, destination);
-                data.receipt->copied.store(true, std::memory_order_release);
-            });
+                    const RHITextureDesc* const description =
+                        builder.GetTextureDesc(destination);
+                    if (description == nullptr)
+                    {
+                        return;
+                    }
+                    RHITextureViewDesc viewDesc;
+                    viewDesc.format = description->format;
+                    viewDesc.dimension = description->dimension;
+                    viewDesc.subresourceRange = destination.subresourceRange;
+                    viewDesc.type = RHITextureViewType::RenderTarget;
+                    viewDesc.debugName =
+                        "TransparentFixtureOpaqueSceneColorPyramidRTV";
+                    data.destination = destination;
+                    data.destinationView = builder.Write(
+                        builder.CreateTextureView(destination, viewDesc),
+                        MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                         RHIShaderStage::Pixel,
+                                         RHIDiscardIntent::Discard));
+                    builder.SetExportState(
+                        destination, RHIResourceState::ShaderResource);
+                    data.extent = mipExtent;
+                    data.mipIndex = mipIndex;
+                    data.mipCount = mipCount;
+                    data.receipt = receipt;
+                },
+                [](const TransparentFixturePyramidMipData& data,
+                   RenderGraphPassContext& context)
+                {
+                    RHITextureView* const destinationView =
+                        context.GetTextureView(data.destinationView);
+                    if (destinationView == nullptr || !data.extent.IsValid() ||
+                        data.receipt == nullptr)
+                    {
+                        context.MarkExecutionFailed(
+                            "Transparent fixture opaque-scene color pyramid has invalid resources");
+                        return;
+                    }
+                    RHIRenderPassDesc renderPassDesc;
+                    renderPassDesc.AddColorAttachment(
+                        destinationView,
+                        RHILoadOp::Clear,
+                        RHIStoreOp::Store,
+                        RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+                    renderPassDesc.SetRenderArea(
+                        0, 0, data.extent.width, data.extent.height);
+                    RHICommandContext& commands = context.Commands();
+                    commands.BeginRenderPass(renderPassDesc);
+                    commands.EndRenderPass();
+                    data.receipt->completedMipCount.store(
+                        data.mipIndex + 1u, std::memory_order_release);
+                    if (data.mipIndex + 1u == data.mipCount)
+                    {
+                        data.receipt->completed.store(
+                            true, std::memory_order_release);
+                    }
+                });
+        }
 
         AddTransparentFixtureReactiveMaskInitialization(
             graph, view.reactiveMaskTarget);
-        return snapshotInput;
+        return pyramidInput;
     }
 
     RenderPassRecordContext MakeTransparentRecordContext(
@@ -3856,7 +3926,7 @@ namespace
         context.identity.frameSequence = frameSequence;
         context.identity.viewOrdinal = 0;
         context.identity.recordEpoch = recordEpoch;
-        context.opaqueSceneSnapshot = AddTransparentFixtureSceneTargets(
+        context.opaqueSceneColorPyramid = AddTransparentFixtureSceneTargets(
             graph, context.view, context.identity);
         const RenderOutputExtent volumetricExtent{
             std::max(context.view.viewportWidth, 1U),
@@ -12901,14 +12971,14 @@ TEST(SceneRendererPassRecordingValidation,
             renderer));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
-        96, 64, RHIFormat::RGBA8_UNORM);
+        401, 233, RHIFormat::RGBA8_UNORM);
     colorDesc.usage = RHITextureUsage::RenderTarget |
         RHITextureUsage::ShaderResource;
     RHITextureRef colorTarget = device.CreateTexture(colorDesc);
     ASSERT_TRUE(colorTarget);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
-        96, 64, PipelineCache::GetDefaultDepthStencilFormat());
+        401, 233, PipelineCache::GetDefaultDepthStencilFormat());
     RHITextureRef depthTarget = device.CreateTexture(depthDesc);
     ASSERT_TRUE(depthTarget);
 
@@ -14622,65 +14692,81 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
-    EXPECT_EQ(stats.totalPasses, 7u);
+    EXPECT_EQ(stats.totalPasses, 4u);
     EXPECT_EQ(stats.culledPasses, 0u);
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
-    for (const char* additivePassName :
-         {"BloomComposite2", "BloomComposite1", "BloomComposite0"})
+    const auto compositePass = std::find_if(
+        diagnostics.passes.begin(),
+        diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& passDiagnostic)
+        {
+            return passDiagnostic.name == "BloomCompositePyramid";
+        });
+    ASSERT_NE(compositePass, diagnostics.passes.end());
+    const auto outputUsage = std::find_if(
+        compositePass->usages.begin(),
+        compositePass->usages.end(),
+        [output](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == output.index;
+        });
+    ASSERT_NE(outputUsage, compositePass->usages.end());
+    EXPECT_EQ(outputUsage->access, RenderGraph::DiagnosticAccessType::Write);
+    EXPECT_EQ(outputUsage->desiredState, RHIResourceState::RenderTarget);
+    EXPECT_FALSE(HasAnyAccess(
+        outputUsage->desiredAccess.memoryAccess,
+        RHIMemoryAccess::ShaderRead));
+    EXPECT_TRUE(HasAnyAccess(
+        outputUsage->desiredAccess.memoryAccess,
+        RHIMemoryAccess::ColorWrite));
+
+    size_t outputUsageCount = 0;
+    for (const RenderGraph::PassDiagnostic& passDiagnostic : diagnostics.passes)
     {
-        const auto additivePass = std::find_if(
-            diagnostics.passes.begin(),
-            diagnostics.passes.end(),
-            [additivePassName](const RenderGraph::PassDiagnostic& passDiagnostic)
-            {
-                return passDiagnostic.name == additivePassName;
-            });
-        ASSERT_NE(additivePass, diagnostics.passes.end());
-        const auto outputUsage = std::find_if(
-            additivePass->usages.begin(),
-            additivePass->usages.end(),
+        outputUsageCount += static_cast<size_t>(std::count_if(
+            passDiagnostic.usages.begin(),
+            passDiagnostic.usages.end(),
             [output](const RenderGraph::ResourceUsageDiagnostic& usage)
             {
-                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                return usage.type ==
+                           RenderGraph::DiagnosticResourceType::Texture &&
                        usage.resourceIndex == output.index;
-            });
-        ASSERT_NE(outputUsage, additivePass->usages.end());
-        EXPECT_EQ(
-            outputUsage->access,
-            RenderGraph::DiagnosticAccessType::ReadWrite);
-        EXPECT_EQ(outputUsage->desiredState, RHIResourceState::RenderTarget);
-        EXPECT_FALSE(HasAnyAccess(
-            outputUsage->desiredAccess.memoryAccess,
-            RHIMemoryAccess::ShaderRead));
-        EXPECT_TRUE(HasAnyAccess(
-            outputUsage->desiredAccess.memoryAccess,
-            RHIMemoryAccess::ColorRead));
-        EXPECT_TRUE(HasAnyAccess(
-            outputUsage->desiredAccess.memoryAccess,
-            RHIMemoryAccess::ColorWrite));
+            }));
+    }
+    EXPECT_EQ(outputUsageCount, static_cast<size_t>(1));
+    for (const char* removedPassName :
+         {"BloomCopyScene", "BloomComposite2", "BloomComposite1",
+          "BloomComposite0"})
+    {
+        EXPECT_EQ(std::find_if(
+                      diagnostics.passes.begin(),
+                      diagnostics.passes.end(),
+                      [removedPassName](
+                          const RenderGraph::PassDiagnostic& passDiagnostic)
+                      {
+                          return passDiagnostic.name == removedPassName;
+                      }),
+                  diagnostics.passes.end());
     }
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
-    EXPECT_EQ(ctx.beginRenderPassCount, 7u);
-    EXPECT_EQ(ctx.endRenderPassCount, 7u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(7));
+    EXPECT_EQ(ctx.beginRenderPassCount, 4u);
+    EXPECT_EQ(ctx.endRenderPassCount, 4u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(4));
     for (size_t i = 0; i < 4; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
     }
-    for (size_t i = 4; i < 7; ++i)
-    {
-        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
-    }
-    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(7));
+    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(4));
     EXPECT_TRUE(std::all_of(ctx.descriptorSetSequence.begin(),
                             ctx.descriptorSetSequence.end(),
                             [](uint32 set) { return set == 0u; }));
-    EXPECT_EQ(ctx.drawCount, 7u);
+    EXPECT_EQ(ctx.drawCount, 4u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.drawIndexedCount, 0u);
 
@@ -14692,7 +14778,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
             return desc.debugName &&
                    std::string(desc.debugName) == "BloomPassConstants";
         }));
-    EXPECT_EQ(passConstantCount, static_cast<size_t>(7));
+    EXPECT_EQ(passConstantCount, static_cast<size_t>(4));
 
     std::vector<RHITextureDesc> pyramidDescs;
     for (const RHITextureDesc& desc : device.createdTextureDescs)
@@ -14712,9 +14798,9 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
         EXPECT_EQ(pyramidDescs[i].height, expectedPyramidHeights[i]);
     }
 
-    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(7));
-    const uint32 expectedWidths[] = {32u, 64u, 16u, 8u, 64u, 64u, 64u};
-    const uint32 expectedHeights[] = {32u, 64u, 16u, 8u, 64u, 64u, 64u};
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(4));
+    const uint32 expectedWidths[] = {32u, 16u, 8u, 64u};
+    const uint32 expectedHeights[] = {32u, 16u, 8u, 64u};
     for (size_t i = 0; i < ctx.renderPasses.size(); ++i)
     {
         EXPECT_EQ(ctx.renderPasses[i].colorAttachmentCount, 1u);
@@ -14722,7 +14808,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
         EXPECT_EQ(ctx.renderPasses[i].renderArea.width, expectedWidths[i]);
         EXPECT_EQ(ctx.renderPasses[i].renderArea.height, expectedHeights[i]);
         EXPECT_EQ(ctx.renderPasses[i].colorAttachments[0].loadOp,
-                  i >= 4 ? RHILoadOp::Load : RHILoadOp::DontCare);
+                  RHILoadOp::DontCare);
     }
 
     ASSERT_FALSE(ctx.viewports.empty());
@@ -14737,12 +14823,13 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
         device.createdDescriptorSetDescs.end(),
         [](const RHIDescriptorSetDesc& desc)
         {
-            return desc.debugName && std::string(desc.debugName) == "BloomDescriptorSet";
+            return desc.debugName &&
+                   std::string(desc.debugName) ==
+                       "BloomCompositePyramidDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout,
-              pipelineCache.GetExposurePostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(5));
+    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetBloomSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(7));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -14767,9 +14854,16 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
     EXPECT_TRUE(hasBinding(3, false, true, false));
-    EXPECT_TRUE(hasBinding(4, true, false, false));
-    EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
-    EXPECT_EQ(descriptorIt->bindings[4].buffer, exposure.buffer.Get());
+    EXPECT_TRUE(hasBinding(4, false, true, false));
+    EXPECT_TRUE(hasBinding(5, false, true, false));
+    EXPECT_TRUE(hasBinding(6, true, false, false));
+    EXPECT_NE(descriptorIt->bindings[3].textureView,
+              descriptorIt->bindings[1].textureView);
+    EXPECT_NE(descriptorIt->bindings[4].textureView,
+              descriptorIt->bindings[1].textureView);
+    EXPECT_NE(descriptorIt->bindings[5].textureView,
+              descriptorIt->bindings[1].textureView);
+    EXPECT_EQ(descriptorIt->bindings[6].buffer, exposure.buffer.Get());
     EXPECT_EQ(pass.GetLastExposureStateContentHash(), exposure.contentHash);
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
@@ -15831,9 +15925,9 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
     EXPECT_EQ(executeStats.enabledEffectCount, 2u);
-    // Bloom expands to seven physical graph passes; the stack must report
+    // Bloom expands to four physical graph passes; the stack must report
     // graph work rather than only the two scheduled semantic effects.
-    EXPECT_EQ(executeStats.graphPassCount, 8u);
+    EXPECT_EQ(executeStats.graphPassCount, 5u);
     EXPECT_EQ(graph.GetRecordedPassCount(),
               static_cast<size_t>(executeStats.graphPassCount) + 1u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
@@ -15850,7 +15944,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 9u);
+    EXPECT_EQ(graphStats.totalPasses, 6u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
@@ -15859,21 +15953,17 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
               executeStats.exposureOutputs.candidateStateContentHash);
     EXPECT_EQ(toneMapping->GetLastExposureStateContentHash(),
               executeStats.exposureOutputs.candidateStateContentHash);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(9));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(6));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetExposureAdaptationPipeline());
     for (size_t i = 1; i < 5; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
     }
-    for (size_t i = 5; i < 8; ++i)
-    {
-        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
-    }
-    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.drawCount, 8u);
+    EXPECT_EQ(ctx.pipelineSequence[5], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.drawCount, 5u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 8u);
-    EXPECT_EQ(ctx.endRenderPassCount, 8u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 5u);
+    EXPECT_EQ(ctx.endRenderPassCount, 5u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGradingChromaticVignetteFXAAWithHDRAndLDRIntermediates)
@@ -15938,9 +16028,9 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
     EXPECT_EQ(executeStats.enabledEffectCount, 6u);
-    // The six semantic effects expand to Bloom's seven passes plus five
+    // The six semantic effects expand to Bloom's four passes plus five
     // single-pass effects. Keep this bound to the RenderGraph record count.
-    EXPECT_EQ(executeStats.graphPassCount, 12u);
+    EXPECT_EQ(executeStats.graphPassCount, 9u);
     EXPECT_EQ(graph.GetRecordedPassCount(),
               static_cast<size_t>(executeStats.graphPassCount) + 1u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 5u);
@@ -15958,30 +16048,26 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 13u);
+    EXPECT_EQ(graphStats.totalPasses, 10u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(13));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(10));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetExposureAdaptationPipeline());
     for (size_t i = 1; i < 5; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
     }
-    for (size_t i = 5; i < 8; ++i)
-    {
-        ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
-    }
-    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[12], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.drawCount, 12u);
+    EXPECT_EQ(ctx.pipelineSequence[5], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[6], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[7], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.drawCount, 9u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 12u);
-    EXPECT_EQ(ctx.endRenderPassCount, 12u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 9u);
+    EXPECT_EQ(ctx.endRenderPassCount, 9u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAsPassThrough)
@@ -22615,8 +22701,8 @@ TEST_F(RenderPassValidationFixture,
             64,
             64,
             RHIFormat::RGBA16_FLOAT,
-            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
-                RHITextureUsage::CopySrc));
+            RHITextureUsage::RenderTarget |
+                RHITextureUsage::ShaderResource));
     ASSERT_TRUE(transparentColor);
     ViewData transparentView = view;
     // This independent graph uses a new record epoch. It must not inherit the
@@ -25609,7 +25695,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassFailsGraphRealizationWhenRequested
 }
 
 TEST_F(RenderPassValidationFixture,
-       TransparentPassExecutesOpaqueSnapshotAndReactiveMrtWithoutPostProcess)
+       TransparentPassExecutesOpaqueSceneColorPyramidAndReactiveMrtWithoutPostProcess)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -25622,8 +25708,8 @@ TEST_F(RenderPassValidationFixture,
             64,
             64,
             RHIFormat::RGBA16_FLOAT,
-            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
-                RHITextureUsage::CopySrc));
+            RHITextureUsage::RenderTarget |
+                RHITextureUsage::ShaderResource));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.viewportWidth = 64;
@@ -25655,17 +25741,17 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1101, 1101);
     AttachDefaultTestLighting(context);
-    // The opaque HDR copy is a graph dependency discovered after the base
+    // The opaque-scene color pyramid is a graph dependency discovered after the base
     // frame snapshot is frozen.  It must travel through the typed execution
     // input, never by mutating the frozen ViewData copy.
-    const OpaqueSceneSnapshotRecordInput lateBoundSnapshot =
-        context.opaqueSceneSnapshot;
-    ASSERT_TRUE(lateBoundSnapshot.IsCompatibleWith(context.identity));
-    context.opaqueSceneSnapshot = {};
+    const OpaqueSceneColorPyramidRecordInput lateBoundPyramid =
+        context.opaqueSceneColorPyramid;
+    ASSERT_TRUE(lateBoundPyramid.IsCompatibleWith(context.identity));
+    context.opaqueSceneColorPyramid = {};
     context.frameSnapshot = MakeRenderPassFrameSnapshot(
         context, *context.results);
     ASSERT_TRUE(context.frameSnapshot);
-    context.opaqueSceneSnapshot = lateBoundSnapshot;
+    context.opaqueSceneColorPyramid = lateBoundPyramid;
     pass.AddToGraph(graph, context);
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
@@ -25688,8 +25774,8 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(1u, stats.preparedDrawItemCount);
     EXPECT_EQ(1u, stats.executedPacketCount);
     EXPECT_EQ(1u, stats.executedDrawCount);
-    EXPECT_TRUE(stats.opaqueSceneSnapshotReady);
-    EXPECT_TRUE(stats.opaqueSceneSnapshotCopied);
+    EXPECT_TRUE(stats.opaqueSceneColorPyramidReady);
+    EXPECT_TRUE(stats.opaqueSceneColorPyramidBuilt);
     EXPECT_TRUE(stats.reactiveMaskAttachmentBound);
     EXPECT_EQ(1u, stats.reactiveMaskWriteDrawCount);
     const RenderPassExecutionReport* execution = FindPassExecutionReport(
@@ -25706,6 +25792,68 @@ TEST_F(RenderPassValidationFixture,
     ExpectCommandBefore(ctx, "SetPipeline", "SetDescriptorSet");
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentFixtureOpaqueSceneColorPyramidUsesQualityExtentAndTerminalReceipt)
+{
+    const auto verifyFixture = [this](RenderQualityTier quality,
+                                      RenderOutputExtent expectedBase)
+    {
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        RHITextureRef colorTarget = device.CreateTexture(
+            RHITextureDesc::Texture2D(
+                65,
+                33,
+                RHIFormat::RGBA16_FLOAT,
+                RHITextureUsage::RenderTarget |
+                    RHITextureUsage::ShaderResource));
+        ASSERT_TRUE(colorTarget);
+
+        ViewData fixtureView = view;
+        fixtureView.viewportWidth = 65;
+        fixtureView.viewportHeight = 33;
+        fixtureView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+            graph, colorTarget.Get(), RHIResourceState::RenderTarget);
+        const RenderPassRecordIdentity identity{
+            &graph,
+            graph.GetGraphIdentity(),
+            graph.GetRecordingGeneration(),
+            1781,
+            0,
+            1781};
+        OpaqueSceneColorPyramidRecordInput pyramid =
+            AddTransparentFixtureSceneTargets(
+                graph, fixtureView, identity, quality);
+        ASSERT_TRUE(pyramid.IsCompatibleWith(identity));
+        EXPECT_EQ(pyramid.sourceExtent, (RenderOutputExtent{65, 33}));
+        EXPECT_EQ(pyramid.baseExtent, expectedBase);
+        EXPECT_EQ(pyramid.mipCount,
+                  CalculateOpaqueSceneColorPyramidMipCount(expectedBase));
+        ASSERT_NE(pyramid.receipt, nullptr);
+        EXPECT_FALSE(pyramid.receipt->completed.load(std::memory_order_acquire));
+
+        OpaqueSceneColorPyramidRecordInput mismatchedMipCount = pyramid;
+        ++mismatchedMipCount.mipCount;
+        EXPECT_FALSE(mismatchedMipCount.IsCompatibleWith(identity));
+        OpaqueSceneColorPyramidRecordInput missingReceipt = pyramid;
+        missingReceipt.receipt.reset();
+        EXPECT_FALSE(missingReceipt.IsCompatibleWith(identity));
+
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_TRUE(pyramid.receipt->completed.load(std::memory_order_acquire));
+        EXPECT_FALSE(pyramid.receipt->failed.load(std::memory_order_acquire));
+        EXPECT_EQ(pyramid.receipt->completedMipCount.load(
+                      std::memory_order_acquire),
+                  pyramid.mipCount);
+    };
+
+    verifyFixture(RenderQualityTier::High, RenderOutputExtent{33, 17});
+    verifyFixture(RenderQualityTier::Ultra, RenderOutputExtent{65, 33});
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -25746,7 +25894,8 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(context.opaqueSceneColorPyramid.mipCount,
+              ctx.beginRenderPassCount);
     EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                              [](uint32 set) { return set == 2; }));
     ASSERT_TRUE(context.results);
@@ -26275,7 +26424,8 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
-    EXPECT_EQ(2u, commandsB.beginRenderPassCount);
+    EXPECT_EQ(2u + contextB.opaqueSceneColorPyramid.mipCount,
+              commandsB.beginRenderPassCount);
     EXPECT_EQ(1u, commandsB.drawIndexedCount);
     EXPECT_EQ(retainedBeforeB, batchB.GetRetainedObjectCount());
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
@@ -26284,11 +26434,16 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
-    EXPECT_EQ(2u, commandsA.beginRenderPassCount);
+    EXPECT_EQ(2u + contextA.opaqueSceneColorPyramid.mipCount,
+              commandsA.beginRenderPassCount);
     EXPECT_EQ(2u, commandsA.drawIndexedCount);
     EXPECT_EQ(retainedBeforeA, batchA.GetRetainedObjectCount());
-    ASSERT_EQ(2u, commandsA.renderPasses.size());
-    ASSERT_EQ(2u, commandsB.renderPasses.size());
+    ASSERT_EQ(static_cast<size_t>(
+                  2u + contextA.opaqueSceneColorPyramid.mipCount),
+              commandsA.renderPasses.size());
+    ASSERT_EQ(static_cast<size_t>(
+                  2u + contextB.opaqueSceneColorPyramid.mipCount),
+              commandsB.renderPasses.size());
     EXPECT_EQ(targetsA.color.Get(),
               commandsA.renderPasses.back().colorAttachments[0].view->GetTexture());
     EXPECT_EQ(targetsB.color.Get(),
@@ -26478,8 +26633,17 @@ TEST_F(RenderPassValidationFixture,
             });
         ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
         EXPECT_TRUE(passDiagnostic->usages.empty());
+        const uint32 pyramidProducerPassCount =
+            static_cast<uint32>(std::count_if(
+                diagnostics.passes.begin(),
+                diagnostics.passes.end(),
+                [](const RenderGraph::PassDiagnostic& diagnostic)
+                {
+                    return diagnostic.name.starts_with(
+                        "TransparentFixtureOpaqueSceneColorPyramidMip");
+                }));
         RenderGraphValidationAccess::Execute(graph, commands);
-        EXPECT_EQ(0u, commands.beginRenderPassCount);
+        EXPECT_EQ(pyramidProducerPassCount, commands.beginRenderPassCount);
         EXPECT_EQ(0u, commands.drawIndexedCount);
     };
 
@@ -26529,8 +26693,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext foreign = makeContext(
         sourceGraph, scene, transparentItems,
         sourceTargets.first.Get(), sourceTargets.second.Get(), 1302);
-    ASSERT_FALSE(foreign.opaqueSceneSnapshot.IsEmpty());
-    EXPECT_FALSE(foreign.opaqueSceneSnapshot.IsCompatibleWith(
+    ASSERT_FALSE(foreign.opaqueSceneColorPyramid.IsEmpty());
+    EXPECT_FALSE(foreign.opaqueSceneColorPyramid.IsCompatibleWith(
         RenderPassRecordIdentity{
             &targetGraph,
             targetGraph.GetGraphIdentity(),
@@ -26563,8 +26727,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext stale = MakeTransparentRecordContext(
         staleGraph, staleView, scene, transparentItems, 1303, 1303);
     AttachDefaultTestLighting(stale);
-    ++stale.opaqueSceneSnapshot.identity.recordEpoch;
-    EXPECT_FALSE(stale.opaqueSceneSnapshot.IsCompatibleWith(stale.identity));
+    ++stale.opaqueSceneColorPyramid.identity.recordEpoch;
+    EXPECT_FALSE(stale.opaqueSceneColorPyramid.IsCompatibleWith(stale.identity));
     pass.AddToGraph(staleGraph, stale);
     RecordingCommandContext staleCommands;
     expectNoUsageOrCommands(staleGraph, staleCommands);
@@ -26586,8 +26750,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext forged = MakeTransparentRecordContext(
         forgedGraph, forgedView, scene, transparentItems, 1304, 1304);
     AttachDefaultTestLighting(forged);
-    forged.opaqueSceneSnapshot.receipt.reset();
-    EXPECT_FALSE(forged.opaqueSceneSnapshot.IsCompatibleWith(forged.identity));
+    forged.opaqueSceneColorPyramid.receipt.reset();
+    EXPECT_FALSE(forged.opaqueSceneColorPyramid.IsCompatibleWith(forged.identity));
     pass.AddToGraph(forgedGraph, forged);
     RecordingCommandContext forgedCommands;
     expectNoUsageOrCommands(forgedGraph, forgedCommands);
@@ -26627,7 +26791,8 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::Compile(sealedGraph);
     ASSERT_TRUE(sealedGraph.GetCompileStats().compileValid);
     RenderGraphValidationAccess::Execute(sealedGraph, sealedCommands);
-    EXPECT_EQ(2u, sealedCommands.beginRenderPassCount);
+    EXPECT_EQ(2u + sealed.opaqueSceneColorPyramid.mipCount,
+              sealedCommands.beginRenderPassCount);
     EXPECT_EQ(1u, sealedCommands.drawIndexedCount);
     EXPECT_EQ(0u, sealedBatch.GetRetainedObjectCount());
     EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
@@ -26713,29 +26878,14 @@ TEST_F(RenderPassValidationFixture,
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
     revealageDesc.debugName =
         "RenderPassValidation.SharedWeightedBlendedOITRevealage";
-    RHITextureDesc compositeDesc = RHITextureDesc::Texture2D(
-        64u,
-        64u,
-        RHIFormat::RGBA16_FLOAT,
-        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
-            RHITextureUsage::CopySrc);
-    compositeDesc.debugName =
-        "RenderPassValidation.WeightedBlendedOITCompositeHDR";
     const RGTextureHandle accumulation = graph.CreateTexture(accumulationDesc);
     const RGTextureHandle revealage = graph.CreateTexture(revealageDesc);
-    // The production composite HDR is consumed by later post-processing. Keep
-    // the focused graph live by importing an external destination; otherwise
-    // graph culling can correctly remove the entire transient-only test chain.
-    RHITextureRef postCompositeTexture = device.CreateTexture(compositeDesc);
-    ASSERT_TRUE(postCompositeTexture);
-    const RGTextureHandle postCompositeHDR =
-        RenderGraphValidationAccess::ImportTexture(
-            graph,
-            postCompositeTexture.Get(),
-            RHIResourceState::RenderTarget);
+    // GFX24A2 resolves WBOIT by attachment-load blending into the canonical
+    // HDR target. Direct sorted refraction resumes on that same graph handle.
+    const RGTextureHandle inPlaceCompositeHDR = graphView.colorTarget;
     ASSERT_TRUE(accumulation.IsValid());
     ASSERT_TRUE(revealage.IsValid());
-    ASSERT_TRUE(postCompositeHDR.IsValid());
+    ASSERT_TRUE(inPlaceCompositeHDR.IsValid());
 
     struct SharedOITClearPassData
     {
@@ -26831,7 +26981,8 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_FALSE(pass.RecordWeightedBlended(
         graph, prepared, accumulation, accumulation));
     EXPECT_FALSE(pass.RecordDirect(
-        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+        graph, prepared, inPlaceCompositeHDR,
+        context.view.reactiveMaskTarget));
     EXPECT_TRUE(pass.RecordWeightedBlended(
         graph, prepared, accumulation, revealage));
     EXPECT_FALSE(pass.RecordWeightedBlended(
@@ -26846,7 +26997,7 @@ TEST_F(RenderPassValidationFixture,
     graph.AddPass<OITCompositeDependencyPassData>(
         "RenderPassValidationWeightedOITCompositeDependency",
         RenderGraphPassType::Graphics,
-        [accumulation, revealage, postCompositeHDR](
+        [accumulation, revealage, inPlaceCompositeHDR](
             RenderGraphBuilder& builder,
             OITCompositeDependencyPassData& data)
         {
@@ -26859,19 +27010,20 @@ TEST_F(RenderPassValidationFixture,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.output = builder.Write(
-                postCompositeHDR,
+                inPlaceCompositeHDR,
                 MakeRGAccessDesc(RHIResourceState::RenderTarget,
                                  RHIShaderStage::Pixel));
         },
         [](const OITCompositeDependencyPassData&, RenderGraphPassContext&) {});
 
-    // Enabled WBOIT cannot resume direct rendering into the pre-composite HDR.
-    EXPECT_FALSE(pass.RecordDirect(
-        graph, prepared, context.view.colorTarget, context.view.reactiveMaskTarget));
+    // The weighted pass and in-place composite must be registered before the
+    // direct stage may consume its one-shot token on the same HDR handle.
     EXPECT_TRUE(pass.RecordDirect(
-        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+        graph, prepared, inPlaceCompositeHDR,
+        context.view.reactiveMaskTarget));
     EXPECT_FALSE(pass.RecordDirect(
-        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+        graph, prepared, inPlaceCompositeHDR,
+        context.view.reactiveMaskTarget));
 
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
@@ -30730,7 +30882,9 @@ TEST_F(RenderPassValidationFixture, TAADeclaresStrictGraphOnlyFrameInputContract
         FindShaderDirectory().parent_path() / "Private" / "PostProcess" / "TAA.cpp";
     const std::string taaSource = ReadTextFile(taaSourcePath);
     EXPECT_NE(taaSource.find("TAAResolve"), std::string::npos);
-    EXPECT_NE(taaSource.find("TAAHistoryStore"), std::string::npos);
+    EXPECT_EQ(taaSource.find("TAAHistoryStore"), std::string::npos);
+    EXPECT_NE(taaSource.find("historyColorWriteView"), std::string::npos);
+    EXPECT_NE(taaSource.find("historyDepthWriteView"), std::string::npos);
     EXPECT_NE(taaSource.find("CreateImmutablePassConstants"),
               std::string::npos);
     EXPECT_NE(taaSource.find("RetainSubmissionResource"),
@@ -31144,7 +31298,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       TAAAddsResolveAndCandidateHistoryStoreWithoutCopyingOrPrematureCommit)
+       TAAAddsSingleResolveWithCandidateMRTWithoutCopyingOrPrematureCommit)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -31249,7 +31403,7 @@ TEST_F(RenderPassValidationFixture,
 
     const RenderGraph::CompileStats& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 2u);
+    EXPECT_EQ(graphStats.totalPasses, 1u);
     EXPECT_EQ(graphStats.culledPasses, 0u);
 
     const RenderGraph::Diagnostics graphDiagnostics = graph.GetDiagnostics();
@@ -31267,10 +31421,8 @@ TEST_F(RenderPassValidationFixture,
     };
     const RenderGraph::PassDiagnostic* const resolvePass =
         findPass("TAAResolve");
-    const RenderGraph::PassDiagnostic* const historyStorePass =
-        findPass("TAAHistoryStore");
     ASSERT_NE(resolvePass, nullptr);
-    ASSERT_NE(historyStorePass, nullptr);
+    EXPECT_EQ(findPass("TAAHistoryStore"), nullptr);
 
     const auto isFrameTexture = [&](uint32 resourceIndex)
     {
@@ -31300,10 +31452,11 @@ TEST_F(RenderPassValidationFixture,
     }
     std::vector<uint32> historyWriteIndices;
     for (const RenderGraph::ResourceUsageDiagnostic& usage :
-         historyStorePass->usages)
+         resolvePass->usages)
     {
         if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
-            usage.access == RenderGraph::DiagnosticAccessType::Write)
+            usage.access == RenderGraph::DiagnosticAccessType::Write &&
+            !isFrameTexture(usage.resourceIndex))
         {
             appendUnique(historyWriteIndices, usage.resourceIndex);
         }
@@ -31392,6 +31545,9 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(historyDepthCount, 2u);
     EXPECT_EQ(historyEstimatedBytes, 88473600ULL);
 
+    EXPECT_FALSE(taa.GetLastResolveStats().executed);
+    EXPECT_FALSE(taa.GetLastResolveStats().historyCandidatePrepared);
+    EXPECT_FALSE(taa.CanCommitHistoryAfterPresent(historyIdentity));
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
@@ -31411,15 +31567,25 @@ TEST_F(RenderPassValidationFixture,
     }
 
     EXPECT_EQ(ctx.copyTextureCount, 0u);
-    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
-    EXPECT_EQ(ctx.endRenderPassCount, 2u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
+    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
+    EXPECT_EQ(ctx.endRenderPassCount, 1u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
     EXPECT_EQ(ctx.pipelineSequence[0],
               pipelineCache.GetTAAResolvePipeline(RHIFormat::RGBA16_FLOAT));
-    EXPECT_EQ(ctx.pipelineSequence[1],
-              pipelineCache.GetTAAHistoryStorePipeline());
-    EXPECT_EQ(ctx.drawCount, 2u);
+    EXPECT_EQ(ctx.drawCount, 1u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+    ASSERT_EQ(ctx.renderPasses.size(), static_cast<size_t>(1));
+    const RHIRenderPassDesc& resolveRenderPass = ctx.renderPasses.front();
+    ASSERT_EQ(resolveRenderPass.colorAttachmentCount, 3u);
+    ASSERT_NE(resolveRenderPass.colorAttachments[0].view, nullptr);
+    ASSERT_NE(resolveRenderPass.colorAttachments[1].view, nullptr);
+    ASSERT_NE(resolveRenderPass.colorAttachments[2].view, nullptr);
+    EXPECT_EQ(resolveRenderPass.colorAttachments[0].view->GetFormat(),
+              RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(resolveRenderPass.colorAttachments[1].view->GetFormat(),
+              RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(resolveRenderPass.colorAttachments[2].view->GetFormat(),
+              RHIFormat::R32_FLOAT);
 
     const auto findDescriptor = [this](const char* debugName)
         -> const RHIDescriptorSetDesc*
@@ -31437,20 +31603,12 @@ TEST_F(RenderPassValidationFixture,
 
     const RHIDescriptorSetDesc* const resolveDescriptor =
         findDescriptor("TAAResolveDescriptorSet");
-    const RHIDescriptorSetDesc* const historyStoreDescriptor =
-        findDescriptor("TAAHistoryStoreDescriptorSet");
     ASSERT_NE(resolveDescriptor, nullptr);
-    ASSERT_NE(historyStoreDescriptor, nullptr);
+    EXPECT_EQ(findDescriptor("TAAHistoryStoreDescriptorSet"), nullptr);
     EXPECT_EQ(resolveDescriptor->layout, pipelineCache.GetTAASetLayout());
-    EXPECT_EQ(historyStoreDescriptor->layout, pipelineCache.GetTAASetLayout());
     EXPECT_EQ(resolveDescriptor->bindings.size(), static_cast<size_t>(9));
-    EXPECT_EQ(historyStoreDescriptor->bindings.size(), static_cast<size_t>(9));
     ASSERT_NE(resolveDescriptor->bindings[0].buffer, nullptr);
-    ASSERT_NE(historyStoreDescriptor->bindings[0].buffer, nullptr);
-    EXPECT_NE(resolveDescriptor->bindings[0].buffer,
-              historyStoreDescriptor->bindings[0].buffer);
     EXPECT_EQ(resolveDescriptor->bindings[8].buffer, exposure.buffer.Get());
-    EXPECT_EQ(historyStoreDescriptor->bindings[8].buffer, exposure.buffer.Get());
 
     const TAAResolveStats& stats = taa.GetLastResolveStats();
     EXPECT_TRUE(stats.requested);
@@ -31463,7 +31621,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(stats.historyCandidatePrepared);
     EXPECT_FALSE(stats.historyCommitted);
     EXPECT_EQ(stats.resolveGraphPassCount, 1u);
-    EXPECT_EQ(stats.historyStoreGraphPassCount, 1u);
+    EXPECT_EQ(stats.historyStoreGraphPassCount, 0u);
     EXPECT_EQ(stats.exposureStateContentHash, exposure.contentHash);
     EXPECT_EQ(stats.historyIdentity, historyIdentity);
     EXPECT_FALSE(taa.HasValidHistory());
@@ -31579,7 +31737,7 @@ TEST_F(RenderPassValidationFixture,
     taa.AddToGraph(initialGraph, initialInputs, initialOutput);
     RenderGraphValidationAccess::Compile(initialGraph);
     ASSERT_TRUE(initialGraph.GetCompileStats().compileValid);
-    ASSERT_EQ(initialGraph.GetCompileStats().totalPasses, 2u);
+    ASSERT_EQ(initialGraph.GetCompileStats().totalPasses, 1u);
     RecordingCommandContext initialCommands;
     RenderGraphValidationAccess::Execute(initialGraph, initialCommands);
     ASSERT_TRUE(taa.GetLastResolveStats().historyCandidatePrepared);
@@ -31760,7 +31918,7 @@ TEST_F(RenderPassValidationFixture,
                  true);
     RenderGraphValidationAccess::Compile(secondGraph);
     ASSERT_TRUE(secondGraph.GetCompileStats().compileValid);
-    ASSERT_EQ(secondGraph.GetCompileStats().totalPasses, 2u);
+    ASSERT_EQ(secondGraph.GetCompileStats().totalPasses, 1u);
 
     const RenderGraph::Diagnostics diagnostics = secondGraph.GetDiagnostics();
     const auto findPass = [&diagnostics](const char* name)
@@ -31777,10 +31935,8 @@ TEST_F(RenderPassValidationFixture,
     };
     const RenderGraph::PassDiagnostic* const resolvePass =
         findPass("TAAResolve");
-    const RenderGraph::PassDiagnostic* const historyStorePass =
-        findPass("TAAHistoryStore");
     ASSERT_NE(resolvePass, nullptr);
-    ASSERT_NE(historyStorePass, nullptr);
+    EXPECT_EQ(findPass("TAAHistoryStore"), nullptr);
 
     const auto isFrameTexture = [&](uint32 resourceIndex)
     {
@@ -31808,10 +31964,11 @@ TEST_F(RenderPassValidationFixture,
     }
     ASSERT_EQ(historyResourceIndices.size(), static_cast<size_t>(2));
     for (const RenderGraph::ResourceUsageDiagnostic& usage :
-         historyStorePass->usages)
+         resolvePass->usages)
     {
         if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
-            usage.access == RenderGraph::DiagnosticAccessType::Write)
+            usage.access == RenderGraph::DiagnosticAccessType::Write &&
+            !isFrameTexture(usage.resourceIndex))
         {
             appendUnique(historyResourceIndices, usage.resourceIndex);
         }

@@ -557,7 +557,7 @@ namespace
         diagnostics.currentJitterPixels = RVX::Vec2(0.25f, -0.125f);
         diagnostics.previousJitterPixels = RVX::Vec2(-0.25f, 0.125f);
         diagnostics.taaResolveGraphPassCount = 1;
-        diagnostics.taaHistoryStoreGraphPassCount = 1;
+        diagnostics.taaHistoryStoreGraphPassCount = 0;
         diagnostics.taaExposureStateHash = diagnostics.exposureStateContentHash;
         return diagnostics;
     }
@@ -1326,7 +1326,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
         EXPECT_NE(json.find("\"waterSurfaceActualExecution\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualifiedWater\": false"),
@@ -1379,7 +1379,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 12"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 13"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -1669,7 +1669,7 @@ namespace
     }
 
     TEST(SampleCLIValidation,
-         SchemaTwelveRenderReceiptSerializesHybridRayTracingExecutionPayload)
+         SchemaThirteenRenderReceiptSerializesHybridRayTracingExecutionPayload)
     {
         RVX::SampleReport report;
         report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
@@ -1680,7 +1680,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 12"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 13"), std::string::npos);
         EXPECT_NE(json.find("\"hybridRayTracing\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"planIdentityHash\": "),
@@ -2596,8 +2596,8 @@ namespace
         report.renderDiagnostics.transparentPremultipliedDrawCount = 2;
         report.renderDiagnostics.transparentAdditiveDrawCount = 3;
         report.renderDiagnostics.transparentThinTransmissionDrawCount = 4;
-        report.renderDiagnostics.transparentOpaqueSceneSnapshotReady = true;
-        report.renderDiagnostics.transparentOpaqueSceneSnapshotCopied = true;
+        report.renderDiagnostics.transparentOpaqueSceneColorPyramidReady = true;
+        report.renderDiagnostics.transparentOpaqueSceneColorPyramidBuilt = true;
         report.renderDiagnostics.transparentReactiveMaskAttachmentBound = true;
         report.renderDiagnostics.transparentReactiveMaskWriteDrawCount = 4;
         report.renderDiagnostics.transparentPriorityBucketCount = 4;
@@ -2712,7 +2712,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2821,7 +2821,7 @@ namespace
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"postProcessActualExecution\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 12"),
+        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 13"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presentedFrameAligned\": true"),
                   std::string::npos);
@@ -2861,7 +2861,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"transparentThinTransmissionDrawCount\": 4"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"transparentOpaqueSceneSnapshotCopied\": true"),
+        EXPECT_NE(json.find("\"transparentOpaqueSceneColorPyramidBuilt\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"transparentReactiveMaskWriteDrawCount\": 4"),
                   std::string::npos);
@@ -3008,7 +3008,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -3499,7 +3499,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),

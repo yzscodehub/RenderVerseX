@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <memory>
 
 namespace RVX
 {
@@ -28,11 +27,6 @@ namespace
         float resolveParams[4] = {0.01f, 1.0f, 0.25f, 0.0f};
     };
 
-    struct TAAFrameRecordState
-    {
-        bool resolveExecuted = false;
-    };
-
     [[nodiscard]] uint64 AlignConstantBufferSize(uint64 size) noexcept
     {
         return (size + RVX_TAA_CONSTANT_BUFFER_ALIGNMENT - 1) &
@@ -42,10 +36,10 @@ namespace
     /**
      * @brief Creates immutable upload constants owned by the recorded submission.
      *
-     * A TAA resolve and its history-store pass may overlap with a later frame.
-     * The constants therefore cannot be an owner-level upload buffer that each
-     * frame maps again. Callers retain the returned buffer through the graph
-     * submission before binding it into their descriptor set.
+     * A TAA resolve may overlap with a later frame. The constants therefore
+     * cannot be an owner-level upload buffer that each frame maps again.
+     * Callers retain the returned buffer through the graph submission before
+     * binding it into their descriptor set.
      */
     [[nodiscard]] RHIBufferRef CreateImmutablePassConstants(
         IRHIDevice& device,
@@ -321,7 +315,7 @@ void TAA::AddToGraph(RenderGraph& graph,
     }
     if (!HasPipelineResources())
     {
-        RecordUnsupported("TAA cooked resolve/store pipeline resources are unavailable", &frameInputs);
+        RecordUnsupported("TAA cooked resolve pipeline resources are unavailable", &frameInputs);
         return;
     }
     m_lastResolveStats.pipelineReady = true;
@@ -409,7 +403,6 @@ void TAA::AddToGraph(RenderGraph& graph,
     const bool useHistory = frameInputs.HasHistory() && m_historyValid;
     const uint32 readHistoryIndex = m_committedHistoryIndex;
     const uint32 writeHistoryIndex = 1u - readHistoryIndex;
-    const auto frameState = std::make_shared<TAAFrameRecordState>();
     const RHIResourceState historyInitialState =
         m_historyResourceStatesInitialized
             ? RHIResourceState::ShaderResource
@@ -449,6 +442,8 @@ void TAA::AddToGraph(RenderGraph& graph,
         RGTextureHandle velocity;
         RGTextureHandle reactiveMask;
         RGTextureHandle output;
+        RGTextureHandle historyColorWrite;
+        RGTextureHandle historyDepthWrite;
         RGTextureViewHandle currentColorView;
         RGTextureViewHandle historyColorView;
         RGTextureViewHandle currentDepthView;
@@ -456,19 +451,20 @@ void TAA::AddToGraph(RenderGraph& graph,
         RGTextureViewHandle velocityView;
         RGTextureViewHandle reactiveMaskView;
         RGTextureViewHandle outputView;
+        RGTextureViewHandle historyColorWriteView;
+        RGTextureViewHandle historyDepthWriteView;
         RHIFormat outputFormat = RHIFormat::Unknown;
         bool useHistory = false;
         Vec2 currentJitterPixels = Vec2(0.0f);
-        Vec2 previousJitterPixels = Vec2(0.0f);
+        RenderViewHistoryIdentity historyIdentity{};
         uint64 exposureStateContentHash = 0;
-        std::shared_ptr<TAAFrameRecordState> state;
     };
 
     graph.AddPass<ResolveData>(
         "TAAResolve",
         RenderGraphPassType::Graphics,
         [this, frameInputs, output, historyColorRead, historyDepthRead,
-         useHistory, frameState](
+         historyColorWrite, historyDepthWrite, useHistory](
             RenderGraphBuilder& builder,
             ResolveData& data)
         {
@@ -501,6 +497,8 @@ void TAA::AddToGraph(RenderGraph& graph,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.output = output;
+            data.historyColorWrite = historyColorWrite;
+            data.historyDepthWrite = historyDepthWrite;
             data.currentColorView = AddTextureSRV(builder, data.currentColor, "TAACurrentColorSRV");
             data.historyColorView = AddTextureSRV(builder, data.historyColor, "TAAHistoryColorSRV");
             data.currentDepthView = AddTextureSRV(builder, data.currentDepth, "TAACurrentDepthSRV");
@@ -508,15 +506,23 @@ void TAA::AddToGraph(RenderGraph& graph,
             data.velocityView = AddTextureSRV(builder, data.velocity, "TAAVelocitySRV");
             data.reactiveMaskView = AddTextureSRV(builder, data.reactiveMask, "TAAReactiveMaskSRV");
             data.outputView = AddTextureRTV(builder, output, "TAAResolveRTV");
+            data.historyColorWriteView = AddTextureRTV(
+                builder, data.historyColorWrite, "TAAHistoryColorRTV");
+            data.historyDepthWriteView = AddTextureRTV(
+                builder, data.historyDepthWrite, "TAAHistoryDepthRTV");
+            builder.SetExportState(
+                data.historyColorWrite, RHIResourceState::ShaderResource);
+            builder.SetExportState(
+                data.historyDepthWrite, RHIResourceState::ShaderResource);
             const RHITextureDesc* const outputTextureDesc = builder.GetTextureDesc(output);
             data.outputFormat = outputTextureDesc ? outputTextureDesc->format : RHIFormat::Unknown;
             data.useHistory = useHistory;
             data.currentJitterPixels = frameInputs.jitterOffset;
-            data.previousJitterPixels = m_previousJitterPixels;
+            data.historyIdentity = frameInputs.historyIdentity;
             data.exposureStateContentHash = frameInputs.exposureStateContentHash;
-            data.state = frameState;
         },
-        [this](const ResolveData& data, RenderGraphPassContext& context)
+        [this, writeHistoryIndex](const ResolveData& data,
+                                  RenderGraphPassContext& context)
         {
             RHIPipeline* const pipeline = m_pipelineCache
                 ? m_pipelineCache->GetTAAResolvePipeline(data.outputFormat)
@@ -534,6 +540,10 @@ void TAA::AddToGraph(RenderGraph& graph,
             RHITexture* const currentColor = context.GetTexture(data.currentColor);
             RHIBuffer* const exposureState = context.GetBuffer(data.exposureState);
             RHITexture* const output = context.GetTexture(data.output);
+            RHITexture* const historyColorWrite =
+                context.GetTexture(data.historyColorWrite);
+            RHITexture* const historyDepthWrite =
+                context.GetTexture(data.historyDepthWrite);
             RHITextureView* const currentColorView = context.GetTextureView(data.currentColorView);
             RHITextureView* const historyColorView = context.GetTextureView(data.historyColorView);
             RHITextureView* const currentDepthView = context.GetTextureView(data.currentDepthView);
@@ -541,11 +551,22 @@ void TAA::AddToGraph(RenderGraph& graph,
             RHITextureView* const velocityView = context.GetTextureView(data.velocityView);
             RHITextureView* const reactiveMaskView = context.GetTextureView(data.reactiveMaskView);
             RHITextureView* const outputView = context.GetTextureView(data.outputView);
+            RHITextureView* const historyColorWriteView =
+                context.GetTextureView(data.historyColorWriteView);
+            RHITextureView* const historyDepthWriteView =
+                context.GetTextureView(data.historyDepthWriteView);
             if (currentColor == nullptr || output == nullptr || exposureState == nullptr ||
+                historyColorWrite == nullptr || historyDepthWrite == nullptr ||
                 data.exposureStateContentHash == 0 || currentColorView == nullptr ||
                 historyColorView == nullptr || currentDepthView == nullptr ||
                 historyDepthView == nullptr || velocityView == nullptr ||
-                reactiveMaskView == nullptr || outputView == nullptr)
+                reactiveMaskView == nullptr || outputView == nullptr ||
+                historyColorWriteView == nullptr ||
+                historyDepthWriteView == nullptr ||
+                historyColorWrite->GetWidth() != output->GetWidth() ||
+                historyColorWrite->GetHeight() != output->GetHeight() ||
+                historyDepthWrite->GetWidth() != output->GetWidth() ||
+                historyDepthWrite->GetHeight() != output->GetHeight())
             {
                 m_lastResolveStats.fallbackReason = "TAA resolve resources could not be realized";
                 context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
@@ -603,6 +624,10 @@ void TAA::AddToGraph(RenderGraph& graph,
 
             RHIRenderPassDesc renderPassDesc;
             renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
+            renderPassDesc.AddColorAttachment(
+                historyColorWriteView, RHILoadOp::DontCare, RHIStoreOp::Store);
+            renderPassDesc.AddColorAttachment(
+                historyDepthWriteView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, output->GetWidth(), output->GetHeight());
             RHICommandContext& commands = context.Commands();
             commands.BeginRenderPass(renderPassDesc);
@@ -621,207 +646,18 @@ void TAA::AddToGraph(RenderGraph& graph,
             commands.Draw(3, 1, 0, 0);
             commands.EndRenderPass();
 
-            data.state->resolveExecuted = true;
-            m_lastResolveStats.executed = true;
-            m_lastResolveStats.historySampled = data.useHistory;
-            m_lastResolveStats.historyConsumed = data.useHistory;
-            m_lastResolveStats.resolveGraphPassCount = 1;
-            m_lastResolveStats.exposureStateContentHash =
-                data.exposureStateContentHash;
-        });
-
-    struct HistoryStoreData
-    {
-        RGTextureHandle resolvedColor;
-        RGBufferHandle exposureState;
-        RGTextureHandle historyColorRead;
-        RGTextureHandle currentDepth;
-        RGTextureHandle historyDepthRead;
-        RGTextureHandle velocity;
-        RGTextureHandle reactiveMask;
-        RGTextureHandle historyColorWrite;
-        RGTextureHandle historyDepthWrite;
-        RGTextureViewHandle resolvedColorView;
-        RGTextureViewHandle historyColorReadView;
-        RGTextureViewHandle currentDepthView;
-        RGTextureViewHandle historyDepthReadView;
-        RGTextureViewHandle velocityView;
-        RGTextureViewHandle reactiveMaskView;
-        RGTextureViewHandle historyColorWriteView;
-        RGTextureViewHandle historyDepthWriteView;
-        RenderViewHistoryIdentity historyIdentity{};
-        Vec2 currentJitterPixels = Vec2(0.0f);
-        uint64 exposureStateContentHash = 0;
-        std::shared_ptr<TAAFrameRecordState> state;
-    };
-
-    graph.AddPass<HistoryStoreData>(
-        "TAAHistoryStore",
-        RenderGraphPassType::Graphics,
-        [frameInputs, output, historyColorRead, historyDepthRead,
-         historyColorWrite, historyDepthWrite, frameState](
-            RenderGraphBuilder& builder,
-            HistoryStoreData& data)
-        {
-            data.resolvedColor = builder.Read(
-                output,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.exposureState = builder.Read(
-                frameInputs.exposureState,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.historyColorRead = builder.Read(
-                historyColorRead,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.currentDepth = builder.Read(
-                frameInputs.depth,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.historyDepthRead = builder.Read(
-                historyDepthRead,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.velocity = builder.Read(
-                frameInputs.velocity,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.reactiveMask = builder.Read(
-                frameInputs.reactiveMask,
-                MakeRGAccessDesc(RHIResourceState::ShaderResource,
-                                 RHIShaderStage::Pixel));
-            data.historyColorWrite = historyColorWrite;
-            data.historyDepthWrite = historyDepthWrite;
-            data.resolvedColorView = AddTextureSRV(builder, data.resolvedColor, "TAAStoredColorSRV");
-            data.historyColorReadView = AddTextureSRV(builder, data.historyColorRead, "TAAStoredHistoryColorSRV");
-            data.currentDepthView = AddTextureSRV(builder, data.currentDepth, "TAAStoredCurrentDepthSRV");
-            data.historyDepthReadView = AddTextureSRV(builder, data.historyDepthRead, "TAAStoredHistoryDepthSRV");
-            data.velocityView = AddTextureSRV(builder, data.velocity, "TAAStoredVelocitySRV");
-            data.reactiveMaskView = AddTextureSRV(builder, data.reactiveMask, "TAAStoredReactiveMaskSRV");
-            data.historyColorWriteView = AddTextureRTV(builder, data.historyColorWrite, "TAAHistoryColorRTV");
-            data.historyDepthWriteView = AddTextureRTV(builder, data.historyDepthWrite, "TAAHistoryDepthRTV");
-            builder.SetExportState(data.historyColorWrite, RHIResourceState::ShaderResource);
-            builder.SetExportState(data.historyDepthWrite, RHIResourceState::ShaderResource);
-            data.historyIdentity = frameInputs.historyIdentity;
-            data.currentJitterPixels = frameInputs.jitterOffset;
-            data.exposureStateContentHash = frameInputs.exposureStateContentHash;
-            data.state = frameState;
-        },
-        [this, writeHistoryIndex](const HistoryStoreData& data,
-                                  RenderGraphPassContext& context)
-        {
-            if (!data.state->resolveExecuted)
-            {
-                m_lastResolveStats.fallbackReason = "TAA history store rejected an unresolved color candidate";
-                context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
-                return;
-            }
-
-            RHIPipeline* const pipeline = m_pipelineCache
-                ? m_pipelineCache->GetTAAHistoryStorePipeline() : nullptr;
-            RHIDescriptorSetLayout* const setLayout = m_pipelineCache
-                ? m_pipelineCache->GetTAASetLayout() : nullptr;
-            IRHIDevice* const device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
-            if (pipeline == nullptr || setLayout == nullptr || device == nullptr || !m_sampler)
-            {
-                m_lastResolveStats.fallbackReason = "TAA history-store pipeline resources disappeared during execution";
-                context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
-                return;
-            }
-
-            RHITexture* const resolvedColor = context.GetTexture(data.resolvedColor);
-            RHIBuffer* const exposureState = context.GetBuffer(data.exposureState);
-            RHITexture* const historyColor = context.GetTexture(data.historyColorWrite);
-            RHITexture* const historyDepth = context.GetTexture(data.historyDepthWrite);
-            RHITextureView* const resolvedColorView = context.GetTextureView(data.resolvedColorView);
-            RHITextureView* const historyColorReadView = context.GetTextureView(data.historyColorReadView);
-            RHITextureView* const currentDepthView = context.GetTextureView(data.currentDepthView);
-            RHITextureView* const historyDepthReadView = context.GetTextureView(data.historyDepthReadView);
-            RHITextureView* const velocityView = context.GetTextureView(data.velocityView);
-            RHITextureView* const reactiveMaskView = context.GetTextureView(data.reactiveMaskView);
-            RHITextureView* const historyColorWriteView = context.GetTextureView(data.historyColorWriteView);
-            RHITextureView* const historyDepthWriteView = context.GetTextureView(data.historyDepthWriteView);
-            if (resolvedColor == nullptr || historyColor == nullptr || historyDepth == nullptr ||
-                exposureState == nullptr || data.exposureStateContentHash == 0 ||
-                resolvedColorView == nullptr || historyColorReadView == nullptr ||
-                currentDepthView == nullptr || historyDepthReadView == nullptr ||
-                velocityView == nullptr || reactiveMaskView == nullptr ||
-                historyColorWriteView == nullptr || historyDepthWriteView == nullptr)
-            {
-                m_lastResolveStats.fallbackReason = "TAA history-store resources could not be realized";
-                context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
-                return;
-            }
-
-            TAAGPUConstants constants;
-            constants.renderSize[0] = static_cast<float>(resolvedColor->GetWidth());
-            constants.renderSize[1] = static_cast<float>(resolvedColor->GetHeight());
-            constants.renderSize[2] = constants.renderSize[0] > 0.0f ?
-                1.0f / constants.renderSize[0] : 1.0f;
-            constants.renderSize[3] = constants.renderSize[1] > 0.0f ?
-                1.0f / constants.renderSize[1] : 1.0f;
-            RHIBufferRef constantBuffer = CreateImmutablePassConstants(
-                *device,
-                constants,
-                "TAAHistoryStorePassConstants");
-            if (!constantBuffer ||
-                !context.RetainSubmissionResource(Ref<RefCounted>(constantBuffer)))
-            {
-                m_lastResolveStats.fallbackReason =
-                    "TAA history-store immutable constants could not be retained";
-                context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
-                return;
-            }
-
-            RHIDescriptorSetDesc descriptorDesc;
-            descriptorDesc.layout = setLayout;
-            descriptorDesc.debugName = "TAAHistoryStoreDescriptorSet";
-            descriptorDesc.BindBuffer(0, constantBuffer.Get(), 0,
-                                      AlignConstantBufferSize(sizeof(TAAGPUConstants)));
-            descriptorDesc.BindTexture(1, resolvedColorView);
-            descriptorDesc.BindTexture(2, historyColorReadView);
-            descriptorDesc.BindTexture(3, currentDepthView);
-            descriptorDesc.BindTexture(4, historyDepthReadView);
-            descriptorDesc.BindTexture(5, velocityView);
-            descriptorDesc.BindTexture(6, reactiveMaskView);
-            descriptorDesc.BindSampler(7, m_sampler.Get());
-            descriptorDesc.BindBuffer(8, exposureState);
-            RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
-            if (!descriptorSet || !context.RetainSubmissionResource(Ref<RefCounted>(descriptorSet)))
-            {
-                m_lastResolveStats.fallbackReason = "TAA history-store descriptor set creation failed";
-                context.MarkExecutionFailed(m_lastResolveStats.fallbackReason.c_str());
-                return;
-            }
-
-            RHIRenderPassDesc renderPassDesc;
-            renderPassDesc.AddColorAttachment(historyColorWriteView, RHILoadOp::DontCare, RHIStoreOp::Store);
-            renderPassDesc.AddColorAttachment(historyDepthWriteView, RHILoadOp::DontCare, RHIStoreOp::Store);
-            renderPassDesc.SetRenderArea(0, 0, historyColor->GetWidth(), historyColor->GetHeight());
-            RHICommandContext& commands = context.Commands();
-            commands.BeginRenderPass(renderPassDesc);
-            commands.SetPipeline(pipeline);
-            commands.SetDescriptorSet(0, descriptorSet.Get());
-            RHIViewport viewport;
-            viewport.width = static_cast<float>(historyColor->GetWidth());
-            viewport.height = static_cast<float>(historyColor->GetHeight());
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            commands.SetViewport(viewport);
-            RHIRect scissor;
-            scissor.width = historyColor->GetWidth();
-            scissor.height = historyColor->GetHeight();
-            commands.SetScissor(scissor);
-            commands.Draw(3, 1, 0, 0);
-            commands.EndRenderPass();
-
             m_pendingHistoryIndex = writeHistoryIndex;
             m_pendingHistoryIdentity = data.historyIdentity;
             m_pendingJitterPixels = data.currentJitterPixels;
             m_hasPendingHistory = true;
+            m_lastResolveStats.executed = true;
+            m_lastResolveStats.historySampled = data.useHistory;
+            m_lastResolveStats.historyConsumed = data.useHistory;
             m_lastResolveStats.historyCandidatePrepared = true;
-            m_lastResolveStats.historyStoreGraphPassCount = 1;
+            m_lastResolveStats.resolveGraphPassCount = 1;
+            m_lastResolveStats.historyStoreGraphPassCount = 0;
+            m_lastResolveStats.exposureStateContentHash =
+                data.exposureStateContentHash;
         });
 
     m_lastResolveStats.inputsReady = true;
@@ -933,7 +769,6 @@ bool TAA::HasPipelineResources() const noexcept
     return m_pipelineCache != nullptr && m_pipelineCache->IsInitialized() &&
            m_pipelineCache->GetDevice() != nullptr && m_viewCache != nullptr &&
            m_viewCache->IsInitialized() && m_pipelineCache->GetTAAResolvePipeline() != nullptr &&
-           m_pipelineCache->GetTAAHistoryStorePipeline() != nullptr &&
            m_pipelineCache->GetTAALayout() != nullptr &&
            m_pipelineCache->GetTAASetLayout() != nullptr;
 }

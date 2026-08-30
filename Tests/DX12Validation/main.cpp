@@ -1346,7 +1346,7 @@ namespace
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(
-            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
         // DefaultLit always declares the local-shadow atlas in space0.  Keep
@@ -1604,7 +1604,7 @@ namespace
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
         frameSetDesc.BindTexture(
-            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             sourceTextureView.Get());
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitLocalShadowAtlasBinding,

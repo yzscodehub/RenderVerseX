@@ -2583,7 +2583,7 @@ TEST_F(PipelineCacheValidationFixture, FullscreenTrianglePassesPreserveUpperLeft
     }
 }
 
-TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
+TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainPyramidComposite)
 {
     if (!HasShaderFixtures())
     {
@@ -2612,7 +2612,7 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
     EXPECT_NE(shaderSource.find("BLOOM_MODE_COPY_SCENE"), std::string::npos);
     EXPECT_NE(shaderSource.find("BLOOM_MODE_EXTRACT"), std::string::npos);
     EXPECT_NE(shaderSource.find("BLOOM_MODE_DOWNSAMPLE"), std::string::npos);
-    EXPECT_NE(shaderSource.find("BLOOM_MODE_COMPOSITE_ADDITIVE"), std::string::npos);
+    EXPECT_NE(shaderSource.find("BLOOM_MODE_COMPOSITE_PYRAMID"), std::string::npos);
     EXPECT_NE(shaderSource.find("SampleBloomWideKernel"), std::string::npos);
     EXPECT_NE(shaderSource.find("return scene;"), std::string::npos);
     EXPECT_NE(shaderSource.find("ring1"), std::string::npos);
@@ -2620,7 +2620,9 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
     EXPECT_NE(shaderSource.find("float2 ring2 = radius * 2.0;"), std::string::npos);
     EXPECT_GE(countOccurrences(shaderSource, "SampleBloomThreshold("),
               static_cast<size_t>(13));
-    EXPECT_NE(shaderSource.find("return float4(bloom * max(Intensity, 0.0), 0.0);"), std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "return float4(scene.rgb + bloom * max(Intensity, 0.0), scene.a);"),
+              std::string::npos);
     EXPECT_EQ(shaderSource.find("tiny fullscreen-neighborhood"), std::string::npos);
     EXPECT_EQ(shaderSource.find("deliberately small one-pass"), std::string::npos);
     EXPECT_EQ(shaderSource.find("Minimum fullscreen bloom path"), std::string::npos);
@@ -2706,7 +2708,7 @@ TEST_F(PipelineCacheValidationFixture,
               std::string::npos);
 }
 
-TEST_F(PipelineCacheValidationFixture, TAAShaderUsesCookedResolveAndHistoryStoreContract)
+TEST_F(PipelineCacheValidationFixture, TAAResolveUsesOneCookedThreeTargetContract)
 {
     if (!HasShaderFixtures())
     {
@@ -2732,8 +2734,16 @@ TEST_F(PipelineCacheValidationFixture, TAAShaderUsesCookedResolveAndHistoryStore
               std::string::npos);
     EXPECT_NE(shaderSource.find("SamplerState LinearClampSampler : register(s7, space0)"),
               std::string::npos);
-    EXPECT_NE(shaderSource.find("float4 PSResolve"), std::string::npos);
-    EXPECT_NE(shaderSource.find("HistoryStoreOutput PSStore"), std::string::npos);
+    EXPECT_NE(shaderSource.find("struct TAAResolveOutput"), std::string::npos);
+    EXPECT_NE(shaderSource.find("float4 ResolvedColor : SV_TARGET0"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("float4 HistoryColorCandidate : SV_TARGET1"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("float HistoryDepthCandidate : SV_TARGET2"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("TAAResolveOutput PSResolve"),
+              std::string::npos);
+    EXPECT_EQ(shaderSource.find("PSStore"), std::string::npos);
     EXPECT_NE(shaderSource.find("RGBToYCoCg"), std::string::npos);
     EXPECT_NE(shaderSource.find("struct CurrentColorNeighborhood"), std::string::npos);
     EXPECT_NE(shaderSource.find("SampleCurrentColorNeighborhood"), std::string::npos);
@@ -2756,7 +2766,7 @@ TEST_F(PipelineCacheValidationFixture, TAAShaderUsesCookedResolveAndHistoryStore
         }
         return count;
     };
-    EXPECT_EQ(countOccurrences("CurrentColor.SampleLevel("), 2u);
+    EXPECT_EQ(countOccurrences("CurrentColor.SampleLevel("), 1u);
     EXPECT_NE(shaderSource.find("velocityNDC.x * 0.5, -velocityNDC.y * 0.5"),
               std::string::npos);
     EXPECT_NE(shaderSource.find("previousUV = uv - velocityUV"),
@@ -3265,13 +3275,14 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(frameAmbientOcclusion->type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(
         frameAmbientOcclusion->visibility, RVX::RHIShaderStage::Pixel));
-    const auto* frameOpaqueSceneSnapshot = FindBinding(
-        frameLayout, RVX::PipelineCache::DefaultLitOpaqueSceneSnapshotBinding);
-    ASSERT_NE(frameOpaqueSceneSnapshot, nullptr);
-    EXPECT_EQ(frameOpaqueSceneSnapshot->type,
+    const auto* frameOpaqueSceneColorPyramid = FindBinding(
+        frameLayout,
+        RVX::PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding);
+    ASSERT_NE(frameOpaqueSceneColorPyramid, nullptr);
+    EXPECT_EQ(frameOpaqueSceneColorPyramid->type,
               RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(
-        frameOpaqueSceneSnapshot->visibility, RVX::RHIShaderStage::Pixel));
+        frameOpaqueSceneColorPyramid->visibility, RVX::RHIShaderStage::Pixel));
     const auto* frameLocalShadowAtlas = FindBinding(
         frameLayout, RVX::PipelineCache::DefaultLitLocalShadowAtlasBinding);
     ASSERT_NE(frameLocalShadowAtlas, nullptr);
@@ -3375,11 +3386,12 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
               1u);
     EXPECT_EQ(fallbackAmbientOcclusion->textureView->GetTexture()->GetHeight(),
               1u);
-    const auto* fallbackOpaqueSceneSnapshot = FindDescriptorBinding(
-        frameSetDesc, RVX::PipelineCache::DefaultLitOpaqueSceneSnapshotBinding);
-    ASSERT_NE(fallbackOpaqueSceneSnapshot, nullptr);
-    ASSERT_NE(fallbackOpaqueSceneSnapshot->textureView, nullptr);
-    EXPECT_EQ(fallbackOpaqueSceneSnapshot->textureView->GetFormat(),
+    const auto* fallbackOpaqueSceneColorPyramid = FindDescriptorBinding(
+        frameSetDesc,
+        RVX::PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding);
+    ASSERT_NE(fallbackOpaqueSceneColorPyramid, nullptr);
+    ASSERT_NE(fallbackOpaqueSceneColorPyramid->textureView, nullptr);
+    EXPECT_EQ(fallbackOpaqueSceneColorPyramid->textureView->GetFormat(),
               RVX::RHIFormat::RGBA8_UNORM);
 
     const auto* object = FindBinding(objectLayout, 0);
@@ -3464,9 +3476,21 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_NE(cache.GetTAASetLayout(), nullptr);
     EXPECT_NE(cache.GetTAALayout(), nullptr);
     EXPECT_NE(cache.GetTAAResolvePipeline(), nullptr);
-    EXPECT_NE(cache.GetTAAHistoryStorePipeline(), nullptr);
     EXPECT_NE(cache.GetStats().taaResolvePipelineHash, 0u);
-    EXPECT_NE(cache.GetStats().taaHistoryStorePipelineHash, 0u);
+    const auto taaResolvePipelineIt = std::find_if(
+        device.capturedGraphicsPipelines.begin(),
+        device.capturedGraphicsPipelines.end(),
+        [](const RVX::RHIGraphicsPipelineDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string(desc.debugName) == "TAAResolvePipeline";
+        });
+    ASSERT_NE(taaResolvePipelineIt, device.capturedGraphicsPipelines.end());
+    EXPECT_EQ(taaResolvePipelineIt->numRenderTargets, 3u);
+    EXPECT_EQ(taaResolvePipelineIt->renderTargetFormats[1],
+              RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(taaResolvePipelineIt->renderTargetFormats[2],
+              RVX::RHIFormat::R32_FLOAT);
 
     ASSERT_EQ(uiLayout.entries.size(), static_cast<size_t>(2));
     const auto* uiTexture = FindBinding(uiLayout, 0);
@@ -5423,6 +5447,108 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 3)->buffer, frozenLightConstants);
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 1)->textureView, directionalShadowView);
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 10)->textureView, irradianceView);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotOwnsExactOpaqueSceneColorPyramidAndRejectsPartialClaims)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "LightingBindingSnapshotPyramid"));
+
+    RVX::RHITextureDesc pyramidDesc = RVX::RHITextureDesc::Texture2D(
+        16, 8, RVX::RHIFormat::RGBA16_FLOAT,
+        RVX::RHITextureUsage::ShaderResource);
+    pyramidDesc.mipLevels = 5;
+    pyramidDesc.debugName = "LightingBindingSnapshotOpaqueSceneColorPyramid";
+    RVX::RHITextureRef pyramidTexture = device.CreateTexture(pyramidDesc);
+    ASSERT_NE(pyramidTexture, nullptr);
+
+    RVX::RHITextureViewDesc pyramidViewDesc;
+    pyramidViewDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+    pyramidViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+    pyramidViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    pyramidViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    pyramidViewDesc.debugName = "LightingBindingSnapshotOpaqueSceneColorPyramidSRV";
+    RVX::RHITextureViewRef pyramidView =
+        device.CreateTextureView(pyramidTexture.Get(), pyramidViewDesc);
+    ASSERT_NE(pyramidView, nullptr);
+
+    constexpr RVX::uint64 kLightingPlanIdentity = 0xC010A11u;
+    RVX::LightingBindingSnapshotRequest request =
+        resources.MakeRequest(cache, kLightingPlanIdentity);
+    request.opaqueSceneColorPyramidView = pyramidView;
+    request.opaqueSceneColorPyramidSampler =
+        cache.GetEnvironmentIBLSamplerRef();
+    request.opaqueSceneColorPyramidSourceExtent = {32, 16};
+    request.opaqueSceneColorPyramidBaseExtent = {16, 8};
+    request.opaqueSceneColorPyramidMipCount = 5;
+
+    RVX::LightingBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot))
+        << cache.GetLastError();
+    ASSERT_TRUE(snapshot.IsValid());
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidView.Get(), pyramidView.Get());
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidSampler.Get(),
+              request.opaqueSceneColorPyramidSampler.Get());
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidSourceExtent.width, 32u);
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidSourceExtent.height, 16u);
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidBaseExtent.width, 16u);
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidBaseExtent.height, 8u);
+    EXPECT_EQ(snapshot.opaqueSceneColorPyramidMipCount, 5u);
+
+    const FakeDescriptorSet* const descriptorSet =
+        static_cast<const FakeDescriptorSet*>(snapshot.frameDescriptorSet.Get());
+    ASSERT_NE(descriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc descriptorSetDesc{
+        nullptr, descriptorSet->GetBindings(), nullptr};
+    const RVX::RHIDescriptorBinding* const pyramidBinding =
+        FindDescriptorBinding(
+            descriptorSetDesc,
+            RVX::PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding);
+    ASSERT_NE(pyramidBinding, nullptr);
+    EXPECT_EQ(pyramidBinding->textureView, pyramidView.Get());
+
+    const RVX::RHIDescriptorSet* const publishedDescriptorSet =
+        snapshot.frameDescriptorSet.Get();
+    const size_t descriptorSetCount = device.capturedDescriptorSetDescs.size();
+
+    request.opaqueSceneColorPyramidSampler.Reset();
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("view and sampler together"),
+              std::string::npos);
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetCount);
+
+    request.opaqueSceneColorPyramidSampler =
+        cache.GetEnvironmentIBLSamplerRef();
+    request.opaqueSceneColorPyramidView.Reset();
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("view and sampler together"),
+              std::string::npos);
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetCount);
+
+    request.opaqueSceneColorPyramidView = pyramidView;
+    request.opaqueSceneColorPyramidMipCount = 4;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("exact all-mip"),
+              std::string::npos);
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetCount);
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -10539,7 +10665,6 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().filmGrainPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().taaResolvePipelineHash, 0u);
-    EXPECT_NE(firstCache.GetStats().taaHistoryStorePipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, firstCache.GetStats().bloomPipelineHash);
@@ -10696,7 +10821,15 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_FALSE(compositeDesc.depthStencilState.depthTestEnable);
     EXPECT_FALSE(compositeDesc.depthStencilState.depthWriteEnable);
     EXPECT_TRUE(compositeDesc.blendState.independentBlendEnable);
-    EXPECT_FALSE(compositeDesc.blendState.renderTargets[0].blendEnable);
+    const RVX::RHIRenderTargetBlendState& sceneBlend =
+        compositeDesc.blendState.renderTargets[0];
+    EXPECT_TRUE(sceneBlend.blendEnable);
+    EXPECT_EQ(sceneBlend.srcColorBlend, RVX::RHIBlendFactor::One);
+    EXPECT_EQ(sceneBlend.dstColorBlend, RVX::RHIBlendFactor::InvSrcAlpha);
+    EXPECT_EQ(sceneBlend.colorBlendOp, RVX::RHIBlendOp::Add);
+    EXPECT_EQ(sceneBlend.srcAlphaBlend, RVX::RHIBlendFactor::Zero);
+    EXPECT_EQ(sceneBlend.dstAlphaBlend, RVX::RHIBlendFactor::One);
+    EXPECT_EQ(sceneBlend.alphaBlendOp, RVX::RHIBlendOp::Add);
     const RVX::RHIRenderTargetBlendState& reactiveBlend =
         compositeDesc.blendState.renderTargets[1];
     EXPECT_TRUE(reactiveBlend.blendEnable);
@@ -10716,7 +10849,7 @@ TEST_F(PipelineCacheValidationFixture,
         cache.GetWeightedBlendedOITCompositeSetLayout();
     ASSERT_NE(compositeSetLayout, nullptr);
     const auto& entries = compositeSetLayout->GetEntries();
-    ASSERT_EQ(entries.size(), 3u);
+    ASSERT_EQ(entries.size(), 2u);
     for (RVX::uint32 binding = 0; binding < entries.size(); ++binding)
     {
         EXPECT_EQ(entries[binding].binding, binding);
@@ -11090,7 +11223,8 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_NE(cache.GetStats().uiPipelineHash, cache.GetStats().bloomPipelineHash);
 }
 
-TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAndPreservesAlpha)
+TEST_F(PipelineCacheValidationFixture,
+       BloomAndOpaqueSceneColorPyramidUseDedicatedDescriptorLayouts)
 {
     if (!HasShaderFixtures())
     {
@@ -11104,27 +11238,50 @@ TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAnd
                                  RVX::RHIFormat::BGRA8_UNORM);
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
-    RVX::RHIPipeline* opaqueBloom = cache.GetBloomPipeline(RVX::RHIFormat::RGBA16_FLOAT);
-    RVX::RHIPipeline* additiveBloom = cache.GetBloomAdditivePipeline(RVX::RHIFormat::RGBA16_FLOAT);
-    ASSERT_NE(opaqueBloom, nullptr);
-    ASSERT_NE(additiveBloom, nullptr);
-    EXPECT_NE(opaqueBloom, additiveBloom);
+    ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA16_FLOAT), nullptr);
+    ASSERT_NE(cache.GetBloomSetLayout(), nullptr);
+    ASSERT_NE(cache.GetBloomLayout(), nullptr);
+    const auto bloomLayoutIt = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string(desc.debugName) == "BloomSetLayout";
+        });
+    ASSERT_NE(bloomLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_EQ(bloomLayoutIt->entries.size(), static_cast<size_t>(7));
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 0)->type, RVX::RHIBindingType::UniformBuffer);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 1)->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 2)->type, RVX::RHIBindingType::Sampler);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 3)->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 4)->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 5)->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(FindBinding(*bloomLayoutIt, 6)->type,
+              RVX::RHIBindingType::ShaderResourceBuffer);
 
-    auto it = std::find_if(device.capturedGraphicsPipelines.begin(),
-                           device.capturedGraphicsPipelines.end(),
-                           [](const RVX::RHIGraphicsPipelineDesc& desc)
-                           {
-                               return desc.debugName && std::string(desc.debugName) == "BloomAdditivePipeline";
-                           });
-    ASSERT_NE(it, device.capturedGraphicsPipelines.end());
-
-    const RVX::RHIRenderTargetBlendState& blend = it->blendState.renderTargets[0];
-    EXPECT_TRUE(blend.blendEnable);
-    EXPECT_EQ(blend.srcColorBlend, RVX::RHIBlendFactor::One);
-    EXPECT_EQ(blend.dstColorBlend, RVX::RHIBlendFactor::One);
-    EXPECT_EQ(blend.srcAlphaBlend, RVX::RHIBlendFactor::Zero);
-    EXPECT_EQ(blend.dstAlphaBlend, RVX::RHIBlendFactor::One);
-    EXPECT_EQ(it->renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(cache.GetOpaqueSceneColorPyramidPipeline(RVX::RHIFormat::R8_UNORM),
+              nullptr);
+    ASSERT_NE(cache.GetOpaqueSceneColorPyramidPipeline(
+                  RVX::RHIFormat::RGBA16_FLOAT),
+              nullptr);
+    ASSERT_NE(cache.GetOpaqueSceneColorPyramidSetLayout(), nullptr);
+    ASSERT_NE(cache.GetOpaqueSceneColorPyramidLayout(), nullptr);
+    const auto pyramidLayoutIt = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string(desc.debugName) ==
+                       "OpaqueSceneColorPyramidSetLayout";
+        });
+    ASSERT_NE(pyramidLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_EQ(pyramidLayoutIt->entries.size(), static_cast<size_t>(3));
+    EXPECT_EQ(FindBinding(*pyramidLayoutIt, 0)->type,
+              RVX::RHIBindingType::UniformBuffer);
+    EXPECT_EQ(FindBinding(*pyramidLayoutIt, 1)->type,
+              RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(FindBinding(*pyramidLayoutIt, 2)->type,
+              RVX::RHIBindingType::Sampler);
 }
 
 TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatchingPipelines)
@@ -11226,7 +11383,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 27u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 29u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -11240,20 +11397,24 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     const auto& gtaoBilateralHorizontalDesc = device.capturedGraphicsPipelines[11];
     const auto& gtaoBilateralVerticalDesc = device.capturedGraphicsPipelines[12];
     const auto& gtaoTemporalDesc = device.capturedGraphicsPipelines[13];
-    const auto& ssrHiZBaseDesc = device.capturedGraphicsPipelines[14];
-    const auto& ssrHiZReduceDesc = device.capturedGraphicsPipelines[15];
-    const auto& ssrTraceDesc = device.capturedGraphicsPipelines[16];
-    const auto& ssrResolveDesc = device.capturedGraphicsPipelines[17];
-    const auto& screenSpaceOutlineDesc = device.capturedGraphicsPipelines[18];
+    const auto& opaqueSceneColorPyramidDesc =
+        device.capturedGraphicsPipelines[14];
+    const auto& ssrHiZBaseDesc = device.capturedGraphicsPipelines[15];
+    const auto& ssrHiZReduceDesc = device.capturedGraphicsPipelines[16];
+    const auto& ssrTraceDesc = device.capturedGraphicsPipelines[17];
+    const auto& ssrResolveDesc = device.capturedGraphicsPipelines[18];
+    const auto& screenSpaceOutlineDesc = device.capturedGraphicsPipelines[19];
     const auto& screenSpaceOutlineVerifierDesc =
-        device.capturedGraphicsPipelines[19];
-    const auto& vignetteDesc = device.capturedGraphicsPipelines[20];
-    const auto& filmGrainDesc = device.capturedGraphicsPipelines[21];
-    const auto& fxaaDesc = device.capturedGraphicsPipelines[22];
-    const auto& colorGradingDesc = device.capturedGraphicsPipelines[23];
-    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[24];
-    const auto& uiDesc = device.capturedGraphicsPipelines[25];
-    const auto& maskedDepthOnlyDesc = device.capturedGraphicsPipelines[26];
+        device.capturedGraphicsPipelines[20];
+    const auto& vignetteDesc = device.capturedGraphicsPipelines[21];
+    const auto& filmGrainDesc = device.capturedGraphicsPipelines[22];
+    const auto& fxaaDesc = device.capturedGraphicsPipelines[23];
+    const auto& colorGradingDesc = device.capturedGraphicsPipelines[24];
+    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[25];
+    const auto& uiDesc = device.capturedGraphicsPipelines[26];
+    const RVX::RHIGraphicsPipelineDesc* const maskedDepthOnlyDesc =
+        FindCapturedGraphicsPipeline(device, "MaskedDepthOnlyPipeline");
+    ASSERT_NE(maskedDepthOnlyDesc, nullptr);
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -11282,45 +11443,45 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(depthOnlyDesc.inputLayout.elements[2].inputSlot, 5u);
 
     ASSERT_NE(cache.GetMaskedDepthOnlyPipeline(), nullptr);
-    EXPECT_STREQ(maskedDepthOnlyDesc.debugName, "MaskedDepthOnlyPipeline");
-    EXPECT_EQ(maskedDepthOnlyDesc.numRenderTargets, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.depthStencilFormat,
+    EXPECT_STREQ(maskedDepthOnlyDesc->debugName, "MaskedDepthOnlyPipeline");
+    EXPECT_EQ(maskedDepthOnlyDesc->numRenderTargets, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc->depthStencilFormat,
               RVX::RHIFormat::D32_FLOAT);
-    EXPECT_TRUE(maskedDepthOnlyDesc.depthStencilState.depthWriteEnable);
-    EXPECT_NE(maskedDepthOnlyDesc.vertexShader, nullptr);
-    EXPECT_NE(maskedDepthOnlyDesc.pixelShader, nullptr);
-    ASSERT_EQ(maskedDepthOnlyDesc.inputLayout.elements.size(),
+    EXPECT_TRUE(maskedDepthOnlyDesc->depthStencilState.depthWriteEnable);
+    EXPECT_NE(maskedDepthOnlyDesc->vertexShader, nullptr);
+    EXPECT_NE(maskedDepthOnlyDesc->pixelShader, nullptr);
+    ASSERT_EQ(maskedDepthOnlyDesc->inputLayout.elements.size(),
               static_cast<size_t>(5));
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticName,
+    EXPECT_STREQ(maskedDepthOnlyDesc->inputLayout.elements[0].semanticName,
                  "POSITION");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].format,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[0].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[0].format,
               RVX::RHIFormat::RGB32_FLOAT);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].inputSlot, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].location, 0u);
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticName,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[0].inputSlot, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[0].location, 0u);
+    EXPECT_STREQ(maskedDepthOnlyDesc->inputLayout.elements[1].semanticName,
                  "TEXCOORD");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].format,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[1].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[1].format,
               RVX::RHIFormat::RG32_FLOAT);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].inputSlot, 2u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].location, 1u);
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticName,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[1].inputSlot, 2u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[1].location, 1u);
+    EXPECT_STREQ(maskedDepthOnlyDesc->inputLayout.elements[2].semanticName,
                  "TEXCOORD");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticIndex, 1u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].inputSlot, 7u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].location, 2u);
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[2].semanticIndex, 1u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[2].inputSlot, 7u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[2].location, 2u);
+    EXPECT_STREQ(maskedDepthOnlyDesc->inputLayout.elements[3].semanticName,
                  "BLENDINDICES");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 4u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].location, 3u);
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[4].semanticName,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[3].inputSlot, 4u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[3].location, 3u);
+    EXPECT_STREQ(maskedDepthOnlyDesc->inputLayout.elements[4].semanticName,
                  "BLENDWEIGHT");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].format,
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[4].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[4].format,
               RVX::RHIFormat::RGBA32_FLOAT);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].inputSlot, 5u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].location, 4u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[4].inputSlot, 5u);
+    EXPECT_EQ(maskedDepthOnlyDesc->inputLayout.elements[4].location, 4u);
 
     ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
     EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);
@@ -11403,6 +11564,22 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
         EXPECT_NE(desc->pixelShader, nullptr);
         EXPECT_TRUE(desc->inputLayout.elements.empty());
     }
+
+    ASSERT_NE(cache.GetOpaqueSceneColorPyramidPipeline(
+                  RVX::RHIFormat::RGBA16_FLOAT),
+              nullptr);
+    EXPECT_STREQ(opaqueSceneColorPyramidDesc.debugName,
+                 "OpaqueSceneColorPyramidPipeline");
+    EXPECT_EQ(opaqueSceneColorPyramidDesc.numRenderTargets, 1u);
+    EXPECT_EQ(opaqueSceneColorPyramidDesc.renderTargetFormats[0],
+              RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(opaqueSceneColorPyramidDesc.depthStencilFormat,
+              RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(opaqueSceneColorPyramidDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(opaqueSceneColorPyramidDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(opaqueSceneColorPyramidDesc.vertexShader, nullptr);
+    EXPECT_NE(opaqueSceneColorPyramidDesc.pixelShader, nullptr);
+    EXPECT_TRUE(opaqueSceneColorPyramidDesc.inputLayout.elements.empty());
 
     const std::array<std::pair<RVX::RHIPipeline*, const RVX::RHIGraphicsPipelineDesc*>, 2>
         ssrHiZPipelines = {{
@@ -12048,7 +12225,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=28"), std::string::npos);
+    EXPECT_NE(manifest.find("version=29"), std::string::npos);
     EXPECT_NE(manifest.find(
                   "weightedBlendedOITAccumulationPixelShaderHash="),
               std::string::npos);
@@ -12066,9 +12243,17 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_NE(manifest.find("fxaaPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("taaVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("taaResolvePixelShaderHash="), std::string::npos);
-    EXPECT_NE(manifest.find("taaHistoryStorePixelShaderHash="), std::string::npos);
+    EXPECT_EQ(manifest.find("taaHistoryStore" "PixelShaderHash="),
+              std::string::npos);
     EXPECT_NE(manifest.find("taaResolvePipelineHash="), std::string::npos);
-    EXPECT_NE(manifest.find("taaHistoryStorePipelineHash="), std::string::npos);
+    EXPECT_EQ(manifest.find("taaHistoryStore" "PipelineHash="),
+              std::string::npos);
+    EXPECT_NE(manifest.find("opaqueSceneColorPyramidVertexShaderHash="),
+              std::string::npos);
+    EXPECT_NE(manifest.find("opaqueSceneColorPyramidPixelShaderHash="),
+              std::string::npos);
+    EXPECT_NE(manifest.find("opaqueSceneColorPyramidPipelineHash="),
+              std::string::npos);
     EXPECT_NE(manifest.find("gtaoSurfacePixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoHorizonPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoBilateralHorizontalPixelShaderHash="), std::string::npos);
@@ -12240,14 +12425,14 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
-       ManifestV27IsInvalidatedAndRewrittenAsV28)
+       ManifestV28IsInvalidatedAndRewrittenAsV29)
 {
     if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    TempDirectory temp("rvx_pipeline_manifest_v27_stale");
+    TempDirectory temp("rvx_pipeline_manifest_v28_stale");
     const fs::path manifestPath =
         temp.Path() / RVX::PipelineCache::GetManifestFileName();
     {
@@ -12258,7 +12443,7 @@ TEST_F(PipelineCacheValidationFixture,
             << cache.GetLastError();
     }
 
-    ReplaceManifestFieldValue(manifestPath, "version", "27");
+    ReplaceManifestFieldValue(manifestPath, "version", "28");
 
     FakeDevice device;
     PipelineCacheForValidation cache;
@@ -12268,7 +12453,7 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
     EXPECT_FALSE(cache.GetStats().manifestValid);
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
-    EXPECT_NE(ReadTextFile(manifestPath).find("version=28\n"),
+    EXPECT_NE(ReadTextFile(manifestPath).find("version=29\n"),
               std::string::npos);
 }
 
@@ -13662,22 +13847,6 @@ TEST_F(PipelineCacheValidationFixture, TAAResolvePipelineCreationFailureIsVisibl
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("TAA resolve pipeline"),
-              std::string::npos);
-}
-
-TEST_F(PipelineCacheValidationFixture, TAAHistoryStorePipelineCreationFailureIsVisible)
-{
-    if (!HasShaderFixtures())
-    {
-        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
-    }
-
-    FakeDevice device;
-    device.failGraphicsPipelineDebugName = "TAAHistoryStorePipeline";
-    PipelineCacheForValidation cache;
-
-    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
-    EXPECT_NE(cache.GetLastError().find("TAA history-store pipeline"),
               std::string::npos);
 }
 

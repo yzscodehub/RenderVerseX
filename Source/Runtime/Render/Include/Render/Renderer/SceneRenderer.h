@@ -427,8 +427,8 @@ namespace RVX
         uint32 transparentPremultipliedDrawCount = 0;
         uint32 transparentAdditiveDrawCount = 0;
         uint32 transparentThinTransmissionDrawCount = 0;
-        bool transparentOpaqueSceneSnapshotReady = false;
-        bool transparentOpaqueSceneSnapshotCopied = false;
+        bool transparentOpaqueSceneColorPyramidReady = false;
+        bool transparentOpaqueSceneColorPyramidBuilt = false;
         bool transparentReactiveMaskAttachmentBound = false;
         uint32 transparentReactiveMaskWriteDrawCount = 0;
         uint32 transparentTranslucencyPriorityBucketCount = 0;

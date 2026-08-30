@@ -441,8 +441,8 @@ namespace RVX
         uint32 premultipliedDrawCount = 0;
         uint32 additiveDrawCount = 0;
         uint32 thinTransmissionDrawCount = 0;
-        bool opaqueSceneSnapshotReady = false;
-        bool opaqueSceneSnapshotCopied = false;
+        bool opaqueSceneColorPyramidReady = false;
+        bool opaqueSceneColorPyramidBuilt = false;
         bool reactiveMaskAttachmentBound = false;
         uint32 reactiveMaskWriteDrawCount = 0;
         uint32 translucencyPriorityBucketCount = 0;
@@ -609,29 +609,71 @@ namespace RVX
         }
     };
 
+    [[nodiscard]] inline uint32 CalculateOpaqueSceneColorPyramidMipCount(
+        RenderOutputExtent baseExtent) noexcept
+    {
+        if (!baseExtent.IsValid())
+        {
+            return 0;
+        }
+
+        uint32 mipCount = 1;
+        uint32 width = baseExtent.width;
+        uint32 height = baseExtent.height;
+        while (mipCount < RVX_OPAQUE_SCENE_COLOR_PYRAMID_MAX_MIP_COUNT &&
+               (width > 1 || height > 1))
+        {
+            width = std::max(1u, width / 2u);
+            height = std::max(1u, height / 2u);
+            ++mipCount;
+        }
+        return mipCount;
+    }
+
     /**
-     * @brief Identity-bound HDR scene input consumed by TransparentPass.
+     * @brief Identity-bound, all-mip opaque HDR scene input used by refraction.
      *
-     * An empty value is valid when no transparent consumer is recorded. Any
-     * populated value must exactly match its graph recording and carry both a
-     * graph-owned texture and the receipt produced by its copy pass.
+     * The texture is one graph-owned RGBA16F Texture2D with a bounded mip
+     * chain. UVs always address @ref sourceExtent; consumers select a level
+     * explicitly from material roughness rather than treating the base extent
+     * as the viewport. The terminal receipt prevents a partial chain from
+     * becoming a legal refraction input.
      */
-    struct OpaqueSceneSnapshotRecordInput
+    struct OpaqueSceneColorPyramidRecordInput
     {
         RenderPassRecordIdentity identity{};
         RGTextureHandle texture{};
-        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+        RenderOutputExtent sourceExtent{};
+        RenderOutputExtent baseExtent{};
+        RenderQualityTier quality = RenderQualityTier::Medium;
+        uint32 mipCount = 0;
+        std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt{};
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
-            return !identity.IsValid() && !texture.IsValid() && !receipt;
+            return !identity.IsValid() && !texture.IsValid() &&
+                   !sourceExtent.IsValid() && !baseExtent.IsValid() &&
+                   mipCount == 0 && !receipt;
         }
 
         [[nodiscard]] bool IsCompatibleWith(
             const RenderPassRecordIdentity& expected) const noexcept
         {
+            if (!IsDeclaredRenderQualityTier(quality))
+            {
+                return false;
+            }
+            const RenderOutputExtent expectedBase =
+                quality == RenderQualityTier::Ultra
+                    ? sourceExtent
+                    : RenderOutputExtent{
+                        std::max(1u, (sourceExtent.width + 1u) / 2u),
+                        std::max(1u, (sourceExtent.height + 1u) / 2u)};
             return identity == expected && texture.IsValid() &&
                    HasCurrentGraphProvenance(texture, expected) &&
+                   sourceExtent.IsValid() && baseExtent == expectedBase &&
+                   mipCount ==
+                       CalculateOpaqueSceneColorPyramidMipCount(baseExtent) &&
                    receipt != nullptr;
         }
     };
@@ -674,7 +716,7 @@ namespace RVX
     /**
      * Graph-owned inputs consumed exclusively by WaterFeaturePass.
      *
-     * Water samples immutable copies instead of the active HDR/depth
+     * Water samples immutable graph-owned surfaces instead of the active HDR/depth
      * attachments. This keeps refraction/thickness legal on explicit APIs and
      * makes accidental sampled/render-target aliasing structurally impossible.
      * The exact committed exposure-state handle is frozen alongside the HDR
@@ -684,16 +726,16 @@ namespace RVX
     struct WaterSurfaceRecordInput
     {
         RenderPassRecordIdentity identity{};
-        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        OpaqueSceneColorPyramidRecordInput sceneColorPyramid{};
         SceneDepthSnapshotRecordInput depthSnapshot{};
-        /** Exact committed producer state that authored opaqueSceneSnapshot. */
+        /** Exact committed producer state that authored sceneColorPyramid. */
         RGBufferHandle exposureState{};
         /** Semantic identity of the frozen committed exposure state. */
         uint64 exposureStateContentHash = 0;
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
-            return !identity.IsValid() && opaqueSceneSnapshot.IsEmpty() &&
+            return !identity.IsValid() && sceneColorPyramid.IsEmpty() &&
                    depthSnapshot.IsEmpty() && !exposureState.IsValid() &&
                    exposureStateContentHash == 0;
         }
@@ -703,7 +745,7 @@ namespace RVX
             RenderOutputExtent expectedExtent) const noexcept
         {
             return identity == expected &&
-                   opaqueSceneSnapshot.IsCompatibleWith(expected) &&
+                   sceneColorPyramid.IsCompatibleWith(expected) &&
                    depthSnapshot.IsCompatibleWith(expected, expectedExtent) &&
                    exposureState.IsValid() &&
                    HasCurrentGraphProvenance(exposureState, expected) &&
@@ -1820,8 +1862,8 @@ namespace RVX
         VolumetricLightingRecordInput volumetricLighting{};
         /** Final HDR surface resolved after the frozen frame snapshot. */
         RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
-        /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
-        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        /** Late opaque HDR pyramid for refraction, late-bound after the frame snapshot. */
+        OpaqueSceneColorPyramidRecordInput opaqueSceneColorPyramid{};
         /** Single D32 snapshot shared by Water and Particle for this graph view. */
         SceneDepthSnapshotRecordInput sceneDepthSnapshot{};
         /** Opaque HDR plus copied D32 inputs late-bound for deterministic water. */
@@ -1932,8 +1974,8 @@ namespace RVX
             {
                 return false;
             }
-            if (!opaqueSceneSnapshot.IsEmpty() &&
-                !opaqueSceneSnapshot.IsCompatibleWith(identity))
+            if (!opaqueSceneColorPyramid.IsEmpty() &&
+                !opaqueSceneColorPyramid.IsCompatibleWith(identity))
             {
                 return false;
             }
@@ -1981,7 +2023,7 @@ namespace RVX
         AmbientOcclusionRecordInput ambientOcclusion{};
         VolumetricLightingRecordInput volumetricLighting{};
         RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
-        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        OpaqueSceneColorPyramidRecordInput opaqueSceneColorPyramid{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
@@ -2014,8 +2056,8 @@ namespace RVX
             {
                 return false;
             }
-            if (!opaqueSceneSnapshot.IsEmpty() &&
-                !opaqueSceneSnapshot.IsCompatibleWith(identity))
+            if (!opaqueSceneColorPyramid.IsEmpty() &&
+                !opaqueSceneColorPyramid.IsCompatibleWith(identity))
             {
                 return false;
             }
@@ -2263,7 +2305,7 @@ namespace RVX
             result.view.colorTarget =
                 result.lateBoundHdrAttachment.finalHdrSceneColor;
         }
-        result.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
+        result.opaqueSceneColorPyramid = context.opaqueSceneColorPyramid;
         result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;
     }

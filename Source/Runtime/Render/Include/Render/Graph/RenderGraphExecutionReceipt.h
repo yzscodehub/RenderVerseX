@@ -6,20 +6,26 @@
  */
 
 #include <atomic>
+#include <cstdint>
 
 namespace RVX
 {
+    inline constexpr std::uint32_t RVX_OPAQUE_SCENE_COLOR_PYRAMID_MAX_MIP_COUNT =
+        7;
+
     /**
-     * @brief Completion fact for the immutable HDR copy used by translucent
-     *        consumers.
+     * @brief Completion fact for the late opaque-scene color pyramid.
      *
      * Frame, view, graph, and generation identity remain on the typed
-     * blackboard entry and record input.  The receipt reports only actual GPU
-     * command execution and therefore cannot be fabricated by graph setup.
+     * blackboard entry and record input. The terminal pass marks this receipt
+     * only after every requested mip has actually been rendered, preventing a
+     * consumer from sampling a partial pyramid as if it were a valid input.
      */
-    struct OpaqueSceneSnapshotCopyReceipt
+    struct OpaqueSceneColorPyramidBuildReceipt
     {
-        std::atomic_bool copied{false};
+        std::atomic<std::uint32_t> completedMipCount{0};
+        std::atomic_bool failed{false};
+        std::atomic_bool completed{false};
     };
 
     /**

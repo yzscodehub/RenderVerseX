@@ -445,6 +445,59 @@ try
                 Throw-BuildTruthFailure -Category "EvidencePath" -Message (
                     "Required evidence path is not a file: $absoluteEvidencePath")
             }
+            # A RenderQuality bundle owns its raw attachment siblings. Remove
+            # those exact manifest-declared files before deleting the manifest
+            # so a fixed-path rerun cannot inherit or collide with stale bytes.
+            # Every candidate is re-resolved against the build root; arbitrary
+            # paths from an old/generated manifest never escape containment.
+            try
+            {
+                $semanticManifest = Get-Content -LiteralPath $absoluteEvidencePath `
+                    -Raw | ConvertFrom-Json -ErrorAction Stop
+                if ($semanticManifest.schema -eq
+                        "RVX.RenderQualityAttachmentBundle" -and
+                    $null -ne $semanticManifest.attachments)
+                {
+                    foreach ($attachment in @($semanticManifest.attachments))
+                    {
+                        $dataPath = [string]$attachment.dataPath
+                        if ([string]::IsNullOrWhiteSpace($dataPath) -or
+                            [IO.Path]::IsPathRooted($dataPath))
+                        {
+                            Throw-BuildTruthFailure `
+                                -Category "EvidencePath" `
+                                -Message "RenderQuality bundle has an invalid attachment dataPath"
+                        }
+                        $attachmentPath = Resolve-BuildTruthContainedPath `
+                            -Root $buildPath `
+                            -Path (Join-Path `
+                                (Split-Path -Parent $absoluteEvidencePath) `
+                                $dataPath) `
+                            -AllowMissing
+                        if (Test-Path -LiteralPath $attachmentPath)
+                        {
+                            if (-not (Test-Path -LiteralPath $attachmentPath `
+                                    -PathType Leaf))
+                            {
+                                Throw-BuildTruthFailure `
+                                    -Category "EvidencePath" `
+                                    -Message "RenderQuality attachment is not a file: $attachmentPath"
+                            }
+                            Remove-Item -LiteralPath $attachmentPath -Force
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                if ($_.FullyQualifiedErrorId -like "BT3.*")
+                {
+                    throw
+                }
+                # Non-RenderQuality or older evidence remains safe to delete
+                # as one exact file; producer-specific validation will reject
+                # any incompatible sibling artifacts on the next run.
+            }
             Remove-Item -LiteralPath $absoluteEvidencePath -Force
         }
         $resolvedEvidencePaths.Add($absoluteEvidencePath)

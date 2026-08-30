@@ -37,7 +37,7 @@ namespace RVX
         bool graphPassScheduled = false;
         bool drawSubmitted = false;
         bool uploadPublished = false;
-        bool opaqueSceneSnapshotReady = false;
+        bool opaqueSceneColorPyramidReady = false;
         bool depthSnapshotReady = false;
         bool exposureStateReady = false;
         bool exposureStateReadDeclared = false;
@@ -75,14 +75,14 @@ namespace RVX
     struct WaterSurfaceRequirements
     {
         bool requested = false;
-        bool opaqueSceneSnapshotRequired = false;
+        bool sceneColorPyramidRequired = false;
         bool depthSnapshotRequired = false;
         bool reactiveMaskRequired = false;
         bool exposureStateRequired = false;
     };
 
-    /** True only after both immutable Water sampling inputs were copied. */
-    [[nodiscard]] bool AreWaterSnapshotCopiesReady(
+    /** True only after the color pyramid and depth snapshot are complete. */
+    [[nodiscard]] bool AreWaterSurfaceInputsReady(
         const WaterSurfaceRecordInput& input) noexcept;
 
     class IShaderProgramProvider;

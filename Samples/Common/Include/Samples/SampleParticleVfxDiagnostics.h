@@ -90,7 +90,7 @@ namespace RVX
         {
             // Schema 11 remains decodable in historical reports, but only the
             // current renderer receipt can qualify a live Sample execution.
-            return available && executionReceiptSchemaVersion == 12 &&
+            return available && executionReceiptSchemaVersion == 13 &&
                    executionReceiptStructurallyValid &&
                    executionReceiptPresented && executionReceiptSucceeded &&
                    mainView && requested && supported && enabled &&

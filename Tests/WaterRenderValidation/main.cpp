@@ -307,8 +307,10 @@ TEST(WaterPreExposureValidation,
     const std::string shader = ReadTextFile(
         root / "Source/Runtime/Render/Shaders/Water/WaterSurface.hlsl");
 
-    EXPECT_NE(shader.find("const float3 refracted = gOpaqueSceneSnapshot.Sample("),
+    EXPECT_NE(shader.find("gOpaqueSceneColorPyramid.SampleLevel("),
               std::string::npos);
+    EXPECT_NE(shader.find("roughness * roughness"), std::string::npos);
+    EXPECT_NE(shader.find("pyramidMipCount"), std::string::npos);
     EXPECT_NE(shader.find("* producerPreExposure;"), std::string::npos);
     EXPECT_NE(shader.find("FoamColorAndParameters.xyz * producerPreExposure"),
               std::string::npos);
@@ -405,7 +407,7 @@ TEST(WaterFeaturePassValidation, ValidV3SnapshotRequiresDistinctOpaqueDepthAndRe
 
     const RVX::WaterSurfaceRequirements requirements = pass.GetRequirements();
     EXPECT_TRUE(requirements.requested);
-    EXPECT_TRUE(requirements.opaqueSceneSnapshotRequired);
+    EXPECT_TRUE(requirements.sceneColorPyramidRequired);
     EXPECT_TRUE(requirements.depthSnapshotRequired);
     EXPECT_TRUE(requirements.reactiveMaskRequired);
     // A request without a graph/device must remain fail-closed rather than
@@ -415,27 +417,40 @@ TEST(WaterFeaturePassValidation, ValidV3SnapshotRequiresDistinctOpaqueDepthAndRe
 }
 
 TEST(WaterFeaturePassValidation,
-     SnapshotCopiesMustCompleteBeforeAnyWaterDrawMayExecute)
+     SceneColorPyramidAndDepthMustCompleteBeforeAnyWaterDrawMayExecute)
 {
     RVX::WaterSurfaceRecordInput input;
-    input.opaqueSceneSnapshot.receipt =
-        std::make_shared<RVX::OpaqueSceneSnapshotCopyReceipt>();
+    input.sceneColorPyramid.mipCount = 3;
+    input.sceneColorPyramid.receipt =
+        std::make_shared<RVX::OpaqueSceneColorPyramidBuildReceipt>();
     input.depthSnapshot.receipt =
         std::make_shared<RVX::SceneDepthSnapshotCopyReceipt>();
-    ASSERT_FALSE(RVX::AreWaterSnapshotCopiesReady(input));
+    ASSERT_FALSE(RVX::AreWaterSurfaceInputsReady(input));
 
-    input.opaqueSceneSnapshot.receipt->copied.store(
+    input.sceneColorPyramid.receipt->completedMipCount.store(
+        input.sceneColorPyramid.mipCount, std::memory_order_release);
+    input.sceneColorPyramid.receipt->completed.store(
         true, std::memory_order_release);
-    EXPECT_FALSE(RVX::AreWaterSnapshotCopiesReady(input));
+    EXPECT_FALSE(RVX::AreWaterSurfaceInputsReady(input));
     input.depthSnapshot.receipt->copied.store(
         true, std::memory_order_release);
-    EXPECT_TRUE(RVX::AreWaterSnapshotCopiesReady(input));
+    EXPECT_TRUE(RVX::AreWaterSurfaceInputsReady(input));
+
+    input.sceneColorPyramid.receipt->failed.store(
+        true, std::memory_order_release);
+    EXPECT_FALSE(RVX::AreWaterSurfaceInputsReady(input));
+    input.sceneColorPyramid.receipt->failed.store(
+        false, std::memory_order_release);
+
+    input.sceneColorPyramid.receipt->completedMipCount.store(
+        input.sceneColorPyramid.mipCount - 1u, std::memory_order_release);
+    EXPECT_FALSE(RVX::AreWaterSurfaceInputsReady(input));
 
     const std::filesystem::path root{RVX_SOURCE_DIR};
     const std::string source = ReadTextFile(
         root / "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp");
     const size_t receiptGate = source.find(
-        "if (!AreWaterSnapshotCopiesReady(data.waterSurface))");
+        "if (!AreWaterSurfaceInputsReady(data.waterSurface))");
     const size_t beginRenderPass = source.find(
         "commands.BeginRenderPass(renderPassDesc)", receiptGate);
     ASSERT_NE(receiptGate, std::string::npos);

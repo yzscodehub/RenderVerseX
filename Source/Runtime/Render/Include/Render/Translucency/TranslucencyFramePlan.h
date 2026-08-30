@@ -45,6 +45,42 @@ namespace RVX
         float32 deviceDepth,
         bool reverseZ) noexcept;
 
+    /**
+     * @brief Conservative resolve scissor policy for weighted-blended OIT.
+     *
+     * RenderDrawItem and particle plans currently do not carry one shared,
+     * frozen projected bounds contract. Until they do, every WBOIT stage must
+     * use this explicit full-viewport fallback rather than infer an unsound
+     * partial rect from heterogeneous source data.
+     */
+    enum class WeightedBlendedOITScissorPolicy : uint8
+    {
+        FullViewportFallback = 0,
+    };
+
+    struct WeightedBlendedOITScissor
+    {
+        WeightedBlendedOITScissorPolicy policy =
+            WeightedBlendedOITScissorPolicy::FullViewportFallback;
+        uint32 x = 0;
+        uint32 y = 0;
+        uint32 width = 0;
+        uint32 height = 0;
+
+        [[nodiscard]] constexpr bool IsValidFor(
+            RenderOutputExtent extent) const noexcept
+        {
+            return extent.IsValid() && policy ==
+                       WeightedBlendedOITScissorPolicy::FullViewportFallback &&
+                   x == 0 && y == 0 && width == extent.width &&
+                   height == extent.height;
+        }
+    };
+
+    [[nodiscard]] WeightedBlendedOITScissor
+        ResolveWeightedBlendedOITScissor(
+            RenderOutputExtent extent) noexcept;
+
     enum class TranslucencyRoute : uint8
     {
         WeightedBlended = 0,

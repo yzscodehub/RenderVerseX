@@ -630,10 +630,11 @@ namespace
                         return resource.name == name;
                     });
             };
+            EXPECT_EQ(findResource("SourceSceneHDR"),
+                      result.reflection.resources.end());
             for (const auto [name, binding] : {
-                     std::pair{"SourceSceneHDR", 0u},
-                     std::pair{"OITAccumulation", 1u},
-                     std::pair{"OITRevealage", 2u}})
+                     std::pair{"OITAccumulation", 0u},
+                     std::pair{"OITRevealage", 1u}})
             {
                 const auto resource = findResource(name);
                 ASSERT_NE(resource, result.reflection.resources.end()) << name;
@@ -650,9 +651,8 @@ namespace
         RVX::IShaderCompiler& compiler,
         RVX::RHIBackendType backend)
     {
-        constexpr std::array<const char*, 2> entryPoints = {
+        constexpr std::array<const char*, 1> entryPoints = {
             "PSResolve",
-            "PSStore",
         };
         const fs::path shaderPath =
             fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
@@ -747,10 +747,6 @@ namespace
             expectResource(
                 "LinearClampSampler", 7u, RVX::RHIBindingType::Sampler);
 
-            if (std::string_view(entryPoint) != "PSResolve")
-            {
-                continue;
-            }
             expectResource(
                 "TAAConstants", 0u, RVX::RHIBindingType::UniformBuffer);
             expectResource(
@@ -764,6 +760,137 @@ namespace
             expectResource(
                 "ExposureState", 8u,
                 RVX::RHIBindingType::ShaderResourceBuffer);
+
+            constexpr std::array<RVX::RHIFormat, 3> expectedOutputFormats = {
+                RVX::RHIFormat::RGBA32_FLOAT,
+                RVX::RHIFormat::RGBA32_FLOAT,
+                RVX::RHIFormat::R32_FLOAT,
+            };
+            ASSERT_EQ(result.reflection.outputs.size(),
+                      expectedOutputFormats.size());
+            for (RVX::uint32 location = 0;
+                 location < expectedOutputFormats.size();
+                 ++location)
+            {
+                const auto output = std::find_if(
+                    result.reflection.outputs.begin(),
+                    result.reflection.outputs.end(),
+                    [location](
+                        const RVX::ShaderReflection::InputAttribute& attribute)
+                    {
+                        return attribute.location == location;
+                    });
+                ASSERT_NE(output, result.reflection.outputs.end()) << location;
+                EXPECT_EQ(output->format, expectedOutputFormats[location])
+                    << location;
+            }
+        }
+    }
+
+    void VerifyOpaqueSceneColorPyramidShaderMatrix(
+        RVX::IShaderCompiler& compiler,
+        RVX::RHIBackendType backend)
+    {
+        const fs::path shaderPath =
+            fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+            "Shaders" / "PostProcess" / "OpaqueSceneColorPyramid.hlsl";
+        ASSERT_TRUE(fs::exists(shaderPath)) << shaderPath.string();
+        const std::string source = ReadTextFile(shaderPath);
+        ASSERT_FALSE(source.empty()) << shaderPath.string();
+        const std::string shaderPathString = shaderPath.string();
+
+        for (const auto [stage, entryPoint] : {
+                 std::pair{RVX::RHIShaderStage::Vertex,
+                           std::string_view{"VSMain"}},
+                 std::pair{RVX::RHIShaderStage::Pixel,
+                           std::string_view{"PSMain"}}})
+        {
+            SCOPED_TRACE(
+                std::string("OpaqueSceneColorPyramid ") +
+                std::string(entryPoint) + " backend " +
+                std::to_string(static_cast<RVX::uint32>(backend)));
+            RVX::ShaderCompileOptions options;
+            options.stage = stage;
+            options.entryPoint = entryPoint.data();
+            options.sourceCode = source.c_str();
+            options.sourcePath = shaderPathString.c_str();
+            options.targetBackend = backend;
+            options.enableOptimization = false;
+            options.defines.push_back({
+                "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+                backend == RVX::RHIBackendType::Vulkan ||
+                        backend == RVX::RHIBackendType::OpenGL
+                    ? "1"
+                    : "0"});
+
+            const RVX::ShaderCompileSupport support =
+                compiler.QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported()) << support.reason;
+            const RVX::ShaderCompileResult result = compiler.Compile(options);
+            ASSERT_TRUE(result.success) << result.errorMessage;
+            ASSERT_TRUE(result.reflection.valid);
+            ASSERT_FALSE(result.bytecode.empty());
+            if (backend != RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasTrackedInclude(
+                    result, "FullscreenTriangle.hlsli"));
+            }
+            if (backend == RVX::RHIBackendType::DX12)
+            {
+                EXPECT_TRUE(HasDXILContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasDXBCContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::Vulkan ||
+                     backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
+            }
+            if (backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_FALSE(result.glslSource.empty());
+            }
+            else if (backend == RVX::RHIBackendType::Metal)
+            {
+                EXPECT_FALSE(result.mslSource.empty());
+                EXPECT_EQ(result.mslEntryPoint, entryPoint);
+            }
+
+            if (stage != RVX::RHIShaderStage::Pixel)
+            {
+                continue;
+            }
+            const auto findResource = [&result](const char* name)
+            {
+                return std::find_if(
+                    result.reflection.resources.begin(),
+                    result.reflection.resources.end(),
+                    [name](
+                        const RVX::ShaderReflection::ResourceBinding& resource)
+                    {
+                        return resource.name == name;
+                    });
+            };
+            const auto expectResource = [&result, &findResource](
+                                            const char* name,
+                                            RVX::uint32 binding,
+                                            RVX::RHIBindingType type)
+            {
+                const auto resource = findResource(name);
+                ASSERT_NE(resource, result.reflection.resources.end()) << name;
+                EXPECT_EQ(resource->set, 0u) << name;
+                EXPECT_EQ(resource->binding, binding) << name;
+                EXPECT_EQ(resource->type, type) << name;
+                EXPECT_EQ(resource->count, 1u) << name;
+            };
+            expectResource("OpaqueSceneColorPyramidConstants", 0u,
+                           RVX::RHIBindingType::UniformBuffer);
+            expectResource("InputSceneColor", 1u,
+                           RVX::RHIBindingType::SampledTexture);
+            expectResource("LinearClampSampler", 2u,
+                           RVX::RHIBindingType::Sampler);
         }
     }
 
@@ -2183,6 +2310,15 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_NE(compiler, nullptr);
     VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::DX12);
 }
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpaqueSceneColorPyramidShadersCompileAsDXILWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyOpaqueSceneColorPyramidShaderMatrix(
+        *compiler, RVX::RHIBackendType::DX12);
+}
 #endif
 
 #if RVX_ENABLE_DX11
@@ -2220,6 +2356,15 @@ TEST_F(ShaderCompilerValidationFixture,
     auto compiler = RVX::CreateShaderCompiler();
     ASSERT_NE(compiler, nullptr);
     VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::DX11);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpaqueSceneColorPyramidShadersCompileAsDXBCWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyOpaqueSceneColorPyramidShaderMatrix(
+        *compiler, RVX::RHIBackendType::DX11);
 }
 #endif
 
@@ -2267,6 +2412,15 @@ TEST_F(ShaderCompilerValidationFixture,
     auto compiler = RVX::CreateShaderCompiler();
     ASSERT_NE(compiler, nullptr);
     VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::Vulkan);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpaqueSceneColorPyramidShadersCompileAsSPIRVWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyOpaqueSceneColorPyramidShaderMatrix(
+        *compiler, RVX::RHIBackendType::Vulkan);
 }
 #endif
 
@@ -2317,7 +2471,16 @@ TEST_F(ShaderCompilerValidationFixture,
 }
 
 TEST_F(ShaderCompilerValidationFixture,
-       OpenGLForwardTranslucencyCompilesWithOpaqueSnapshotSamplerPair)
+       OpaqueSceneColorPyramidShadersCompileAsOpenGLGLSLWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyOpaqueSceneColorPyramidShaderMatrix(
+        *compiler, RVX::RHIBackendType::OpenGL);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpenGLForwardTranslucencyCompilesWithOpaqueSceneColorPyramidSamplerPair)
 {
     const fs::path shaderPath =
         fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
@@ -2349,7 +2512,7 @@ TEST_F(ShaderCompilerValidationFixture,
     EXPECT_NE(
         result.glslSource.find(
             "layout(binding = 14) uniform sampler2D "
-            "OpaqueSceneSnapshotTexture_IBLLinearClampSampler"),
+            "OpaqueSceneColorPyramidTexture_IBLLinearClampSampler"),
         std::string::npos);
     EXPECT_NE(
         result.glslSource.find(
@@ -2403,6 +2566,15 @@ TEST_F(ShaderCompilerValidationFixture,
     auto compiler = RVX::CreateShaderCompiler();
     ASSERT_NE(compiler, nullptr);
     VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::Metal);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpaqueSceneColorPyramidShadersCompileAsMSLWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyOpaqueSceneColorPyramidShaderMatrix(
+        *compiler, RVX::RHIBackendType::Metal);
 }
 #endif
 

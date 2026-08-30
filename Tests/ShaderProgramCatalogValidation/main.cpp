@@ -167,6 +167,63 @@ TEST(ShaderProgramCatalogValidation,
 }
 
 TEST(ShaderProgramCatalogValidation,
+     TAAUsesOneResolveProgramAndHasNoIndependentHistoryStore)
+{
+    std::vector<RVX::Tools::ShaderProgramCatalogEntry> entries;
+    std::string error;
+    ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
+        RepositoryCatalogPath(), entries, error)) << error;
+
+    std::vector<const RVX::Tools::ShaderProgramCatalogEntry*> taaEntries;
+    for (const RVX::Tools::ShaderProgramCatalogEntry& entry : entries)
+    {
+        if (entry.logicalAssetId == "PostProcess/TAA.hlsl")
+        {
+            taaEntries.push_back(&entry);
+        }
+    }
+    ASSERT_EQ(taaEntries.size(), static_cast<size_t>(2));
+
+    const auto findEntry = [&taaEntries](
+                               RVX::RHIShaderStage stage,
+                               std::string_view entryPoint)
+    {
+        return std::find_if(
+            taaEntries.begin(), taaEntries.end(),
+            [stage, entryPoint](
+                const RVX::Tools::ShaderProgramCatalogEntry* entry)
+            {
+                return entry != nullptr && entry->stage == stage &&
+                       entry->entryPoint == entryPoint;
+            });
+    };
+    EXPECT_NE(findEntry(RVX::RHIShaderStage::Vertex, "VSMain"),
+              taaEntries.end());
+    EXPECT_NE(findEntry(RVX::RHIShaderStage::Pixel, "PSResolve"),
+              taaEntries.end());
+    EXPECT_EQ(findEntry(RVX::RHIShaderStage::Pixel, "PSStore"),
+              taaEntries.end());
+
+    const auto resolve = findEntry(
+        RVX::RHIShaderStage::Pixel, "PSResolve");
+    ASSERT_NE(resolve, taaEntries.end());
+    const std::array expectedBackends = {
+        RVX::RHIBackendType::DX11,
+        RVX::RHIBackendType::DX12,
+        RVX::RHIBackendType::Vulkan,
+        RVX::RHIBackendType::Metal,
+        RVX::RHIBackendType::OpenGL,
+    };
+    for (const RVX::RHIBackendType backend : expectedBackends)
+    {
+        EXPECT_NE(std::find((*resolve)->backends.begin(),
+                            (*resolve)->backends.end(),
+                            backend),
+                  (*resolve)->backends.end());
+    }
+}
+
+TEST(ShaderProgramCatalogValidation,
      SymbolicBackendDefinesResolveToExplicitPermutationValues)
 {
     RVX::Tools::ShaderProgramCatalogEntry entry;
@@ -415,11 +472,76 @@ TEST(ShaderProgramCatalogValidation,
               std::string::npos);
     EXPECT_NE(particleSource.find("if (input.BlendMode > 1u)"),
               std::string::npos);
-    EXPECT_NE(compositeSource.find("SourceSceneHDR.Load"),
-              std::string::npos);
+    EXPECT_EQ(compositeSource.find("SourceSceneHDR"), std::string::npos);
     EXPECT_NE(compositeSource.find("OITAccumulation.Load"),
               std::string::npos);
     EXPECT_NE(compositeSource.find("OITRevealage.Load"),
+              std::string::npos);
+    EXPECT_NE(compositeSource.find(
+                  "output.SceneHDR = float4(resolved * coverage, coverage);"),
+              std::string::npos);
+}
+
+TEST(ShaderProgramCatalogValidation,
+     OpaqueSceneColorPyramidProgramsAreCookedForEveryRasterBackend)
+{
+    std::vector<RVX::Tools::ShaderProgramCatalogEntry> entries;
+    std::string error;
+    ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
+        RepositoryCatalogPath(), entries, error)) << error;
+
+    constexpr std::array expectedBackends = {
+        RVX::RHIBackendType::DX11,
+        RVX::RHIBackendType::DX12,
+        RVX::RHIBackendType::Vulkan,
+        RVX::RHIBackendType::Metal,
+        RVX::RHIBackendType::OpenGL,
+    };
+    for (const auto [stage, entryPoint] : {
+             std::pair{RVX::RHIShaderStage::Vertex,
+                       std::string_view{"VSMain"}},
+             std::pair{RVX::RHIShaderStage::Pixel,
+                       std::string_view{"PSMain"}}})
+    {
+        const auto program = std::find_if(
+            entries.begin(), entries.end(),
+            [stage, entryPoint](
+                const RVX::Tools::ShaderProgramCatalogEntry& entry)
+            {
+                return entry.logicalAssetId ==
+                           "PostProcess/OpaqueSceneColorPyramid.hlsl" &&
+                       entry.stage == stage && entry.entryPoint == entryPoint;
+            });
+        ASSERT_NE(program, entries.end()) << entryPoint;
+        EXPECT_EQ(program->backends.size(), expectedBackends.size());
+        for (const RVX::RHIBackendType backend : expectedBackends)
+        {
+            EXPECT_NE(std::find(program->backends.begin(),
+                                program->backends.end(), backend),
+                      program->backends.end()) << entryPoint;
+
+            RVX::ShaderProgramRequest request;
+            ASSERT_TRUE(RVX::Tools::ResolveShaderProgramCatalogEntry(
+                *program, backend, request, error)) << error;
+            const auto clipY = std::find_if(
+                request.defines.begin(), request.defines.end(),
+                [](const RVX::ShaderMacro& define)
+                {
+                    return define.name ==
+                        "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y";
+                });
+            ASSERT_NE(clipY, request.defines.end()) << entryPoint;
+            EXPECT_TRUE(clipY->value == "0" || clipY->value == "1");
+        }
+    }
+
+    const std::string source = ReadText(
+        RepositoryShaderRoot() / "PostProcess" /
+        "OpaqueSceneColorPyramid.hlsl");
+    EXPECT_NE(source.find("SourceIsFullResolution"), std::string::npos);
+    EXPECT_NE(source.find("InputSceneColor.GetDimensions"),
+              std::string::npos);
+    EXPECT_NE(source.find("RVX_GetFullscreenTrianglePosition"),
               std::string::npos);
 }
 

@@ -6,10 +6,10 @@
 // - copy scene color when bloom intensity is zero
 // - extract bright pixels with a soft knee
 // - downsample a fixed transient bloom pyramid
-// - additively composite blurred levels back into HDR scene color
+// - composite the source scene plus every blurred level in one opaque write
 //
 // The narrow exposure-aware fullscreen layout additionally binds the candidate
-// state at t4, so thresholding uses the exact same E/P state as ToneMapping.
+// state at t6, so thresholding uses the exact same E/P state as ToneMapping.
 //
 // =============================================================================
 
@@ -31,12 +31,16 @@ cbuffer BloomConstants : register(b0, space0)
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);
-StructuredBuffer<RVXExposureState> ExposureState : register(t4, space0);
+Texture2D<float4> BloomPyramid0 : register(t3, space0);
+Texture2D<float4> BloomPyramid1 : register(t4, space0);
+Texture2D<float4> BloomPyramid2 : register(t5, space0);
+StructuredBuffer<RVXExposureState> ExposureState : register(t6, space0);
 
 static const float BLOOM_MODE_COPY_SCENE = 0.0;
 static const float BLOOM_MODE_EXTRACT = 1.0;
 static const float BLOOM_MODE_DOWNSAMPLE = 2.0;
-static const float BLOOM_MODE_COMPOSITE_ADDITIVE = 3.0;
+static const float BLOOM_MODE_COMPOSITE_PYRAMID = 3.0;
+static const float BLOOM_PYRAMID_WEIGHTS[3] = {0.45, 0.35, 0.20};
 
 float Luminance(float3 color)
 {
@@ -64,52 +68,59 @@ float3 ApplySoftThreshold(float3 color)
     return color * saturate(contribution);
 }
 
-float3 SampleBloomThreshold(float2 uv)
+float3 SampleBloomThreshold(Texture2D<float4> source, float2 uv)
 {
-    return ApplySoftThreshold(InputTexture.Sample(LinearSampler, uv).rgb);
+    return ApplySoftThreshold(source.Sample(LinearSampler, uv).rgb);
 }
 
-float3 SampleBloomSource(float2 uv)
+float3 SampleBloomSource(Texture2D<float4> source, float2 uv)
 {
-    return InputTexture.Sample(LinearSampler, uv).rgb;
+    return source.Sample(LinearSampler, uv).rgb;
 }
 
-float3 SampleBloomWideKernel(float2 uv, bool thresholdSource)
+float3 SampleBloomWideKernel(Texture2D<float4> source,
+                             float2 uv,
+                             bool thresholdSource)
 {
-    float2 radius = InvTextureSize * max(Radius, 0.0);
+    uint sourceWidth = 1;
+    uint sourceHeight = 1;
+    source.GetDimensions(sourceWidth, sourceHeight);
+    const float2 inverseSourceSize = 1.0 / float2(
+        max(sourceWidth, 1u), max(sourceHeight, 1u));
+    float2 radius = inverseSourceSize * max(Radius, 0.0);
     float2 ring2 = radius * 2.0;
 
-    float3 bloom = (thresholdSource ? SampleBloomThreshold(uv) : SampleBloomSource(uv)) * 0.18;
+    float3 bloom = (thresholdSource ? SampleBloomThreshold(source, uv) : SampleBloomSource(source, uv)) * 0.18;
 
     // ring1: axial taps keep bright highlights crisp near the source.
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(-radius.x, 0.0)) :
-                                SampleBloomSource(uv + float2(-radius.x, 0.0))) * 0.12;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2( radius.x, 0.0)) :
-                                SampleBloomSource(uv + float2( radius.x, 0.0))) * 0.12;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(0.0, -radius.y)) :
-                                SampleBloomSource(uv + float2(0.0, -radius.y))) * 0.12;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(0.0,  radius.y)) :
-                                SampleBloomSource(uv + float2(0.0,  radius.y))) * 0.12;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(-radius.x, 0.0)) :
+                                SampleBloomSource(source, uv + float2(-radius.x, 0.0))) * 0.12;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2( radius.x, 0.0)) :
+                                SampleBloomSource(source, uv + float2( radius.x, 0.0))) * 0.12;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(0.0, -radius.y)) :
+                                SampleBloomSource(source, uv + float2(0.0, -radius.y))) * 0.12;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(0.0,  radius.y)) :
+                                SampleBloomSource(source, uv + float2(0.0,  radius.y))) * 0.12;
 
     // ring1 diagonal taps soften the kernel into a rounder glow.
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(-radius.x, -radius.y)) :
-                                SampleBloomSource(uv + float2(-radius.x, -radius.y))) * 0.065;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2( radius.x, -radius.y)) :
-                                SampleBloomSource(uv + float2( radius.x, -radius.y))) * 0.065;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(-radius.x,  radius.y)) :
-                                SampleBloomSource(uv + float2(-radius.x,  radius.y))) * 0.065;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2( radius.x,  radius.y)) :
-                                SampleBloomSource(uv + float2( radius.x,  radius.y))) * 0.065;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(-radius.x, -radius.y)) :
+                                SampleBloomSource(source, uv + float2(-radius.x, -radius.y))) * 0.065;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2( radius.x, -radius.y)) :
+                                SampleBloomSource(source, uv + float2( radius.x, -radius.y))) * 0.065;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(-radius.x,  radius.y)) :
+                                SampleBloomSource(source, uv + float2(-radius.x,  radius.y))) * 0.065;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2( radius.x,  radius.y)) :
+                                SampleBloomSource(source, uv + float2( radius.x,  radius.y))) * 0.065;
 
     // ring2: wider axial taps extend bloom across the transient pyramid.
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(-ring2.x, 0.0)) :
-                                SampleBloomSource(uv + float2(-ring2.x, 0.0))) * 0.02;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2( ring2.x, 0.0)) :
-                                SampleBloomSource(uv + float2( ring2.x, 0.0))) * 0.02;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(0.0, -ring2.y)) :
-                                SampleBloomSource(uv + float2(0.0, -ring2.y))) * 0.02;
-    bloom += (thresholdSource ? SampleBloomThreshold(uv + float2(0.0,  ring2.y)) :
-                                SampleBloomSource(uv + float2(0.0,  ring2.y))) * 0.02;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(-ring2.x, 0.0)) :
+                                SampleBloomSource(source, uv + float2(-ring2.x, 0.0))) * 0.02;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2( ring2.x, 0.0)) :
+                                SampleBloomSource(source, uv + float2( ring2.x, 0.0))) * 0.02;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(0.0, -ring2.y)) :
+                                SampleBloomSource(source, uv + float2(0.0, -ring2.y))) * 0.02;
+    bloom += (thresholdSource ? SampleBloomThreshold(source, uv + float2(0.0,  ring2.y)) :
+                                SampleBloomSource(source, uv + float2(0.0,  ring2.y))) * 0.02;
 
     return bloom;
 }
@@ -138,14 +149,24 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     if (Mode < BLOOM_MODE_DOWNSAMPLE - 0.5)
     {
-        return float4(SampleBloomWideKernel(input.TexCoord, true), scene.a);
+        return float4(
+            SampleBloomWideKernel(InputTexture, input.TexCoord, true),
+            scene.a);
     }
 
-    float3 bloom = SampleBloomWideKernel(input.TexCoord, false);
-    if (Mode < BLOOM_MODE_COMPOSITE_ADDITIVE - 0.5)
+    if (Mode < BLOOM_MODE_COMPOSITE_PYRAMID - 0.5)
     {
-        return float4(bloom, scene.a);
+        return float4(
+            SampleBloomWideKernel(InputTexture, input.TexCoord, false),
+            scene.a);
     }
 
-    return float4(bloom * max(Intensity, 0.0), 0.0);
+    const float3 bloom =
+        SampleBloomWideKernel(BloomPyramid0, input.TexCoord, false) *
+            BLOOM_PYRAMID_WEIGHTS[0] +
+        SampleBloomWideKernel(BloomPyramid1, input.TexCoord, false) *
+            BLOOM_PYRAMID_WEIGHTS[1] +
+        SampleBloomWideKernel(BloomPyramid2, input.TexCoord, false) *
+            BLOOM_PYRAMID_WEIGHTS[2];
+    return float4(scene.rgb + bloom * max(Intensity, 0.0), scene.a);
 }

@@ -26,10 +26,10 @@ cbuffer WaterSurfaceConstants : register(b0, space0)
     float4 WaveSteepnessTemporalPhase[8];
 };
 
-Texture2D gOpaqueSceneSnapshot : register(t1, space0);
+Texture2D gOpaqueSceneColorPyramid : register(t1, space0);
 Texture2D gWaterDepthSnapshot : register(t2, space0);
 Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0);
-// The exact committed producer state frozen with the opaque snapshot. Water
+// The exact committed producer state frozen with the opaque-scene pyramid. Water
 // authored radiance enters this pre-exposed HDR domain once; the snapshot is
 // already in that domain and must never be scaled again.
 StructuredBuffer<RVXExposureState> gExposureState : register(t5, space0);
@@ -169,8 +169,16 @@ WaterTargets PSMain(VSOutput input)
     const float2 refractOffset = input.WorldNormal.xz *
         ShallowColorAndRefraction.w * FoamAndFeatureParameters.w *
         18.0f * InverseExtentAndReverseZ.xy;
-    const float3 refracted = gOpaqueSceneSnapshot.Sample(
-        gLinearClamp, saturate(uv + refractOffset)).rgb;
+    const float roughness = saturate(SurfaceSizeAndTransparency.w);
+    uint pyramidWidth = 1;
+    uint pyramidHeight = 1;
+    uint pyramidMipCount = 1;
+    gOpaqueSceneColorPyramid.GetDimensions(
+        0, pyramidWidth, pyramidHeight, pyramidMipCount);
+    const float refractionLod = roughness * roughness *
+        max((float)pyramidMipCount - 1.0f, 0.0f);
+    const float3 refracted = gOpaqueSceneColorPyramid.SampleLevel(
+        gLinearClamp, saturate(uv + refractOffset), refractionLod).rgb;
     // Authored shallow/deep water radiance is physical. Convert it once into
     // the committed producer domain before composing with the already
     // pre-exposed opaque/refraction snapshot.
@@ -181,7 +189,6 @@ WaterTargets PSMain(VSOutput input)
         absorbedWater * (1.0f - transmission);
     const float3 viewDirection = normalize(
         CameraPositionAndPadding.xyz - input.WorldPosition);
-    const float roughness = saturate(SurfaceSizeAndTransparency.w);
     const float schlickFresnel = 0.02f + 0.98f * pow(
         1.0f - saturate(dot(viewDirection, input.WorldNormal)), 5.0f);
     // Rough surfaces keep the same reflected environment identity but attenuate

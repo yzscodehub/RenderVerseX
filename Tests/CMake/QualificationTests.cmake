@@ -1471,7 +1471,7 @@ function(rvx_add_renderverse_gfx15_translucency_native
             --require-transparent-premultiplied-execution
             --require-transparent-additive-execution
             --require-transparent-thin-transmission-execution
-            --require-transparent-opaque-scene-snapshot
+            --require-transparent-opaque-scene-color-pyramid
             --require-transparent-reactive-mask
             --require-transparent-sorting
             --forbid-transparent-fallbacks

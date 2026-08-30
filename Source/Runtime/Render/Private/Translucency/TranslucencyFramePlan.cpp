@@ -317,6 +317,17 @@ float32 CanonicalizeWeightedBlendedOITDepth(
     return reverseZ ? 1.0f - saturatedDepth : saturatedDepth;
 }
 
+WeightedBlendedOITScissor ResolveWeightedBlendedOITScissor(
+    RenderOutputExtent extent) noexcept
+{
+    return WeightedBlendedOITScissor{
+        .policy = WeightedBlendedOITScissorPolicy::FullViewportFallback,
+        .x = 0,
+        .y = 0,
+        .width = extent.width,
+        .height = extent.height};
+}
+
 bool WeightedBlendedOITCapabilityReadiness::IsReady() const noexcept
 {
     return requested && compiled && hardwareSupported &&

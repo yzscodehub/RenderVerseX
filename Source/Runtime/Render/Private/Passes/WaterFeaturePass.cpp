@@ -17,13 +17,18 @@
 
 namespace RVX
 {
-bool AreWaterSnapshotCopiesReady(
+bool AreWaterSurfaceInputsReady(
     const WaterSurfaceRecordInput& input) noexcept
 {
-    return input.opaqueSceneSnapshot.receipt != nullptr &&
+    return input.sceneColorPyramid.receipt != nullptr &&
            input.depthSnapshot.receipt != nullptr &&
-           input.opaqueSceneSnapshot.receipt->copied.load(
+           !input.sceneColorPyramid.receipt->failed.load(
                std::memory_order_acquire) &&
+           input.sceneColorPyramid.receipt->completed.load(
+               std::memory_order_acquire) &&
+           input.sceneColorPyramid.receipt->completedMipCount.load(
+               std::memory_order_acquire) ==
+               input.sceneColorPyramid.mipCount &&
            input.depthSnapshot.receipt->copied.load(
                std::memory_order_acquire);
 }
@@ -711,14 +716,14 @@ namespace
         RGTextureHandle colorHandle{};
         RGTextureHandle depthHandle{};
         RGTextureHandle reactiveMaskHandle{};
-        RGTextureHandle opaqueSnapshotHandle{};
+        RGTextureHandle sceneColorPyramidHandle{};
         RGTextureHandle depthSnapshotHandle{};
         RGTextureHandle froxelVolumetricLightingHandle{};
         RGBufferHandle exposureStateReadHandle{};
         RGTextureViewHandle colorView{};
         RGTextureViewHandle depthView{};
         RGTextureViewHandle reactiveMaskView{};
-        RGTextureViewHandle opaqueSnapshotView{};
+        RGTextureViewHandle sceneColorPyramidView{};
         RGTextureViewHandle depthSnapshotView{};
         RGTextureViewHandle froxelVolumetricLightingView{};
         RHITextureViewRef neutralFroxelVolumetricLightingView{};
@@ -798,8 +803,8 @@ namespace
         const RHITextureDesc* const depthDesc = builder.GetTextureDesc(view.depthTarget);
         const RHITextureDesc* const reactiveDesc = builder.GetTextureDesc(
             view.reactiveMaskTarget);
-        const RHITextureDesc* const opaqueSnapshotDesc = builder.GetTextureDesc(
-            data.waterSurface.opaqueSceneSnapshot.texture);
+        const RHITextureDesc* const sceneColorPyramidDesc =
+            builder.GetTextureDesc(data.waterSurface.sceneColorPyramid.texture);
         const RHITextureDesc* const depthSnapshotDesc = builder.GetTextureDesc(
             data.waterSurface.depthSnapshot.texture);
         const RHITextureDesc* const froxelVolumetricLightingDesc =
@@ -816,11 +821,21 @@ namespace
         };
         if (view.viewportX != 0 || view.viewportY != 0 ||
             !exactExtent(colorDesc) || !exactExtent(depthDesc) ||
-            !exactExtent(reactiveDesc) || !exactExtent(opaqueSnapshotDesc) ||
+            !exactExtent(reactiveDesc) ||
             !exactExtent(depthSnapshotDesc) || colorDesc->format != RHIFormat::RGBA16_FLOAT ||
             depthDesc->format != RHIFormat::D32_FLOAT ||
             reactiveDesc->format != RHIFormat::R8_UNORM ||
-            opaqueSnapshotDesc->format != RHIFormat::RGBA16_FLOAT ||
+            sceneColorPyramidDesc == nullptr ||
+            sceneColorPyramidDesc->format != RHIFormat::RGBA16_FLOAT ||
+            sceneColorPyramidDesc->width !=
+                data.waterSurface.sceneColorPyramid.baseExtent.width ||
+            sceneColorPyramidDesc->height !=
+                data.waterSurface.sceneColorPyramid.baseExtent.height ||
+            sceneColorPyramidDesc->mipLevels !=
+                data.waterSurface.sceneColorPyramid.mipCount ||
+            sceneColorPyramidDesc->sampleCount != RHISampleCount::Count1 ||
+            !HasFlag(sceneColorPyramidDesc->usage,
+                     RHITextureUsage::ShaderResource) ||
             depthSnapshotDesc->format != RHIFormat::D32_FLOAT ||
             exposureStateDesc == nullptr ||
             exposureStateDesc->size != SceneTextures::ExposureStateStride ||
@@ -877,8 +892,8 @@ namespace
         data.colorHandle = view.colorTarget;
         data.reactiveMaskHandle = view.reactiveMaskTarget;
         data.depthHandle = view.depthTarget;
-        data.opaqueSnapshotHandle = builder.Read(
-            data.waterSurface.opaqueSceneSnapshot.texture,
+        data.sceneColorPyramidHandle = builder.Read(
+            data.waterSurface.sceneColorPyramid.texture,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
         data.depthSnapshotHandle = builder.Read(
             data.waterSurface.depthSnapshot.texture,
@@ -922,14 +937,16 @@ namespace
         data.depthView = builder.Read(data.depthView,
             MakeRGAccessDesc(RHIResourceState::DepthRead,
                              RHIShaderStage::Vertex | RHIShaderStage::Pixel));
-        RHITextureViewDesc opaqueViewDesc;
-        opaqueViewDesc.type = RHITextureViewType::ShaderResource;
-        opaqueViewDesc.format = RHIFormat::RGBA16_FLOAT;
-        opaqueViewDesc.dimension = RHITextureDimension::Texture2D;
-        opaqueViewDesc.debugName = "WaterSurface.OpaqueSceneSnapshotSRV";
-        data.opaqueSnapshotView = builder.CreateTextureView(data.opaqueSnapshotHandle,
-                                                             opaqueViewDesc);
-        data.opaqueSnapshotView = builder.Read(data.opaqueSnapshotView,
+        RHITextureViewDesc sceneColorPyramidViewDesc;
+        sceneColorPyramidViewDesc.type = RHITextureViewType::ShaderResource;
+        sceneColorPyramidViewDesc.format = RHIFormat::RGBA16_FLOAT;
+        sceneColorPyramidViewDesc.dimension = RHITextureDimension::Texture2D;
+        sceneColorPyramidViewDesc.subresourceRange = RHISubresourceRange::All();
+        sceneColorPyramidViewDesc.debugName =
+            "WaterSurface.OpaqueSceneColorPyramidSRV";
+        data.sceneColorPyramidView = builder.CreateTextureView(
+            data.sceneColorPyramidHandle, sceneColorPyramidViewDesc);
+        data.sceneColorPyramidView = builder.Read(data.sceneColorPyramidView,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
         RHITextureViewDesc depthSnapshotViewDesc;
         depthSnapshotViewDesc.type = RHITextureViewType::ShaderResource;
@@ -961,8 +978,8 @@ namespace
                                  RHIShaderStage::Pixel));
         }
         return data.colorView.IsValid() && data.reactiveMaskView.IsValid() &&
-            data.depthView.IsValid() && data.opaqueSnapshotHandle.IsValid() &&
-            data.opaqueSnapshotView.IsValid() && data.depthSnapshotHandle.IsValid() &&
+            data.depthView.IsValid() && data.sceneColorPyramidHandle.IsValid() &&
+            data.sceneColorPyramidView.IsValid() && data.depthSnapshotHandle.IsValid() &&
             data.depthSnapshotView.IsValid() && data.exposureStateReadHandle.IsValid() &&
             data.exposureStateContentHash != 0 &&
             (data.volumetricLighting.identityRoute
@@ -983,15 +1000,15 @@ namespace
         {
             return {};
         }
-        RHITextureView* const opaqueSnapshot = context.GetTextureView(
-            data.opaqueSnapshotView);
+        RHITextureView* const sceneColorPyramid = context.GetTextureView(
+            data.sceneColorPyramidView);
         RHITextureView* const depthSnapshot = context.GetTextureView(
             data.depthSnapshotView);
         RHITextureView* froxelVolumetricLighting =
             data.volumetricLighting.identityRoute
                 ? data.neutralFroxelVolumetricLightingView.Get()
                 : context.GetTextureView(data.froxelVolumetricLightingView);
-        if (opaqueSnapshot == nullptr || depthSnapshot == nullptr ||
+        if (sceneColorPyramid == nullptr || depthSnapshot == nullptr ||
             froxelVolumetricLighting == nullptr)
         {
             return {};
@@ -1033,7 +1050,7 @@ namespace
                         static_cast<uint64>(surfaceIndex) *
                             RVX_WATER_CONSTANT_BUFFER_SIZE,
                         RVX_WATER_CONSTANT_BUFFER_SIZE)
-            .BindTexture(1, opaqueSnapshot)
+            .BindTexture(1, sceneColorPyramid)
             .BindTexture(2, depthSnapshot)
             .BindSampler(3, data.submission.linearClampSampler.Get())
             .BindTexture(4, froxelVolumetricLighting)
@@ -1077,7 +1094,7 @@ namespace
         };
         if (!data.contextValid || !data.submission.IsReady() ||
             !data.colorView.IsValid() || !data.reactiveMaskView.IsValid() ||
-            !data.depthView.IsValid() || !data.opaqueSnapshotView.IsValid() ||
+            !data.depthView.IsValid() || !data.sceneColorPyramidView.IsValid() ||
             !data.depthSnapshotView.IsValid() ||
             !data.exposureStateReadHandle.IsValid() ||
             data.exposureStateContentHash == 0 ||
@@ -1091,17 +1108,22 @@ namespace
             fail("Water graph recording prerequisites are unavailable");
             return;
         }
-        stats.opaqueSceneSnapshotReady =
-            data.waterSurface.opaqueSceneSnapshot.receipt != nullptr &&
-            data.waterSurface.opaqueSceneSnapshot.receipt->copied.load(
-                std::memory_order_acquire);
+        stats.opaqueSceneColorPyramidReady =
+            data.waterSurface.sceneColorPyramid.receipt != nullptr &&
+            !data.waterSurface.sceneColorPyramid.receipt->failed.load(
+                std::memory_order_acquire) &&
+            data.waterSurface.sceneColorPyramid.receipt->completed.load(
+                std::memory_order_acquire) &&
+            data.waterSurface.sceneColorPyramid.receipt->completedMipCount.load(
+                std::memory_order_acquire) ==
+                data.waterSurface.sceneColorPyramid.mipCount;
         stats.depthSnapshotReady =
             data.waterSurface.depthSnapshot.receipt != nullptr &&
             data.waterSurface.depthSnapshot.receipt->copied.load(
                 std::memory_order_acquire);
-        if (!AreWaterSnapshotCopiesReady(data.waterSurface))
+        if (!AreWaterSurfaceInputsReady(data.waterSurface))
         {
-            fail("Water snapshot copies were not completed before draw execution");
+            fail("Water scene-color pyramid or depth snapshot was not completed before draw execution");
             return;
         }
         RHITexture* const colorTexture = context.GetTexture(data.colorHandle);
@@ -1218,7 +1240,7 @@ WaterSurfaceRequirements WaterFeaturePass::GetRequirements() const noexcept
 {
     WaterSurfaceRequirements requirements;
     requirements.requested = HasReadyWaterItem(m_snapshot);
-    requirements.opaqueSceneSnapshotRequired = requirements.requested;
+    requirements.sceneColorPyramidRequired = requirements.requested;
     requirements.depthSnapshotRequired = requirements.requested;
     requirements.reactiveMaskRequired = requirements.requested;
     requirements.exposureStateRequired = requirements.requested;

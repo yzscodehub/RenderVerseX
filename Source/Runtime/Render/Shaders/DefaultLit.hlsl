@@ -157,9 +157,9 @@ StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t14, space0);
 // Renderer-owned R8 visibility field. Opaque receives the exact GTAO output;
 // later Forward surfaces receive PipelineCache's neutral white fallback.
 Texture2D<float> AmbientOcclusionTexture : register(t15, space0);
-// Immutable graph copy of HDR scene color after Sky. Transparent geometry is
-// the RT writer, so ThinTransmission must only sample this separate resource.
-Texture2D OpaqueSceneSnapshotTexture : register(t16, space0);
+// Late graph-owned opaque HDR pyramid after Reflection/Sky. ThinTransmission
+// samples its explicit roughness-squared mip; it never samples the active RT.
+Texture2D OpaqueSceneColorPyramidTexture : register(t16, space0);
 // Renderer-owned full-capacity D32 Texture2DArray. It shares the existing
 // point-clamp depth sampler at s2 with directional CSM sampling.
 Texture2DArray<float> LocalShadowAtlasTexture : register(t17, space0);
@@ -1209,10 +1209,16 @@ float3 RVXApplyThinTransmission(
         return litColor;
     }
 
-    uint snapshotWidth;
-    uint snapshotHeight;
-    OpaqueSceneSnapshotTexture.GetDimensions(snapshotWidth, snapshotHeight);
-    const float2 invExtent = 1.0f / max(float2(snapshotWidth, snapshotHeight), 1.0f.xx);
+    uint pyramidWidth = 1u;
+    uint pyramidHeight = 1u;
+    uint pyramidMipCount = 1u;
+    OpaqueSceneColorPyramidTexture.GetDimensions(
+        0u, pyramidWidth, pyramidHeight, pyramidMipCount);
+    // ClusterScreenParams.xy is the frozen full-resolution scene/source
+    // extent. It remains the UV denominator even when the pyramid base is
+    // half resolution on High, so refraction never treats mip-zero texels as
+    // screen pixels.
+    const float2 sourceExtent = max(ClusterScreenParams.xy, 1.0f.xx);
     const float ior = max(surface.material.ThinTransmissionParams.y, 1.0f);
     float thickness = max(surface.material.ThinTransmissionParams.z, 0.0f);
     if ((surface.material.TextureFlags & MATERIAL_TEXTURE_THICKNESS) != 0u)
@@ -1232,7 +1238,7 @@ float3 RVXApplyThinTransmission(
         pow(1.0f - saturate(dot(surface.normal, viewDirection)), 5.0f);
     const float refractionScale = (ior - 1.0f) / ior *
         (0.5f + saturate(surface.roughness));
-    const float2 baseUV = input.Position.xy * invExtent;
+    const float2 baseUV = saturate(input.Position.xy / sourceExtent);
     const float4 baseClip = mul(float4(input.WorldPos, 1.0f), ViewProjection);
     const float4 normalClip = mul(
         float4(input.WorldPos + surface.normal, 1.0f), ViewProjection);
@@ -1240,11 +1246,10 @@ float3 RVXApplyThinTransmission(
                                  baseClip.xy / max(abs(baseClip.w), 1.0e-4f)) *
         float2(0.5f, -0.5f);
     const float2 offset = screenNormal * refractionScale * thickness;
-    const float2 roughOffset = max(surface.roughness, 0.02f) * 1.5f * invExtent;
-    const float3 refracted = (
-        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset, 0).rgb +
-        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset + roughOffset, 0).rgb +
-        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset - roughOffset, 0).rgb) / 3.0f;
+    const float refractionLod = saturate(surface.roughness * surface.roughness) *
+        max((float)pyramidMipCount - 1.0f, 0.0f);
+    const float3 refracted = OpaqueSceneColorPyramidTexture.SampleLevel(
+        IBLLinearClampSampler, saturate(baseUV + offset), refractionLod).rgb;
     // attenuationDistance==0 is the canonical infinite-distance/no-absorption case.
     const float3 absorption = attenuationDistance > 0.0f
         ? exp(-max(thickness, 0.0f) / attenuationDistance *

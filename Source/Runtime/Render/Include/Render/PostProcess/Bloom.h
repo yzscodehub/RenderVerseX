@@ -7,6 +7,7 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <array>
 
 namespace RVX
 {
@@ -16,9 +17,10 @@ namespace RVX
     /**
      * @brief HDR Bloom post-process pass
      *
-     * RQ27 builds a small transient pyramid, then additively composites the
-     * blurred levels over a scene-color copy. Full quality presets and compute
-     * downsample remain future expansions.
+     * Builds a compact transient pyramid. When enabled, the final opaque
+     * fullscreen pass reads the source scene plus every pyramid level and
+     * writes the HDR destination exactly once. Full quality presets and
+     * compute downsample remain future expansions.
      */
     class BloomPass : public IPostProcessPass
     {
@@ -74,7 +76,7 @@ namespace RVX
             CopyScene = 0,
             Extract = 1,
             Downsample = 2,
-            CompositeAdditive = 3,
+            CompositePyramid = 3,
         };
 
         void AddFullscreenPass(RenderGraph& graph,
@@ -84,11 +86,16 @@ namespace RVX
                                uint64 exposureStateContentHash,
                                RGTextureHandle output,
                                PassMode mode,
-                               bool additive,
-                               RHILoadOp outputLoadOp,
                                float threshold,
                                float intensity,
                                float radius);
+        void AddCompositePyramidPass(
+            RenderGraph& graph,
+            RGTextureHandle source,
+            const std::array<RGTextureHandle, 3>& pyramid,
+            RGBufferHandle exposureState,
+            uint64 exposureStateContentHash,
+            RGTextureHandle output);
         void AddToGraphWithExposure(RenderGraph& graph,
                                     RGTextureHandle input,
                                     RGBufferHandle exposureState,

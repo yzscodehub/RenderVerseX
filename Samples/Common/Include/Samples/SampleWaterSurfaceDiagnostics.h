@@ -35,7 +35,7 @@ namespace RVX
         bool graphPassScheduled = false;
         bool drawSubmitted = false;
         bool uploadPublished = false;
-        bool opaqueSceneSnapshotReady = false;
+        bool opaqueSceneColorPyramidReady = false;
         bool depthSnapshotReady = false;
         bool depthLinearizationReady = false;
         bool layeredNormalsEvaluated = false;
@@ -78,12 +78,12 @@ namespace RVX
         {
             // Schema 11 remains decodable in historical reports, but only the
             // current renderer receipt can qualify a live Sample execution.
-            return available && executionReceiptSchemaVersion == 12 &&
+            return available && executionReceiptSchemaVersion == 13 &&
                    executionReceiptStructurallyValid &&
                    executionReceiptPresented && executionReceiptSucceeded &&
                    mainView && requested && supported && enabled &&
                    graphPassScheduled && drawSubmitted && uploadPublished &&
-                   opaqueSceneSnapshotReady && depthSnapshotReady &&
+                   opaqueSceneColorPyramidReady && depthSnapshotReady &&
                    depthLinearizationReady && layeredNormalsEvaluated &&
                    fresnelEvaluated && thicknessEvaluated &&
                    beerLambertEvaluated && foamEvaluated &&

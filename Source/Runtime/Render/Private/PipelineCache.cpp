@@ -156,10 +156,11 @@ namespace
     // descriptor ABI for HDR producers; never reuse a manifest built before it.
     // GTAO extends both the raster frame set and deferred compute set, so its
     // exact R8 visibility ABI must invalidate all previous manifests.
-    // Froxel volumetrics add four cooked compute programs and the fixed
-    // DefaultLit t18 Texture3D sampling ABI; a manifest without that contract
-    // must never be reused.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 28;
+    // GFX24A2 changes the TAA resolve MRT ABI, Bloom descriptor ABI, WBOIT
+    // attachment-load composite ABI, and adds the opaque-scene pyramid.
+    // Any manifest predating those combined layout and shader contracts must
+    // never be reused.
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 29;
     constexpr uint64 RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH =
         0x4E45555452414F31ull; // "NEUTRAO1"
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
@@ -282,6 +283,8 @@ namespace
         uint64 screenSpaceOutlineVerifierPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 opaqueSceneColorPyramidVertexShaderHash = 0;
+        uint64 opaqueSceneColorPyramidPixelShaderHash = 0;
         uint64 gtaoSurfacePixelShaderHash = 0;
         uint64 gtaoHorizonPixelShaderHash = 0;
         uint64 gtaoBilateralHorizontalPixelShaderHash = 0;
@@ -301,7 +304,6 @@ namespace
         uint64 fxaaPixelShaderHash = 0;
         uint64 taaVertexShaderHash = 0;
         uint64 taaResolvePixelShaderHash = 0;
-        uint64 taaHistoryStorePixelShaderHash = 0;
         uint64 vignetteVertexShaderHash = 0;
         uint64 vignettePixelShaderHash = 0;
         uint64 skyboxVertexShaderHash = 0;
@@ -321,6 +323,7 @@ namespace
         uint64 screenSpaceOutlinePipelineHash = 0;
         uint64 screenSpaceOutlineVerifierPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 opaqueSceneColorPyramidPipelineHash = 0;
         uint64 gtaoSurfacePipelineHash = 0;
         uint64 gtaoHorizonPipelineHash = 0;
         uint64 gtaoBilateralHorizontalPipelineHash = 0;
@@ -335,7 +338,6 @@ namespace
         uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 taaResolvePipelineHash = 0;
-        uint64 taaHistoryStorePipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
     };
@@ -475,7 +477,7 @@ namespace
         frameLayout.AddBinding(PipelineCache::DefaultLitAmbientOcclusionBinding,
                                RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
-        frameLayout.AddBinding(PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+        frameLayout.AddBinding(PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
                                RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
         frameLayout.AddBinding(PipelineCache::DefaultLitLocalShadowAtlasBinding,
@@ -624,6 +626,8 @@ namespace
                key == "screenSpaceOutlineVerifierPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "opaqueSceneColorPyramidVertexShaderHash" ||
+               key == "opaqueSceneColorPyramidPixelShaderHash" ||
                key == "gtaoSurfacePixelShaderHash" ||
                key == "gtaoHorizonPixelShaderHash" ||
                key == "gtaoBilateralHorizontalPixelShaderHash" ||
@@ -643,7 +647,6 @@ namespace
                key == "fxaaPixelShaderHash" ||
                key == "taaVertexShaderHash" ||
                key == "taaResolvePixelShaderHash" ||
-               key == "taaHistoryStorePixelShaderHash" ||
                key == "vignetteVertexShaderHash" ||
                key == "vignettePixelShaderHash" ||
                key == "skyboxVertexShaderHash" ||
@@ -663,6 +666,7 @@ namespace
                key == "screenSpaceOutlinePipelineHash" ||
                key == "screenSpaceOutlineVerifierPipelineHash" ||
                key == "bloomPipelineHash" ||
+               key == "opaqueSceneColorPyramidPipelineHash" ||
                key == "gtaoSurfacePipelineHash" ||
                key == "gtaoHorizonPipelineHash" ||
                key == "gtaoBilateralHorizontalPipelineHash" ||
@@ -677,7 +681,6 @@ namespace
                key == "filmGrainPipelineHash" ||
                key == "fxaaPipelineHash" ||
                key == "taaResolvePipelineHash" ||
-               key == "taaHistoryStorePipelineHash" ||
                key == "vignettePipelineHash" ||
                key == "uiPipelineHash";
     }
@@ -769,7 +772,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 69)
+        if (fields.size() != 70)
         {
             return false;
         }
@@ -787,6 +790,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "screenSpaceOutlineVerifierPixelShaderHash", manifest.screenSpaceOutlineVerifierPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "opaqueSceneColorPyramidVertexShaderHash", manifest.opaqueSceneColorPyramidVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "opaqueSceneColorPyramidPixelShaderHash", manifest.opaqueSceneColorPyramidPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoSurfacePixelShaderHash", manifest.gtaoSurfacePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoHorizonPixelShaderHash", manifest.gtaoHorizonPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPixelShaderHash", manifest.gtaoBilateralHorizontalPixelShaderHash) ||
@@ -806,7 +811,6 @@ namespace
             !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "taaVertexShaderHash", manifest.taaVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "taaResolvePixelShaderHash", manifest.taaResolvePixelShaderHash) ||
-            !ReadRequiredManifestUint64(fields, "taaHistoryStorePixelShaderHash", manifest.taaHistoryStorePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignetteVertexShaderHash", manifest.vignetteVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePixelShaderHash", manifest.vignettePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxVertexShaderHash", manifest.skyboxVertexShaderHash) ||
@@ -826,6 +830,7 @@ namespace
             !ReadRequiredManifestUint64(fields, "screenSpaceOutlinePipelineHash", manifest.screenSpaceOutlinePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "screenSpaceOutlineVerifierPipelineHash", manifest.screenSpaceOutlineVerifierPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "opaqueSceneColorPyramidPipelineHash", manifest.opaqueSceneColorPyramidPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoSurfacePipelineHash", manifest.gtaoSurfacePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoHorizonPipelineHash", manifest.gtaoHorizonPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPipelineHash", manifest.gtaoBilateralHorizontalPipelineHash) ||
@@ -840,7 +845,6 @@ namespace
             !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "taaResolvePipelineHash", manifest.taaResolvePipelineHash) ||
-            !ReadRequiredManifestUint64(fields, "taaHistoryStorePipelineHash", manifest.taaHistoryStorePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePipelineHash", manifest.vignettePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "uiPipelineHash", manifest.uiPipelineHash))
         {
@@ -884,6 +888,10 @@ namespace
             file << "screenSpaceOutlineVerifierPixelShaderHash=" << manifest.screenSpaceOutlineVerifierPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "opaqueSceneColorPyramidVertexShaderHash="
+                 << manifest.opaqueSceneColorPyramidVertexShaderHash << '\n';
+            file << "opaqueSceneColorPyramidPixelShaderHash="
+                 << manifest.opaqueSceneColorPyramidPixelShaderHash << '\n';
             file << "gtaoSurfacePixelShaderHash=" << manifest.gtaoSurfacePixelShaderHash << '\n';
             file << "gtaoHorizonPixelShaderHash=" << manifest.gtaoHorizonPixelShaderHash << '\n';
             file << "gtaoBilateralHorizontalPixelShaderHash=" << manifest.gtaoBilateralHorizontalPixelShaderHash << '\n';
@@ -903,7 +911,6 @@ namespace
             file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
             file << "taaVertexShaderHash=" << manifest.taaVertexShaderHash << '\n';
             file << "taaResolvePixelShaderHash=" << manifest.taaResolvePixelShaderHash << '\n';
-            file << "taaHistoryStorePixelShaderHash=" << manifest.taaHistoryStorePixelShaderHash << '\n';
             file << "vignetteVertexShaderHash=" << manifest.vignetteVertexShaderHash << '\n';
             file << "vignettePixelShaderHash=" << manifest.vignettePixelShaderHash << '\n';
             file << "skyboxVertexShaderHash=" << manifest.skyboxVertexShaderHash << '\n';
@@ -923,6 +930,8 @@ namespace
             file << "screenSpaceOutlinePipelineHash=" << manifest.screenSpaceOutlinePipelineHash << '\n';
             file << "screenSpaceOutlineVerifierPipelineHash=" << manifest.screenSpaceOutlineVerifierPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
+            file << "opaqueSceneColorPyramidPipelineHash="
+                 << manifest.opaqueSceneColorPyramidPipelineHash << '\n';
             file << "gtaoSurfacePipelineHash=" << manifest.gtaoSurfacePipelineHash << '\n';
             file << "gtaoHorizonPipelineHash=" << manifest.gtaoHorizonPipelineHash << '\n';
             file << "gtaoBilateralHorizontalPipelineHash=" << manifest.gtaoBilateralHorizontalPipelineHash << '\n';
@@ -937,7 +946,6 @@ namespace
             file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
             file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
             file << "taaResolvePipelineHash=" << manifest.taaResolvePipelineHash << '\n';
-            file << "taaHistoryStorePipelineHash=" << manifest.taaHistoryStorePipelineHash << '\n';
             file << "vignettePipelineHash=" << manifest.vignettePipelineHash << '\n';
             file << "uiPipelineHash=" << manifest.uiPipelineHash << '\n';
             if (!file)
@@ -1008,8 +1016,12 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.screenSpaceOutlinePixelShaderHash == b.screenSpaceOutlinePixelShaderHash &&
                a.screenSpaceOutlineVerifierPixelShaderHash == b.screenSpaceOutlineVerifierPixelShaderHash &&
-               a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
-               a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
+                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+                a.opaqueSceneColorPyramidVertexShaderHash ==
+                    b.opaqueSceneColorPyramidVertexShaderHash &&
+                a.opaqueSceneColorPyramidPixelShaderHash ==
+                    b.opaqueSceneColorPyramidPixelShaderHash &&
                a.gtaoSurfacePixelShaderHash == b.gtaoSurfacePixelShaderHash &&
                a.gtaoHorizonPixelShaderHash == b.gtaoHorizonPixelShaderHash &&
                a.gtaoBilateralHorizontalPixelShaderHash == b.gtaoBilateralHorizontalPixelShaderHash &&
@@ -1028,8 +1040,7 @@ namespace
                a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
                a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
                a.taaVertexShaderHash == b.taaVertexShaderHash &&
-               a.taaResolvePixelShaderHash == b.taaResolvePixelShaderHash &&
-               a.taaHistoryStorePixelShaderHash == b.taaHistoryStorePixelShaderHash &&
+                a.taaResolvePixelShaderHash == b.taaResolvePixelShaderHash &&
                a.vignetteVertexShaderHash == b.vignetteVertexShaderHash &&
                a.vignettePixelShaderHash == b.vignettePixelShaderHash &&
                a.skyboxVertexShaderHash == b.skyboxVertexShaderHash &&
@@ -1048,7 +1059,9 @@ namespace
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.screenSpaceOutlinePipelineHash == b.screenSpaceOutlinePipelineHash &&
                a.screenSpaceOutlineVerifierPipelineHash == b.screenSpaceOutlineVerifierPipelineHash &&
-               a.bloomPipelineHash == b.bloomPipelineHash &&
+                a.bloomPipelineHash == b.bloomPipelineHash &&
+                a.opaqueSceneColorPyramidPipelineHash ==
+                    b.opaqueSceneColorPyramidPipelineHash &&
                a.gtaoSurfacePipelineHash == b.gtaoSurfacePipelineHash &&
                a.gtaoHorizonPipelineHash == b.gtaoHorizonPipelineHash &&
                a.gtaoBilateralHorizontalPipelineHash == b.gtaoBilateralHorizontalPipelineHash &&
@@ -1062,8 +1075,7 @@ namespace
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
                a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
                a.fxaaPipelineHash == b.fxaaPipelineHash &&
-               a.taaResolvePipelineHash == b.taaResolvePipelineHash &&
-               a.taaHistoryStorePipelineHash == b.taaHistoryStorePipelineHash &&
+                a.taaResolvePipelineHash == b.taaResolvePipelineHash &&
                a.vignettePipelineHash == b.vignettePipelineHash &&
                a.uiPipelineHash == b.uiPipelineHash;
     }
@@ -1308,6 +1320,24 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateBloomPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create Bloom pipeline layout");
+        }
+        return false;
+    }
+
+    if (!CreateOpaqueSceneColorPyramidPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create opaque scene-color pyramid pipeline layout");
+        }
+        return false;
+    }
+
     if (!CreateWeightedBlendedOITCompositePipelineLayout())
     {
         if (m_lastError.empty())
@@ -1438,7 +1468,7 @@ void PipelineCache::Shutdown()
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
-    m_bloomAdditivePipeline.Reset();
+    m_opaqueSceneColorPyramidPipeline.Reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
     m_rigidObjectVelocityPipeline.Reset();
@@ -1464,7 +1494,6 @@ void PipelineCache::Shutdown()
     m_filmGrainPipeline.Reset();
     m_fxaaPipeline.Reset();
     m_taaResolvePipeline.Reset();
-    m_taaHistoryStorePipeline.Reset();
     m_vignettePipeline.Reset();
     m_uiPipeline.Reset();
     m_pipelineCache.clear();
@@ -1524,6 +1553,10 @@ void PipelineCache::Shutdown()
     m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
+    m_bloomPipelineLayout.Reset();
+    m_bloomSetLayout.Reset();
+    m_opaqueSceneColorPyramidPipelineLayout.Reset();
+    m_opaqueSceneColorPyramidSetLayout.Reset();
     m_weightedBlendedOITCompositePipelineLayout.Reset();
     m_weightedBlendedOITCompositeSetLayout.Reset();
     m_exposurePostProcessPipelineLayout.Reset();
@@ -1590,6 +1623,8 @@ void PipelineCache::Shutdown()
     m_screenSpaceOutlineVerifierPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
+    m_opaqueSceneColorPyramidVertexShader.Reset();
+    m_opaqueSceneColorPyramidPixelShader.Reset();
     m_gtaoSurfacePixelShader.Reset();
     m_gtaoHorizonPixelShader.Reset();
     m_gtaoBilateralHorizontalPixelShader.Reset();
@@ -1624,7 +1659,6 @@ void PipelineCache::Shutdown()
     m_fxaaPixelShader.Reset();
     m_taaVertexShader.Reset();
     m_taaResolvePixelShader.Reset();
-    m_taaHistoryStorePixelShader.Reset();
     m_vignetteVertexShader.Reset();
     m_vignettePixelShader.Reset();
     m_uiVertexShader.Reset();
@@ -1669,6 +1703,8 @@ void PipelineCache::Shutdown()
     m_screenSpaceOutlineVerifierPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
+    m_opaqueSceneColorPyramidVsCompileResult.reset();
+    m_opaqueSceneColorPyramidPsCompileResult.reset();
     m_gtaoSurfacePsCompileResult.reset();
     m_gtaoHorizonPsCompileResult.reset();
     m_gtaoBilateralHorizontalPsCompileResult.reset();
@@ -1703,7 +1739,6 @@ void PipelineCache::Shutdown()
     m_fxaaPsCompileResult.reset();
     m_taaVsCompileResult.reset();
     m_taaResolvePsCompileResult.reset();
-    m_taaHistoryStorePsCompileResult.reset();
     m_vignetteVsCompileResult.reset();
     m_vignettePsCompileResult.reset();
     m_uiVsCompileResult.reset();
@@ -1757,6 +1792,8 @@ bool PipelineCache::CompileShaders()
     std::string screenSpaceOutlineVerifierShaderPath =
         m_shaderDir + "/PostProcess/ScreenSpaceOutlineVerifier.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string opaqueSceneColorPyramidShaderPath =
+        m_shaderDir + "/PostProcess/OpaqueSceneColorPyramid.hlsl";
     std::string gtaoShaderPath = m_shaderDir + "/Lighting/GTAO.hlsl";
     std::string froxelVolumetricShaderPath =
         m_shaderDir + "/Volumetric/FroxelVolumetricLighting.hlsl";
@@ -2511,6 +2548,56 @@ bool PipelineCache::CompileShaders()
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(bloomPsResult.compileResult));
 
+    RenderShaderLoadDesc opaqueSceneColorPyramidVsDesc = bloomVsDesc;
+    opaqueSceneColorPyramidVsDesc.path = opaqueSceneColorPyramidShaderPath;
+    auto opaqueSceneColorPyramidVsResult =
+        m_shaderProgramLoader->LoadFromFile(
+            m_device, opaqueSceneColorPyramidVsDesc);
+    if (!opaqueSceneColorPyramidVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile opaque scene-color pyramid vertex shader: " +
+                     opaqueSceneColorPyramidVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!opaqueSceneColorPyramidVsResult.shader)
+    {
+        SetLastError("Failed to create opaque scene-color pyramid vertex shader");
+        return false;
+    }
+    m_opaqueSceneColorPyramidVertexShader =
+        opaqueSceneColorPyramidVsResult.shader;
+    m_opaqueSceneColorPyramidVsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(opaqueSceneColorPyramidVsResult.compileResult));
+
+    RenderShaderLoadDesc opaqueSceneColorPyramidPsDesc =
+        opaqueSceneColorPyramidVsDesc;
+    opaqueSceneColorPyramidPsDesc.entryPoint = "PSMain";
+    opaqueSceneColorPyramidPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        opaqueSceneColorPyramidPsDesc.targetProfile = "ps_5_0";
+    }
+    auto opaqueSceneColorPyramidPsResult =
+        m_shaderProgramLoader->LoadFromFile(
+            m_device, opaqueSceneColorPyramidPsDesc);
+    if (!opaqueSceneColorPyramidPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile opaque scene-color pyramid pixel shader: " +
+                     opaqueSceneColorPyramidPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!opaqueSceneColorPyramidPsResult.shader)
+    {
+        SetLastError("Failed to create opaque scene-color pyramid pixel shader");
+        return false;
+    }
+    m_opaqueSceneColorPyramidPixelShader =
+        opaqueSceneColorPyramidPsResult.shader;
+    m_opaqueSceneColorPyramidPsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(opaqueSceneColorPyramidPsResult.compileResult));
+
     const auto loadGTAOPixelProgram =
         [this, &vsDesc, &gtaoShaderPath, backend, &fullscreenUVYMappingDefine](
             const char* entryPoint,
@@ -3119,25 +3206,6 @@ bool PipelineCache::CompileShaders()
     m_taaResolvePsCompileResult = std::make_unique<ShaderProgramMetadata>(
         std::move(taaResolvePsResult.compileResult));
 
-    RenderShaderLoadDesc taaHistoryStorePsDesc = taaResolvePsDesc;
-    taaHistoryStorePsDesc.entryPoint = "PSStore";
-    auto taaHistoryStorePsResult = m_shaderProgramLoader->LoadFromFile(
-        m_device, taaHistoryStorePsDesc);
-    if (!taaHistoryStorePsResult.compileResult.success)
-    {
-        SetLastError("Failed to compile TAA history-store pixel shader: " +
-                     taaHistoryStorePsResult.compileResult.errorMessage);
-        return false;
-    }
-    if (!taaHistoryStorePsResult.shader)
-    {
-        SetLastError("Failed to create TAA history-store pixel shader");
-        return false;
-    }
-    m_taaHistoryStorePixelShader = taaHistoryStorePsResult.shader;
-    m_taaHistoryStorePsCompileResult = std::make_unique<ShaderProgramMetadata>(
-        std::move(taaHistoryStorePsResult.compileResult));
-
     RenderShaderLoadDesc vignetteVsDesc = vsDesc;
     vignetteVsDesc.path = vignetteShaderPath;
     vignetteVsDesc.entryPoint = "VSMain";
@@ -3683,6 +3751,74 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateBloomPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "BloomSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(5, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(6, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
+    m_bloomSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_bloomSetLayout)
+    {
+        SetLastError("Failed to create Bloom descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "BloomPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_bloomSetLayout.Get());
+    m_bloomPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_bloomPipelineLayout)
+    {
+        SetLastError("Failed to create Bloom pipeline layout");
+        return false;
+    }
+    return true;
+}
+
+bool PipelineCache::CreateOpaqueSceneColorPyramidPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "OpaqueSceneColorPyramidSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler,
+                             RHIShaderStage::Pixel);
+    m_opaqueSceneColorPyramidSetLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_opaqueSceneColorPyramidSetLayout)
+    {
+        SetLastError("Failed to create opaque scene-color pyramid descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "OpaqueSceneColorPyramidPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_opaqueSceneColorPyramidSetLayout.Get());
+    m_opaqueSceneColorPyramidPipelineLayout =
+        m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_opaqueSceneColorPyramidPipelineLayout)
+    {
+        SetLastError("Failed to create opaque scene-color pyramid pipeline layout");
+        return false;
+    }
+    return true;
+}
+
 bool PipelineCache::CreateWeightedBlendedOITCompositePipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -3691,8 +3827,6 @@ bool PipelineCache::CreateWeightedBlendedOITCompositePipelineLayout()
         0, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(
         1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    setLayoutDesc.AddBinding(
-        2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
 
     m_weightedBlendedOITCompositeSetLayout =
         m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -4309,7 +4443,7 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
                   RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitAmbientOcclusionBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-    ensureBinding(outLayouts[0], PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+    ensureBinding(outLayouts[0], PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitLocalShadowAtlasBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
@@ -4439,7 +4573,7 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(0, PipelineCache::DefaultLitAmbientOcclusionBinding,
                         RHIBindingType::SampledTexture))
         return false;
-    if (!requireBinding(0, PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+    if (!requireBinding(0, PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
                         RHIBindingType::SampledTexture))
         return false;
     if (!requireBinding(0, PipelineCache::DefaultLitLocalShadowAtlasBinding,
@@ -4504,6 +4638,10 @@ void PipelineCache::ProcessPipelineManifest()
         ComputeShaderHash(m_screenSpaceOutlineVerifierPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.opaqueSceneColorPyramidVertexShaderHash =
+        ComputeShaderHash(m_opaqueSceneColorPyramidVsCompileResult.get());
+    expected.opaqueSceneColorPyramidPixelShaderHash =
+        ComputeShaderHash(m_opaqueSceneColorPyramidPsCompileResult.get());
     expected.gtaoSurfacePixelShaderHash =
         ComputeShaderHash(m_gtaoSurfacePsCompileResult.get());
     expected.gtaoHorizonPixelShaderHash =
@@ -4532,8 +4670,6 @@ void PipelineCache::ProcessPipelineManifest()
     expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
     expected.taaVertexShaderHash = ComputeShaderHash(m_taaVsCompileResult.get());
     expected.taaResolvePixelShaderHash = ComputeShaderHash(m_taaResolvePsCompileResult.get());
-    expected.taaHistoryStorePixelShaderHash =
-        ComputeShaderHash(m_taaHistoryStorePsCompileResult.get());
     expected.vignetteVertexShaderHash = ComputeShaderHash(m_vignetteVsCompileResult.get());
     expected.vignettePixelShaderHash = ComputeShaderHash(m_vignettePsCompileResult.get());
     expected.skyboxVertexShaderHash = ComputeShaderHash(m_skyboxVsCompileResult.get());
@@ -4555,6 +4691,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.screenSpaceOutlineVerifierPipelineHash =
         m_stats.screenSpaceOutlineVerifierPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
+    expected.opaqueSceneColorPyramidPipelineHash =
+        m_stats.opaqueSceneColorPyramidPipelineHash;
     expected.gtaoSurfacePipelineHash = m_stats.gtaoSurfacePipelineHash;
     expected.gtaoHorizonPipelineHash = m_stats.gtaoHorizonPipelineHash;
     expected.gtaoBilateralHorizontalPipelineHash =
@@ -4571,7 +4709,6 @@ void PipelineCache::ProcessPipelineManifest()
     expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
     expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
     expected.taaResolvePipelineHash = m_stats.taaResolvePipelineHash;
-    expected.taaHistoryStorePipelineHash = m_stats.taaHistoryStorePipelineHash;
     expected.vignettePipelineHash = m_stats.vignettePipelineHash;
     expected.uiPipelineHash = m_stats.uiPipelineHash;
 
@@ -5081,6 +5218,23 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         return false;
     }
 
+    // This fixed frame-set slot is optional for ordinary surfaces, but a
+    // caller that opts into ThinTransmission must provide the graph-owned
+    // pyramid and its sampler as one inseparable contract.  Falling back for
+    // only one half would make a partially published transmission request
+    // appear valid and could sample an unrelated texture/sampler pair.
+    const bool opaqueSceneColorPyramidViewRequested =
+        request.opaqueSceneColorPyramidView != nullptr;
+    const bool opaqueSceneColorPyramidSamplerRequested =
+        request.opaqueSceneColorPyramidSampler != nullptr;
+    if (opaqueSceneColorPyramidViewRequested !=
+        opaqueSceneColorPyramidSamplerRequested)
+    {
+        SetLastError(
+            "Lighting binding snapshot requires opaque-scene pyramid view and sampler together");
+        return false;
+    }
+
     const FrozenFrameLightResources& frozenLightResources = request.frozenLightResources;
     if (!frozenLightResources.IsComplete())
     {
@@ -5287,15 +5441,60 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         snapshot.ambientOcclusionFieldHash =
             RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
     }
-    // Keep one fixed frame-set ABI for all DefaultLit paths.  A thin
-    // transmission draw replaces this neutral fallback with the graph-owned
-    // HDR snapshot and rejects a missing or incompatible request before draw.
-    snapshot.opaqueSceneSnapshotView = request.opaqueSceneSnapshotView
-        ? request.opaqueSceneSnapshotView
+    // Keep one fixed frame-set ABI for all DefaultLit paths. Thin transmission
+    // replaces this neutral fallback with the graph-owned all-mip opaque-scene
+    // pyramid and rejects a missing or incompatible request before draw.
+    snapshot.opaqueSceneColorPyramidView = request.opaqueSceneColorPyramidView
+        ? request.opaqueSceneColorPyramidView
         : m_fallbackEnvironmentIBLBRDFLUTView;
-    snapshot.opaqueSceneSnapshotSampler = request.opaqueSceneSnapshotSampler
-        ? request.opaqueSceneSnapshotSampler
+    snapshot.opaqueSceneColorPyramidSampler =
+        request.opaqueSceneColorPyramidSampler
+        ? request.opaqueSceneColorPyramidSampler
         : m_environmentIBLSampler;
+    if (opaqueSceneColorPyramidViewRequested)
+    {
+        RHITexture* const texture =
+            request.opaqueSceneColorPyramidView->GetTexture();
+        const RHISubresourceRange& range =
+            request.opaqueSceneColorPyramidView->GetSubresourceRange();
+        if (!texture ||
+            request.opaqueSceneColorPyramidView->GetFormat() !=
+                RHIFormat::RGBA16_FLOAT ||
+            texture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+            texture->GetDimension() != RHITextureDimension::Texture2D ||
+            texture->GetSampleCount() != RHISampleCount::Count1 ||
+            !HasFlag(texture->GetUsage(), RHITextureUsage::ShaderResource) ||
+            !request.opaqueSceneColorPyramidSourceExtent.IsValid() ||
+            !request.opaqueSceneColorPyramidBaseExtent.IsValid() ||
+            request.opaqueSceneColorPyramidMipCount == 0 ||
+            request.opaqueSceneColorPyramidMipCount != texture->GetMipLevels() ||
+            texture->GetWidth() != request.opaqueSceneColorPyramidBaseExtent.width ||
+            texture->GetHeight() != request.opaqueSceneColorPyramidBaseExtent.height ||
+            range.baseMipLevel != 0 ||
+            (range.mipLevelCount != RVX_ALL_MIPS &&
+             range.mipLevelCount != texture->GetMipLevels()) ||
+            range.baseArrayLayer != 0 ||
+            (range.arrayLayerCount != 1 &&
+             range.arrayLayerCount != RVX_ALL_LAYERS) ||
+            range.aspect != RHITextureAspect::Color)
+        {
+            SetLastError(
+                "Lighting binding snapshot requires an exact all-mip RGBA16F opaque-scene pyramid");
+            return false;
+        }
+        snapshot.opaqueSceneColorPyramidSourceExtent =
+            request.opaqueSceneColorPyramidSourceExtent;
+        snapshot.opaqueSceneColorPyramidBaseExtent =
+            request.opaqueSceneColorPyramidBaseExtent;
+        snapshot.opaqueSceneColorPyramidMipCount =
+            request.opaqueSceneColorPyramidMipCount;
+    }
+    else
+    {
+        snapshot.opaqueSceneColorPyramidSourceExtent = {1, 1};
+        snapshot.opaqueSceneColorPyramidBaseExtent = {1, 1};
+        snapshot.opaqueSceneColorPyramidMipCount = 1;
+    }
     if (request.froxelVolumetricLightingView)
     {
         RHITexture* const texture =
@@ -5357,7 +5556,11 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.environmentIBLBRDFLUTView || !snapshot.environmentIBLSampler ||
         !snapshot.exposureStateBuffer || !snapshot.ambientOcclusionView ||
         snapshot.ambientOcclusionFieldHash == 0 ||
-        !snapshot.opaqueSceneSnapshotView || !snapshot.opaqueSceneSnapshotSampler ||
+        !snapshot.opaqueSceneColorPyramidView ||
+        !snapshot.opaqueSceneColorPyramidSampler ||
+        !snapshot.opaqueSceneColorPyramidSourceExtent.IsValid() ||
+        !snapshot.opaqueSceneColorPyramidBaseExtent.IsValid() ||
+        snapshot.opaqueSceneColorPyramidMipCount == 0 ||
         !snapshot.froxelVolumetricLightingView ||
         !snapshot.frameSetLayout)
     {
@@ -5392,8 +5595,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
                                  snapshot.exposureStateBuffer.Get());
     descriptorSetDesc.BindTexture(DefaultLitAmbientOcclusionBinding,
                                   snapshot.ambientOcclusionView.Get());
-    descriptorSetDesc.BindTexture(DefaultLitOpaqueSceneSnapshotBinding,
-                                  snapshot.opaqueSceneSnapshotView.Get());
+    descriptorSetDesc.BindTexture(DefaultLitOpaqueSceneColorPyramidBinding,
+                                  snapshot.opaqueSceneColorPyramidView.Get());
     descriptorSetDesc.BindTexture(DefaultLitLocalShadowAtlasBinding,
                                   snapshot.localShadowAtlasView.Get());
     descriptorSetDesc.BindTexture(DefaultLitFroxelVolumetricLightingBinding,
@@ -6358,7 +6561,7 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
             DefaultLitAmbientOcclusionBinding,
             m_fallbackAmbientOcclusionView.Get());
         frameSetDesc.BindTexture(
-            DefaultLitOpaqueSceneSnapshotBinding,
+            DefaultLitOpaqueSceneColorPyramidBinding,
             m_fallbackEnvironmentIBLBRDFLUTView.Get());
         frameSetDesc.BindTexture(
             DefaultLitLocalShadowAtlasBinding,
@@ -8109,20 +8312,20 @@ RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
     return GetOrCreateBloomPipeline(outputFormat).Get();
 }
 
-RHIPipeline* PipelineCache::GetBloomAdditivePipeline(RHIFormat outputFormat)
+RHIPipeline* PipelineCache::GetOpaqueSceneColorPyramidPipeline(
+    RHIFormat outputFormat)
 {
-    const RHIFormat resolvedFormat =
-        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
-    if (resolvedFormat == m_postProcessIntermediateFormat)
+    if (outputFormat != RHIFormat::RGBA16_FLOAT)
     {
-        if (!m_bloomAdditivePipeline)
-        {
-            m_bloomAdditivePipeline = GetOrCreateBloomAdditivePipeline(resolvedFormat);
-        }
-        return m_bloomAdditivePipeline.Get();
+        SetLastError("Opaque scene-color pyramid requires RGBA16_FLOAT output");
+        return nullptr;
     }
-
-    return GetOrCreateBloomAdditivePipeline(resolvedFormat).Get();
+    if (!m_opaqueSceneColorPyramidPipeline)
+    {
+        m_opaqueSceneColorPyramidPipeline =
+            GetOrCreateOpaqueSceneColorPyramidPipeline(outputFormat);
+    }
+    return m_opaqueSceneColorPyramidPipeline.Get();
 }
 
 RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
@@ -9213,7 +9416,8 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
     owners->exposureStateBuffer = m_currentExposureStateBuffer
         ? m_currentExposureStateBuffer : m_fallbackExposureStateBuffer;
     owners->ambientOcclusionView = m_fallbackAmbientOcclusionView;
-    owners->opaqueSceneSnapshotView = m_fallbackEnvironmentIBLBRDFLUTView;
+    owners->opaqueSceneColorPyramidView =
+        m_fallbackEnvironmentIBLBRDFLUTView;
     owners->froxelVolumetricLightingView =
         m_fallbackFroxelVolumetricLightingView;
     owners->ambientOcclusionFieldHash =
@@ -9249,8 +9453,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
                         0, RVX_WHOLE_SIZE, nullptr, nullptr});
     bindings.push_back({DefaultLitAmbientOcclusionBinding, nullptr, 0, 0,
                         owners.ambientOcclusionView.Get(), nullptr});
-    bindings.push_back({DefaultLitOpaqueSceneSnapshotBinding, nullptr, 0, 0,
-                        owners.opaqueSceneSnapshotView.Get(), nullptr});
+    bindings.push_back({DefaultLitOpaqueSceneColorPyramidBinding, nullptr, 0, 0,
+                        owners.opaqueSceneColorPyramidView.Get(), nullptr});
     bindings.push_back({DefaultLitLocalShadowAtlasBinding, nullptr, 0, 0,
                         owners.localShadowAtlasView.Get(), nullptr});
     bindings.push_back({DefaultLitFroxelVolumetricLightingBinding, nullptr, 0, 0,
@@ -9487,6 +9691,17 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    m_opaqueSceneColorPyramidPipeline =
+        GetOrCreateOpaqueSceneColorPyramidPipeline(RHIFormat::RGBA16_FLOAT);
+    if (!m_opaqueSceneColorPyramidPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create opaque scene-color pyramid pipeline");
+        }
+        return false;
+    }
+
     m_ssrHiZBasePipeline = GetOrCreateSSRHiZBasePipeline();
     m_ssrHiZReducePipeline = GetOrCreateSSRHiZReducePipeline();
     m_ssrTracePipeline = GetOrCreateSSRTracePipeline();
@@ -9599,9 +9814,8 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    // TAA needs two coupled pipelines, but it remains after the established
-    // default-pipeline sequence so existing backend diagnostics and failure
-    // injection ordinals stay stable.
+    // The three-target TAA resolve remains after the established default
+    // pipeline sequence so backend diagnostics stay deterministic.
     m_taaResolvePipeline =
         GetOrCreateTAAResolvePipeline(m_postProcessIntermediateFormat);
     if (!m_taaResolvePipeline)
@@ -9609,16 +9823,6 @@ bool PipelineCache::CreatePipeline()
         if (m_lastError.empty())
         {
             SetLastError("Failed to create TAA resolve pipeline");
-        }
-        return false;
-    }
-
-    m_taaHistoryStorePipeline = GetOrCreateTAAHistoryStorePipeline();
-    if (!m_taaHistoryStorePipeline)
-    {
-        if (m_lastError.empty())
-        {
-            SetLastError("Failed to create TAA history-store pipeline");
         }
         return false;
     }
@@ -10751,31 +10955,23 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomPipeline(RHIFormat outputFormat)
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateOpaqueSceneColorPyramidPipeline(
+    RHIFormat outputFormat)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomAdditivePipelineDesc(outputFormat);
-    if (!pipelineDesc.vertexShader)
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildOpaqueSceneColorPyramidPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
+        pipelineDesc.renderTargetFormats[0] != RHIFormat::RGBA16_FLOAT)
     {
-        SetLastError("Cannot create additive Bloom pipeline without vertex shader");
-        return {};
-    }
-    if (!pipelineDesc.pixelShader)
-    {
-        SetLastError("Cannot create additive Bloom pipeline without pixel shader");
-        return {};
-    }
-    if (!pipelineDesc.pipelineLayout)
-    {
-        SetLastError("Cannot create additive Bloom pipeline without pipeline layout");
-        return {};
-    }
-    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
-    {
-        SetLastError("Cannot create additive Bloom pipeline with invalid render target format");
+        SetLastError(
+            "Cannot create opaque scene-color pyramid pipeline from incomplete RGBA16F state");
         return {};
     }
 
-    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.opaqueSceneColorPyramidPipelineHash = stateHash;
     m_stats.lastPipelineStateHash = stateHash;
 
     auto cached = m_pipelineCache.find(stateHash);
@@ -10789,7 +10985,7 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputF
     RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
     if (!pipeline)
     {
-        SetLastError("Backend failed to create additive Bloom pipeline");
+        SetLastError("Backend failed to create opaque scene-color pyramid pipeline");
         return {};
     }
 
@@ -11480,8 +11676,10 @@ RHIPipelineRef PipelineCache::GetOrCreateTAAResolvePipeline(RHIFormat outputForm
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildTAAResolvePipelineDesc(outputFormat);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
-        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
-        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 3 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.renderTargetFormats[1] != RHIFormat::RGBA16_FLOAT ||
+        pipelineDesc.renderTargetFormats[2] != RHIFormat::R32_FLOAT)
     {
         SetLastError("Cannot create TAA resolve pipeline from incomplete state");
         return {};
@@ -11504,43 +11702,6 @@ RHIPipelineRef PipelineCache::GetOrCreateTAAResolvePipeline(RHIFormat outputForm
     if (!pipeline)
     {
         SetLastError("Backend failed to create TAA resolve pipeline");
-        return {};
-    }
-
-    ++m_stats.pipelineCreateCount;
-    m_pipelineCache[stateHash] = pipeline;
-    return pipeline;
-}
-
-RHIPipelineRef PipelineCache::GetOrCreateTAAHistoryStorePipeline()
-{
-    RHIGraphicsPipelineDesc pipelineDesc = BuildTAAHistoryStorePipelineDesc();
-    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
-        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 2 ||
-        pipelineDesc.renderTargetFormats[0] != RHIFormat::RGBA16_FLOAT ||
-        pipelineDesc.renderTargetFormats[1] != RHIFormat::R32_FLOAT)
-    {
-        SetLastError("Cannot create TAA history-store pipeline from incomplete state");
-        return {};
-    }
-
-    const uint64 stateHash = ComputePipelineStateHash(
-        pipelineDesc, MaterialPipelineVariant::Transparent);
-    m_stats.taaHistoryStorePipelineHash = stateHash;
-    m_stats.lastPipelineStateHash = stateHash;
-
-    const auto cached = m_pipelineCache.find(stateHash);
-    if (cached != m_pipelineCache.end())
-    {
-        ++m_stats.pipelineCacheHitCount;
-        return cached->second;
-    }
-
-    ++m_stats.pipelineCacheMissCount;
-    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
-    if (!pipeline)
-    {
-        SetLastError("Backend failed to create TAA history-store pipeline");
         return {};
     }
 
@@ -11944,8 +12105,15 @@ PipelineCache::BuildWeightedBlendedOITCompositePipelineDesc(
     pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
     pipelineDesc.blendState = RHIBlendState::Default();
     pipelineDesc.blendState.independentBlendEnable = true;
-    pipelineDesc.blendState.renderTargets[0] =
-        RHIRenderTargetBlendState::Opaque();
+    RHIRenderTargetBlendState& sceneBlend =
+        pipelineDesc.blendState.renderTargets[0];
+    sceneBlend.blendEnable = true;
+    sceneBlend.srcColorBlend = RHIBlendFactor::One;
+    sceneBlend.dstColorBlend = RHIBlendFactor::InvSrcAlpha;
+    sceneBlend.colorBlendOp = RHIBlendOp::Add;
+    sceneBlend.srcAlphaBlend = RHIBlendFactor::Zero;
+    sceneBlend.dstAlphaBlend = RHIBlendFactor::One;
+    sceneBlend.alphaBlendOp = RHIBlendOp::Add;
     RHIRenderTargetBlendState& reactiveBlend =
         pipelineDesc.blendState.renderTargets[1];
     reactiveBlend.blendEnable = true;
@@ -12012,7 +12180,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
 
     pipelineDesc.vertexShader = m_bloomVertexShader.Get();
     pipelineDesc.pixelShader = m_bloomPixelShader.Get();
-    pipelineDesc.pipelineLayout = m_exposurePostProcessPipelineLayout.Get();
+    pipelineDesc.pipelineLayout = m_bloomPipelineLayout.Get();
     pipelineDesc.debugName = "BloomPipeline";
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
@@ -12028,16 +12196,24 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc
+PipelineCache::BuildOpaqueSceneColorPyramidPipelineDesc(
+    RHIFormat outputFormat) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildBloomPipelineDesc(outputFormat);
-    pipelineDesc.debugName = "BloomAdditivePipeline";
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_opaqueSceneColorPyramidVertexShader.Get();
+    pipelineDesc.pixelShader = m_opaqueSceneColorPyramidPixelShader.Get();
+    pipelineDesc.pipelineLayout =
+        m_opaqueSceneColorPyramidPipelineLayout.Get();
+    pipelineDesc.debugName = "OpaqueSceneColorPyramidPipeline";
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
     pipelineDesc.blendState = RHIBlendState::Default();
-    pipelineDesc.blendState.renderTargets[0].blendEnable = true;
-    pipelineDesc.blendState.renderTargets[0].srcColorBlend = RHIBlendFactor::One;
-    pipelineDesc.blendState.renderTargets[0].dstColorBlend = RHIBlendFactor::One;
-    pipelineDesc.blendState.renderTargets[0].srcAlphaBlend = RHIBlendFactor::Zero;
-    pipelineDesc.blendState.renderTargets[0].dstAlphaBlend = RHIBlendFactor::One;
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
     return pipelineDesc;
 }
 
@@ -12359,27 +12535,10 @@ RHIGraphicsPipelineDesc PipelineCache::BuildTAAResolvePipelineDesc(
     pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
     pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
     pipelineDesc.blendState = RHIBlendState::Default();
-    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.numRenderTargets = 3;
     pipelineDesc.renderTargetFormats[0] = outputFormat;
-    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
-    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
-    return pipelineDesc;
-}
-
-RHIGraphicsPipelineDesc PipelineCache::BuildTAAHistoryStorePipelineDesc() const
-{
-    RHIGraphicsPipelineDesc pipelineDesc;
-    pipelineDesc.vertexShader = m_taaVertexShader.Get();
-    pipelineDesc.pixelShader = m_taaHistoryStorePixelShader.Get();
-    pipelineDesc.pipelineLayout = m_taaPipelineLayout.Get();
-    pipelineDesc.debugName = "TAAHistoryStorePipeline";
-    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
-    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
-    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
-    pipelineDesc.blendState = RHIBlendState::Default();
-    pipelineDesc.numRenderTargets = 2;
-    pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA16_FLOAT;
-    pipelineDesc.renderTargetFormats[1] = RHIFormat::R32_FLOAT;
+    pipelineDesc.renderTargetFormats[1] = RHIFormat::RGBA16_FLOAT;
+    pipelineDesc.renderTargetFormats[2] = RHIFormat::R32_FLOAT;
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
     return pipelineDesc;
@@ -12619,8 +12778,6 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_taaVsCompileResult.get());
         if (shader == m_taaResolvePixelShader.Get())
             return ComputeShaderHash(m_taaResolvePsCompileResult.get());
-        if (shader == m_taaHistoryStorePixelShader.Get())
-            return ComputeShaderHash(m_taaHistoryStorePsCompileResult.get());
         if (shader == m_vignetteVertexShader.Get())
             return ComputeShaderHash(m_vignetteVsCompileResult.get());
         if (shader == m_vignettePixelShader.Get())

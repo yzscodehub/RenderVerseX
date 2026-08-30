@@ -110,7 +110,8 @@ namespace RVX
     {
     public:
         explicit DeferredForwardSpecialFeatureAdapter(
-            DefaultRenderPassBundle* passBundle) noexcept;
+            DefaultRenderPassBundle* passBundle,
+            PipelineCache* pipelineCache) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
@@ -134,6 +135,7 @@ namespace RVX
         void SetCompositionFailure(std::string diagnostic);
 
         DefaultRenderPassBundle* m_passBundle = nullptr;
+        PipelineCache* m_pipelineCache = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         DeferredRecipeFeaturePassChainStats m_lastPassChainStats{};

@@ -660,10 +660,10 @@ namespace
                 frame.transparentAdditiveDrawCount;
             features.transparent.thinTransmissionDrawCount =
                 frame.transparentThinTransmissionDrawCount;
-            features.transparent.opaqueSceneSnapshotReady =
-                frame.transparentOpaqueSceneSnapshotReady;
-            features.transparent.opaqueSceneSnapshotCopied =
-                frame.transparentOpaqueSceneSnapshotCopied;
+            features.transparent.opaqueSceneColorPyramidReady =
+                frame.transparentOpaqueSceneColorPyramidReady;
+            features.transparent.opaqueSceneColorPyramidBuilt =
+                frame.transparentOpaqueSceneColorPyramidBuilt;
             features.transparent.reactiveMaskAttachmentBound =
                 frame.transparentReactiveMaskAttachmentBound;
             features.transparent.reactiveMaskWriteDrawCount =
@@ -987,8 +987,8 @@ namespace
             features.water.graphPassScheduled = water.graphPassScheduled;
             features.water.drawSubmitted = water.drawSubmitted;
             features.water.uploadPublished = water.uploadPublished;
-            features.water.opaqueSceneSnapshotReady =
-                water.opaqueSceneSnapshotReady;
+            features.water.opaqueSceneColorPyramidReady =
+                water.opaqueSceneColorPyramidReady;
             features.water.depthSnapshotReady = water.depthSnapshotReady;
             features.water.depthLinearizationReady = water.depthLinearizationReady;
             features.water.layeredNormalsEvaluated = water.layeredNormalsEvaluated;

@@ -40,8 +40,8 @@ namespace RVX
                diagnostics.transparentPremultipliedDrawCount != 0 &&
                diagnostics.transparentAdditiveDrawCount != 0 &&
                diagnostics.transparentThinTransmissionDrawCount != 0 &&
-               diagnostics.transparentOpaqueSceneSnapshotReady &&
-               diagnostics.transparentOpaqueSceneSnapshotCopied &&
+               diagnostics.transparentOpaqueSceneColorPyramidReady &&
+               diagnostics.transparentOpaqueSceneColorPyramidBuilt &&
                diagnostics.transparentReactiveMaskAttachmentBound &&
                diagnostics.transparentReactiveMaskWriteDrawCount != 0 &&
                diagnostics.transparentPriorityBucketCount >= 4u &&

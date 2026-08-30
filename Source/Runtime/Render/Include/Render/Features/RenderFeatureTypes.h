@@ -874,11 +874,11 @@ namespace RVX
             RenderAntiAliasingMode::None;
         /** TAA was selected by the canonical AA mode. */
         bool taaRequested = false;
-        /** The cooked TAA resolve/store pipelines were ready. */
+        /** The cooked fused TAA resolve/history-candidate pipeline was ready. */
         bool taaPipelineReady = false;
         /** Required current-frame TAA inputs were valid. */
         bool taaInputsReady = false;
-        /** Both physical TAA graph nodes executed successfully. */
+        /** The fused physical TAA graph node executed successfully. */
         bool taaExecuted = false;
         /** Exact prior-presented temporal history was reusable before resolve. */
         bool historyAvailableBefore = false;
@@ -896,8 +896,9 @@ namespace RVX
         /** Current and previous jitter expressed in physical pixels. */
         Vec2 currentJitterPixels = Vec2(0.0f);
         Vec2 previousJitterPixels = Vec2(0.0f);
-        /** Physical graph evidence for the real resolve/store implementation. */
+        /** Physical graph evidence for the fused resolve implementation. */
         uint32 taaResolveGraphPassCount = 0;
+        /** Independent history-store nodes; the fused implementation requires zero. */
         uint32 taaHistoryStoreGraphPassCount = 0;
         /** Semantic domain consumed by the post-process presentation plan. */
         PostProcessColorDomain inputColorDomain =
@@ -962,7 +963,8 @@ namespace RVX
                    !encodedOutputReady && !fallbackUsed;
         }
 
-        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        [[nodiscard]] bool IsStructurallyValid(
+            uint32 expectedIndependentHistoryStoreGraphPassCount = 0) const noexcept
         {
             const bool finiteTemporalJitter =
                 std::isfinite(currentJitterPixels.x) &&
@@ -1050,7 +1052,8 @@ namespace RVX
                   !historyCandidateProduced ||
                   (historyAbandoned && historyCommitted) ||
                   taaResolveGraphPassCount != 1 ||
-                  taaHistoryStoreGraphPassCount != 1 ||
+                  taaHistoryStoreGraphPassCount !=
+                      expectedIndependentHistoryStoreGraphPassCount ||
                   (historyAvailableBefore != historySampled) ||
                   (historyAvailableBefore &&
                    historyResetReasons != RenderHistoryResetReason::None) ||
@@ -1378,7 +1381,7 @@ namespace RVX
     };
 
     /** @brief Current ABI of @ref RenderExecutionReceipt. */
-    inline constexpr uint32 RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 12;
+    inline constexpr uint32 RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 13;
 
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
@@ -1424,7 +1427,8 @@ namespace RVX
                  schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
                  schemaVersion != 8 && schemaVersion != 10 &&
-                 schemaVersion != 11 && schemaVersion != 12) ||
+                 schemaVersion != 11 && schemaVersion != 12 &&
+                 schemaVersion != 13) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -1440,17 +1444,19 @@ namespace RVX
                 return false;
             }
             if (schemaVersion != 10 && schemaVersion != 11 &&
-                schemaVersion != 12 &&
+                schemaVersion != 12 && schemaVersion != 13 &&
                 !ambientOcclusion.IsEmpty())
             {
                 return false;
             }
             if (schemaVersion != 11 && schemaVersion != 12 &&
+                schemaVersion != 13 &&
                 (!toonLighting.IsEmpty() || !toonOutline.IsEmpty()))
             {
                 return false;
             }
-            if (schemaVersion != 12 && !hybridRayTracing.IsEmpty())
+            if (schemaVersion != 12 && schemaVersion != 13 &&
+                !hybridRayTracing.IsEmpty())
             {
                 return false;
             }
@@ -1495,29 +1501,37 @@ namespace RVX
                 postProcess.previousJitterPixels != Vec2(0.0f) ||
                 postProcess.taaResolveGraphPassCount != 0 ||
                 postProcess.taaHistoryStoreGraphPassCount != 0;
+            const uint32 expectedIndependentHistoryStoreGraphPassCount =
+                schemaVersion == 13 ? 0u : 1u;
+            const auto isPostProcessStructurallyValid = [this,
+                expectedIndependentHistoryStoreGraphPassCount]() noexcept
+            {
+                return postProcess.IsStructurallyValid(
+                    expectedIndependentHistoryStoreGraphPassCount);
+            };
             const bool schemaSixInvalid = schemaVersion == 6 &&
                 (!deferredOpaque.IsStructurallyValid() ||
                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                 (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                 (!postProcess.IsEmpty() &&
-                  !postProcess.IsStructurallyValid()) ||
+                  !isPostProcessStructurallyValid()) ||
                  postProcessCarriesTemporalEvidence ||
                 ((executionSucceeded || presented) &&
                  (!lighting.IsStructurallyValid() ||
                   !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())));
+                   !isPostProcessStructurallyValid())));
             const bool schemaSevenInvalid = schemaVersion == 7 &&
                 (!deferredOpaque.IsStructurallyValid() ||
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                  (!postProcess.IsEmpty() &&
-                  !postProcess.IsStructurallyValid()) ||
+                  !isPostProcessStructurallyValid()) ||
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())) ||
+                   !isPostProcessStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted));
             const bool schemaEightInvalid = schemaVersion == 8 &&
@@ -1526,11 +1540,11 @@ namespace RVX
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                  (!postProcess.IsEmpty() &&
-                  !postProcess.IsStructurallyValid()) ||
+                  !isPostProcessStructurallyValid()) ||
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())) ||
+                   !isPostProcessStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted) ||
                  (presented &&
@@ -1543,13 +1557,14 @@ namespace RVX
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
-                 (!postProcess.IsEmpty() && !postProcess.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() &&
+                  !isPostProcessStructurallyValid()) ||
                  (!ambientOcclusion.IsEmpty() &&
                   !ambientOcclusion.IsStructurallyValid()) ||
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())) ||
+                   !isPostProcessStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted) ||
                  (presented && !postProcess.exposureHistoryCommitted) ||
@@ -1565,7 +1580,7 @@ namespace RVX
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                  (!postProcess.IsEmpty() &&
-                  !postProcess.IsStructurallyValid()) ||
+                  !isPostProcessStructurallyValid()) ||
                  (!ambientOcclusion.IsEmpty() &&
                   !ambientOcclusion.IsStructurallyValid()) ||
                  (!toonLighting.IsEmpty() &&
@@ -1575,7 +1590,7 @@ namespace RVX
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())) ||
+                   !isPostProcessStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted) ||
                  (presented && !postProcess.exposureHistoryCommitted) ||
@@ -1591,13 +1606,14 @@ namespace RVX
                  (toonOutline.executed && toonLighting.executed &&
                   toonOutline.materialTableContentHash !=
                       toonLighting.materialTableContentHash));
-            const bool schemaTwelveInvalid = schemaVersion == 12 &&
+            const bool schemaTwelveOrThirteenInvalid =
+                (schemaVersion == 12 || schemaVersion == 13) &&
                 (!deferredOpaque.IsStructurallyValid() ||
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                  (!postProcess.IsEmpty() &&
-                  !postProcess.IsStructurallyValid()) ||
+                  !isPostProcessStructurallyValid()) ||
                  (!ambientOcclusion.IsEmpty() &&
                   !ambientOcclusion.IsStructurallyValid()) ||
                  (!toonLighting.IsEmpty() &&
@@ -1621,7 +1637,7 @@ namespace RVX
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())) ||
+                   !isPostProcessStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted) ||
                  (presented && !postProcess.exposureHistoryCommitted) ||
@@ -1646,7 +1662,7 @@ namespace RVX
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
                 schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid ||
                 schemaEightInvalid || schemaTenInvalid ||
-                schemaElevenInvalid || schemaTwelveInvalid)
+                schemaElevenInvalid || schemaTwelveOrThirteenInvalid)
             {
                 return false;
             }

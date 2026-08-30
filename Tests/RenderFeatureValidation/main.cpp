@@ -1491,6 +1491,31 @@ namespace
         return outputs;
     }
 
+    [[nodiscard]] OpaqueSceneColorPyramid MakeOpaqueSceneColorPyramid(
+        const RenderGraphBlackboardProvenance& provenance,
+        RenderQualityTier quality = RenderQualityTier::High)
+    {
+        OpaqueSceneColorPyramid pyramid;
+        pyramid.provenance = provenance;
+        pyramid.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        pyramid.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        pyramid.sourceExtent = RenderOutputExtent{320, 180};
+        pyramid.baseExtent = quality == RenderQualityTier::Ultra
+            ? pyramid.sourceExtent
+            : RenderOutputExtent{160, 90};
+        pyramid.quality = quality;
+        pyramid.mipCount = OpaqueSceneColorPyramid::MaxMipCount;
+        pyramid.texture = MakeTextureHandle(provenance, 5);
+        pyramid.textureMetadata = MakeSceneTextureMetadata(
+            OpaqueSceneColorPyramid::FormatContract,
+            pyramid.baseExtent);
+        pyramid.receipt =
+            std::make_shared<OpaqueSceneColorPyramidBuildReceipt>();
+        return pyramid;
+    }
+
     [[nodiscard]] TranslucencyOutputs MakeTranslucencyOutputs(
         const RenderGraphBlackboardProvenance& provenance)
     {
@@ -1503,9 +1528,8 @@ namespace
         outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
         outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
             SceneTextures::HDRSceneColorContract);
-        outputs.opaqueSceneSnapshot = MakeTextureHandle(provenance, 5);
-        outputs.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
-            SceneTextures::HDRSceneColorContract);
+        outputs.opaqueSceneColorPyramid =
+            MakeOpaqueSceneColorPyramid(provenance);
         outputs.deviceDepth = MakeTextureHandle(provenance, 2);
         outputs.deviceDepthMetadata = MakeSceneTextureMetadata(
             SceneTextures::DeviceDepthContract);
@@ -1536,11 +1560,8 @@ namespace
         outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
         outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
             SceneTextures::HDRSceneColorContract);
-        outputs.opaqueSceneSnapshot = MakeTextureHandle(provenance, 5);
-        outputs.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
-            SceneTextures::HDRSceneColorContract);
-        outputs.opaqueSceneSnapshotReceipt =
-            std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
+        outputs.opaqueSceneColorPyramid =
+            MakeOpaqueSceneColorPyramid(provenance);
         outputs.exposureState = MakeBufferHandle(provenance, 4);
         outputs.exposureStateMetadata = {
             SceneTextures::ExposureStateSchemaVersion,
@@ -1660,12 +1681,18 @@ namespace
                     m_context.outputExtent.height,
                     presentableFormat);
             m_sceneColor = m_graph.CreateTexture(sceneColorDesc);
-            RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
-                m_context.outputExtent.width,
-                m_context.outputExtent.height,
-                RHIFormat::RGBA16_FLOAT,
-                RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
-            m_opaqueSceneSnapshot = m_graph.CreateTexture(opaqueSnapshotDesc);
+            RHITextureDesc opaqueSceneColorPyramidDesc =
+                RHITextureDesc::RenderTarget(
+                    m_context.outputExtent.width / 2u,
+                    m_context.outputExtent.height / 2u,
+                    RHIFormat::RGBA16_FLOAT);
+            opaqueSceneColorPyramidDesc.usage =
+                opaqueSceneColorPyramidDesc.usage |
+                RHITextureUsage::ShaderResource;
+            opaqueSceneColorPyramidDesc.mipLevels =
+                OpaqueSceneColorPyramid::MaxMipCount;
+            m_opaqueSceneColorPyramid = m_graph.CreateTexture(
+                opaqueSceneColorPyramidDesc);
             m_presentableColor = m_graph.CreateTexture(presentableColorDesc);
             m_exposureStateBuffer = RHIBufferRef(new TestBuffer(
                 SceneTextures::ExposureStateStride,
@@ -1734,10 +1761,23 @@ namespace
             translucency.hdrSceneColorMetadata = MakeSceneTextureMetadata(
                 SceneTextures::HDRSceneColorContract,
                 m_context.outputExtent);
-            translucency.opaqueSceneSnapshot = m_opaqueSceneSnapshot;
-            translucency.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
-                SceneTextures::HDRSceneColorContract,
-                m_context.outputExtent);
+            translucency.opaqueSceneColorPyramid =
+                MakeOpaqueSceneColorPyramid(m_provenance);
+            translucency.opaqueSceneColorPyramid.frameIdentity =
+                m_context.frameIdentity;
+            translucency.opaqueSceneColorPyramid.viewIdentity =
+                m_context.viewIdentity;
+            translucency.opaqueSceneColorPyramid.sourceExtent =
+                m_context.outputExtent;
+            translucency.opaqueSceneColorPyramid.baseExtent = {
+                m_context.outputExtent.width / 2u,
+                m_context.outputExtent.height / 2u};
+            translucency.opaqueSceneColorPyramid.texture =
+                m_opaqueSceneColorPyramid;
+            translucency.opaqueSceneColorPyramid.textureMetadata =
+                MakeSceneTextureMetadata(
+                    OpaqueSceneColorPyramid::FormatContract,
+                    translucency.opaqueSceneColorPyramid.baseExtent);
             translucency.exposureState = m_exposureState;
             translucency.exposureStateMetadata = {
                 SceneTextures::ExposureStateSchemaVersion,
@@ -1800,7 +1840,7 @@ namespace
         RenderFeatureContext m_context{};
         RenderGraphBlackboardProvenance m_provenance{};
         RGTextureHandle m_sceneColor{};
-        RGTextureHandle m_opaqueSceneSnapshot{};
+        RGTextureHandle m_opaqueSceneColorPyramid{};
         RGTextureHandle m_presentableColor{};
         RHIBufferRef m_exposureStateBuffer{};
         RGBufferHandle m_exposureState{};
@@ -2164,7 +2204,8 @@ namespace
                     [](RenderGraphBuilder&, uint8&) {},
                     [](const uint8&, RHICommandContext&) {}));
             };
-        addPostReflectionSentinel("OpaqueSceneSnapshotCopy");
+        addPostReflectionSentinel("OpaqueSceneColorPyramidBase");
+        addPostReflectionSentinel("OpaqueSceneColorPyramidMip1");
         addPostReflectionSentinel("WaterFeaturePass");
         // Translucency is now a later, recipe-neutral feature rather than
         // part of either special-surface adapter.
@@ -2181,13 +2222,17 @@ namespace
             findName("RayTracedReflectionDenoisePass");
         const auto composite =
             findName("RayTracedReflectionCompositePass");
-        const auto opaqueSnapshot = findName("OpaqueSceneSnapshotCopy");
+        const auto opaqueSceneColorPyramidBase =
+            findName("OpaqueSceneColorPyramidBase");
+        const auto opaqueSceneColorPyramidMip1 =
+            findName("OpaqueSceneColorPyramidMip1");
         const auto water = findName("WaterFeaturePass");
         const auto transparent = findName("TransparentPass");
         ASSERT_NE(rayTracedReflection, names.end());
         ASSERT_NE(spatialDenoise, names.end());
         ASSERT_NE(composite, names.end());
-        ASSERT_NE(opaqueSnapshot, names.end());
+        ASSERT_NE(opaqueSceneColorPyramidBase, names.end());
+        ASSERT_NE(opaqueSceneColorPyramidMip1, names.end());
         ASSERT_NE(water, names.end());
         ASSERT_NE(transparent, names.end());
         EXPECT_EQ(findName("HiZScreenSpaceReflection"), names.end());
@@ -2197,7 +2242,9 @@ namespace
         };
         EXPECT_LT(indexOf(rayTracedReflection), indexOf(spatialDenoise));
         EXPECT_LT(indexOf(spatialDenoise), indexOf(composite));
-        EXPECT_LT(indexOf(composite), indexOf(opaqueSnapshot));
+        EXPECT_LT(indexOf(composite), indexOf(opaqueSceneColorPyramidBase));
+        EXPECT_LT(indexOf(opaqueSceneColorPyramidBase),
+                  indexOf(opaqueSceneColorPyramidMip1));
         EXPECT_LT(indexOf(composite), indexOf(water));
         EXPECT_LT(indexOf(composite), indexOf(transparent));
 
@@ -2826,8 +2873,8 @@ namespace
         DeferredLightingFeatureAdapter lighting(nullptr, nullptr);
         ReflectionFeatureAdapter reflection;
         VolumetricLightingFeatureAdapter volumetricLighting(nullptr);
-        ForwardSpecialFeatureAdapter forwardSpecial(nullptr);
-        DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr);
+        ForwardSpecialFeatureAdapter forwardSpecial(nullptr, nullptr);
+        DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr, nullptr);
         TranslucencyFeatureAdapter translucency(nullptr);
 
         const RenderFeatureDescriptor forwardGeometryDescriptor =
@@ -3052,7 +3099,7 @@ namespace
     TEST(RenderFeatureValidation,
          PreTranslucencyOutputsEnforcesSchemaAndExactGraphProvenance)
     {
-        ForwardSpecialFeatureAdapter producer(nullptr);
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
         TranslucencyFeatureAdapter consumer(nullptr);
         const RenderFeatureDescriptor producerDescriptor =
             producer.Describe();
@@ -3100,7 +3147,7 @@ namespace
         RenderGraphBlackboard staleHandleBlackboard(provenance);
         PreTranslucencyOutputs staleHandle =
             MakePreTranslucencyOutputs(provenance);
-        ++staleHandle.opaqueSceneSnapshot.recordingGeneration;
+        ++staleHandle.opaqueSceneColorPyramid.texture.recordingGeneration;
         EXPECT_EQ(staleHandleBlackboard.Publish(
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       producerDescriptor,
@@ -3120,7 +3167,7 @@ namespace
         RenderGraphBlackboard missingReceiptBlackboard(provenance);
         PreTranslucencyOutputs missingReceipt =
             MakePreTranslucencyOutputs(provenance);
-        missingReceipt.opaqueSceneSnapshotReceipt.reset();
+        missingReceipt.opaqueSceneColorPyramid.receipt.reset();
         EXPECT_EQ(missingReceiptBlackboard.Publish(
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       producerDescriptor,
@@ -3556,15 +3603,75 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         PreTranslucencyV2ForwardsOneExactVolumetricRoute)
+         OpaqueSceneColorPyramidRequiresQualityDerivedExtentAndCompleteContract)
     {
-        ForwardSpecialFeatureAdapter producer(nullptr);
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        const RenderFeatureDescriptor descriptor = producer.Describe();
+
+        PreTranslucencyOutputs high = MakePreTranslucencyOutputs(provenance);
+        ASSERT_EQ(high.opaqueSceneColorPyramid.quality,
+                  RenderQualityTier::High);
+        ASSERT_EQ(high.opaqueSceneColorPyramid.baseExtent,
+                  (RenderOutputExtent{160, 90}));
+        RenderGraphBlackboard highBlackboard(provenance);
+        EXPECT_EQ(highBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      descriptor,
+                      std::move(high)),
+                  RenderGraphBlackboardCode::Success);
+
+        PreTranslucencyOutputs ultra = MakePreTranslucencyOutputs(provenance);
+        ultra.opaqueSceneColorPyramid = MakeOpaqueSceneColorPyramid(
+            provenance, RenderQualityTier::Ultra);
+        RenderGraphBlackboard ultraBlackboard(provenance);
+        EXPECT_EQ(ultraBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      descriptor,
+                      std::move(ultra)),
+                  RenderGraphBlackboardCode::Success);
+
+        PreTranslucencyOutputs invalidBase =
+            MakePreTranslucencyOutputs(provenance);
+        ++invalidBase.opaqueSceneColorPyramid.baseExtent.width;
+        RenderGraphBlackboard invalidBaseBlackboard(provenance);
+        EXPECT_EQ(invalidBaseBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      descriptor,
+                      std::move(invalidBase)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        PreTranslucencyOutputs invalidMipCount =
+            MakePreTranslucencyOutputs(provenance);
+        --invalidMipCount.opaqueSceneColorPyramid.mipCount;
+        RenderGraphBlackboard invalidMipCountBlackboard(provenance);
+        EXPECT_EQ(invalidMipCountBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      descriptor,
+                      std::move(invalidMipCount)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        PreTranslucencyOutputs missingReceipt =
+            MakePreTranslucencyOutputs(provenance);
+        missingReceipt.opaqueSceneColorPyramid.receipt.reset();
+        RenderGraphBlackboard missingReceiptBlackboard(provenance);
+        EXPECT_EQ(missingReceiptBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      descriptor,
+                      std::move(missingReceipt)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         PreTranslucencyV3ForwardsOneExactVolumetricRoute)
+    {
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
         TranslucencyFeatureAdapter consumer(nullptr);
         const RenderFeatureDescriptor producerDescriptor = producer.Describe();
         const RenderFeatureDescriptor consumerDescriptor = consumer.Describe();
         const RenderGraphBlackboardProvenance provenance = MakeProvenance();
 
-        EXPECT_EQ(PreTranslucencyOutputs::SchemaVersion, 2U);
+        EXPECT_EQ(PreTranslucencyOutputs::SchemaVersion, 3U);
 
         RenderGraphBlackboard valid(provenance);
         ASSERT_EQ(valid.Publish(
@@ -3646,7 +3753,7 @@ namespace
             context.recordingViewOrdinal,
             context.recordEpoch};
         RenderGraphBlackboard blackboard(provenance);
-        ForwardSpecialFeatureAdapter producer(nullptr);
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
         SceneDepthSnapshot sceneDepthSnapshot =
             MakeSceneDepthSnapshot(provenance);
         sceneDepthSnapshot.frameIdentity = context.frameIdentity;
@@ -3693,10 +3800,10 @@ namespace
                   inputs.hdrSceneColor.index);
         EXPECT_EQ(outputs->hdrSceneColor.graphIdentity,
                   inputs.hdrSceneColor.graphIdentity);
-        EXPECT_EQ(outputs->opaqueSceneSnapshot.index,
-                  inputs.opaqueSceneSnapshot.index);
-        EXPECT_EQ(outputs->opaqueSceneSnapshot.graphIdentity,
-                  inputs.opaqueSceneSnapshot.graphIdentity);
+        EXPECT_EQ(outputs->opaqueSceneColorPyramid.texture.index,
+                  inputs.opaqueSceneColorPyramid.texture.index);
+        EXPECT_EQ(outputs->opaqueSceneColorPyramid.texture.graphIdentity,
+                  inputs.opaqueSceneColorPyramid.texture.graphIdentity);
         EXPECT_EQ(outputs->exposureState.index,
                   inputs.exposureState.index);
         EXPECT_EQ(outputs->exposureState.graphIdentity,
@@ -4253,7 +4360,7 @@ namespace
         RenderFeatureDescriptor forwardVolumetricLighting =
             VolumetricLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardSpecial =
-            ForwardSpecialFeatureAdapter(nullptr).Describe();
+            ForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
         RenderFeatureDescriptor forwardTranslucency =
             TranslucencyFeatureAdapter(nullptr).Describe();
 
@@ -4312,7 +4419,7 @@ namespace
         RenderFeatureDescriptor deferredVolumetricLighting =
             VolumetricLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor deferredSpecial =
-            DeferredForwardSpecialFeatureAdapter(nullptr).Describe();
+            DeferredForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
         RenderFeatureDescriptor deferredTranslucency =
             TranslucencyFeatureAdapter(nullptr).Describe();
         ASSERT_EQ(deferredRegistry.Register(
@@ -4450,14 +4557,15 @@ namespace
 
         RenderGraphBlackboard missingSnapshotBlackboard(provenance);
         TranslucencyOutputs missingSnapshot = MakeTranslucencyOutputs(provenance);
-        missingSnapshot.opaqueSceneSnapshot = {};
+        missingSnapshot.opaqueSceneColorPyramid = {};
         EXPECT_EQ(missingSnapshotBlackboard.Publish(
                       RenderFeatureId{71}, translucencyProducer, missingSnapshot),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
 
         RenderGraphBlackboard aliasedSnapshotBlackboard(provenance);
         TranslucencyOutputs aliasedSnapshot = MakeTranslucencyOutputs(provenance);
-        aliasedSnapshot.opaqueSceneSnapshot = aliasedSnapshot.hdrSceneColor;
+        aliasedSnapshot.opaqueSceneColorPyramid.texture =
+            aliasedSnapshot.hdrSceneColor;
         EXPECT_EQ(aliasedSnapshotBlackboard.Publish(
                       RenderFeatureId{71}, translucencyProducer, aliasedSnapshot),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
@@ -4569,7 +4677,7 @@ namespace
         temporal.historyResetReasons = RenderHistoryResetReason::FirstFrame;
         temporal.taaPassCount = 1;
         temporal.taaResolveGraphPassCount = 1;
-        temporal.taaHistoryStoreGraphPassCount = 1;
+        temporal.taaHistoryStoreGraphPassCount = 0;
         temporal.taaExposureStateHash = temporal.exposureStateContentHash;
         EXPECT_TRUE(temporal.IsStructurallyValid());
 
@@ -5498,7 +5606,7 @@ namespace
             RenderHistoryResetReason::FirstFrame;
         temporalCandidate.postProcess.taaPassCount = 1;
         temporalCandidate.postProcess.taaResolveGraphPassCount = 1;
-        temporalCandidate.postProcess.taaHistoryStoreGraphPassCount = 1;
+        temporalCandidate.postProcess.taaHistoryStoreGraphPassCount = 0;
         temporalCandidate.postProcess.taaExposureStateHash =
             temporalCandidate.postProcess.exposureStateContentHash;
         EXPECT_TRUE(temporalCandidate.IsStructurallyValid());

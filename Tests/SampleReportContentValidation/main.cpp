@@ -241,7 +241,7 @@ namespace
         bool requireTransparentPremultipliedExecution = false;
         bool requireTransparentAdditiveExecution = false;
         bool requireTransparentThinTransmissionExecution = false;
-        bool requireTransparentOpaqueSceneSnapshot = false;
+        bool requireTransparentOpaqueSceneColorPyramid = false;
         bool requireTransparentReactiveMask = false;
         bool requireTransparentSorting = false;
         bool forbidTransparentFallbacks = false;
@@ -1272,9 +1272,10 @@ namespace
             {
                 options.requireTransparentThinTransmissionExecution = true;
             }
-            else if (arg == "--require-transparent-opaque-scene-snapshot")
+            else if (arg ==
+                     "--require-transparent-opaque-scene-color-pyramid")
             {
-                options.requireTransparentOpaqueSceneSnapshot = true;
+                options.requireTransparentOpaqueSceneColorPyramid = true;
             }
             else if (arg == "--require-transparent-reactive-mask")
             {
@@ -3092,7 +3093,7 @@ namespace
             options->requireTransparentPremultipliedExecution ||
             options->requireTransparentAdditiveExecution ||
             options->requireTransparentThinTransmissionExecution ||
-            options->requireTransparentOpaqueSceneSnapshot ||
+            options->requireTransparentOpaqueSceneColorPyramid ||
             options->requireTransparentReactiveMask ||
             options->requireTransparentSorting ||
             options->forbidTransparentFallbacks;
@@ -3118,11 +3119,14 @@ namespace
         uint64_t frameFeatureSequence = 0;
         uint64_t receiptFrameSequence = 0;
         uint64_t lastPresentedFrameSequence = 0;
-        bool snapshotReady = false;
-        bool snapshotCopied = false;
+        uint64_t reportSchemaVersion = 0;
+        bool pyramidReady = false;
+        bool pyramidBuilt = false;
         bool reactiveAttachmentBound = false;
         bool presentedFrameAligned = false;
         bool passed =
+            ReadUnsignedField(report, "schemaVersion", reportSchemaVersion,
+                              "GFX15 translucency") &&
             ReadUnsignedField(*diagnostics, "transparentAlphaBlendDrawCount",
                               alphaBlend, "GFX15 translucency") &&
             ReadUnsignedField(*diagnostics,
@@ -3133,12 +3137,18 @@ namespace
             ReadUnsignedField(*diagnostics,
                               "transparentThinTransmissionDrawCount",
                               thinTransmission, "GFX15 translucency") &&
-            ReadBooleanField(*diagnostics,
-                             "transparentOpaqueSceneSnapshotReady",
-                             snapshotReady, "GFX15 translucency") &&
-            ReadBooleanField(*diagnostics,
-                             "transparentOpaqueSceneSnapshotCopied",
-                             snapshotCopied, "GFX15 translucency") &&
+            ReadBooleanField(
+                *diagnostics,
+                reportSchemaVersion > 33
+                    ? "transparentOpaqueSceneColorPyramidReady"
+                    : "transparentOpaqueSceneSnapshotReady",
+                pyramidReady, "GFX15 translucency") &&
+            ReadBooleanField(
+                *diagnostics,
+                reportSchemaVersion > 33
+                    ? "transparentOpaqueSceneColorPyramidBuilt"
+                    : "transparentOpaqueSceneSnapshotCopied",
+                pyramidBuilt, "GFX15 translucency") &&
             ReadBooleanField(*diagnostics,
                              "transparentReactiveMaskAttachmentBound",
                              reactiveAttachmentBound, "GFX15 translucency") &&
@@ -3201,10 +3211,11 @@ namespace
             std::cerr << "GFX15 translucency receipt records no ThinTransmission draw\n";
             passed = false;
         }
-        if ((requireAllCategories || options->requireTransparentOpaqueSceneSnapshot) &&
-            (!snapshotReady || !snapshotCopied))
+        if ((requireAllCategories ||
+             options->requireTransparentOpaqueSceneColorPyramid) &&
+            (!pyramidReady || !pyramidBuilt))
         {
-            std::cerr << "GFX15 translucency receipt lacks an actual opaque scene snapshot\n";
+            std::cerr << "GFX15 translucency receipt lacks a completed opaque-scene color pyramid\n";
             passed = false;
         }
         if ((requireAllCategories || options->requireTransparentReactiveMask) &&
@@ -3497,7 +3508,7 @@ namespace
             return false;
         }
 
-        const bool receiptExact = executionReceiptSchemaVersion == 12u &&
+        const bool receiptExact = executionReceiptSchemaVersion == 13u &&
             executionReceiptStructurallyValid && executionReceiptAvailable &&
             executionReceiptGraphComposed && executionReceiptExecutionSucceeded &&
             executionReceiptPresented && executionReceiptSucceeded;
@@ -3712,7 +3723,7 @@ namespace
             return false;
         }
 
-        const bool common = available && receiptSchema == 12u && receiptValid &&
+        const bool common = available && receiptSchema == 13u && receiptValid &&
             receiptPresented && receiptSucceeded && mainView && requestedByRenderer &&
             supported && enabled && graphScheduled && drawSubmitted && uploadPublished &&
             itemCount != 0 && packetCount != 0 && aliveCount != 0 &&
@@ -3875,7 +3886,7 @@ namespace
         bool graphScheduled = false;
         bool drawSubmitted = false;
         bool uploadPublished = false;
-        bool opaqueSnapshotReady = false;
+        bool opaqueSceneColorPyramidReady = false;
         bool depthSnapshotReady = false;
         bool depthLinearizationReady = false;
         bool layeredNormalsEvaluated = false;
@@ -3915,7 +3926,10 @@ namespace
         uint64_t presentedFrame = 0;
         std::string diagnostic;
 
+        uint64_t reportSchemaVersion = 0;
         const bool parsed =
+            ReadUnsignedField(report, "schemaVersion", reportSchemaVersion,
+                              Context) &&
             ReadBooleanField(*water, "available", available, Context) &&
             ReadUnsignedField(*water, "executionReceiptSchemaVersion", receiptSchema, Context) &&
             ReadBooleanField(*water, "executionReceiptStructurallyValid", receiptValid, Context) &&
@@ -3928,7 +3942,12 @@ namespace
             ReadBooleanField(*water, "graphPassScheduled", graphScheduled, Context) &&
             ReadBooleanField(*water, "drawSubmitted", drawSubmitted, Context) &&
             ReadBooleanField(*water, "uploadPublished", uploadPublished, Context) &&
-            ReadBooleanField(*water, "opaqueSceneSnapshotReady", opaqueSnapshotReady, Context) &&
+            ReadBooleanField(
+                *water,
+                reportSchemaVersion > 33
+                    ? "opaqueSceneColorPyramidReady"
+                    : "opaqueSceneSnapshotReady",
+                opaqueSceneColorPyramidReady, Context) &&
             ReadBooleanField(*water, "depthSnapshotReady", depthSnapshotReady, Context) &&
             ReadBooleanField(*water, "depthLinearizationReady", depthLinearizationReady, Context) &&
             ReadBooleanField(*water, "layeredNormalsEvaluated", layeredNormalsEvaluated, Context) &&
@@ -3971,10 +3990,11 @@ namespace
             return false;
         }
 
-        const bool qualified = qualifiedWater && available && receiptSchema == 12u &&
+        const bool qualified = reportSchemaVersion >= 34u && qualifiedWater &&
+            available && receiptSchema == 13u &&
             receiptValid && receiptPresented && receiptSucceeded && mainView &&
             requested && supported && enabled && graphScheduled && drawSubmitted &&
-            uploadPublished && opaqueSnapshotReady && depthSnapshotReady &&
+            uploadPublished && opaqueSceneColorPyramidReady && depthSnapshotReady &&
             depthLinearizationReady && layeredNormalsEvaluated && fresnelEvaluated &&
             thicknessEvaluated && beerLambertEvaluated && foamEvaluated &&
             reactiveMaskWriteEnabled && itemCount == 1u && drawCount == 1u &&
@@ -4223,7 +4243,9 @@ namespace
             return value <= std::numeric_limits<uint32_t>::max();
         };
         const uint64_t expectedExecutionReceiptSchemaVersion =
-            reportSchemaVersion >= 33 ? 12u : 10u;
+            reportSchemaVersion >= 34
+                ? 13u
+                : (reportSchemaVersion >= 33 ? 12u : 10u);
         const bool presentationAligned = available &&
             executionReceiptSchemaVersion ==
                 expectedExecutionReceiptSchemaVersion &&
@@ -4889,37 +4911,40 @@ namespace
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12 ||
+            schemaVersion == 13)
         {
             expectedFields.insert("deferredOpaque");
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
             schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
-            schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 11 || schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFields.insert("lighting");
         }
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
             schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11 ||
-            schemaVersion == 12)
+            schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFields.insert("deformation");
         }
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12 ||
+            schemaVersion == 13)
         {
             expectedFields.insert("postProcess");
         }
-        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+        if (schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFields.insert("ambientOcclusion");
         }
-        if (schemaVersion == 11 || schemaVersion == 12)
+        if (schemaVersion == 11 || schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFields.insert("toonLighting");
             expectedFields.insert("toonOutline");
         }
-        if (schemaVersion == 12)
+        if (schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFields.insert("hybridRayTracing");
         }
@@ -4966,7 +4991,8 @@ namespace
              schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
                  schemaVersion != 8 && schemaVersion != 10 &&
-                 schemaVersion != 11 && schemaVersion != 12) || !available ||
+                 schemaVersion != 11 && schemaVersion != 12 &&
+                 schemaVersion != 13) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -4975,7 +5001,8 @@ namespace
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12 ||
+            schemaVersion == 13)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -5046,7 +5073,7 @@ namespace
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
             schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
-            schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 11 || schemaVersion == 12 || schemaVersion == 13)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -5192,7 +5219,7 @@ namespace
              options->requireSkinnedVelocityExecution);
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
             schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11 ||
-            schemaVersion == 12)
+            schemaVersion == 12 || schemaVersion == 13)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -5345,7 +5372,8 @@ namespace
              options->requireAmbientOcclusionIndirectOnlyLighting ||
              options->requireAmbientOcclusionNonNeutralProbe);
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+            schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12 || schemaVersion == 13)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -5367,7 +5395,7 @@ namespace
                     "encodedOutputReady", "fallbackUsed"};
                 if (schemaVersion == 7 || schemaVersion == 8 ||
                     schemaVersion == 10 || schemaVersion == 11 ||
-                    schemaVersion == 12)
+                    schemaVersion == 12 || schemaVersion == 13)
                 {
                     expectedPostProcessFields.insert({
                         "antiAliasingMode", "taaRequested", "taaPipelineReady",
@@ -5380,7 +5408,8 @@ namespace
                         "taaHistoryStoreGraphPassCount"});
                 }
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11 || schemaVersion == 12)
+                    schemaVersion == 11 || schemaVersion == 12 ||
+                    schemaVersion == 13)
                 {
                     expectedPostProcessFields.insert({
                         "exposureStateContentHash",
@@ -5482,7 +5511,7 @@ namespace
                                             taaPassCount, context);
                 if (schemaVersion == 7 || schemaVersion == 8 ||
                     schemaVersion == 10 || schemaVersion == 11 ||
-                    schemaVersion == 12)
+                    schemaVersion == 12 || schemaVersion == 13)
                 {
                     passed &= ReadStringField(*postProcess, "antiAliasingMode",
                                               antiAliasingMode, context, true);
@@ -5548,7 +5577,8 @@ namespace
                         "previousJitterPixels", previousJitterX, previousJitterY);
                 }
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11 || schemaVersion == 12)
+                    schemaVersion == 11 || schemaVersion == 12 ||
+                    schemaVersion == 13)
                 {
                     passed &= ReadUnsignedField(*postProcess,
                                                 "exposureStateContentHash",
@@ -5706,7 +5736,7 @@ namespace
                 bool aaStructurallyValid = taaPassCount == 0;
                 if (schemaVersion == 7 || schemaVersion == 8 ||
                     schemaVersion == 10 || schemaVersion == 11 ||
-                    schemaVersion == 12)
+                    schemaVersion == 12 || schemaVersion == 13)
                 {
                     const bool temporalJitterProgressed =
                         currentJitterX != previousJitterX ||
@@ -5727,6 +5757,8 @@ namespace
                     const bool fxaaMode = antiAliasingMode == "fxaa" &&
                         fxaaPassCount == 1 && taaPassCount == 0 &&
                         temporalStateEmpty;
+                    const uint64_t expectedHistoryStoreGraphPassCount =
+                        schemaVersion == 13 ? 0u : 1u;
                     const bool taaMode = antiAliasingMode == "taa" &&
                         fxaaPassCount == 0 && taaPassCount == 1 &&
                         taaRequested && taaPipelineReady && taaInputsReady &&
@@ -5734,7 +5766,8 @@ namespace
                         historyCommitted && !historyAbandoned &&
                         temporalJitterProgressed &&
                         taaResolveGraphPassCount == 1 &&
-                        taaHistoryStoreGraphPassCount == 1 &&
+                        taaHistoryStoreGraphPassCount ==
+                            expectedHistoryStoreGraphPassCount &&
                         historyAvailableBefore == historySampled &&
                         ((historyAvailableBefore && historyResetReasons == 0) ||
                          (!historyAvailableBefore && historyResetReasons != 0));
@@ -5743,7 +5776,8 @@ namespace
                 bool exposureStructurallyValid = true;
                 bool sharedExposureState = false;
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11 || schemaVersion == 12)
+                    schemaVersion == 11 || schemaVersion == 12 ||
+                    schemaVersion == 13)
                 {
                     sharedExposureState =
                         exposureStateContentHash != 0 &&
@@ -5817,7 +5851,7 @@ namespace
                      (options->requireTemporalAAExecution &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
                         schemaVersion != 10 && schemaVersion != 11 &&
-                        schemaVersion != 12) ||
+                        schemaVersion != 12 && schemaVersion != 13) ||
                        antiAliasingMode != "taa" ||
                        taaPassCount != 1 || !taaRequested ||
                        !taaPipelineReady || !taaInputsReady ||
@@ -5825,12 +5859,13 @@ namespace
                        (currentJitterX == previousJitterX &&
                         currentJitterY == previousJitterY) ||
                        taaResolveGraphPassCount != 1 ||
-                       taaHistoryStoreGraphPassCount != 1)) ||
+                       taaHistoryStoreGraphPassCount !=
+                           (schemaVersion == 13 ? 0u : 1u))) ||
                      (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
                      (options->requireTemporalHistorySampled &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
                         schemaVersion != 10 && schemaVersion != 11 &&
-                        schemaVersion != 12) ||
+                        schemaVersion != 12 && schemaVersion != 13) ||
                        !historyAvailableBefore ||
                        !historySampled ||
                        (currentJitterX == previousJitterX &&
@@ -5838,12 +5873,13 @@ namespace
                      (options->requireTemporalHistoryCommitted &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
                         schemaVersion != 10 && schemaVersion != 11 &&
-                        schemaVersion != 12) ||
+                        schemaVersion != 12 && schemaVersion != 13) ||
                        !historyCandidateProduced ||
                        !historyCommitted || historyAbandoned)) ||
                      (options->requireManualEV100Exposure &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11 && schemaVersion != 12) ||
+                        schemaVersion != 11 && schemaVersion != 12 &&
+                        schemaVersion != 13) ||
                        exposureMode != "manual-ev100" ||
                        exposureHistogramPassCount != 0 ||
                        exposureAdaptationPassCount != 1 ||
@@ -5860,7 +5896,8 @@ namespace
                            previousPreExposure, exposureScale))) ||
                      (options->requireHistogramAutoExposure &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11 && schemaVersion != 12) ||
+                        schemaVersion != 11 && schemaVersion != 12 &&
+                        schemaVersion != 13) ||
                        exposureMode != "histogram-auto" ||
                        exposureHistogramPassCount != 2 ||
                        exposureAdaptationPassCount != 1 ||
@@ -5874,7 +5911,8 @@ namespace
                        !(targetEV100 + 1.0e-4 < adaptedEV100))) ||
                      (options->requireExposureProbe &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11 && schemaVersion != 12) ||
+                        schemaVersion != 11 && schemaVersion != 12 &&
+                        schemaVersion != 13) ||
                        !exposureProbeRequested ||
                        !exposureProbeReady || !std::isfinite(targetEV100) ||
                        !std::isfinite(adaptedEV100) ||
@@ -5883,7 +5921,8 @@ namespace
                        !IsValidExposureScale(previousPreExposure))) ||
                      (options->requireSharedExposureState &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11 && schemaVersion != 12) ||
+                        schemaVersion != 11 && schemaVersion != 12 &&
+                        schemaVersion != 13) ||
                        !sharedExposureState))) )
                 {
                     std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
@@ -5896,7 +5935,8 @@ namespace
             std::cerr << "Render execution receipt predates required post-process evidence\n";
             passed = false;
         }
-        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+        if (schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12 || schemaVersion == 13)
         {
             const auto ambientOcclusion = execution.find("ambientOcclusion");
             if (ambientOcclusion == execution.end() ||
@@ -5911,7 +5951,7 @@ namespace
             std::cerr << "Render execution receipt predates required ambient-occlusion evidence\n";
             passed = false;
         }
-        if (schemaVersion == 11 || schemaVersion == 12)
+        if (schemaVersion == 11 || schemaVersion == 12 || schemaVersion == 13)
         {
             const auto toonLighting = execution.find("toonLighting");
             const auto toonOutline = execution.find("toonOutline");
@@ -6089,7 +6129,7 @@ namespace
             passed = false;
         }
 
-        if (schemaVersion == 12)
+        if (schemaVersion == 12 || schemaVersion == 13)
         {
             const auto hybridRayTracing = execution.find("hybridRayTracing");
             if (hybridRayTracing == execution.end() ||
@@ -6142,7 +6182,8 @@ namespace
         // The explicit contract-only completion marker was added with the
         // schema-10 receipt.  Older receipt versions retain their published
         // feature shape and therefore must not accept or require this field.
-        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
+        if (schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12 || schemaVersion == 13)
         {
             expectedFeatureFields.insert(
                 "contractCompletedWithoutGraphWork");
@@ -6207,7 +6248,7 @@ namespace
                                         executedGraphPassCount,
                                         "Render feature execution receipt v21");
             if (schemaVersion == 10 || schemaVersion == 11 ||
-                schemaVersion == 12)
+                schemaVersion == 12 || schemaVersion == 13)
             {
                 passed &= ReadBooleanField(
                     feature, "contractCompletedWithoutGraphWork",
@@ -6309,7 +6350,7 @@ namespace
                 implementationSupported && pipelineReady && inputsReady;
             const bool contractOnlyExecution =
                 (schemaVersion == 10 || schemaVersion == 11 ||
-                 schemaVersion == 12) &&
+                 schemaVersion == 12 || schemaVersion == 13) &&
                 contractCompletedWithoutGraphWork && ready && executed &&
                 !fallbackUsed && graphPassCount == 0 &&
                 executedGraphPassCount == 0;
@@ -6455,7 +6496,7 @@ namespace
         {
             return false;
         }
-        if (schemaVersion != 12 || !available || !graphComposed ||
+        if (schemaVersion != 13 || !available || !graphComposed ||
             !executionSucceeded || !presented || !succeeded ||
             frameSequence == 0 || subViewIndex != 0 || viewRole != "main")
         {
@@ -8060,7 +8101,7 @@ namespace
             {"renderDiagnostics", {
                 {"hizReflectionActualExecution", {
                     {"available", true},
-                    {"executionReceiptSchemaVersion", 12},
+                    {"executionReceiptSchemaVersion", 13},
                     {"executionReceiptStructurallyValid", true},
                     {"executionReceiptAvailable", true},
                     {"executionReceiptGraphComposed", true},
@@ -8128,7 +8169,7 @@ namespace
         }
         qualifiedHiZReflectionReport["renderDiagnostics"]
                                   ["hizReflectionActualExecution"]
-                                  ["executionReceiptSchemaVersion"] = 12;
+                                  ["executionReceiptSchemaVersion"] = 13;
         qualifiedHiZReflectionReport["renderDiagnostics"]
                                   ["hizReflectionActualExecution"]
                                   ["routeMaskRadianceSchemaVersion"] = 0;
@@ -8259,7 +8300,7 @@ namespace
         char translucencyParserArg6[] =
             "--require-transparent-thin-transmission-execution";
         char translucencyParserArg7[] =
-            "--require-transparent-opaque-scene-snapshot";
+            "--require-transparent-opaque-scene-color-pyramid";
         char translucencyParserArg8[] = "--require-transparent-reactive-mask";
         char translucencyParserArg9[] = "--require-transparent-sorting";
         char translucencyParserArg10[] = "--forbid-transparent-fallbacks";
@@ -8284,7 +8325,7 @@ namespace
             !parsedTranslucencyOptions
                  .requireTransparentThinTransmissionExecution ||
             !parsedTranslucencyOptions
-                 .requireTransparentOpaqueSceneSnapshot ||
+                 .requireTransparentOpaqueSceneColorPyramid ||
             !parsedTranslucencyOptions.requireTransparentReactiveMask ||
             !parsedTranslucencyOptions.requireTransparentSorting ||
             !parsedTranslucencyOptions.forbidTransparentFallbacks ||
@@ -8294,13 +8335,14 @@ namespace
             return false;
         }
         Json qualifiedTranslucencyReport = {
+            {"schemaVersion", 34},
             {"renderDiagnostics", {
                 {"transparentAlphaBlendDrawCount", 1},
                 {"transparentPremultipliedDrawCount", 1},
                 {"transparentAdditiveDrawCount", 1},
                 {"transparentThinTransmissionDrawCount", 1},
-                {"transparentOpaqueSceneSnapshotReady", true},
-                {"transparentOpaqueSceneSnapshotCopied", true},
+                {"transparentOpaqueSceneColorPyramidReady", true},
+                {"transparentOpaqueSceneColorPyramidBuilt", true},
                 {"transparentReactiveMaskAttachmentBound", true},
                 {"transparentReactiveMaskWriteDrawCount", 1},
                 {"transparentPriorityBucketCount", 4},
@@ -8349,7 +8391,7 @@ namespace
             return false;
         }
         Json qualifiedWeightedBlendedOitReceipt = {
-            {"schemaVersion", 12},
+            {"schemaVersion", 13},
             {"available", true},
             {"graphComposed", true},
             {"executionSucceeded", true},
@@ -8549,7 +8591,7 @@ namespace
             {"renderDiagnostics", {
                 {"particleVfxActualExecution", {
                     {"available", true},
-                    {"executionReceiptSchemaVersion", 12},
+                    {"executionReceiptSchemaVersion", 13},
                     {"executionReceiptStructurallyValid", true},
                     {"executionReceiptPresented", true},
                     {"executionReceiptSucceeded", true},
@@ -8628,7 +8670,7 @@ namespace
         }
         qualifiedParticleFireReport["renderDiagnostics"]
                                   ["particleVfxActualExecution"]
-                                  ["executionReceiptSchemaVersion"] = 12;
+                                  ["executionReceiptSchemaVersion"] = 13;
         qualifiedParticleFireReport["renderDiagnostics"]
                                   ["particleVfxActualExecution"]
                                   ["lightHintAdmittedCount"] = 0;
@@ -8693,10 +8735,11 @@ namespace
             return false;
         }
         Json qualifiedWaterReport = {
+            {"schemaVersion", 34},
             {"renderDiagnostics", {
                 {"waterSurfaceActualExecution", {
                     {"available", true},
-                    {"executionReceiptSchemaVersion", 12},
+                    {"executionReceiptSchemaVersion", 13},
                     {"executionReceiptStructurallyValid", true},
                     {"executionReceiptPresented", true},
                     {"executionReceiptSucceeded", true},
@@ -8707,7 +8750,7 @@ namespace
                     {"graphPassScheduled", true},
                     {"drawSubmitted", true},
                     {"uploadPublished", true},
-                    {"opaqueSceneSnapshotReady", true},
+                    {"opaqueSceneColorPyramidReady", true},
                     {"depthSnapshotReady", true},
                     {"depthLinearizationReady", true},
                     {"layeredNormalsEvaluated", true},
@@ -8763,7 +8806,7 @@ namespace
         }
         qualifiedWaterReport["renderDiagnostics"]
                             ["waterSurfaceActualExecution"]
-                            ["executionReceiptSchemaVersion"] = 12;
+                            ["executionReceiptSchemaVersion"] = 13;
         qualifiedWaterReport["renderDiagnostics"]
                             ["waterSurfaceActualExecution"]
                             ["waveContentHash"] = 0;
@@ -10241,13 +10284,13 @@ namespace
             schema25GTAOReport["renderDiagnostics"]
                               ["ambientOcclusionActualExecution"];
         if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 33u, &strictGTAOEvidence))
+                currentGTAOProjection, 34u, &strictGTAOEvidence))
         {
             return false;
         }
         currentGTAOProjection["executionReceiptSchemaVersion"] = 11;
         if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 33u, &strictGTAOEvidence))
+                currentGTAOProjection, 34u, &strictGTAOEvidence))
         {
             return false;
         }
@@ -10256,9 +10299,9 @@ namespace
         {
             return false;
         }
-        currentGTAOProjection["executionReceiptSchemaVersion"] = 12;
+        currentGTAOProjection["executionReceiptSchemaVersion"] = 13;
         if (!ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 33u, &strictGTAOEvidence))
+                currentGTAOProjection, 34u, &strictGTAOEvidence))
         {
             return false;
         }
@@ -10504,6 +10547,39 @@ namespace
         {
             return false;
         }
+
+        // Schema 13 retains the complete schema-12 receipt shape while
+        // replacing the independent TAA history-store node with the fused
+        // three-target resolve. Schema 12 remains immutable and therefore
+        // continues to require its published store-pass count of one.
+        Json schema13FusedTemporalReceipt = schema12DeferredReceipt;
+        Json& schema13FusedTemporalExecution =
+            schema13FusedTemporalReceipt["visualContractReceipt"]
+                                        ["renderExecutionReceipt"];
+        schema13FusedTemporalExecution["schemaVersion"] = 13;
+        schema13FusedTemporalExecution["postProcess"]
+                                      ["taaHistoryStoreGraphPassCount"] = 0;
+        if (!ValidateSampleReportV12Root(
+                schema13FusedTemporalReceipt,
+                expectedBuildIdentity,
+                &strictTemporalEvidence))
+        {
+            return false;
+        }
+
+        Json schema13WithLegacyHistoryStore = schema13FusedTemporalReceipt;
+        schema13WithLegacyHistoryStore["visualContractReceipt"]
+                                      ["renderExecutionReceipt"]
+                                      ["postProcess"]
+                                      ["taaHistoryStoreGraphPassCount"] = 1;
+        if (ValidateSampleReportV12Root(
+                schema13WithLegacyHistoryStore,
+                expectedBuildIdentity,
+                &strictTemporalEvidence))
+        {
+            return false;
+        }
+
         Json missingHybridReceipt = schema12DeferredReceipt;
         missingHybridReceipt["visualContractReceipt"]
                             ["renderExecutionReceipt"].erase(
@@ -11528,7 +11604,7 @@ namespace
             << "  --require-transparent-premultiplied-execution\n"
             << "  --require-transparent-additive-execution\n"
             << "  --require-transparent-thin-transmission-execution\n"
-            << "  --require-transparent-opaque-scene-snapshot\n"
+            << "  --require-transparent-opaque-scene-color-pyramid\n"
             << "  --require-transparent-reactive-mask\n"
             << "  --require-transparent-sorting\n"
             << "  --forbid-transparent-fallbacks\n"

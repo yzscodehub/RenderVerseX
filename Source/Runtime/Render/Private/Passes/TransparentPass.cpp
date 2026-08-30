@@ -146,7 +146,7 @@ namespace RVX
             std::vector<DrawRecord> draws;
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
-            RGTextureHandle opaqueSceneSnapshotReadHandle{};
+            RGTextureHandle opaqueSceneColorPyramidReadHandle{};
             RGTextureHandle froxelVolumetricLightingReadHandle{};
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle directionalShadowReadHandle{};
@@ -163,7 +163,7 @@ namespace RVX
             RGBufferHandle previousPaletteReadHandle{};
             RGTextureViewHandle colorViewHandle{};
             RGTextureViewHandle depthViewHandle{};
-            RGTextureViewHandle opaqueSceneSnapshotViewHandle{};
+            RGTextureViewHandle opaqueSceneColorPyramidViewHandle{};
             RGTextureViewHandle froxelVolumetricLightingViewHandle{};
             RGTextureViewHandle reactiveMaskViewHandle{};
             RGTextureViewHandle directionalShadowViewHandle{};
@@ -340,6 +340,12 @@ namespace RVX
                     Ref<RefCounted>(bindings.exposureStateBuffer.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.ambientOcclusionView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(
+                        bindings.opaqueSceneColorPyramidView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(
+                        bindings.opaqueSceneColorPyramidSampler.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.froxelVolumetricLightingView.Get())) &&
                 context.RetainSubmissionResource(
@@ -618,8 +624,8 @@ namespace RVX
             }
 
             const ViewData& view = data.execution.view;
-            const OpaqueSceneSnapshotRecordInput& opaqueSnapshot =
-                data.execution.opaqueSceneSnapshot;
+            const OpaqueSceneColorPyramidRecordInput& sceneColorPyramid =
+                data.execution.opaqueSceneColorPyramid;
             const VolumetricLightingRecordInput& volumetricLighting =
                 data.execution.volumetricLighting;
             if (!data.stagedRecording &&
@@ -639,23 +645,23 @@ namespace RVX
             if (!IsTransparentDrawListStrictlyOrdered(
                     data.frameSnapshot->transparentDrawItems) ||
                 !view.colorTarget.IsValid() ||
-                !opaqueSnapshot.IsCompatibleWith(data.identity) ||
+                !sceneColorPyramid.IsCompatibleWith(data.identity) ||
                 !volumetricLighting.IsCompatibleWith(data.identity) ||
                 !view.reactiveMaskTarget.IsValid() ||
-                opaqueSnapshot.IsEmpty())
+                sceneColorPyramid.IsEmpty())
             {
                 RVX_CORE_WARN(
                     "TransparentPass: draw-order or scene-input facts are inconsistent "
-                    "(orderValid={}, colorTarget={}, opaqueSnapshotEmpty={}, "
-                    "opaqueSnapshotCompatible={}, opaqueSnapshotTexture={}, "
-                    "opaqueSnapshotReceipt={}, reactiveMaskTarget={})",
+                    "(orderValid={}, colorTarget={}, sceneColorPyramidEmpty={}, "
+                    "sceneColorPyramidCompatible={}, sceneColorPyramidTexture={}, "
+                    "sceneColorPyramidReceipt={}, reactiveMaskTarget={})",
                     IsTransparentDrawListStrictlyOrdered(
                         data.frameSnapshot->transparentDrawItems),
                     view.colorTarget.IsValid(),
-                    opaqueSnapshot.IsEmpty(),
-                    opaqueSnapshot.IsCompatibleWith(data.identity),
-                    opaqueSnapshot.texture.IsValid(),
-                    opaqueSnapshot.receipt != nullptr,
+                    sceneColorPyramid.IsEmpty(),
+                    sceneColorPyramid.IsCompatibleWith(data.identity),
+                    sceneColorPyramid.texture.IsValid(),
+                    sceneColorPyramid.receipt != nullptr,
                     view.reactiveMaskTarget.IsValid());
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::InconsistentFacts);
@@ -670,8 +676,8 @@ namespace RVX
                 return false;
             }
             data.colorFormat = colorDesc->format;
-            const RHITextureDesc* const opaqueSnapshotDesc =
-                builder.GetTextureDesc(opaqueSnapshot.texture);
+            const RHITextureDesc* const sceneColorPyramidDesc =
+                builder.GetTextureDesc(sceneColorPyramid.texture);
             const RHITextureDesc* const volumetricLightingDesc =
                 volumetricLighting.identityRoute ? nullptr :
                 builder.GetTextureDesc(
@@ -680,16 +686,18 @@ namespace RVX
                 builder.GetTextureDesc(view.reactiveMaskTarget);
             const bool directTargetsValid = directStage &&
                 data.colorFormat == RHIFormat::RGBA16_FLOAT &&
-                HasFlag(colorDesc->usage, RHITextureUsage::CopySrc) &&
-                opaqueSnapshot.texture.index != view.colorTarget.index &&
-                opaqueSnapshotDesc != nullptr &&
-                opaqueSnapshotDesc->format == RHIFormat::RGBA16_FLOAT &&
-                opaqueSnapshotDesc->width == colorDesc->width &&
-                opaqueSnapshotDesc->height == colorDesc->height &&
-                opaqueSnapshotDesc->sampleCount == colorDesc->sampleCount &&
-                HasFlag(opaqueSnapshotDesc->usage,
+                HasFlag(colorDesc->usage, RHITextureUsage::RenderTarget) &&
+                sceneColorPyramid.texture.index != view.colorTarget.index &&
+                sceneColorPyramidDesc != nullptr &&
+                sceneColorPyramidDesc->format == RHIFormat::RGBA16_FLOAT &&
+                sceneColorPyramidDesc->width ==
+                    sceneColorPyramid.baseExtent.width &&
+                sceneColorPyramidDesc->height ==
+                    sceneColorPyramid.baseExtent.height &&
+                sceneColorPyramidDesc->mipLevels == sceneColorPyramid.mipCount &&
+                sceneColorPyramidDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(sceneColorPyramidDesc->usage,
                         RHITextureUsage::ShaderResource) &&
-                HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst) &&
                 reactiveMaskDesc != nullptr &&
                 reactiveMaskDesc->format == RHIFormat::R8_UNORM &&
                 reactiveMaskDesc->width == colorDesc->width &&
@@ -709,22 +717,50 @@ namespace RVX
                 HasFlag(colorDesc->usage, RHITextureUsage::RenderTarget) &&
                 HasFlag(reactiveMaskDesc->usage,
                         RHITextureUsage::RenderTarget);
-            const bool opaqueInputsValid = opaqueSnapshot.texture.index !=
+            const bool sceneColorPyramidInputsValid =
+                sceneColorPyramid.texture.index !=
                     view.colorTarget.index &&
-                opaqueSnapshotDesc != nullptr &&
-                opaqueSnapshotDesc->format == RHIFormat::RGBA16_FLOAT &&
-                opaqueSnapshotDesc->width == colorDesc->width &&
-                opaqueSnapshotDesc->height == colorDesc->height &&
-                opaqueSnapshotDesc->sampleCount == colorDesc->sampleCount &&
-                HasFlag(opaqueSnapshotDesc->usage,
-                        RHITextureUsage::ShaderResource) &&
-                HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst);
+                sceneColorPyramidDesc != nullptr &&
+                sceneColorPyramidDesc->format == RHIFormat::RGBA16_FLOAT &&
+                sceneColorPyramidDesc->width ==
+                    sceneColorPyramid.baseExtent.width &&
+                sceneColorPyramidDesc->height ==
+                    sceneColorPyramid.baseExtent.height &&
+                sceneColorPyramidDesc->mipLevels ==
+                    sceneColorPyramid.mipCount &&
+                sceneColorPyramidDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(sceneColorPyramidDesc->usage,
+                        RHITextureUsage::ShaderResource);
             if ((!directTargetsValid && !weightedTargetsValid) ||
-                !opaqueInputsValid ||
+                !sceneColorPyramidInputsValid ||
                 (!volumetricLighting.identityRoute &&
                  !IsExactFroxelVolumetricTexture(
                      volumetricLightingDesc, volumetricLighting)))
             {
+                RVX_CORE_WARN(
+                    "TransparentPass: target contract unavailable "
+                    "(directStage={}, directTargets={}, weightedTargets={}, "
+                    "pyramidInputs={}, volumetricIdentityRoute={}, "
+                    "colorFormat={}, colorExtent={}x{}, pyramidExtent={}x{}, "
+                    "pyramidMips={}, expectedPyramidMips={})",
+                    directStage,
+                    directTargetsValid,
+                    weightedTargetsValid,
+                    sceneColorPyramidInputsValid,
+                    volumetricLighting.identityRoute,
+                    static_cast<uint32>(data.colorFormat),
+                    colorDesc->width,
+                    colorDesc->height,
+                    sceneColorPyramidDesc != nullptr
+                        ? sceneColorPyramidDesc->width
+                        : 0u,
+                    sceneColorPyramidDesc != nullptr
+                        ? sceneColorPyramidDesc->height
+                        : 0u,
+                    sceneColorPyramidDesc != nullptr
+                        ? sceneColorPyramidDesc->mipLevels
+                        : 0u,
+                    sceneColorPyramid.mipCount);
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
@@ -739,7 +775,7 @@ namespace RVX
                     lastPriority = item.translucencySortPriority;
                 }
             }
-            data.results->transparentStats.opaqueSceneSnapshotReady = true;
+            data.results->transparentStats.opaqueSceneColorPyramidReady = true;
             data.depthAvailable = view.depthTarget.IsValid();
 
             const uint64 lightingPlanIdentity =
@@ -759,6 +795,8 @@ namespace RVX
                 builder.GetBufferDesc(view.exposureState) != nullptr;
             if (!lightingGraphInputsReady)
             {
+                RVX_CORE_WARN(
+                    "TransparentPass: current lighting graph inputs are unavailable");
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
@@ -1216,19 +1254,23 @@ namespace RVX
                 data.reactiveMaskViewHandle,
                 MakeRGAccessDesc(RHIResourceState::RenderTarget,
                                  RHIShaderStage::Pixel));
-            data.opaqueSceneSnapshotReadHandle = builder.Read(
-                opaqueSnapshot.texture,
+            data.opaqueSceneColorPyramidReadHandle = builder.Read(
+                sceneColorPyramid.texture,
                 RHIResourceState::ShaderResource,
                 RHIShaderStage::Pixel);
-            RHITextureViewDesc snapshotViewDesc;
-            snapshotViewDesc.format = RHIFormat::RGBA16_FLOAT;
-            snapshotViewDesc.dimension = RHITextureDimension::Texture2D;
-            snapshotViewDesc.type = RHITextureViewType::ShaderResource;
-            snapshotViewDesc.debugName = "TransparentOpaqueSceneSnapshotSRV";
-            data.opaqueSceneSnapshotViewHandle = builder.CreateTextureView(
-                data.opaqueSceneSnapshotReadHandle, snapshotViewDesc);
-            data.opaqueSceneSnapshotViewHandle = builder.Read(
-                data.opaqueSceneSnapshotViewHandle,
+            RHITextureViewDesc sceneColorPyramidViewDesc;
+            sceneColorPyramidViewDesc.format = RHIFormat::RGBA16_FLOAT;
+            sceneColorPyramidViewDesc.dimension = RHITextureDimension::Texture2D;
+            sceneColorPyramidViewDesc.subresourceRange =
+                RHISubresourceRange::All();
+            sceneColorPyramidViewDesc.type = RHITextureViewType::ShaderResource;
+            sceneColorPyramidViewDesc.debugName =
+                "TransparentOpaqueSceneColorPyramidSRV";
+            data.opaqueSceneColorPyramidViewHandle = builder.CreateTextureView(
+                data.opaqueSceneColorPyramidReadHandle,
+                sceneColorPyramidViewDesc);
+            data.opaqueSceneColorPyramidViewHandle = builder.Read(
+                data.opaqueSceneColorPyramidViewHandle,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             if (!volumetricLighting.identityRoute)
@@ -1252,13 +1294,23 @@ namespace RVX
                     MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                      RHIShaderStage::Pixel));
             }
-            if (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
-                !data.opaqueSceneSnapshotViewHandle.IsValid() ||
+            if (!data.opaqueSceneColorPyramidReadHandle.IsValid() ||
+                !data.opaqueSceneColorPyramidViewHandle.IsValid() ||
                 !data.reactiveMaskViewHandle.IsValid() ||
                 (!volumetricLighting.identityRoute &&
                  (!data.froxelVolumetricLightingReadHandle.IsValid() ||
                   !data.froxelVolumetricLightingViewHandle.IsValid())))
             {
+                RVX_CORE_WARN(
+                    "TransparentPass: graph views are unavailable "
+                    "(pyramidRead={}, pyramidView={}, reactiveView={}, "
+                    "froxelRead={}, froxelView={}, volumetricIdentityRoute={})",
+                    data.opaqueSceneColorPyramidReadHandle.IsValid(),
+                    data.opaqueSceneColorPyramidViewHandle.IsValid(),
+                    data.reactiveMaskViewHandle.IsValid(),
+                    data.froxelVolumetricLightingReadHandle.IsValid(),
+                    data.froxelVolumetricLightingViewHandle.IsValid(),
+                    volumetricLighting.identityRoute);
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
@@ -1318,11 +1370,11 @@ namespace RVX
                 data.reactiveMaskHandle.recordingGeneration !=
                     data.identity.graphRecordingGeneration ||
                 (!data.weightedBlendedStage &&
-                 (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
-                  !data.opaqueSceneSnapshotViewHandle.IsValid() ||
-                  data.opaqueSceneSnapshotReadHandle.graphIdentity !=
+                 (!data.opaqueSceneColorPyramidReadHandle.IsValid() ||
+                  !data.opaqueSceneColorPyramidViewHandle.IsValid() ||
+                  data.opaqueSceneColorPyramidReadHandle.graphIdentity !=
                       data.identity.graphIdentity ||
-                  data.opaqueSceneSnapshotReadHandle.recordingGeneration !=
+                  data.opaqueSceneColorPyramidReadHandle.recordingGeneration !=
                       data.identity.graphRecordingGeneration)) ||
                 (!data.execution.volumetricLighting.identityRoute &&
                  (!data.froxelVolumetricLightingReadHandle.IsValid() ||
@@ -1571,30 +1623,45 @@ namespace RVX
             }
             lightingRequest.environmentIBL = environmentIBLResources;
             lightingRequest.exposureStateBuffer = RHIBufferRef(exposureState);
-            RHITextureView* const opaqueSceneSnapshotView = context.GetTextureView(
-                data.opaqueSceneSnapshotViewHandle);
+            RHITextureView* const opaqueSceneColorPyramidView =
+                context.GetTextureView(data.opaqueSceneColorPyramidViewHandle);
             RHITextureView* const reactiveMaskView = context.GetTextureView(
                 data.reactiveMaskViewHandle);
-            if (opaqueSceneSnapshotView == nullptr || reactiveMaskView == nullptr ||
-                opaqueSceneSnapshotView == colorView ||
-                !data.execution.opaqueSceneSnapshot.IsCompatibleWith(data.identity) ||
-                !data.execution.opaqueSceneSnapshot.receipt->copied.load(
-                    std::memory_order_acquire))
+            if (opaqueSceneColorPyramidView == nullptr ||
+                reactiveMaskView == nullptr ||
+                opaqueSceneColorPyramidView == colorView ||
+                !data.execution.opaqueSceneColorPyramid.IsCompatibleWith(
+                    data.identity) ||
+                data.execution.opaqueSceneColorPyramid.receipt == nullptr ||
+                data.execution.opaqueSceneColorPyramid.receipt->failed.load(
+                    std::memory_order_acquire) ||
+                !data.execution.opaqueSceneColorPyramid.receipt->completed.load(
+                    std::memory_order_acquire) ||
+                data.execution.opaqueSceneColorPyramid.receipt
+                    ->completedMipCount.load(std::memory_order_acquire) !=
+                    data.execution.opaqueSceneColorPyramid.mipCount)
             {
                 RVX_CORE_WARN(
-                    "TransparentPass: opaque HDR typed-input receipt/reactive MRT binding is invalid "
+                    "TransparentPass: opaque-scene color-pyramid receipt/reactive MRT binding is invalid "
                     "(empty={}, compatible={}, texture={}, receipt={})",
-                    data.execution.opaqueSceneSnapshot.IsEmpty(),
-                    data.execution.opaqueSceneSnapshot.IsCompatibleWith(data.identity),
-                    data.execution.opaqueSceneSnapshot.texture.IsValid(),
-                    data.execution.opaqueSceneSnapshot.receipt != nullptr);
+                    data.execution.opaqueSceneColorPyramid.IsEmpty(),
+                    data.execution.opaqueSceneColorPyramid.IsCompatibleWith(
+                        data.identity),
+                    data.execution.opaqueSceneColorPyramid.texture.IsValid(),
+                    data.execution.opaqueSceneColorPyramid.receipt != nullptr);
                 return false;
             }
-            data.results->transparentStats.opaqueSceneSnapshotCopied = true;
-            lightingRequest.opaqueSceneSnapshotView =
-                RHITextureViewRef(opaqueSceneSnapshotView);
-            lightingRequest.opaqueSceneSnapshotSampler =
+            data.results->transparentStats.opaqueSceneColorPyramidBuilt = true;
+            lightingRequest.opaqueSceneColorPyramidView =
+                RHITextureViewRef(opaqueSceneColorPyramidView);
+            lightingRequest.opaqueSceneColorPyramidSampler =
                 data.pipelineCache->GetEnvironmentIBLSamplerRef();
+            lightingRequest.opaqueSceneColorPyramidSourceExtent =
+                data.execution.opaqueSceneColorPyramid.sourceExtent;
+            lightingRequest.opaqueSceneColorPyramidBaseExtent =
+                data.execution.opaqueSceneColorPyramid.baseExtent;
+            lightingRequest.opaqueSceneColorPyramidMipCount =
+                data.execution.opaqueSceneColorPyramid.mipCount;
             const VolumetricLightingRecordInput& volumetricLighting =
                 data.execution.volumetricLighting;
             if (!volumetricLighting.identityRoute)
@@ -1642,7 +1709,9 @@ namespace RVX
                    RetainLightingBindingSnapshot(context, lightingBindings));
             if (!lightingBindingsReady)
             {
-                RVX_CORE_WARN("TransparentPass: could not create record-owned lighting bindings");
+                RVX_CORE_WARN(
+                    "TransparentPass: could not create record-owned lighting bindings ({})",
+                    data.pipelineCache->GetLastError());
                 return false;
             }
 
@@ -2244,10 +2313,7 @@ namespace RVX
             if (!state->stats.prepared || state->stats.preparationFailed ||
                 state->directRecorded || !state->prepared.identity.Matches(graph) ||
                 (state->stats.weightedBlendedDrawCount != 0 &&
-                 !state->weightedBlendedRecorded) ||
-                (state->weightedBlendedEnabled &&
-                 sceneHDR.index ==
-                     state->prepared.execution.view.colorTarget.index))
+                 !state->weightedBlendedRecorded))
             {
                 return false;
             }

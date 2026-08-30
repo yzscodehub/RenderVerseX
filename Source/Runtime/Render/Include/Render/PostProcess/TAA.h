@@ -46,6 +46,7 @@ namespace RVX
         Vec2 currentJitterPixels = Vec2(0.0f);
         Vec2 previousJitterPixels = Vec2(0.0f);
         uint32 resolveGraphPassCount = 0;
+        /** Independent history-store passes; fused resolve requires zero. */
         uint32 historyStoreGraphPassCount = 0;
         RenderViewHistoryIdentity historyIdentity{};
         RenderHistoryResetReason historyResetReasons =
@@ -56,7 +57,8 @@ namespace RVX
     /**
      * @brief HDR temporal resolve with explicit candidate-history presentation.
      *
-     * Resolve and history store are separate graph passes. The class never
+     * One resolve graph pass writes the post-process output and both persistent
+     * history candidates through three MRT color attachments. The class never
      * promotes a written history target itself; composition must call
      * CommitHistoryAfterPresent() for the matching successfully presented view.
      */
