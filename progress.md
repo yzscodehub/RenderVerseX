@@ -287,3 +287,26 @@ Keep at most the ten most useful recent entries.
 - Follow-up: claim GFX24 separately and add RenderQualityLab plus fail-closed
   visual/performance qualification contracts. Linux Vulkan and macOS Metal
   remain remote PR-CI obligations.
+
+### 2026-08-30 - gfx-24 - graphics foundation qualification
+
+- Outcome: committed the cooked-only RenderQualityLab and completion-owned
+  seven-attachment/60+300 qualification foundation in `18572c63`, then fixed
+  the Release performance producer to disable the API debug layer in
+  `ce0846ba`. Visual producers retain validation. Missing run provenance or
+  semantic artifacts now fails through the required-suite boundary.
+- Verification: GFX24 contract 62/62, Architecture 65/65, Unit 2040/2040,
+  Integration 751/751, real DX12 Native 61/61, Shipping 5/5, PR Smoke 3/3,
+  and DX12 GFX24 candidate producers 3/3 passed on `ce0846ba`.
+- Evidence: Architecture `1eecf54dee2749b88207bd7f774b9d85`, Build Truth
+  `d7d3bbe434374da7a6ab9254b40bb291`, GFX24 contract
+  `985127c6a79b4c46a72ac54586f56958`, native candidate
+  `b215f9e3965c4492932378a1d9aee6f3`, Shipping
+  `a8fc557a20b34fa3987368675fbff449`, and PR Smoke
+  `93933108736c41f08a77d1b542484476` bind product digest
+  `5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a`.
+- Follow-up: GFX24 remains active because the local 2560x1440 High Deferred
+  Graphics qualification-span p95 is 18.874368 ms versus the 16.67 ms target,
+  and both visual Golden and fixed-hardware performance baseline remain
+  unapproved. Optimize the measured top GPU passes, then obtain Linux Vulkan
+  and macOS Metal PR-CI evidence.
