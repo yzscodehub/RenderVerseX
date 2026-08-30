@@ -935,6 +935,96 @@
       "deterministicQualification": true
     },
     {
+      "id": "render-quality-lab",
+      "domain": "qualification",
+      "intent": "regression",
+      "defaultRecipe": "deferred",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING",
+        "RENDER.CAPABILITY.TEMPORAL_AA",
+        "RENDER.CAPABILITY.DIRECTIONAL_CSM",
+        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY",
+        "RENDER.CAPABILITY.CPU_PARTICLE_BILLBOARD",
+        "RENDER.CAPABILITY.GERSTNER_WATER_SURFACE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "post-processing-interior-v1",
+        "pbr-reference-environment-cooked-v1",
+        "transparent-materials-v1",
+        "particle-fire-v1",
+        "particle-smoke-v1",
+        "water-surface-reference-fixture-v1",
+        "particle-vfx-ground-caster-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 2401
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 4.0, 12.5],
+          "target": [0.0, 1.0, -1.0],
+          "verticalFieldOfViewDegrees": 44.0,
+          "nearPlane": 0.05,
+          "farPlane": 160.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120, 360],
+      "visualContractVersion": 2,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "interior",
+            "x": 0.04,
+            "y": 0.08,
+            "width": 0.44,
+            "height": 0.82
+          },
+          {
+            "id": "water-and-vfx",
+            "x": 0.34,
+            "y": 0.18,
+            "width": 0.60,
+            "height": 0.70
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 4.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "interior",
+            "minimum": 0.10,
+            "maximum": 1.0
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "water-and-vfx",
+            "minimum": 0.04,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
       "id": "rendering-stress",
       "domain": "rendering",
       "intent": "stress",

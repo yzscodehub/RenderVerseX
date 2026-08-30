@@ -211,6 +211,9 @@ TEST(EcsRenderFramePipelineValidation,
     EXPECT_EQ(result.completedExtractionDiagnostics->code,
               RenderExtractionCode::Complete);
     EXPECT_EQ(result.completedExtractionDiagnostics->fullScanCount, 1U);
+    EXPECT_GT(
+        result.completedExtractionDiagnostics->extractionDurationNanoseconds,
+        0U);
     ASSERT_TRUE(result.publication.has_value());
     EXPECT_TRUE(result.publication->IsValid());
     EXPECT_EQ(result.publication->sourceSceneRuntimeId, runtime);

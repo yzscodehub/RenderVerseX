@@ -48,6 +48,9 @@ namespace RVX
         uint32 additiveBatchCount = 0;
         uint32 premultipliedBatchCount = 0;
         uint32 textureResolvedBatchCount = 0;
+        uint32 qualifiedBatchReceiptCount = 0;
+        uint32 distinctEffectDescriptorCount = 0;
+        uint32 distinctTextureBindingCount = 0;
         uint64 effectDescriptorHash = 0;
         uint64 textureAssetId = 0;
         uint32 textureGeneration = 0;
@@ -83,7 +86,7 @@ namespace RVX
         bool presentedFrameAligned = false;
         std::string diagnostic;
 
-        [[nodiscard]] bool HasCommonExecution() const noexcept
+        [[nodiscard]] bool HasPresentationBoundExecution() const noexcept
         {
             // Schema 11 remains decodable in historical reports, but only the
             // current renderer receipt can qualify a live Sample execution.
@@ -96,10 +99,6 @@ namespace RVX
                    totalAliveParticles != 0 && drawCallCount != 0 &&
                    instanceCount != 0 && uploadBytes != 0 &&
                    fallbackCount == 0 && flipbookRequested && flipbookValidated &&
-                   batchReceiptCount == 1u && !batchReceiptsOverflow &&
-                   textureResolvedBatchCount == batchReceiptCount &&
-                   effectDescriptorHash != 0 && textureAssetId != 0 &&
-                   textureGeneration != 0 && textureContentRevision != 0 &&
                    recordFrameSequence != 0 && recordSceneRevision != 0 &&
                    recordSurfaceGeneration != 0 &&
                    recordConfigurationRevision != 0 &&
@@ -109,6 +108,19 @@ namespace RVX
                    recordFrameSequence == executionReceiptFrameSequence &&
                    executionReceiptFrameSequence == presentedFrameSequence &&
                    presentedFrameAligned && diagnostic.empty();
+        }
+
+        [[nodiscard]] bool HasCommonExecution() const noexcept
+        {
+            return HasPresentationBoundExecution() && itemCount == 1u &&
+                   cpuPacketReadyItemCount == 1u && batchReceiptCount == 1u &&
+                   !batchReceiptsOverflow &&
+                   textureResolvedBatchCount == batchReceiptCount &&
+                   qualifiedBatchReceiptCount == batchReceiptCount &&
+                   distinctEffectDescriptorCount == 1u &&
+                   distinctTextureBindingCount == 1u &&
+                   effectDescriptorHash != 0 && textureAssetId != 0 &&
+                   textureGeneration != 0 && textureContentRevision != 0;
         }
 
         [[nodiscard]] bool HasFireExecution() const noexcept
@@ -132,6 +144,33 @@ namespace RVX
                    reactiveMaskWriteEnabled && reactiveMaskWriteDrawCount != 0 &&
                    !distortionRequested && !distortionPassScheduled &&
                    !distortionPassExecuted && !distortionCompositeExecuted;
+        }
+
+        /** @brief Exact two-emitter fire+smoke composition used by GFX24. */
+        [[nodiscard]] bool HasFireAndSmokeExecution() const noexcept
+        {
+            return HasPresentationBoundExecution() && itemCount == 2u &&
+                   cpuPacketReadyItemCount == itemCount &&
+                   instanceCount == totalAliveParticles &&
+                   batchReceiptCount >= 2u && !batchReceiptsOverflow &&
+                   drawCallCount == batchReceiptCount &&
+                   textureResolvedBatchCount == batchReceiptCount &&
+                   qualifiedBatchReceiptCount == batchReceiptCount &&
+                   distinctEffectDescriptorCount == 2u &&
+                   distinctTextureBindingCount == 2u &&
+                   additiveBatchCount != 0 && premultipliedBatchCount != 0 &&
+                   additiveBatchCount + premultipliedBatchCount ==
+                       batchReceiptCount &&
+                   softDepthRequested && softDepthRequired &&
+                   softDepthSnapshotReady && softDepthLinearizationReady &&
+                   softDepthEnabled && !softDepthOptionalFallback &&
+                   reactiveMaskRequested && reactiveMaskWriteEnabled &&
+                   reactiveMaskWriteDrawCount != 0 && distortionRequested &&
+                   distortionPassScheduled && distortionPassExecuted &&
+                   distortionCompositeExecuted &&
+                   lightHintRequestedCount == 1u &&
+                   lightHintAdmittedCount == 1u &&
+                   lightHintDroppedCount == 0;
         }
     };
 

@@ -418,7 +418,7 @@ namespace RVX
          * @param index Query index within the pool
          */
         virtual void EndQuery(RHIQueryPool* pool, uint32 index) = 0;
-        
+
         /**
          * @brief Write a GPU timestamp
          * @param pool The timestamp query pool
@@ -444,6 +444,59 @@ namespace RVX
          * @param queryCount Number of queries to reset
          */
         virtual void ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount) = 0;
+
+        /**
+         * @brief Attempt to reset a query range and report whether it was recorded.
+         *
+         * Backends that do not implement explicit query resets must return false.
+         * This deliberately does not fall through to ResetQueries(): callers that
+         * need fail-closed qualification evidence must be able to distinguish an
+         * unsupported operation from a legacy best-effort command.
+         */
+        virtual bool TryResetQueries(
+            RHIQueryPool* pool,
+            uint32 firstQuery,
+            uint32 queryCount) noexcept
+        {
+            (void)pool;
+            (void)firstQuery;
+            (void)queryCount;
+            return false;
+        }
+
+        /**
+         * @brief Attempt to write a timestamp and report whether it was recorded.
+         *
+         * The default is fail-closed.  It intentionally does not call the legacy
+         * WriteTimestamp() command because that command cannot report failure.
+         */
+        virtual bool TryWriteTimestamp(RHIQueryPool* pool, uint32 index) noexcept
+        {
+            (void)pool;
+            (void)index;
+            return false;
+        }
+
+        /**
+         * @brief Attempt to resolve query results and report whether it was recorded.
+         *
+         * The default is fail-closed.  It intentionally does not call the legacy
+         * ResolveQueries() command because that command cannot report failure.
+         */
+        virtual bool TryResolveQueries(
+            RHIQueryPool* pool,
+            uint32 firstQuery,
+            uint32 queryCount,
+            RHIBuffer* destBuffer,
+            uint64 destOffset) noexcept
+        {
+            (void)pool;
+            (void)firstQuery;
+            (void)queryCount;
+            (void)destBuffer;
+            (void)destOffset;
+            return false;
+        }
 
         // =========================================================================
         // Dynamic Render State

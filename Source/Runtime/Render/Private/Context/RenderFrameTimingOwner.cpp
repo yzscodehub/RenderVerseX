@@ -5,6 +5,7 @@
 
 #include "Context/RenderFrameTimingOwner.h"
 
+#include "Core/Assert.h"
 #include "RHI/RHIBuffer.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
@@ -104,6 +105,7 @@ namespace RVX
                 ClearSlot(slot);
             }
         }
+        ClearCompletedSamples();
 
         m_queryPool.Reset();
         for (Slot& slot : m_slots)
@@ -130,6 +132,14 @@ namespace RVX
         Slot& slot = m_slots[frameIndex];
         if (slot.state != SlotState::Idle)
         {
+            if (slot.state == SlotState::Submitted && slot.sourceBound)
+            {
+                // The queue cannot evict a source-bound completion sample.
+                // Leave the completed query readable for a later poll instead
+                // of overwriting it with a newer frame's timestamps.
+                return;
+            }
+
             // RenderContext always drains this slot after WaitForFrame before it
             // can be re-recorded. Preserve rendering if that invariant is broken,
             // but never reuse unread data as a fresh timing sample.
@@ -243,6 +253,14 @@ namespace RVX
             return;
         }
 
+        // Retain the completed readback in its slot until a consumer has made
+        // enough queue capacity available. This applies back-pressure to timing
+        // recording but never drops or overwrites a source-bound sample.
+        if (slot.sourceBound && !HasCompletedSampleQueueCapacity())
+        {
+            return;
+        }
+
         if (!slot.readbackBuffer)
         {
             ++m_diagnostics.droppedSampleCount;
@@ -271,6 +289,22 @@ namespace RVX
         if (slot.sourceBound)
         {
             PublishSample(slot, startTimestamp, endTimestamp);
+            const uint64 elapsedTimestampTicks = CalculateRHITimestampElapsedDelta(
+                startTimestamp, endTimestamp,
+                static_cast<uint8>(m_timestampValidBits));
+            const float64 elapsedMilliseconds =
+                (static_cast<float64>(elapsedTimestampTicks) * 1000.0) /
+                static_cast<float64>(m_timestampFrequency);
+            EnqueueCompletedSample({
+                .sourceFrameSequence = slot.sourceFrameSequence,
+                .completionValue = slot.submittedPoint.value,
+                .startTimestamp = startTimestamp,
+                .endTimestamp = endTimestamp,
+                .elapsedTimestampTicks = elapsedTimestampTicks,
+                .timestampFrequency = m_timestampFrequency,
+                .timestampValidBits = m_timestampValidBits,
+                .terminalCriticalPathMilliseconds = elapsedMilliseconds,
+            });
         }
         ClearSlot(slot);
     }
@@ -306,6 +340,25 @@ namespace RVX
         {
             DiscardFrame(frameIndex, true);
         }
+        ClearCompletedSamples();
+    }
+
+    bool RenderFrameTimingOwner::ConsumeCompletedSamples(
+        RenderGpuFrameTimingSampleBatch& outSamples) noexcept
+    {
+        outSamples = {};
+        if (m_completedSampleCount == 0)
+        {
+            return false;
+        }
+
+        outSamples.count = m_completedSampleCount;
+        for (uint32 index = 0; index < m_completedSampleCount; ++index)
+        {
+            outSamples.samples[index] = m_completedSamples[index];
+        }
+        ClearCompletedSamples();
+        return true;
     }
 
     void RenderFrameTimingOwner::SetUnavailable(const char* reason) noexcept
@@ -375,5 +428,39 @@ namespace RVX
         m_diagnostics.timestampFrequency = m_timestampFrequency;
         m_diagnostics.timestampValidBits = m_timestampValidBits;
         m_diagnostics.usedForAutoDecision = false;
+    }
+
+    bool RenderFrameTimingOwner::HasCompletedSampleQueueCapacity() const noexcept
+    {
+        return m_completedSampleCount < m_completedSamples.size();
+    }
+
+    void RenderFrameTimingOwner::EnqueueCompletedSample(
+        const RenderGpuFrameTimingSample& sample) noexcept
+    {
+        RVX_ASSERT_MSG(
+            HasCompletedSampleQueueCapacity(),
+            "RenderFrameTimingOwner must retain capacity before reading a bound completed sample");
+
+        // Completion values are monotonic per Graphics timeline. Preserve that
+        // order even when a polling pass discovers several frame slots out of
+        // ring-index order.
+        uint32 insertionIndex = m_completedSampleCount;
+        while (insertionIndex > 0 &&
+               sample.completionValue <
+                   m_completedSamples[insertionIndex - 1u].completionValue)
+        {
+            m_completedSamples[insertionIndex] =
+                m_completedSamples[insertionIndex - 1u];
+            --insertionIndex;
+        }
+        m_completedSamples[insertionIndex] = sample;
+        ++m_completedSampleCount;
+    }
+
+    void RenderFrameTimingOwner::ClearCompletedSamples() noexcept
+    {
+        m_completedSamples = {};
+        m_completedSampleCount = 0;
     }
 } // namespace RVX

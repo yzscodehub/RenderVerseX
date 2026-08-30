@@ -302,6 +302,7 @@ namespace RVX
         RenderGraph* owner = nullptr;
         IRHIDevice* device = nullptr;
         TransientResourcePool* transientResourcePool = nullptr;
+        IRenderGraphPassTimestampRecorder* passTimestampRecorder = nullptr;
         RHICapabilities capabilitySnapshot;
         bool hasCapabilitySnapshot = false;
         std::vector<TextureResource> textures;

@@ -17,6 +17,7 @@
 #include "Scenes/ParticleVfxSamples.h"
 #include "Scenes/PostProcessingShowcaseSample.h"
 #include "Scenes/RenderPipelineShowcaseSample.h"
+#include "Scenes/RenderQualityLabSample.h"
 #include "Scenes/RenderingStressSample.h"
 #include "Scenes/SceneLifecycleSample.h"
 #include "Scenes/StylizedMaterialsSample.h"
@@ -105,6 +106,8 @@ namespace RVX
                RegisterBuiltInSample<ParticleSmokeSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<WaterSurfaceSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<RenderQualityLabSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderingStressSample>(
                    manifest, registry, outError) &&

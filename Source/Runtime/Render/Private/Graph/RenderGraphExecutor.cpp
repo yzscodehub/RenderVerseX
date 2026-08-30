@@ -459,10 +459,21 @@ namespace RVX
                                   RHICommandContext& ctx,
                                   RenderGraph::DiagnosticExecutionQueue queue,
                                   uint32 executionSerial,
-                                  RenderGraphImpl& graph)
+                                  RenderGraphImpl& graph,
+                                  IRenderGraphPassTimestampRecorder* passTimestampRecorder)
         {
             const auto beginTime = std::chrono::steady_clock::now();
 
+            if (passTimestampRecorder != nullptr &&
+                !passTimestampRecorder->RecordPassTimestamp(
+                    ctx,
+                    executionSerial,
+                    pass.name,
+                    RenderGraphPassTimestampBoundary::Begin))
+            {
+                throw std::runtime_error(
+                    "RenderGraph pass timestamp recorder rejected a pass begin boundary");
+            }
             ctx.BeginEvent(pass.name.c_str());
 
             if (!pass.aliasingBarriers.empty())
@@ -553,6 +564,17 @@ namespace RVX
                 ctx.Barriers(bufferBarriers, textureBarriers);
             }
             ctx.EndEvent();
+
+            if (passTimestampRecorder != nullptr &&
+                !passTimestampRecorder->RecordPassTimestamp(
+                    ctx,
+                    executionSerial,
+                    pass.name,
+                    RenderGraphPassTimestampBoundary::End))
+            {
+                throw std::runtime_error(
+                    "RenderGraph pass timestamp recorder rejected a pass end boundary");
+            }
 
             const auto endTime = std::chrono::steady_clock::now();
             pass.executedLastRun = true;
@@ -1060,12 +1082,22 @@ namespace RVX
 
         if (!graph.stats.compileValid)
         {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "RenderGraph did not compile successfully.");
+            }
             RVX_CORE_ERROR("RenderGraph execution skipped because the graph did not compile successfully");
             return;
         }
 
         if (!RealizeRenderGraphResources(graph))
         {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "RenderGraph physical resource realization failed.");
+            }
             RVX_CORE_ERROR(
                 "RenderGraph execution skipped because physical resource realization failed");
             return;
@@ -1085,11 +1117,66 @@ namespace RVX
         }
         if (graph.stats.executionQueueMismatchCount != 0)
         {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "Exact pass timing requires Graphics-only graph execution.");
+            }
             RollbackRealizedResources(graph);
             return;
         }
 
         ValidatePlannedAccessSources(graph);
+
+        uint32 expectedPassCount = 0;
+        bool validExecutionOrder = true;
+        const auto countUnculledPass = [&graph, &expectedPassCount, &validExecutionOrder](uint32 passIndex)
+        {
+            if (passIndex >= graph.passes.size())
+            {
+                validExecutionOrder = false;
+                return;
+            }
+            if (!graph.passes[passIndex].culled)
+                ++expectedPassCount;
+        };
+        if (!graph.executionOrder.empty())
+        {
+            for (const uint32 passIndex : graph.executionOrder)
+                countUnculledPass(passIndex);
+        }
+        else
+        {
+            for (uint32 passIndex = 0;
+                 passIndex < static_cast<uint32>(graph.passes.size());
+                 ++passIndex)
+            {
+                countUnculledPass(passIndex);
+            }
+        }
+
+        if (!validExecutionOrder)
+        {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "RenderGraph execution order contains an invalid pass index.");
+            }
+            RVX_CORE_ERROR(
+                "RenderGraph command recording rejected an invalid execution-order pass index");
+            RollbackRealizedResources(graph);
+            return;
+        }
+
+        if (graph.passTimestampRecorder != nullptr &&
+            !graph.passTimestampRecorder->BeginExactGraphicsExecution(
+                ctx, expectedPassCount))
+        {
+            graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                "RenderGraph pass timestamp recording could not begin.");
+            RollbackRealizedResources(graph);
+            return;
+        }
 
         try
         {
@@ -1107,7 +1194,8 @@ namespace RVX
                         ctx,
                         RenderGraph::DiagnosticExecutionQueue::Graphics,
                         executionSerial++,
-                        graph);
+                        graph,
+                        graph.passTimestampRecorder);
                 }
             }
             else
@@ -1122,13 +1210,25 @@ namespace RVX
                         ctx,
                         RenderGraph::DiagnosticExecutionQueue::Graphics,
                         executionSerial++,
-                        graph);
+                        graph,
+                        graph.passTimestampRecorder);
                 }
+            }
+            if (graph.passTimestampRecorder != nullptr &&
+                !graph.passTimestampRecorder->FinalizeExactGraphicsExecution(ctx))
+            {
+                throw std::runtime_error(
+                    "RenderGraph pass timestamp recorder could not resolve the pass query range");
             }
             EmitExportBarriers(graph, ctx);
         }
         catch (const std::exception& error)
         {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "RenderGraph command recording failed before an exact timing sample completed.");
+            }
             RVX_CORE_ERROR(
                 "RenderGraph command recording failed: {}", error.what());
             RollbackRealizedResources(graph);
@@ -1136,6 +1236,11 @@ namespace RVX
         }
         catch (...)
         {
+            if (graph.passTimestampRecorder != nullptr)
+            {
+                graph.passTimestampRecorder->AbortExactGraphicsExecution(
+                    "RenderGraph command recording failed before an exact timing sample completed.");
+            }
             RVX_CORE_ERROR(
                 "RenderGraph command recording failed with an unknown exception");
             RollbackRealizedResources(graph);
@@ -1300,7 +1405,8 @@ namespace RVX
                                          *context,
                                          plannedBatch.queue,
                                          executionSerial++,
-                                         graph);
+                                         graph,
+                                         nullptr);
                 }
             }
             if (plannedBatch.syntheticTerminal ||

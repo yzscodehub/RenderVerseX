@@ -37,6 +37,9 @@ add_library(RVX_SampleCommon STATIC
     Private/FrameworkAssessment.cpp
     Private/ModelCameraFraming.cpp
     Private/RuntimeFrameDriver.cpp
+    Private/RenderQualityPerformanceWriter.cpp
+    Private/RenderQualityQualificationWriter.cpp
+    Private/SampleRenderQualityDiagnostics.cpp
     Private/SampleAssetCatalog.cpp
     Private/SampleAnimationLoader.cpp
     Private/SampleCLI.cpp
@@ -70,9 +73,6 @@ target_link_libraries(RVX_SampleCommon PUBLIC
 )
 
 target_link_libraries(RVX_SampleCommon PRIVATE
-    RVX::AssetImport
-    RVX::EngineDevelopmentComposition
-    RVX::EngineRuntimeOnlyComposition
     nlohmann_json::nlohmann_json
 )
 
@@ -81,6 +81,43 @@ if(WIN32)
 endif()
 
 add_library(RVX::SampleCommon ALIAS RVX_SampleCommon)
+
+# Executable roots choose exactly one composition.  Keeping these small static
+# libraries outside SampleCommon means scenario/host code cannot accidentally
+# gain a Developer importer/compiler edge merely by linking shared helpers.
+add_library(RVX_SampleDevelopmentComposition STATIC
+    Private/SampleDevelopmentComposition.cpp
+)
+target_include_directories(RVX_SampleDevelopmentComposition PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+)
+target_link_libraries(RVX_SampleDevelopmentComposition
+    PUBLIC
+        RVX::SampleCommon
+    PRIVATE
+        RVX::AssetImport
+        RVX::EngineDevelopmentComposition
+        RVX::EngineRuntimeOnlyComposition
+)
+target_compile_features(RVX_SampleDevelopmentComposition PUBLIC cxx_std_20)
+add_library(RVX::SampleDevelopmentComposition
+    ALIAS RVX_SampleDevelopmentComposition)
+
+add_library(RVX_SampleCookedComposition STATIC
+    Private/SampleCookedComposition.cpp
+)
+target_include_directories(RVX_SampleCookedComposition PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+)
+target_link_libraries(RVX_SampleCookedComposition
+    PUBLIC
+        RVX::SampleCommon
+    PRIVATE
+        RVX::EngineRuntimeOnlyComposition
+)
+target_compile_features(RVX_SampleCookedComposition PUBLIC cxx_std_20)
+add_library(RVX::SampleCookedComposition
+    ALIAS RVX_SampleCookedComposition)
 
 add_executable(RVXSampleHDRFixtureWriter
     Tools/SampleHDRFixtureWriter.cpp
@@ -115,10 +152,31 @@ target_link_libraries(RVXSampleCookedCatalogWriter PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# Filters an already-admitted staging catalog to the exact package-only
+# closure consumed by the cooked RenderQualityLab product.  It is a build-time
+# publisher and is never linked by a Sample runtime target.
+add_executable(RVXSampleCookedProductCatalogWriter
+    Tools/SampleCookedProductCatalogWriter.cpp
+)
+target_compile_features(RVXSampleCookedProductCatalogWriter PRIVATE cxx_std_20)
+target_link_libraries(RVXSampleCookedProductCatalogWriter PRIVATE
+    nlohmann_json::nlohmann_json
+)
+
 rvx_register_module_target(
     TARGET RVX_SampleCommon
     MODULE Samples
     ALIASES RVX::SampleCommon
+)
+rvx_register_module_target(
+    TARGET RVX_SampleDevelopmentComposition
+    MODULE Samples
+    ALIASES RVX::SampleDevelopmentComposition
+)
+rvx_register_module_target(
+    TARGET RVX_SampleCookedComposition
+    MODULE Samples
+    ALIASES RVX::SampleCookedComposition
 )
 rvx_register_module_target(
     TARGET RVX_SampleScenarioContracts
@@ -144,5 +202,9 @@ rvx_register_module_target(
 )
 rvx_register_module_target(
     TARGET RVXSampleCookedCatalogWriter
+    MODULE Samples
+)
+rvx_register_module_target(
+    TARGET RVXSampleCookedProductCatalogWriter
     MODULE Samples
 )

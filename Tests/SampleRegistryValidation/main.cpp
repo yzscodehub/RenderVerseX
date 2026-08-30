@@ -159,6 +159,43 @@ namespace
         EXPECT_NE(error.find("count mismatch"), std::string::npos);
     }
 
+    TEST(SampleRegistryValidation,
+         SelectedProductRegistryBindsTheFullManifestIdentity)
+    {
+        RVX::SampleRegistry registry;
+        std::string error;
+        ASSERT_TRUE(registry.Register(
+            MakeInfo("alpha"),
+            MakeManifest("alpha"),
+            []() { return std::make_unique<TestSample>(MakeInfo("alpha")); },
+            &error));
+
+        RVX::SampleManifestCatalog catalog;
+        catalog.contentSha256 = std::string(64, 'c');
+        catalog.samples.emplace("alpha", MakeManifest("alpha"));
+        catalog.samples.emplace("unlinked-product", MakeManifest("unlinked-product"));
+        ASSERT_TRUE(registry.ValidateManifestSelection(catalog, &error))
+            << error;
+        EXPECT_EQ(registry.GetManifestSchemaVersion(), 1u);
+        EXPECT_EQ(registry.GetManifestContentSha256(),
+                  std::string_view(std::string(64, 'c')));
+        EXPECT_FALSE(registry.Register(
+            MakeInfo("late"),
+            MakeManifest("late"),
+            []() { return std::make_unique<TestSample>(MakeInfo("late")); },
+            &error));
+
+        RVX::SampleRegistry mismatched;
+        ASSERT_TRUE(mismatched.Register(
+            MakeInfo("alpha"),
+            MakeManifest("alpha"),
+            []() { return std::make_unique<TestSample>(MakeInfo("alpha")); },
+            &error));
+        catalog.samples["alpha"].visualContractVersion = 2;
+        EXPECT_FALSE(mismatched.ValidateManifestSelection(catalog, &error));
+        EXPECT_NE(error.find("does not match"), std::string::npos);
+    }
+
     TEST(SampleRegistryValidation, ParsesHostAndCommonOptionsTogether)
     {
         const char* argv[] = {

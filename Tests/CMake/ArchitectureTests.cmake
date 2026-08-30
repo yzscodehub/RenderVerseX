@@ -214,6 +214,33 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.CookedSampleProductClosureChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_sample_cooked_product_closure.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.CookedSampleProductClosure
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_sample_cooked_product_closure.py
+        --root ${CMAKE_SOURCE_DIR}
+        --manifest ${RVX_ARCH_MANIFEST}
+        --module-inventory ${RVX_ARCH_MODULE_INVENTORY}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        ${RVX_ARCH_MANIFEST}
+        ${RVX_ARCH_MODULE_INVENTORY}
+        ${CMAKE_SOURCE_DIR}/Samples/Common/Include/Samples/SampleHostComposition.h
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/CookedMain.cpp
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.RendererFeatureOwnershipChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_renderer_feature_ownership.py

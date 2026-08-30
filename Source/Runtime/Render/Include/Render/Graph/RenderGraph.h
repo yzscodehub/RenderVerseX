@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 namespace RVX
@@ -25,6 +26,48 @@ namespace RVX
     class RenderGraphExecutor;
     class RenderGraphValidationAccess;
     class TransientResourcePool;
+
+    /** @brief Boundary of one GPU timestamp pair emitted around a recorded pass. */
+    enum class RenderGraphPassTimestampBoundary : uint8
+    {
+        Begin = 0,
+        End,
+    };
+
+    /**
+     * @brief Optional exact-Graphics timestamp hook owned outside RenderGraph.
+     *
+     * RenderGraph defines only the recording boundary. Query-pool allocation,
+     * submission ownership, completion polling, and diagnostics remain with the
+     * injected owner. A recorder failure rejects the graph recording rather
+     * than publishing a partial timing sample.
+     */
+    class IRenderGraphPassTimestampRecorder
+    {
+    public:
+        virtual ~IRenderGraphPassTimestampRecorder() = default;
+
+        [[nodiscard]] virtual bool BeginExactGraphicsExecution(
+            RHICommandContext& graphicsContext,
+            uint32 expectedPassCount) noexcept = 0;
+
+        [[nodiscard]] virtual bool RecordPassTimestamp(
+            RHICommandContext& graphicsContext,
+            uint32 executionIndex,
+            std::string_view passName,
+            RenderGraphPassTimestampBoundary boundary) noexcept = 0;
+
+        [[nodiscard]] virtual bool FinalizeExactGraphicsExecution(
+            RHICommandContext& graphicsContext) noexcept = 0;
+
+        /** @brief Transfer exact terminal ownership to the recorded execution. */
+        [[nodiscard]] virtual std::shared_ptr<
+            IRenderGraphExecutionTerminalObserver>
+        SealExecutionTerminalObserver() noexcept = 0;
+
+        /** @brief Terminally invalidate recording that cannot become exact evidence. */
+        virtual void AbortExactGraphicsExecution(const char* reason) noexcept = 0;
+    };
 
     /** @brief Logical graph access without a physical queue ownership domain. */
     struct RGAccessDesc
@@ -68,6 +111,8 @@ namespace RVX
         IRHIDevice* device = nullptr;
         TransientResourcePool* transientResourcePool = nullptr;
         RHICommandContext* graphicsContext = nullptr;
+        /** @brief Optional fail-closed timing owner; unsupported for MultiQueue plans. */
+        IRenderGraphPassTimestampRecorder* passTimestampRecorder = nullptr;
     };
 
     // =============================================================================

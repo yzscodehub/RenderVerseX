@@ -7,6 +7,8 @@
 #include "Samples/SampleRenderPathPolicy.h"
 
 #include "Core/Diagnostics/JsonWriter.h"
+#include "Core/Hash/SHA256.h"
+#include "Render/Qualification/RenderExecutionReceiptDigest.h"
 #include "Render/Material/MaterialSystem.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "RHI/RHI.h"
@@ -15,11 +17,17 @@
 #include <charconv>
 #include <cctype>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <locale>
 #include <ostream>
+#include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace RVX
@@ -1197,6 +1205,31 @@ namespace RVX
         }
     } // namespace
 
+    void WriteRenderExecutionReceiptJson(
+        std::ostream& stream,
+        const RenderExecutionReceipt& receipt)
+    {
+        WriteRenderExecutionReceipt(stream, receipt);
+    }
+
+    std::string SerializeRenderExecutionReceiptJson(
+        const RenderExecutionReceipt& receipt)
+    {
+        std::ostringstream stream;
+        stream.imbue(std::locale::classic());
+        stream << std::setprecision(
+            std::numeric_limits<float32>::max_digits10);
+        WriteRenderExecutionReceiptJson(stream, receipt);
+        return stream.str();
+    }
+
+    std::string ComputeRenderExecutionReceiptSha256(
+        const RenderExecutionReceipt& receipt)
+    {
+        return Hash::FormatSHA256Digest(
+            ComputeRenderExecutionReceiptDigest(receipt));
+    }
+
     SampleToonLightingExecutionDiagnostics
         ProjectSampleToonLightingExecutionDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics)
@@ -1413,6 +1446,8 @@ namespace RVX
         result.batchReceiptCount = static_cast<uint32>(
             std::min<size_t>(particles.batchReceipts.size(),
                              std::numeric_limits<uint32>::max()));
+        std::set<uint64> effectDescriptorHashes;
+        std::set<std::tuple<uint64, uint32, uint64>> textureBindings;
         for (const RenderParticleBatchReceipt& batch : particles.batchReceipts)
         {
             if (batch.blendMode == ParticleRenderSnapshotBlendMode::Additive)
@@ -1428,6 +1463,19 @@ namespace RVX
             {
                 ++result.textureResolvedBatchCount;
             }
+            if (batch.effectDescriptorHash != 0 &&
+                batch.textureAssetId.IsValid() &&
+                batch.textureResourceGeneration != 0 &&
+                batch.textureContentRevision != 0 &&
+                batch.instanceCount != 0 && batch.textureResolved)
+            {
+                ++result.qualifiedBatchReceiptCount;
+                effectDescriptorHashes.insert(batch.effectDescriptorHash);
+                textureBindings.emplace(
+                    batch.textureAssetId.value,
+                    batch.textureResourceGeneration,
+                    batch.textureContentRevision);
+            }
 
             // GFX17 scenarios publish exactly one emitter.  Recording the
             // first receipt preserves a stable, bounded Sample ABI while the
@@ -1440,6 +1488,12 @@ namespace RVX
                 result.textureContentRevision = batch.textureContentRevision;
             }
         }
+        result.distinctEffectDescriptorCount = static_cast<uint32>(
+            std::min<size_t>(effectDescriptorHashes.size(),
+                             std::numeric_limits<uint32>::max()));
+        result.distinctTextureBindingCount = static_cast<uint32>(
+            std::min<size_t>(textureBindings.size(),
+                             std::numeric_limits<uint32>::max()));
         result.diagnostic = particles.reason;
         return result;
     }
@@ -2546,7 +2600,7 @@ namespace RVX
                     stream << "    \"renderExecutionReceipt\": ";
                     if (receipt.renderExecutionReceipt.has_value())
                     {
-                        WriteRenderExecutionReceipt(
+                        WriteRenderExecutionReceiptJson(
                             stream, *receipt.renderExecutionReceipt);
                     }
                     else
@@ -3714,6 +3768,12 @@ namespace RVX
                    << particle.premultipliedBatchCount << ",\n";
             stream << "      \"textureResolvedBatchCount\": "
                    << particle.textureResolvedBatchCount << ",\n";
+            stream << "      \"qualifiedBatchReceiptCount\": "
+                   << particle.qualifiedBatchReceiptCount << ",\n";
+            stream << "      \"distinctEffectDescriptorCount\": "
+                   << particle.distinctEffectDescriptorCount << ",\n";
+            stream << "      \"distinctTextureBindingCount\": "
+                   << particle.distinctTextureBindingCount << ",\n";
             stream << "      \"effectDescriptorHash\": "
                    << particle.effectDescriptorHash << ",\n";
             stream << "      \"textureAssetId\": "
@@ -3787,6 +3847,10 @@ namespace RVX
                    << Diagnostics::JsonBool(particle.HasFireExecution()) << ",\n";
             stream << "      \"qualifiedSmoke\": "
                    << Diagnostics::JsonBool(particle.HasSmokeExecution()) << ",\n";
+            stream << "      \"qualifiedFireAndSmoke\": "
+                   << Diagnostics::JsonBool(
+                          particle.HasFireAndSmokeExecution())
+                   << ",\n";
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(particle.diagnostic) << "\n";
             stream << "    },\n";

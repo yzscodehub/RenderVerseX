@@ -198,6 +198,16 @@ namespace RVX
         /** @brief Non-blockingly collect already-completed Graphics timing samples. */
         void PollFrameTiming() noexcept;
 
+        /**
+         * @brief Consume every source-bound timing sample retired by prior polls.
+         *
+         * This is the only API for consumers that require a per-frame stream.
+         * It returns false with an empty batch when no complete, source-bound
+         * sample is available, rather than substituting the latest snapshot.
+         */
+        bool ConsumeGpuFrameTimingSamples(
+            RenderGpuFrameTimingSampleBatch& outSamples) noexcept;
+
         /** @brief Wait only for Graphics work referencing the current surface generation. */
         bool WaitForSurfaceGeneration();
 

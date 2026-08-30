@@ -143,6 +143,9 @@ namespace RVX
         bool softDepthSnapshotReady = false;
         bool softDepthLinearizationReady = false;
         bool reactiveMaskWriteEnabled = false;
+        bool exposureStateReady = false;
+        bool exposureStateReadDeclared = false;
+        bool exposureStateDescriptorBound = false;
         uint32 reactiveMaskWriteDrawCount = 0;
         uint32 lightHintRequestedCount = 0;
         uint32 lightHintAdmittedCount = 0;
@@ -152,6 +155,7 @@ namespace RVX
         uint64 recordGraphIdentity = 0;
         uint64 recordGraphGeneration = 0;
         uint64 recordEpoch = 0;
+        uint64 exposureStateContentHash = 0;
         uint64 translucencyPlanIdentity = 0;
         uint64 translucencyParticleSourceIdentity = 0;
         uint32 preparationCount = 0;
@@ -179,6 +183,7 @@ namespace RVX
         bool softDepthRequired = false;
         bool reactiveMaskRequested = false;
         bool distortionRequested = false;
+        bool exposureStateRequired = false;
     };
 
     class IShaderProgramProvider;

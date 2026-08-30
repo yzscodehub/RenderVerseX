@@ -78,6 +78,8 @@ namespace
         RHISamplerRef sampler;
         RHITextureRef fallbackCubemap;
         RGTextureHandle skyTextureHandle{};
+        /** Exact color attachment selected by the immutable record payload. */
+        RGTextureHandle finalHdrColorTarget{};
         RGTextureHandle colorHandle{};
         RGTextureHandle depthHandle{};
         RGBufferHandle exposureStateReadHandle{};
@@ -277,7 +279,9 @@ namespace
         {
             return false;
         }
-        if (!view.colorTarget.IsValid())
+        if (!data.finalHdrColorTarget.IsValid() ||
+            !AreSameGraphTextureHandle(
+                view.colorTarget, data.finalHdrColorTarget))
         {
             return false;
         }
@@ -287,7 +291,7 @@ namespace
             return false;
         }
         const RHITextureDesc* colorDesc =
-            builder.GetTextureDesc(view.colorTarget);
+            builder.GetTextureDesc(data.finalHdrColorTarget);
         if (colorDesc == nullptr)
         {
             return false;
@@ -346,7 +350,11 @@ namespace
             return false;
         }
 
-        data.colorHandle = view.colorTarget;
+        // Declarations and the actual render-pass attachment must consume the
+        // same captured target.  In particular this keeps a deferred skybox
+        // on the volumetric-resolved HDR surface rather than the older target
+        // held by the frozen frame snapshot.
+        data.colorHandle = data.finalHdrColorTarget;
         RHITextureViewDesc colorViewDesc;
         colorViewDesc.format = colorDesc->format;
         colorViewDesc.dimension = colorDesc->dimension;
@@ -415,6 +423,9 @@ namespace
             !data.pipelineLayout || !data.setLayout || !data.constantBuffer ||
             !data.cubemapTexture || !data.skyTextureViewHandle.IsValid() ||
             !data.sampler || !data.exposureStateReadHandle.IsValid() ||
+            !data.finalHdrColorTarget.IsValid() ||
+            !AreSameGraphTextureHandle(
+                data.colorHandle, data.finalHdrColorTarget) ||
             data.colorHandle.graphIdentity != data.identity.graphIdentity ||
             data.colorHandle.recordingGeneration !=
                 data.identity.graphRecordingGeneration ||
@@ -606,9 +617,20 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
         execution.identity = context.identity;
     }
 
-    const bool colorValid = execution.view.colorTarget.IsValid() &&
-        HasCurrentGraphProvenance(execution.view.colorTarget, execution.identity) &&
-        graph.GetTextureDesc(execution.view.colorTarget) != nullptr;
+    const bool hasLateBoundHdrAttachment =
+        !execution.lateBoundHdrAttachment.IsEmpty();
+    const RGTextureHandle finalHdrColorTarget = hasLateBoundHdrAttachment
+        ? execution.lateBoundHdrAttachment.finalHdrSceneColor
+        : execution.view.colorTarget;
+    const bool lateBoundHdrAttachmentValid =
+        !hasLateBoundHdrAttachment ||
+        (execution.lateBoundHdrAttachment.IsCompatibleWith(execution.identity) &&
+         AreSameGraphTextureHandle(
+             execution.view.colorTarget, finalHdrColorTarget));
+    const bool colorValid = lateBoundHdrAttachmentValid &&
+        finalHdrColorTarget.IsValid() &&
+        HasCurrentGraphProvenance(finalHdrColorTarget, execution.identity) &&
+        graph.GetTextureDesc(finalHdrColorTarget) != nullptr;
     const bool depthValid = !execution.view.depthTarget.IsValid() ||
         (HasCurrentGraphProvenance(execution.view.depthTarget, execution.identity) &&
          graph.GetTextureDesc(execution.view.depthTarget) != nullptr);
@@ -645,10 +667,12 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
          device,
          fallbackCubemap,
          sampler,
-         frameSnapshot](RenderGraphBuilder& builder, GraphPassData& data)
+         frameSnapshot,
+         finalHdrColorTarget](RenderGraphBuilder& builder, GraphPassData& data)
         {
             data.execution = execution;
             data.identity = execution.identity;
+            data.finalHdrColorTarget = finalHdrColorTarget;
             data.contextValid = contextValid;
             data.requestedEnabled = requestedEnabled;
             data.supported = supported;
@@ -661,10 +685,10 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
                 pipelineCache->GetConfig().reverseZ;
 
             if (pipelineCache != nullptr && data.contextValid && data.frameSnapshot &&
-                data.execution.view.colorTarget.IsValid())
+                data.finalHdrColorTarget.IsValid())
             {
                 const RHITextureDesc* colorDesc = builder.GetTextureDesc(
-                    data.execution.view.colorTarget);
+                    data.finalHdrColorTarget);
                 const bool hasDepth = data.execution.view.depthTarget.IsValid();
                 if (colorDesc != nullptr)
                 {

@@ -35,6 +35,7 @@ namespace RVX
             buffers.clear();
             heaps.clear();
             resources.clear();
+            terminalObservers.clear();
             queuePlan = {};
             ownedContexts.clear();
         }
@@ -46,6 +47,8 @@ namespace RVX
         std::vector<RHIBufferRef> buffers;
         std::vector<RHIHeapRef> heaps;
         std::vector<Ref<RefCounted>> resources;
+        std::vector<std::shared_ptr<IRenderGraphExecutionTerminalObserver>>
+            terminalObservers;
         RHIQueueSubmissionPlan queuePlan;
         std::vector<RHICommandContextRef> ownedContexts;
     };
@@ -164,6 +167,11 @@ namespace RVX
         m_impl->textureLeases.clear();
         m_impl->bufferLeases.clear();
         m_impl->state = RenderGraphExecutionState::Submitted;
+        for (const auto& observer : m_impl->terminalObservers)
+        {
+            if (observer)
+                observer->OnRenderGraphSubmitted(completion);
+        }
         return true;
     }
 
@@ -181,6 +189,11 @@ namespace RVX
             success = record.lease.AbortUnsubmitted() && success;
         for (Impl::BufferLeaseRecord& record : m_impl->bufferLeases)
             success = record.lease.AbortUnsubmitted() && success;
+        for (const auto& observer : m_impl->terminalObservers)
+        {
+            if (observer)
+                observer->OnRenderGraphAborted();
+        }
         m_impl->ClearOwnership();
         m_impl->state = RenderGraphExecutionState::AbortUnsubmitted;
         return success;
@@ -200,6 +213,11 @@ namespace RVX
             success = record.lease.MarkDeviceLost() && success;
         for (Impl::BufferLeaseRecord& record : m_impl->bufferLeases)
             success = record.lease.MarkDeviceLost() && success;
+        for (const auto& observer : m_impl->terminalObservers)
+        {
+            if (observer)
+                observer->OnRenderGraphDeviceLost();
+        }
         m_impl->ClearOwnership();
         m_impl->state = RenderGraphExecutionState::DeviceLost;
         return success;
@@ -209,6 +227,11 @@ namespace RVX
     {
         if (!m_impl || m_impl->state != RenderGraphExecutionState::Submitted)
             return false;
+        for (const auto& observer : m_impl->terminalObservers)
+        {
+            if (observer)
+                observer->OnRenderGraphRetired();
+        }
         m_impl->ClearOwnership();
         m_impl->state = RenderGraphExecutionState::Retired;
         return true;
@@ -258,6 +281,16 @@ namespace RVX
     {
         if (resource)
             m_impl->resources.push_back(std::move(resource));
+    }
+
+    void RenderGraphExecution::RetainTerminalObserver(
+        std::shared_ptr<IRenderGraphExecutionTerminalObserver> observer)
+    {
+        RVX_ASSERT_MSG(m_impl &&
+                           m_impl->state == RenderGraphExecutionState::Prepared,
+                       "Terminal observers attach while preparing execution");
+        if (observer)
+            m_impl->terminalObservers.push_back(std::move(observer));
     }
 
     void RenderGraphExecution::SetQueueSubmission(

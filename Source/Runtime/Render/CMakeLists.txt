@@ -145,6 +145,11 @@ target_sources(RVX_RenderFoundation PRIVATE
     Private/Submission/RenderInstanceBatchPlan.cpp
     Private/Submission/RasterInstanceStream.cpp
     Private/Submission/DirectRasterReadbackQualification.cpp
+    Private/Qualification/QualificationCaptureOwner.cpp
+    Private/Qualification/QualificationCaptureBridge.cpp
+    Private/Qualification/RenderExecutionReceiptDigest.cpp
+    Private/Qualification/RenderGraphPassTimingOwner.cpp
+    Private/Qualification/RenderQualityPerformanceSession.cpp
     Private/Resources/FrameConstantUploadArena.cpp
     Private/Passes/DirectDrawPacketBatch.cpp
     Private/Passes/MeshPassProcessor.cpp

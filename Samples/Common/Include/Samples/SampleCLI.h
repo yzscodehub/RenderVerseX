@@ -1709,6 +1709,25 @@ namespace RVX
 
     void PrintSampleCLIUsage(std::ostream& stream, const char* executableName);
 
+    /**
+     * @brief Write the canonical JSON representation of one renderer receipt.
+     *
+     * Sample reports use this human-readable projection. Qualification digest
+     * binding uses RenderExecutionReceiptDigest so it can be computed inside
+     * the Render completion owner without a Samples dependency.
+     */
+    void WriteRenderExecutionReceiptJson(
+        std::ostream& stream,
+        const RenderExecutionReceipt& receipt);
+
+    /** @brief Return the deterministic, locale-independent receipt JSON bytes. */
+    [[nodiscard]] std::string SerializeRenderExecutionReceiptJson(
+        const RenderExecutionReceipt& receipt);
+
+    /** @brief SHA-256 from Render's full canonical receipt representation. */
+    [[nodiscard]] std::string ComputeRenderExecutionReceiptSha256(
+        const RenderExecutionReceipt& receipt);
+
     void WriteSampleReportJson(std::ostream& stream, const SampleReport& report);
     bool WriteSampleReportJson(const SampleReport& report,
                                const std::filesystem::path& path,

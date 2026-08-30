@@ -34,7 +34,6 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::AnimationSceneAdapters
     RVX::Core
     RVX::Engine
-    RVX::EngineDevelopmentComposition
     RVX::HAL
     RVX::Physics
     RVX::Render
@@ -44,10 +43,32 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::RHI_BackendFactory
     RVX::RuntimeServices
     RVX::SampleCommon
+    RVX::SampleDevelopmentComposition
     RVX::Scene
     RVX::World
     RVX::Gfx17SampleScenarios
     RVX::Gfx18SampleScenarios
+    RVX::Gfx24SampleScenarios
+)
+
+# A separately-linked cooked product root demonstrates that GFX24 has no
+# runtime dependency on source importers, shader compilers, or the broad
+# development Sample host.  It intentionally compiles only the lab scenario.
+add_executable(RenderVerseSamplesCooked
+    CookedMain.cpp
+    RegisterCookedSamples.cpp
+)
+target_compile_features(RenderVerseSamplesCooked PRIVATE cxx_std_20)
+target_include_directories(RenderVerseSamplesCooked PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(RenderVerseSamplesCooked PRIVATE
+    RVX::Core
+    RVX::HAL
+    RVX::RHI
+    RVX::RHI_BackendFactory
+    RVX::SampleCookedComposition
+    RVX::Gfx24SampleScenarios
 )
 
 # GFX17 scenarios compile against the narrow scenario contracts only. Their
@@ -123,6 +144,47 @@ rvx_register_module_target(
     TARGET RVX_Gfx18SampleScenarios
     MODULE Samples
     ALIASES RVX::Gfx18SampleScenarios
+)
+
+# GFX24 is intentionally a composition-only scenario.  It consumes the
+# public Sample/World, Particle, and Water contracts while keeping all render
+# feature, graph, backend, importer, and compiler ownership in the host.
+add_library(RVX_Gfx24SampleScenarios STATIC
+    Scenes/RenderQualityLabSample.cpp
+)
+target_compile_features(RVX_Gfx24SampleScenarios PRIVATE cxx_std_20)
+target_include_directories(RVX_Gfx24SampleScenarios PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+rvx_apply_scenario_contract_include_roots(
+    RVX_Gfx24SampleScenarios
+    RVX_Animation
+    RVX_AnimationSceneAdapters
+    RVX_AssetContracts
+    RVX_Core
+    RVX_ECS
+    RVX_Engine
+    RVX_Geometry
+    RVX_HAL
+    Particle
+    RVX_Physics
+    RVX_RenderContracts
+    RVX_ResourceRuntime
+    RVX_ResourceSceneAdapters
+    RVX_Scene
+    RVX_Water
+    RVX_World
+)
+target_link_libraries(RVX_Gfx24SampleScenarios PRIVATE
+    RVX::SampleScenarioContracts
+    RVX::Water
+    glm::glm-header-only
+)
+add_library(RVX::Gfx24SampleScenarios ALIAS RVX_Gfx24SampleScenarios)
+rvx_register_module_target(
+    TARGET RVX_Gfx24SampleScenarios
+    MODULE Samples
+    ALIASES RVX::Gfx24SampleScenarios
 )
 
 # Keep the GFX17 scene target honest even while the legacy SampleCommon host
@@ -212,6 +274,72 @@ function(rvx_assert_gfx_sample_scenario_closure _rvx_target)
     endforeach()
 endfunction()
 
+# Product closure is intentionally stronger than the scenario rule above:
+# the executable itself must have exactly the cooked composition in its full
+# static-link closure.  Inspect both ordinary and LINK_ONLY values because
+# static libraries otherwise allow an importer/compiler dependency to hide in
+# a consumer's link implementation.
+function(rvx_assert_sample_cooked_product_closure _rvx_target)
+    if(NOT TARGET "${_rvx_target}")
+        message(FATAL_ERROR
+            "Cooked Sample closure check requires existing target ${_rvx_target}")
+    endif()
+    set(_rvx_pending "${_rvx_target}")
+    set(_rvx_visited)
+    set(_rvx_seen_cooked FALSE)
+    set(_rvx_seen_development FALSE)
+    set(_rvx_forbidden
+        RVX::AssetImport RVX_AssetImport
+        RVX::ShaderCompiler RVX_ShaderCompiler
+        RVX::EngineDevelopmentComposition RVX_EngineDevelopmentComposition
+        RVX::SampleDevelopmentComposition RVX_SampleDevelopmentComposition)
+    while(_rvx_pending)
+        list(POP_FRONT _rvx_pending _rvx_current)
+        if(_rvx_current MATCHES "^\\$<LINK_ONLY:(.+)>$")
+            set(_rvx_current "${CMAKE_MATCH_1}")
+        endif()
+        list(FIND _rvx_visited "${_rvx_current}" _rvx_seen_index)
+        if(NOT _rvx_seen_index EQUAL -1)
+            continue()
+        endif()
+        list(APPEND _rvx_visited "${_rvx_current}")
+        if("${_rvx_current}" STREQUAL "RVX::SampleCookedComposition" OR
+           "${_rvx_current}" STREQUAL "RVX_SampleCookedComposition")
+            set(_rvx_seen_cooked TRUE)
+        endif()
+        if("${_rvx_current}" STREQUAL "RVX::SampleDevelopmentComposition" OR
+           "${_rvx_current}" STREQUAL "RVX_SampleDevelopmentComposition")
+            set(_rvx_seen_development TRUE)
+        endif()
+        list(FIND _rvx_forbidden "${_rvx_current}" _rvx_forbidden_index)
+        if(NOT _rvx_forbidden_index EQUAL -1)
+            message(FATAL_ERROR
+                "Cooked Sample product closure reached forbidden target ${_rvx_current}")
+        endif()
+        if(NOT TARGET "${_rvx_current}")
+            continue()
+        endif()
+        foreach(_rvx_property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+            get_target_property(_rvx_links "${_rvx_current}" ${_rvx_property})
+            if(_rvx_links AND NOT _rvx_links STREQUAL "_rvx_links-NOTFOUND")
+                foreach(_rvx_link IN LISTS _rvx_links)
+                    if(NOT _rvx_link MATCHES "^::@")
+                        list(APPEND _rvx_pending "${_rvx_link}")
+                    endif()
+                endforeach()
+            endif()
+        endforeach()
+    endwhile()
+    if(NOT _rvx_seen_cooked)
+        message(FATAL_ERROR
+            "Cooked Sample product closure must reach RVX::SampleCookedComposition")
+    endif()
+    if(_rvx_seen_development)
+        message(FATAL_ERROR
+            "Cooked Sample product closure reaches both Sample compositions")
+    endif()
+endfunction()
+
 # Regression proof for the static closure checker itself. A future attempt to
 # hide RHI behind LINK_ONLY must remain detectable rather than weakening this
 # check to a consumer-interface-only inspection.
@@ -221,6 +349,7 @@ if(NOT _rvx_gfx17_link_only_rhi_rejected)
     message(FATAL_ERROR
         "GFX17 closure check does not reject LINK_ONLY RHI dependencies")
 endif()
+rvx_assert_sample_cooked_product_closure(RenderVerseSamplesCooked)
 rvx_assert_gfx_sample_scenario_closure(
     RVX_Gfx17SampleScenarios
     SOURCE_CONTRACT_FILES
@@ -241,21 +370,38 @@ rvx_assert_gfx_sample_scenario_closure(
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleWaterSurfaceDiagnostics.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
+rvx_assert_gfx_sample_scenario_closure(
+    RVX_Gfx24SampleScenarios
+    SOURCE_CONTRACT_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/RenderQualityLabSample.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/RenderQualityLabSample.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleEnvironmentLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderQualityDiagnostics.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
 
 if(RVX_ENABLE_DX11)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX11)
+    target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_DX11)
 endif()
 if(RVX_ENABLE_DX12)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX12)
+    target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_DX12)
 endif()
 if(RVX_ENABLE_VULKAN)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_Vulkan)
+    target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_Vulkan)
 endif()
 if(RVX_ENABLE_METAL)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_Metal)
+    target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_Metal)
 endif()
 if(RVX_ENABLE_OPENGL)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_OpenGL)
+    target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_OpenGL)
 endif()
 
 file(GLOB_RECURSE RVX_SAMPLE_ASSET_INPUTS CONFIGURE_DEPENDS
@@ -325,12 +471,57 @@ rvx_register_module_target(
     MODULE Samples
 )
 
+# The normal Sample staging tree contains source assets for development
+# scenarios.  The Cooked product receives a separate seven-package subset so
+# its final runtime directory has no authoring model, image, HDR, or shader
+# source fallback to accidentally mount.
+set(RVX_SAMPLE_COOKED_PRODUCT_ASSET_DESTINATION
+    "${RVX_SAMPLE_RUNTIME_DIRECTORY}/Assets/RenderQualityLabCooked")
+set(RVX_SAMPLE_COOKED_PRODUCT_RECEIPT
+    "${RVX_SAMPLE_COOKED_PRODUCT_ASSET_DESTINATION}/.rvx-staged")
+add_custom_command(
+    OUTPUT "${RVX_SAMPLE_COOKED_PRODUCT_RECEIPT}"
+    COMMAND ${CMAKE_COMMAND}
+        "-DFULL_ASSET_ROOT=${RVX_SAMPLE_ASSET_DESTINATION}"
+        "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"
+        "-DDESTINATION_ROOT=${RVX_SAMPLE_COOKED_PRODUCT_ASSET_DESTINATION}"
+        "-DSTAMP_PATH=${RVX_SAMPLE_COOKED_PRODUCT_RECEIPT}"
+        "-DCATALOG_WRITER=$<TARGET_FILE:RVXSampleCookedProductCatalogWriter>"
+        "-DMANIFEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageRenderQualityLabCookedAssets.cmake"
+    DEPENDS
+        RVXSampleAssets
+        RVXSampleCookedProductCatalogWriter
+        "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageRenderQualityLabCookedAssets.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"
+    COMMENT "Staging strict cooked-only RenderQualityLab product assets"
+    VERBATIM
+)
+add_custom_target(RVXRenderQualityLabCookedAssets
+    DEPENDS "${RVX_SAMPLE_COOKED_PRODUCT_RECEIPT}")
+add_dependencies(RenderVerseSamplesCooked RVXRenderQualityLabCookedAssets)
+set_target_properties(RVXRenderQualityLabCookedAssets PROPERTIES
+    FOLDER "Samples/Assets")
+rvx_register_module_target(
+    TARGET RVXRenderQualityLabCookedAssets
+    MODULE Samples
+)
+
 set_target_properties(RenderVerseSamples PROPERTIES
     FOLDER "Samples/Product"
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
 )
 
+set_target_properties(RenderVerseSamplesCooked PROPERTIES
+    FOLDER "Samples/Product"
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+)
+
 rvx_register_module_target(
     TARGET RenderVerseSamples
+    MODULE Samples
+)
+rvx_register_module_target(
+    TARGET RenderVerseSamplesCooked
     MODULE Samples
 )

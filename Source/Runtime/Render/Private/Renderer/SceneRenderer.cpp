@@ -27,6 +27,7 @@
 #include "Render/Graph/RenderGraphCompiler.h"
 #include "Render/Graph/RenderGraphExecutor.h"
 #include "Core/Assert.h"
+#include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
 #include "Core/PathUtils.h"
 #include "Render/Passes/CameraVelocityPass.h"
@@ -65,6 +66,7 @@
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
+#include "RHI/RHICapabilities.h"
 #include "RHI/RHIRenderPass.h"
 #include "Runtime/RenderViewHistoryCoordinator.h"
 
@@ -138,6 +140,74 @@ RenderPassRegistry* SceneRenderer::GetRenderPassRegistry() const noexcept
 
 namespace
 {
+    [[nodiscard]] bool TryAccumulatePerformanceBytes(
+        uint64& total,
+        uint64 value) noexcept
+    {
+        if (value > std::numeric_limits<uint64>::max() - total)
+            return false;
+        total += value;
+        return true;
+    }
+
+    [[nodiscard]] const char* GetPerformanceQualificationBackendName(
+        RHIBackendType backend) noexcept
+    {
+        switch (backend)
+        {
+            case RHIBackendType::DX11: return "dx11";
+            case RHIBackendType::DX12: return "dx12";
+            case RHIBackendType::Vulkan: return "vulkan";
+            case RHIBackendType::Metal: return "metal";
+            case RHIBackendType::OpenGL: return "opengl";
+            case RHIBackendType::None: break;
+        }
+        return "invalid";
+    }
+
+    [[nodiscard]] bool TryDerivePerspectiveCaptureDepthConvention(
+        const RenderViewSnapshot& view,
+        bool& outReverseZ) noexcept
+    {
+        outReverseZ = false;
+        if (!std::isfinite(view.nearPlane) || !std::isfinite(view.farPlane) ||
+            view.nearPlane <= 0.0f || view.farPlane <= view.nearPlane)
+        {
+            return false;
+        }
+
+        // The renderer uses a right-handed camera space (forward is -Z).
+        // Derive, rather than assume, the frozen device convention from the
+        // accepted projection. Orthographic matrices retain W and therefore
+        // fail this perspective-only capture contract.
+        const Vec4 nearClip = view.projectionMatrix *
+            Vec4(0.0f, 0.0f, -view.nearPlane, 1.0f);
+        const Vec4 farClip = view.projectionMatrix *
+            Vec4(0.0f, 0.0f, -view.farPlane, 1.0f);
+        if (!std::isfinite(nearClip.x) || !std::isfinite(nearClip.y) ||
+            !std::isfinite(nearClip.z) || !std::isfinite(nearClip.w) ||
+            !std::isfinite(farClip.x) || !std::isfinite(farClip.y) ||
+            !std::isfinite(farClip.z) || !std::isfinite(farClip.w) ||
+            std::abs(nearClip.w) <= 1.0e-6f ||
+            std::abs(farClip.w) <= 1.0e-6f ||
+            std::abs(nearClip.w - farClip.w) <= 1.0e-6f)
+        {
+            return false;
+        }
+
+        const float32 nearDepth = nearClip.z / nearClip.w;
+        const float32 farDepth = farClip.z / farClip.w;
+        if (!std::isfinite(nearDepth) || !std::isfinite(farDepth) ||
+            nearDepth < -1.0e-4f || nearDepth > 1.0001f ||
+            farDepth < -1.0e-4f || farDepth > 1.0001f ||
+            std::abs(nearDepth - farDepth) <= 1.0e-6f)
+        {
+            return false;
+        }
+        outReverseZ = nearDepth > farDepth;
+        return true;
+    }
+
     [[nodiscard]] RenderFeatureCapabilityMask
     BuildRenderFeatureCapabilityMask(const RHICapabilities& capabilities) noexcept
     {
@@ -1584,9 +1654,24 @@ void SceneRenderer::Initialize(
     RVX_CORE_DEBUG("SceneRenderer initialized");
 }
 
-void SceneRenderer::Shutdown()
+void SceneRenderer::Shutdown(bool deviceLost)
 {
     InvalidateRenderFramePlan();
+    // Do not release timing query/readback resources while their submission is
+    // still completion-owned.  The timing owner is responsible for retaining
+    // a terminal sample; a shutdown path must never turn an in-flight sample
+    // into fabricated "unavailable" evidence.
+    const RenderGraphPassTimingState timingState =
+        m_qualificationPassTiming->GetDiagnostics().state;
+    if (timingState == RenderGraphPassTimingState::Unavailable ||
+        timingState == RenderGraphPassTimingState::Idle ||
+        timingState == RenderGraphPassTimingState::Completed ||
+        timingState == RenderGraphPassTimingState::Rejected)
+    {
+        m_qualificationPassTiming->Shutdown(false);
+    }
+    if (deviceLost || !m_qualityPerformanceSession.HasPendingCompletion())
+        m_qualityPerformanceSession.Shutdown(deviceLost);
     AbandonAcceptedFrameHistory();
     if (GetPostProcessStack())
     {
@@ -3221,7 +3306,14 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_viewData.ambientFloorIntensity =
         m_environmentIBLStats.textureIBLEnabled ? 0.0f : 0.08f;
 
+    const auto visibilityAndDrawPlanningStart =
+        std::chrono::steady_clock::now();
     BuildMaterialDrawLists();
+    m_pendingVisibilityAndDrawPlanningNanoseconds =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() -
+            visibilityAndDrawPlanningStart)
+                                .count());
     return result;
 }
 
@@ -3266,6 +3358,8 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     m_recordingGraphicsSubmissionBaseline = 0;
     m_recordingSubmissionTracker = nullptr;
     m_currentCpuFrameTiming = {};
+    m_currentCpuFrameTiming.visibilityAndDrawPlanning =
+        m_pendingVisibilityAndDrawPlanningNanoseconds;
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
     if (FindPostProcessEffect<ToneMappingPass>())
@@ -3381,6 +3475,234 @@ bool SceneRenderer::ArmDirectOpaqueRasterReadbackQualificationCapture()
     return m_directOpaqueRasterReadbackQualification.Arm();
 }
 
+bool SceneRenderer::ArmQualificationCaptureBundle()
+{
+    return m_qualificationCaptureBridge.Arm();
+}
+
+bool SceneRenderer::ArmRenderQualityPerformanceSession()
+{
+    RenderQualityPerformanceHardwareIdentity hardware;
+    uint64 initialCumulativeTrackedUploadBytes = 0;
+    if (!BuildRenderQualityPerformanceHardwareIdentity(hardware))
+    {
+        m_qualityPerformanceSession.RejectAdmission(
+            RenderQualityPerformanceFailure::InvalidHardwareIdentity,
+            "Render could not freeze a backend capability identity for performance evidence.");
+        return false;
+    }
+    if (!CollectRenderQualityCumulativeTrackedUploadBytes(
+            initialCumulativeTrackedUploadBytes))
+    {
+        m_qualityPerformanceSession.RejectAdmission(
+            RenderQualityPerformanceFailure::TelemetryUnavailable,
+            "Render could not freeze the tracked upload baseline for performance evidence.");
+        return false;
+    }
+    return m_qualityPerformanceSession.Arm(
+        hardware, initialCumulativeTrackedUploadBytes);
+}
+
+void SceneRenderer::RejectRenderQualityPerformanceSessionAdmission(
+    const char* diagnostic) noexcept
+{
+    m_qualityPerformanceSession.RejectAdmission(
+        RenderQualityPerformanceFailure::SubmissionRejected,
+        diagnostic != nullptr
+            ? diagnostic
+            : "RenderThreadRuntime could not admit the performance session.");
+}
+
+bool SceneRenderer::RecordRenderQualityPerformanceCpuTiming(
+    const RenderFrameIdentity& frameIdentity,
+    const RenderQualityPerformanceCpuTiming& timing) noexcept
+{
+    return m_qualityPerformanceSession.RecordCpuTiming(frameIdentity, timing);
+}
+
+bool SceneRenderer::BuildRenderQualityPerformanceHardwareIdentity(
+    RenderQualityPerformanceHardwareIdentity& outIdentity) const noexcept
+{
+    outIdentity = {};
+    const IRHIDevice* const device = m_renderContext != nullptr
+        ? m_renderContext->GetDevice()
+        : nullptr;
+    if (device == nullptr)
+        return false;
+
+    try
+    {
+        const RHICapabilities& capabilities = device->GetCapabilities();
+        outIdentity.backend =
+            GetPerformanceQualificationBackendName(capabilities.backendType);
+        const std::string report = ExportRHICapabilityReportJson(
+            BuildRHICapabilityReport(capabilities));
+        outIdentity.capabilityReportSha256 = Hash::FormatSHA256Digest(
+            Hash::ComputeSHA256(report));
+    }
+    catch (...)
+    {
+        outIdentity = {};
+        return false;
+    }
+    return outIdentity.IsValid();
+}
+
+bool SceneRenderer::CollectRenderQualityCumulativeTrackedUploadBytes(
+    uint64& outTrackedUploadBytes) const noexcept
+{
+    outTrackedUploadBytes = 0;
+    const RenderMutationEvidenceDiagnostics& evidence =
+        m_completedMutationEvidence;
+    if (!evidence.completion.available || evidence.completion.saturated)
+    {
+        return false;
+    }
+
+    return TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.gpuSceneUpload.uploadBytes) &&
+           TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.gpuCulling.instanceUploadBytes) &&
+           TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.gpuCulling.candidateUploadBytes) &&
+           TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.gpuCulling.activeRowUploadBytes) &&
+           TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.directRaster.instanceUploadBytes) &&
+           TryAccumulatePerformanceBytes(
+               outTrackedUploadBytes, evidence.directRaster.indexUploadBytes);
+}
+
+bool SceneRenderer::CollectRenderQualityPerformanceTelemetry(
+    const RenderFrameIdentity& frameIdentity,
+    RenderQualityPerformanceFrameTelemetry& outTelemetry) const noexcept
+{
+    outTelemetry = {};
+    if (!frameIdentity.IsValid() || m_renderGraph == nullptr ||
+        m_transientResourcePool == nullptr ||
+        m_renderResourceRegistry == nullptr ||
+        !m_completedMutationEvidence.completion.available ||
+        m_completedMutationEvidence.completion.completedFrameSequence !=
+            frameIdentity.frameSequence)
+    {
+        return false;
+    }
+
+    try
+    {
+        const TransientResourcePool::Stats poolStats =
+            m_transientResourcePool->GetStats();
+        const RenderResourceRegistryStats registryStats =
+            m_renderResourceRegistry->GetStats();
+        const RenderGraph::Diagnostics graphDiagnostics =
+            m_renderGraph->GetDiagnostics();
+        if (registryStats.residentMeshCount >
+                std::numeric_limits<uint32>::max() ||
+            registryStats.residentTextureCount >
+                std::numeric_limits<uint32>::max() ||
+            registryStats.residentMaterialCount >
+                std::numeric_limits<uint32>::max())
+        {
+            return false;
+        }
+
+        uint64 historyBytes = 0;
+        uint32 importedTextureCount = 0;
+        uint32 importedBufferCount = 0;
+        for (const RenderGraph::ResourceDiagnostic& resource :
+             graphDiagnostics.resources)
+        {
+            if (!resource.used || !resource.imported)
+                continue;
+            uint32& importedCount = resource.type ==
+                    RenderGraph::DiagnosticResourceType::Texture
+                ? importedTextureCount
+                : importedBufferCount;
+            if (importedCount == std::numeric_limits<uint32>::max())
+                return false;
+            ++importedCount;
+
+            // Imported resources with an explicit History name are the exact
+            // temporal backing consumed by this graph. This deliberately
+            // excludes ordinary imported scene assets and the swapchain.
+            if (resource.name.find("History") != std::string::npos &&
+                !TryAccumulatePerformanceBytes(
+                    historyBytes, resource.estimatedMemoryBytes))
+            {
+                return false;
+            }
+        }
+
+        uint64 cumulativeUploadBytes = 0;
+        if (!CollectRenderQualityCumulativeTrackedUploadBytes(
+                cumulativeUploadBytes))
+            return false;
+
+        // The performance lab always builds particle and water feature passes.
+        // Their per-frame uploads are not monotonic mutation totals, therefore
+        // retain them separately and fold them into the exact-frame delta in
+        // the session.  A stale stats record would otherwise attribute a later
+        // frame's VFX upload to this presented receipt.
+        const ParticleFeaturePassStats& particleStats =
+            GetParticleFeaturePassStats();
+        const WaterFeaturePassStats& waterStats = GetWaterFeaturePassStats();
+        if (particleStats.recordFrameIdentity != frameIdentity ||
+            waterStats.recordFrameIdentity != frameIdentity)
+        {
+            return false;
+        }
+        uint64 frameTrackedUploadBytes = 0;
+        if (!TryAccumulatePerformanceBytes(
+                frameTrackedUploadBytes, particleStats.uploadBytes) ||
+            !TryAccumulatePerformanceBytes(
+                frameTrackedUploadBytes, waterStats.uploadBytes))
+        {
+            return false;
+        }
+
+        outTelemetry.frameIdentity = frameIdentity;
+        outTelemetry.trackedUploadCoverageMask =
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_UPLOAD_COVERAGE;
+        outTelemetry.cumulativeTrackedUploadBytes = cumulativeUploadBytes;
+        outTelemetry.frameTrackedUploadBytes = frameTrackedUploadBytes;
+        outTelemetry.cumulativeTrackedUploadBytesAvailable = true;
+        // These are deliberately tracked estimated footprint domains, not a
+        // full GPU memory report.  In particular, imported history remains a
+        // name-classified graph subset until RenderGraph gains lifetime tags.
+        outTelemetry.trackedEstimatedFootprint.coverageMask =
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE;
+        outTelemetry.trackedEstimatedFootprint
+            .transientPoolPhysicalEstimatedBytes = poolStats.totalPooledMemory;
+        outTelemetry.trackedEstimatedFootprint
+            .importedHistoryNamedEstimatedBytes = historyBytes;
+        outTelemetry.trackedEstimatedFootprint
+            .resourceRegistryResidentEstimatedBytes =
+            static_cast<uint64>(registryStats.usedMemory);
+        outTelemetry.trackedEstimatedFootprint.available = true;
+        outTelemetry.resourceCounts.transientTextureCount =
+            poolStats.texturePoolSize;
+        outTelemetry.resourceCounts.transientBufferCount =
+            poolStats.bufferPoolSize;
+        outTelemetry.resourceCounts.importedTextureCount =
+            importedTextureCount;
+        outTelemetry.resourceCounts.importedBufferCount =
+            importedBufferCount;
+        outTelemetry.resourceCounts.residentMeshCount =
+            static_cast<uint32>(registryStats.residentMeshCount);
+        outTelemetry.resourceCounts.residentTextureCount =
+            static_cast<uint32>(registryStats.residentTextureCount);
+        outTelemetry.resourceCounts.residentMaterialCount =
+            static_cast<uint32>(registryStats.residentMaterialCount);
+        outTelemetry.resourceCounts.available = true;
+    }
+    catch (...)
+    {
+        outTelemetry = {};
+        return false;
+    }
+    return outTelemetry.IsValid();
+}
+
 bool SceneRenderer::ArmExposureQualificationProbe()
 {
     if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() == nullptr || m_exposureProbeCompletion ||
@@ -3481,7 +3803,13 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
     static_cast<void>(
         m_directOpaqueRasterReadbackQualification.PollCompletion(tracker));
-
+    static_cast<void>(m_qualificationCaptureBridge.PollCompletion(tracker));
+    if (m_qualificationPassTiming->IsEnabled() &&
+        m_qualificationPassTiming->GetDiagnostics().state ==
+            RenderGraphPassTimingState::PendingCompletion)
+    {
+        static_cast<void>(m_qualificationPassTiming->PollCompletion(tracker));
+    }
     if (m_exposureProbeCompletion &&
         m_exposureProbeHistoryIdentity.has_value())
     {
@@ -3872,6 +4200,20 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
 }
 
+void SceneRenderer::PollRenderQualityPerformanceCompletion(
+    const RenderSubmissionTracker& tracker,
+    const RenderGpuFrameTimingSampleBatch& graphicsTerminalSpans)
+{
+    // The source-bound RenderContext span is the Graphics prelude-to-terminal
+    // command interval. It must bind before polling this session's RenderGraph pass
+    // owners, otherwise a completed per-pass sample could be finalized
+    // without proof that it belongs to the same terminal submission.
+    static_cast<void>(
+        m_qualityPerformanceSession.BindGraphicsTerminalCommandSpans(
+            graphicsTerminalSpans));
+    m_qualityPerformanceSession.PollCompletion(tracker);
+}
+
 bool SceneRenderer::HasPendingGPUSceneCullingQualificationCompletion()
     const noexcept
 {
@@ -3885,6 +4227,66 @@ bool SceneRenderer::HasPendingDirectOpaqueRasterReadbackQualificationCompletion(
     const noexcept
 {
     return m_directOpaqueRasterReadbackQualification.HasPendingCompletion();
+}
+
+bool SceneRenderer::HasPendingQualificationCaptureCompletion() const noexcept
+{
+    return m_qualificationCaptureBridge.HasPendingCompletion() ||
+        (m_qualificationPassTiming->IsEnabled() &&
+         m_qualificationPassTiming->GetDiagnostics().state ==
+             RenderGraphPassTimingState::PendingCompletion);
+}
+
+bool SceneRenderer::IsQualificationCaptureAwaitingGraphRecord() const noexcept
+{
+    return m_qualificationCaptureBridge.IsAwaitingGraphRecord();
+}
+
+const QualificationCaptureDiagnostics&
+SceneRenderer::GetQualificationCaptureDiagnostics() const noexcept
+{
+    return m_qualificationCaptureBridge.GetDiagnostics();
+}
+
+std::shared_ptr<const QualificationCaptureBundle>
+SceneRenderer::GetQualificationCaptureBundle() const noexcept
+{
+    return m_qualificationCaptureBridge.GetCompletedBundle();
+}
+
+const RenderGraphPassTimingDiagnostics&
+SceneRenderer::GetQualificationPassTimingDiagnostics() const noexcept
+{
+    return m_qualificationPassTiming->GetDiagnostics();
+}
+
+std::span<const RenderGraphPassTimingSample>
+SceneRenderer::GetQualificationPassTimingSamples() const noexcept
+{
+    return m_qualificationPassTiming->GetCompletedSamples();
+}
+
+bool SceneRenderer::HasPendingRenderQualityPerformanceCompletion()
+    const noexcept
+{
+    return m_qualityPerformanceSession.HasPendingCompletion();
+}
+
+bool SceneRenderer::IsRenderQualityPerformanceAwaitingFrame() const noexcept
+{
+    return m_qualityPerformanceSession.RequiresExactGraphicsFrame();
+}
+
+const RenderQualityPerformanceSessionDiagnostics&
+SceneRenderer::GetRenderQualityPerformanceDiagnostics() const noexcept
+{
+    return m_qualityPerformanceSession.GetDiagnostics();
+}
+
+std::shared_ptr<const RenderQualityPerformanceEvidence>
+SceneRenderer::GetRenderQualityPerformanceEvidence() const noexcept
+{
+    return m_qualityPerformanceSession.GetCompletedEvidence();
 }
 
 bool SceneRenderer::HasPendingExposureQualificationCompletion() const noexcept
@@ -3924,6 +4326,15 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     }
 
     bool submissionSemanticsAccepted = true;
+    if (!m_qualityPerformanceSession.NotifyGraphicsSubmission(completion))
+    {
+        // GFX24 performance evidence is completion-qualified independently
+        // from physical submission ownership. Keep the already-submitted
+        // presentation lifecycle intact while the session records its first
+        // exact admission failure.
+        RVX_RENDER_WARN(
+            "SceneRenderer: GFX24 performance session rejected the submitted Graphics completion value");
+    }
     if (m_rayTracingSceneStats.prepared &&
         !m_rayTracingSceneRecordingToken.IsValid())
     {
@@ -4018,6 +4429,17 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     {
         RVX_RENDER_WARN(
             "SceneRenderer: Direct Opaque readback qualification completion evidence was rejected");
+    }
+    if (m_qualificationCaptureBridge.GetDiagnostics().state ==
+        QualificationCaptureState::Recorded)
+    {
+        if (!m_qualificationCaptureBridge.NotifySubmission(completion, *tracker))
+        {
+            // The normal frame has an exact owner boundary and must still be
+            // presented. The optional qualification bundle alone fails closed.
+            RVX_RENDER_WARN(
+                "SceneRenderer: RenderQuality qualification capture rejected exact submission evidence");
+        }
     }
     if (GetPostProcessStack() != nullptr)
     {
@@ -4498,6 +4920,18 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     }
     m_directOpaqueRasterReadbackQualification.ReleaseUnsubmitted(
         directQualificationIdentity);
+    m_qualificationCaptureBridge.RejectPending();
+    const RenderGraphPassTimingState timingState =
+        m_qualificationPassTiming->GetDiagnostics().state;
+    if (timingState == RenderGraphPassTimingState::Recording ||
+        timingState == RenderGraphPassTimingState::AwaitingSubmission)
+    {
+        m_qualificationPassTiming->AbortExactGraphicsExecution(
+            "Frame did not reach an exact graphics submission.");
+    }
+    m_qualityPerformanceSession.AbortCurrentFrame(
+        RenderQualityPerformanceFailure::GraphRecordingFailed,
+        "Sampled performance frame did not reach exact graphics submission.");
     m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
     // RenderGraph execution may have realized final depth/back-buffer states,
     // but those states are not persistent until EndFrame submits the frame.
@@ -5320,6 +5754,20 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
     }
+    if (m_qualificationCaptureBridge.GetDiagnostics().state ==
+        QualificationCaptureState::PendingCompletion)
+    {
+        if (!m_qualificationCaptureBridge.FinalizePresentedReceipt(
+                m_lastAttemptedRenderExecutionReceipt))
+        {
+            // The copy resources remain completion-owned. RejectPending only
+            // marks the pending owner; it releases no GPU-visible resource
+            // until the exact graphics token reaches completion.
+            m_qualificationCaptureBridge.RejectPending();
+            RVX_RENDER_WARN(
+                "SceneRenderer: RenderQuality qualification capture rejected final presentation receipt");
+        }
+    }
     m_pendingRenderExecutionReceipt.reset();
     m_pendingReflectionDiagnostics.reset();
     m_frameDiagnostics.attemptedExecutionReceipt =
@@ -5332,6 +5780,19 @@ void SceneRenderer::MarkAcceptedFramePresented(
         m_completedRenderExecutionReceipt;
 
     FreezeMutationEvidenceForPresentedFrame();
+    if (m_qualityPerformanceSession.RequiresFrameTelemetry(
+            m_lastAttemptedRenderExecutionReceipt.frameIdentity))
+    {
+        RenderQualityPerformanceFrameTelemetry telemetry;
+        static_cast<void>(CollectRenderQualityPerformanceTelemetry(
+            m_lastAttemptedRenderExecutionReceipt.frameIdentity, telemetry));
+        if (!m_qualityPerformanceSession.MarkFramePresented(
+                m_lastAttemptedRenderExecutionReceipt, telemetry))
+        {
+            RVX_RENDER_WARN(
+                "SceneRenderer: GFX24 performance session rejected same-frame presentation telemetry");
+        }
+    }
     FreezePresentedMaterialBindingsForPresentedFrame();
 }
 
@@ -7692,6 +8153,13 @@ void SceneRenderer::Render()
     // observable, so start with a fresh recording object.
     m_renderGraph = std::make_unique<RenderGraph>();
 
+    // Freeze one-shot evidence intent before BuildRenderGraph consumes the
+    // request. The capture bridge transitions from Armed to Recorded while
+    // adding its copy passes, so querying only after graph construction would
+    // lose the exact-Graphics requirement for the carrying frame.
+    const bool qualificationTimingRequested =
+        m_qualificationCaptureBridge.IsAwaitingGraphRecord();
+
     // Build the render graph (creates depth buffer if needed, imports resources)
     const auto graphBuildStart = std::chrono::steady_clock::now();
     BuildRenderGraph();
@@ -7726,8 +8194,16 @@ void SceneRenderer::Render()
 
     // Finalize one immutable queue policy and allocation-free plan. Physical
     // resources are deliberately unavailable during this stage.
+    const bool performanceTimingRequested =
+        m_qualityPerformanceSession.RequiresExactGraphicsFrame();
     RenderGraphCompileOptions compileOptions;
-    compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    // A quality capture has to bind one exact Graphics completion point to
+    // both attachment mapping and pass timestamps. MultiQueue would make
+    // that ownership ambiguous, so force the graph policy before compile.
+    compileOptions.queuePolicy =
+        (qualificationTimingRequested || performanceTimingRequested)
+        ? RGQueuePolicy::GraphicsOnly
+        : RGQueuePolicy::PreferMultiQueue;
     compileOptions.canonicalizeTransientPoolAccess =
         m_transientResourcePool != nullptr &&
         m_transientResourcePool->IsInitialized();
@@ -7757,6 +8233,7 @@ void SceneRenderer::Render()
     const auto graphRealizeRecordStart = std::chrono::steady_clock::now();
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     bool graphExecuted = false;
+    bool performanceFramePrepared = false;
     const char* executionSkippedReason = nullptr;
     std::string deferredToneMappingSemanticDiagnostic;
     if (ctx && graphCompileValid)
@@ -7766,6 +8243,59 @@ void SceneRenderer::Render()
         executionEnvironment.transientResourcePool =
             m_transientResourcePool.get();
         executionEnvironment.graphicsContext = ctx;
+        const RenderGraph::CompileStats& timingStats =
+            m_renderGraph->GetCompileStats();
+        const uint32 activePassCount = timingStats.totalPasses >=
+                timingStats.culledPasses
+            ? timingStats.totalPasses - timingStats.culledPasses
+            : 0;
+        if (!performanceTimingRequested &&
+            m_qualificationCaptureBridge.GetDiagnostics().state ==
+                QualificationCaptureState::Recorded)
+        {
+            const RenderGraphPassTimingState priorTimingState =
+                m_qualificationPassTiming->GetDiagnostics().state;
+            const bool canReplaceTimingSample =
+                priorTimingState == RenderGraphPassTimingState::Unavailable ||
+                priorTimingState == RenderGraphPassTimingState::Idle ||
+                priorTimingState == RenderGraphPassTimingState::Completed ||
+                priorTimingState == RenderGraphPassTimingState::Rejected;
+            if (!canReplaceTimingSample)
+            {
+                // Never destroy a nonterminal completion-owned sample merely
+                // because a later visual bundle was requested.
+                RVX_RENDER_WARN(
+                    "SceneRenderer: RenderQuality pass timing is still completion-owned; this visual bundle has no performance sample");
+            }
+            else if (!m_qualificationPassTiming->Initialize(
+                         executionEnvironment.device, activePassCount))
+            {
+                // Visual attachment capture remains independently valid, but
+                // performance qualification receives an explicit unavailable
+                // native-timestamp status. It must not substitute CPU timing.
+                RVX_RENDER_WARN(
+                    "SceneRenderer: RenderQuality pass timing is unavailable; performance evidence will fail closed");
+            }
+            else
+            {
+                executionEnvironment.passTimestampRecorder =
+                    m_qualificationPassTiming.get();
+            }
+        }
+        if (performanceTimingRequested)
+        {
+            IRenderGraphPassTimestampRecorder* recorder =
+                m_qualityPerformanceSession.PrepareFrame(
+                    executionEnvironment.device,
+                    activePassCount,
+                    m_renderScene.GetViewFamily().identity,
+                    m_renderScene.GetView().identity);
+            if (recorder != nullptr)
+            {
+                executionEnvironment.passTimestampRecorder = recorder;
+                performanceFramePrepared = true;
+            }
+        }
         RenderGraphExecutor graphExecutor;
         RenderGraphExecution execution =
             graphExecutor.Prepare(compiledPlan, executionEnvironment);
@@ -8606,6 +9136,25 @@ void SceneRenderer::Render()
                     : "Render feature execution did not complete";
         }
         m_lastAttemptedRenderExecutionReceipt = receipt;
+        if (m_qualificationCaptureBridge.GetDiagnostics().state ==
+            QualificationCaptureState::Recorded)
+        {
+            // Receipt identity does not exist while RenderGraph records. Bind
+            // it only after executor/feature evidence has accepted this exact
+            // graph; a failed optional capture never rewrites normal frame
+            // execution truth.
+            if (!m_qualificationCaptureBridge.FinalizeExecutionReceipt(receipt))
+            {
+                RVX_RENDER_WARN(
+                    "SceneRenderer: RenderQuality qualification capture rejected final execution receipt");
+            }
+        }
+        if (performanceFramePrepared &&
+            !m_qualityPerformanceSession.BindExecutionReceipt(receipt))
+        {
+            RVX_RENDER_WARN(
+                "SceneRenderer: GFX24 performance session rejected the exact execution receipt");
+        }
         if (receipt.executionSucceeded && receipt.IsStructurallyValid())
         {
             if (m_pendingReflectionDiagnostics.has_value() &&
@@ -8620,6 +9169,7 @@ void SceneRenderer::Render()
         }
         else
         {
+            m_qualificationCaptureBridge.RejectPending();
             m_pendingRenderExecutionReceipt.reset();
             m_pendingReflectionDiagnostics.reset();
         }
@@ -12344,6 +12894,112 @@ void SceneRenderer::BuildRenderGraph()
             GetRenderFeatureRegistry()->CollectExecutionReceipt(
                 m_executionBuildIdentity);
         return;
+    }
+
+    if (m_qualificationCaptureBridge.IsAwaitingGraphRecord())
+    {
+        // The capture consumer is deliberately local to the renderer facade:
+        // it adds no feature implementation and cannot publish a substitute
+        // scene surface. It only retains the exact typed feature outputs
+        // already composed into this graph.
+        RenderFeatureDescriptor captureConsumer;
+        captureConsumer.featureId = BuiltinRenderFeatureIds::PostProcessPipeline;
+        captureConsumer.schemaVersion = 1;
+        captureConsumer.name = "RenderQualityCapture";
+        captureConsumer.phase = RenderFeaturePhase::Present;
+        captureConsumer.consumedResources = {
+            {PostProcessOutputs::ResourceId, PostProcessOutputs::SchemaVersion},
+            {TranslucencyOutputs::ResourceId, TranslucencyOutputs::SchemaVersion},
+            {AmbientOcclusionOutputs::ResourceId,
+             AmbientOcclusionOutputs::SchemaVersion}};
+
+        RenderGraphBlackboardCode captureCode =
+            RenderGraphBlackboardCode::Success;
+        const PostProcessOutputs* const postProcess =
+            blackboard.Require<PostProcessOutputs>(
+                captureConsumer.featureId, captureConsumer, &captureCode);
+        const TranslucencyOutputs* const translucency =
+            captureCode == RenderGraphBlackboardCode::Success
+                ? blackboard.Require<TranslucencyOutputs>(
+                    captureConsumer.featureId, captureConsumer, &captureCode)
+                : nullptr;
+        const AmbientOcclusionOutputs* const ambientOcclusion =
+            captureCode == RenderGraphBlackboardCode::Success
+                ? blackboard.Require<AmbientOcclusionOutputs>(
+                    captureConsumer.featureId, captureConsumer, &captureCode)
+                : nullptr;
+
+        bool reverseZ = false;
+        const bool captureInputsValid =
+            captureCode == RenderGraphBlackboardCode::Success &&
+            postProcess != nullptr && translucency != nullptr &&
+            ambientOcclusion != nullptr &&
+            postProcess->provenance == provenance &&
+            translucency->provenance == provenance &&
+            ambientOcclusion->provenance == provenance &&
+            postProcess->frameIdentity == featureContext.frameIdentity &&
+            translucency->frameIdentity == featureContext.frameIdentity &&
+            ambientOcclusion->frameIdentity == featureContext.frameIdentity &&
+            postProcess->viewIdentity == featureContext.viewIdentity &&
+            translucency->viewIdentity == featureContext.viewIdentity &&
+            ambientOcclusion->viewIdentity == featureContext.viewIdentity &&
+            TryDerivePerspectiveCaptureDepthConvention(acceptedView, reverseZ);
+        if (!captureInputsValid)
+        {
+            // Qualification is intentionally optional for the visualizer but
+            // never partial: the ordinary render remains valid while this
+            // one-shot request receives an observable rejected state.
+            m_qualificationCaptureBridge.RejectPending();
+        }
+        else
+        {
+            QualificationCaptureGraphInputs captureInputs;
+            captureInputs.provenance = provenance;
+            captureInputs.frameIdentity = featureContext.frameIdentity;
+            captureInputs.viewIdentity = featureContext.viewIdentity;
+            captureInputs.nearPlane = acceptedView.nearPlane;
+            captureInputs.farPlane = acceptedView.farPlane;
+            captureInputs.originBottomLeft = featureDevice != nullptr &&
+                featureDevice->GetBackendType() == RHIBackendType::OpenGL;
+            captureInputs.reverseZ = reverseZ;
+            captureInputs.perspectiveProjection = true;
+            captureInputs.sources = {{
+                {QualificationCaptureAttachmentSemantic::BeautyLDR,
+                 postProcess->presentableColor,
+                 postProcess->presentableColorMetadata,
+                 blackboard.GetProducer(PostProcessOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::PreToneHDR,
+                 translucency->hdrSceneColor,
+                 translucency->hdrSceneColorMetadata,
+                 blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::LinearDepth,
+                 translucency->deviceDepth,
+                 translucency->deviceDepthMetadata,
+                 blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::Normal,
+                 translucency->worldNormal,
+                 translucency->worldNormalMetadata,
+                 blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::Velocity,
+                 translucency->velocity,
+                 translucency->velocityMetadata,
+                 blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::AmbientOcclusion,
+                 ambientOcclusion->ambientOcclusion,
+                 ambientOcclusion->ambientOcclusionMetadata,
+                 blackboard.GetProducer(AmbientOcclusionOutputs::ResourceId)},
+                {QualificationCaptureAttachmentSemantic::ReactiveMask,
+                 translucency->reactiveMask,
+                 translucency->reactiveMaskMetadata,
+                 blackboard.GetProducer(TranslucencyOutputs::ResourceId)}}};
+            if (featureDevice == nullptr ||
+                !m_qualificationCaptureBridge.Record(
+                    *m_renderGraph, *featureDevice, captureInputs))
+            {
+                RVX_RENDER_WARN(
+                    "SceneRenderer: RenderQuality qualification capture could not record a complete typed attachment bundle");
+            }
+        }
     }
 
     // The PostProcessPipeline feature is the sole owner of the typed HDR to

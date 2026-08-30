@@ -1105,6 +1105,76 @@ namespace
         return true;
     }
 
+    bool RenderThreadRuntime::RequestQualificationCaptureBundle() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_qualificationCaptureBundleRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_qualificationCaptureBundleRequestPending.store(
+                true, std::memory_order_release);
+        }
+        Wake();
+        return true;
+    }
+
+    bool RenderThreadRuntime::RequestRenderQualityPerformanceSession() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_qualityPerformanceRequestIssued.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_qualityPerformanceRequestPending.store(
+                true, std::memory_order_release);
+        }
+        Wake();
+        return true;
+    }
+
     bool RenderThreadRuntime::RequestExposureQualificationProbe() noexcept
     {
         {
@@ -1480,6 +1550,23 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
+            if (m_qualificationCaptureBundleRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                static_cast<void>(
+                    m_consumer->RequestQualificationCaptureBundle());
+                progressed = true;
+            }
+            if (m_qualityPerformanceRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                if (!m_consumer->RequestRenderQualityPerformanceSession())
+                {
+                    m_consumer->RejectRenderQualityPerformanceSessionAdmission(
+                        "RenderThreadRuntime could not arm the requested GFX24 performance session.");
+                }
+                progressed = true;
+            }
             if (m_exposureQualificationProbeRequestPending.exchange(
                     false, std::memory_order_acq_rel))
             {
@@ -1623,6 +1710,35 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
+            bool qualificationBundleRequestBeforeFrameAcquire = false;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                qualificationBundleRequestBeforeFrameAcquire =
+                    m_qualificationCaptureBundleRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+            }
+            if (qualificationBundleRequestBeforeFrameAcquire)
+            {
+                static_cast<void>(
+                    m_consumer->RequestQualificationCaptureBundle());
+                progressed = true;
+            }
+            bool qualityPerformanceRequestBeforeFrameAcquire = false;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                qualityPerformanceRequestBeforeFrameAcquire =
+                    m_qualityPerformanceRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+            }
+            if (qualityPerformanceRequestBeforeFrameAcquire)
+            {
+                if (!m_consumer->RequestRenderQualityPerformanceSession())
+                {
+                    m_consumer->RejectRenderQualityPerformanceSessionAdmission(
+                        "RenderThreadRuntime could not arm the requested GFX24 performance session before frame acquisition.");
+                }
+                progressed = true;
+            }
             bool exposureProbeRequestBeforeFrameAcquire = false;
             {
                 std::lock_guard lock(m_publicationMutex);
@@ -1752,6 +1868,35 @@ namespace
                 {
                     static_cast<void>(m_consumer
                         ->RequestDirectOpaqueRasterReadbackQualificationCapture());
+                    progressed = true;
+                }
+                bool qualificationBundleRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    qualificationBundleRequestBeforeFrameConsume =
+                        m_qualificationCaptureBundleRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (qualificationBundleRequestBeforeFrameConsume)
+                {
+                    static_cast<void>(
+                        m_consumer->RequestQualificationCaptureBundle());
+                    progressed = true;
+                }
+                bool qualityPerformanceRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    qualityPerformanceRequestBeforeFrameConsume =
+                        m_qualityPerformanceRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (qualityPerformanceRequestBeforeFrameConsume)
+                {
+                    if (!m_consumer->RequestRenderQualityPerformanceSession())
+                    {
+                        m_consumer->RejectRenderQualityPerformanceSessionAdmission(
+                            "RenderThreadRuntime could not arm the requested GFX24 performance session before frame consumption.");
+                    }
                     progressed = true;
                 }
                 bool exposureProbeRequestBeforeFrameConsume = false;

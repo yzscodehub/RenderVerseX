@@ -6,6 +6,7 @@
 #include "Render/RenderSubsystem.h"
 #include "Context/RenderContextInternal.h"
 #include "Core/Diagnostics/Trace.h"
+#include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Renderer/RenderScene.h"
@@ -19,6 +20,7 @@
 
 #include <chrono>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -256,7 +258,8 @@ namespace
                 return result;
             }
 
-            const auto frameApplyStart = std::chrono::steady_clock::now();
+            const auto acceptedFrameStart = std::chrono::steady_clock::now();
+            const auto frameApplyStart = acceptedFrameStart;
             const RenderFrameApplyResult applyResult =
                 m_sceneRenderer->ApplyFrameV5(packet,
                                               scene,
@@ -278,6 +281,8 @@ namespace
                 phases);
             if (result.code == RenderRuntimeCode::Running)
             {
+                phases.acceptedFrameTotal =
+                    ElapsedNanoseconds(acceptedFrameStart);
                 RenderCpuFrameTimingDiagnostics timing;
                 timing.sourceFrameSequence = packet.GetHeader().sequence;
                 timing.requiredSceneRevision =
@@ -286,6 +291,49 @@ namespace
                 timing.phases = DiagnosticValue<RenderCpuFramePhaseDurations>::Available(
                     phases);
                 m_lastCpuFrameTiming = std::move(timing);
+
+                RenderQualityPerformanceCpuTiming performanceTiming;
+                performanceTiming.extraction =
+                    RenderQualityPerformanceDuration::Available(
+                        packet.GetExtractionDiagnostics()
+                            .extractionDurationNanoseconds);
+                performanceTiming.visibilityAndDrawPlanning =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.visibilityAndDrawPlanning);
+                performanceTiming.frameApply =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.frameApply);
+                performanceTiming.frameBeginAcquire =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.frameBeginAcquire);
+                performanceTiming.renderPrepare =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.renderPrepare);
+                performanceTiming.policy =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.policy);
+                performanceTiming.graphBuild =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.graphBuild);
+                performanceTiming.graphCompile =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.graphCompile);
+                performanceTiming.graphRealizeRecord =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.graphRealizeRecord);
+                performanceTiming.frameEndSubmit =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.frameEndSubmit);
+                performanceTiming.present =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.present);
+                performanceTiming.acceptedFrameTotal =
+                    RenderQualityPerformanceDuration::Available(
+                        phases.acceptedFrameTotal);
+                static_cast<void>(
+                    m_sceneRenderer->RecordRenderQualityPerformanceCpuTiming(
+                        packet.GetViewFamily().identity,
+                        performanceTiming));
             }
             return result;
         }
@@ -301,6 +349,28 @@ namespace
             return m_sceneRenderer != nullptr &&
                    m_sceneRenderer
                        ->ArmDirectOpaqueRasterReadbackQualificationCapture();
+        }
+
+        bool RequestQualificationCaptureBundle() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer->ArmQualificationCaptureBundle();
+        }
+
+        bool RequestRenderQualityPerformanceSession() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer->ArmRenderQualityPerformanceSession();
+        }
+
+        void RejectRenderQualityPerformanceSessionAdmission(
+            const char* diagnostic) noexcept override
+        {
+            if (m_sceneRenderer != nullptr)
+            {
+                m_sceneRenderer->RejectRenderQualityPerformanceSessionAdmission(
+                    diagnostic);
+            }
         }
 
         bool RequestExposureQualificationProbe() override
@@ -331,19 +401,29 @@ namespace
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());
+            RenderGpuFrameTimingSampleBatch graphicsTerminalSpans;
+            if (m_context != nullptr)
+            {
+                // Drain RenderContext's source-bound Graphics prelude-to-
+                // terminal samples before any GFX24 per-pass timing owner is allowed to
+                // finalize. The session binds source frame + completion value
+                // from this batch to the same pass-query owner.
+                m_context->PollFrameTiming();
+                static_cast<void>(
+                    m_context->ConsumeGpuFrameTimingSamples(
+                        graphicsTerminalSpans));
+            }
             if (m_sceneRenderer != nullptr && m_context != nullptr)
             {
                 if (RenderSubmissionTracker* const tracker =
                         RenderContextInternalAccess::GetSubmissionTracker(
                             *m_context))
                 {
+                    m_sceneRenderer->PollRenderQualityPerformanceCompletion(
+                        *tracker, graphicsTerminalSpans);
                     m_sceneRenderer->PollGPUSceneCullingQualificationCompletion(
                         *tracker);
                 }
-            }
-            if (m_context != nullptr)
-            {
-                m_context->PollFrameTiming();
             }
         }
 
@@ -362,6 +442,11 @@ namespace
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
                         ->HasPendingDirectOpaqueRasterReadbackQualificationCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer->HasPendingQualificationCaptureCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer
+                        ->HasPendingRenderQualityPerformanceCompletion()) ||
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
                         ->HasPendingExposureQualificationCompletion()) ||
@@ -388,6 +473,12 @@ namespace
                     m_context->GetDevice()->GetCapabilities();
                 outDiagnostics.adapterName = capabilities.adapterName;
                 outDiagnostics.driverVersion = capabilities.driverVersion;
+                const std::string capabilityReportJson =
+                    ExportRHICapabilityReportJson(
+                        BuildRHICapabilityReport(capabilities));
+                outDiagnostics.capabilityReportSha256 =
+                    Hash::FormatSHA256Digest(
+                        Hash::ComputeSHA256(capabilityReportJson));
             }
             // PopulateDiagnostics executes on the RenderThreadRuntime owner
             // thread.  Query the queue here so the value-only sample
@@ -398,6 +489,8 @@ namespace
             {
                 return;
             }
+
+            PopulateRenderQualityDiagnostics(outDiagnostics);
 
             const SceneRendererFrameDiagnostics frame =
                 m_sceneRenderer->GetFrameDiagnostics();
@@ -1172,6 +1265,11 @@ namespace
             // current-frame values onto this delayed source-frame evidence.
             if (m_sceneRenderer != nullptr)
             {
+                // These objects own their own request/frame/completion
+                // provenance. Refresh them on completion-only pumps instead
+                // of leaving the update thread with a permanently stale
+                // Armed/Pending snapshot.
+                PopulateRenderQualityDiagnostics(outDiagnostics);
                 const SceneRendererFrameDiagnostics frame =
                     m_sceneRenderer->GetFrameDiagnostics();
                 const RenderExecutionReceipt& completedReceipt =
@@ -1291,12 +1389,24 @@ namespace
                         // readable. Poll before tearing the context down so
                         // the runtime can publish this final delayed sample.
                         m_context->PollFrameTiming();
+                        RenderGpuFrameTimingSampleBatch graphicsTerminalSpans;
+                        static_cast<void>(
+                            m_context->ConsumeGpuFrameTimingSamples(
+                                graphicsTerminalSpans));
+                        if (m_sceneRenderer != nullptr &&
+                            submissionTracker != nullptr)
+                        {
+                            m_sceneRenderer
+                                ->PollRenderQualityPerformanceCompletion(
+                                    *submissionTracker,
+                                    graphicsTerminalSpans);
+                        }
                         m_shutdownGpuFrameTiming =
                             GetGpuTimingDiagnostics();
                     }
                     if (m_sceneRenderer != nullptr)
                     {
-                        m_sceneRenderer->Shutdown();
+                        m_sceneRenderer->Shutdown(bypassCompletion);
                         m_sceneRenderer.reset();
                     }
                     if (bypassCompletion)
@@ -1408,6 +1518,35 @@ namespace
             outDiagnostics.gpuFrameTiming = GetGpuTimingDiagnostics();
         }
 
+        void PopulateRenderQualityDiagnostics(
+            RenderDiagnosticsSnapshot& outDiagnostics) const
+        {
+            if (m_sceneRenderer == nullptr)
+            {
+                outDiagnostics.qualificationCapture = {};
+                outDiagnostics.qualityPerformance = {};
+                return;
+            }
+            outDiagnostics.qualificationCapture.requestPending =
+                m_sceneRenderer->IsQualificationCaptureAwaitingGraphRecord();
+            outDiagnostics.qualificationCapture.capture =
+                m_sceneRenderer->GetQualificationCaptureDiagnostics();
+            outDiagnostics.qualificationCapture.completedBundle =
+                m_sceneRenderer->GetQualificationCaptureBundle();
+            outDiagnostics.qualificationCapture.passTiming =
+                m_sceneRenderer->GetQualificationPassTimingDiagnostics();
+            const std::span<const RenderGraphPassTimingSample> completedTiming =
+                m_sceneRenderer->GetQualificationPassTimingSamples();
+            outDiagnostics.qualificationCapture.completedPassTimings.assign(
+                completedTiming.begin(), completedTiming.end());
+            outDiagnostics.qualityPerformance.requestPending =
+                m_sceneRenderer->IsRenderQualityPerformanceAwaitingFrame();
+            outDiagnostics.qualityPerformance.session =
+                m_sceneRenderer->GetRenderQualityPerformanceDiagnostics();
+            outDiagnostics.qualityPerformance.completedEvidence =
+                m_sceneRenderer->GetRenderQualityPerformanceEvidence();
+        }
+
         [[nodiscard]] RenderGpuFrameTimingDiagnostics
             GetGpuTimingDiagnostics() const
         {
@@ -1499,6 +1638,8 @@ namespace
 
             const SceneRendererCpuFrameTiming& rendererTiming =
                 m_sceneRenderer->GetCurrentCpuFrameTiming();
+            phases.visibilityAndDrawPlanning =
+                rendererTiming.visibilityAndDrawPlanning;
             phases.renderPrepare = rendererTiming.renderPrepare;
             phases.policy = rendererTiming.policy;
             phases.graphBuild = rendererTiming.graphBuild;
@@ -2208,6 +2349,18 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
         return m_runtime != nullptr &&
                m_runtime
                    ->RequestDirectOpaqueRasterReadbackQualificationCapture();
+    }
+
+    bool RenderSubsystem::RequestQualificationCaptureBundle() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestQualificationCaptureBundle();
+    }
+
+    bool RenderSubsystem::RequestRenderQualityPerformanceSession() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestRenderQualityPerformanceSession();
     }
 
     bool RenderSubsystem::RequestExposureQualificationProbe() noexcept

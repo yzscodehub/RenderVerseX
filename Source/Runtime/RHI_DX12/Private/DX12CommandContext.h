@@ -151,6 +151,17 @@ namespace RVX
         // =========================================================================
         void BeginQuery(RHIQueryPool* pool, uint32 index) override;
         void EndQuery(RHIQueryPool* pool, uint32 index) override;
+        bool TryResetQueries(
+            RHIQueryPool* pool,
+            uint32 firstQuery,
+            uint32 queryCount) noexcept override;
+        bool TryWriteTimestamp(RHIQueryPool* pool, uint32 index) noexcept override;
+        bool TryResolveQueries(
+            RHIQueryPool* pool,
+            uint32 firstQuery,
+            uint32 queryCount,
+            RHIBuffer* destBuffer,
+            uint64 destOffset) noexcept override;
         void WriteTimestamp(RHIQueryPool* pool, uint32 index) override;
         void ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
                             RHIBuffer* destBuffer, uint64 destOffset) override;

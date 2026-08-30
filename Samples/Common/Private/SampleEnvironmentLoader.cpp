@@ -2,7 +2,7 @@
 
 #include "Samples/SampleEnvironmentLoader.h"
 
-#include "AssetImport/EnvironmentLoader.h"
+#include "Samples/SampleHostComposition.h"
 
 #include <algorithm>
 #include <cctype>
@@ -14,34 +14,6 @@ namespace RVX
 {
     namespace
     {
-        [[nodiscard]] bool TryResolveQualityProfile(
-            const SampleEnvironmentLoadOptions& sampleOptions,
-            Resource::HDRIBLQualityProfile& outProfile)
-        {
-            if (sampleOptions.quality != "default" && sampleOptions.quality != "low" &&
-                sampleOptions.quality != "high")
-            {
-                return false;
-            }
-            if (sampleOptions.smoke)
-            {
-                outProfile = Resource::HDRIBLQualityProfile::Validation;
-                return true;
-            }
-            if (sampleOptions.quality == "low")
-            {
-                outProfile = Resource::HDRIBLQualityProfile::Low;
-                return true;
-            }
-            if (sampleOptions.quality == "high")
-            {
-                outProfile = Resource::HDRIBLQualityProfile::High;
-                return true;
-            }
-            outProfile = Resource::HDRIBLQualityProfile::Default;
-            return true;
-        }
-
         [[nodiscard]] std::string GetLowercaseExtension(
             const std::filesystem::path& path)
         {
@@ -102,18 +74,23 @@ namespace RVX
 
     SampleEnvironmentLoader::SampleEnvironmentLoader(
         IWorldEcsRuntimeServices& runtimeServices,
-        ECS::SceneRuntimeId sceneRuntimeId) noexcept
-        : m_runtimeServices(runtimeServices), m_sceneRuntimeId(sceneRuntimeId)
+        ECS::SceneRuntimeId sceneRuntimeId,
+        const ISampleHostComposition& composition) noexcept
+        : m_runtimeServices(runtimeServices)
+        , m_sceneRuntimeId(sceneRuntimeId)
+        , m_composition(composition)
     {
     }
 
     SampleEnvironmentLoader::SampleEnvironmentLoader(
         IWorldEcsRuntimeServices& runtimeServices,
         ECS::SceneRuntimeId sceneRuntimeId,
-        SampleAssetRegistry assetRegistry)
+        SampleAssetRegistry assetRegistry,
+        const ISampleHostComposition& composition)
         : m_runtimeServices(runtimeServices)
         , m_sceneRuntimeId(sceneRuntimeId)
         , m_assetRegistry(std::move(assetRegistry))
+        , m_composition(composition)
     {
     }
 
@@ -245,31 +222,24 @@ namespace RVX
             return false;
         }
 
-        Resource::HDRIBLQualityProfile quality;
-        if (!TryResolveQualityProfile(options, quality))
-        {
-            outError = "Environment quality must be one of: default, low, high.";
-            return false;
-        }
-
         ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
         desc.path = resourcePath;
         if (!packageOnly)
         {
-            Resource::EnvironmentLoadOptions environmentOptions;
-            environmentOptions.quality = quality;
-            environmentOptions.exposure = options.exposure;
-            environmentOptions.applyGamma = false;
             Resource::ResourceLoadError preparationError;
-            desc.preparationState =
-                Resource::EnvironmentLoader::CreatePreparationState(
-                    environmentOptions,
+            const SampleSourceEnvironmentPreparationRequest preparationRequest{
+                .quality = options.quality,
+                .smoke = options.smoke,
+                .exposure = options.exposure};
+            if (!m_composition.PrepareSourceEnvironment(
+                    preparationRequest,
                     desc.resourceOptions.importOptionsHash,
-                    preparationError);
-            if (!desc.preparationState)
+                    desc.preparationState,
+                    preparationError) ||
+                !desc.preparationState)
             {
                 outError = preparationError.message.empty()
-                               ? "Environment preparation state creation failed."
+                               ? "Sample host rejected environment source preparation."
                                : preparationError.message;
                 return false;
             }

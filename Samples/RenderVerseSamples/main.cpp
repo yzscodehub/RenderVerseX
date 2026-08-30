@@ -2,12 +2,14 @@
 
 #include "RegisterSamples.h"
 #include "Samples/SampleManifest.h"
+#include "Samples/SampleHostComposition.h"
 #include "Samples/SampleRegistry.h"
 #include "Samples/SampleRunner.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -126,5 +128,12 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    return RVX::SampleRunner(registry).Run(argc, argv);
+    const std::unique_ptr<RVX::ISampleHostComposition> composition =
+        RVX::CreateSampleDevelopmentComposition();
+    if (!composition)
+    {
+        std::cerr << "Failed to create development Sample composition\n";
+        return 1;
+    }
+    return RVX::SampleRunner(registry, *composition).Run(argc, argv);
 }

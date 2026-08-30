@@ -56,6 +56,16 @@ namespace RVX
         void DiscardFrame(uint32 frameIndex, bool lost) noexcept;
         void MarkAllLost() noexcept;
 
+        /**
+         * @brief Move every completed source-bound sample into @p outSamples.
+         *
+         * The operation is all-or-nothing and never waits. `false` means no
+         * complete sample is available; callers must not infer timing from a
+         * latest diagnostic snapshot in that case.
+         */
+        bool ConsumeCompletedSamples(
+            RenderGpuFrameTimingSampleBatch& outSamples) noexcept;
+
         [[nodiscard]] const RenderGpuFrameTimingDiagnostics& GetDiagnostics() const noexcept
         {
             return m_diagnostics;
@@ -86,6 +96,10 @@ namespace RVX
         void PublishSample(const Slot& slot,
                            uint64 startTimestamp,
                            uint64 endTimestamp) noexcept;
+        [[nodiscard]] bool HasCompletedSampleQueueCapacity() const noexcept;
+        void EnqueueCompletedSample(
+            const RenderGpuFrameTimingSample& sample) noexcept;
+        void ClearCompletedSamples() noexcept;
 
         IRHIDevice* m_device = nullptr;
         RHIQueryPoolRef m_queryPool;
@@ -95,5 +109,9 @@ namespace RVX
         uint32 m_timestampValidBits = 0;
         bool m_enabled = false;
         RenderGpuFrameTimingDiagnostics m_diagnostics;
+        std::array<RenderGpuFrameTimingSample,
+                   RVX_RENDER_GPU_FRAME_TIMING_SAMPLE_QUEUE_CAPACITY>
+            m_completedSamples{};
+        uint32 m_completedSampleCount = 0;
     };
 } // namespace RVX

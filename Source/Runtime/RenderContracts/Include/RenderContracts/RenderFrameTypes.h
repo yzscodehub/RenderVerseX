@@ -745,6 +745,15 @@ namespace RVX
         uint32 featureProviderVisitCount = 0;
         /** @brief True when the feed cursor required an authoritative resync. */
         bool continuityLost = false;
+        /**
+         * @brief Update-owner CPU time spent preparing this immutable packet.
+         *
+         * This is measured inside EcsFrameExtractor after candidate state and
+         * packet inputs are complete, immediately before immutable allocation
+         * and transport hand-off. Render must not replace it with frame-apply,
+         * queue-wait, or submission time.
+         */
+        uint64 extractionDurationNanoseconds = 0;
         bool complete = false;
     };
 

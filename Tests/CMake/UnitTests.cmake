@@ -649,7 +649,6 @@ if(TARGET RVX_SampleCommon)
         TAGS product.samples subsystem.particle suite.particle-vfx
         TIMEOUT 30
     )
-
     # GFX18 receipt predicates and immutable sample metadata are ordinary
     # deterministic unit coverage.  The native qualification matrix owns the
     # sole GFX18 water qualification tag, so this target deliberately carries only
@@ -1325,3 +1324,71 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )
+
+if(RVX_ENABLE_GFX24_QUALIFICATION)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    # This target has no generated binary: it owns the immutable Python
+    # contract inputs so suite builds fail if any validator source is absent.
+    add_custom_target(RenderQualityMetricsValidation
+        DEPENDS
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_performance.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py"
+    )
+    rvx_register_module_target(
+        TARGET RenderQualityMetricsValidation
+        MODULE Tests
+        INFRASTRUCTURE
+    )
+
+    rvx_add_gtest(
+        NAME RenderQualityLabSampleValidation
+        LANE unit
+        SOURCES RenderQualityLabSampleValidation/main.cpp
+        LIBS
+            RVX::Gfx24SampleScenarios
+            RVX::SampleCommon
+            RVX::SampleScenarioContracts
+            RVX::Engine
+        INCLUDES ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+        TAGS product.samples subsystem.render trait.contract suite.gfx24-qualification
+        SUITE gfx24-qualification
+        TIMEOUT 30
+    )
+    # The Scenario target deliberately keeps its public module include roots
+    # private.  The unit test includes the scenario header directly, so mirror
+    # that audited contract surface without widening the scenario target.
+    rvx_apply_scenario_contract_include_roots(
+        RenderQualityLabSampleValidation
+        RVX_AssetContracts
+        RVX_Core
+        RVX_ECS
+        RVX_Geometry
+        Particle
+        RVX_Physics
+        RVX_RenderContracts
+        RVX_ResourceRuntime
+        RVX_ResourceSceneAdapters
+        RVX_Scene
+        RVX_Water
+        RVX_World
+    )
+
+    rvx_add_validation_test(
+        LANE unit
+        NAME RenderQualityMetricsValidationSelfTest
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
+            -v
+        BUILD_TARGETS RenderQualityMetricsValidation
+        REQUIRED_FILES
+            ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py
+            ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_performance.py
+            ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
+        TAGS subsystem.render trait.contract suite.gfx24-qualification
+        SUITE gfx24-qualification
+        TIMEOUT 60
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+endif()

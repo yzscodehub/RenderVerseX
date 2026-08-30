@@ -85,6 +85,25 @@ namespace RenderRuntimeDetail
         {
             return false;
         }
+        /** @brief Arm one owner-side complete RenderQuality attachment bundle. */
+        [[nodiscard]] virtual bool RequestQualificationCaptureBundle()
+        {
+            return false;
+        }
+        /** @brief Arm one fixed Render-owned GFX24 performance session. */
+        [[nodiscard]] virtual bool RequestRenderQualityPerformanceSession()
+        {
+            return false;
+        }
+        /**
+         * @brief Project an asynchronous performance-admission failure to the
+         * render owner diagnostics before the caller can wait for a frame.
+         */
+        virtual void RejectRenderQualityPerformanceSessionAdmission(
+            const char* diagnostic) noexcept
+        {
+            (void)diagnostic;
+        }
         /** @brief Arm one owner-side physical-exposure qualification probe. */
         [[nodiscard]] virtual bool RequestExposureQualificationProbe()
         {
@@ -318,6 +337,10 @@ namespace RenderRuntimeDetail
         /** @brief Publish one explicit Direct Opaque readback qualification request. */
         [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
             noexcept;
+        /** @brief Publish one complete RenderQuality bundle request to the owner. */
+        [[nodiscard]] bool RequestQualificationCaptureBundle() noexcept;
+        /** @brief Publish one fixed performance-session request to the owner. */
+        [[nodiscard]] bool RequestRenderQualityPerformanceSession() noexcept;
         /** @brief Publish one explicit physical-exposure qualification probe request. */
         [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
         /** @brief Publish one explicit GTAO visibility probe request. */
@@ -447,6 +470,10 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_directOpaqueRasterReadbackQualificationRequestPending =
             false;
+        std::atomic<bool> m_qualificationCaptureBundleRequestIssued = false;
+        std::atomic<bool> m_qualificationCaptureBundleRequestPending = false;
+        std::atomic<bool> m_qualityPerformanceRequestIssued = false;
+        std::atomic<bool> m_qualityPerformanceRequestPending = false;
         std::atomic<bool> m_exposureQualificationProbeRequestIssued = false;
         std::atomic<bool> m_exposureQualificationProbeRequestPending = false;
         std::atomic<bool> m_ambientOcclusionQualificationProbeRequestIssued =

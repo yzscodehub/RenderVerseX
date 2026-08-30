@@ -1,4 +1,5 @@
 #include "Render/Passes/WaterFeaturePass.h"
+#include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderClipConvention.h"
 #include "Render/Water/GerstnerReference.h"
@@ -24,6 +25,7 @@ namespace
     // 256-byte aligned descriptor range: the v3 water ABI is 544 bytes.
     constexpr uint32 RVX_WATER_CONSTANT_BUFFER_SIZE = 768u;
     constexpr uint32 RVX_WATER_SURFACE_RECEIPT_CAPACITY = 64u;
+    constexpr uint32 RVX_WATER_EXPOSURE_STATE_BINDING = 5u;
 
     struct WaterGridVertex
     {
@@ -81,6 +83,25 @@ namespace
     {
         return resource == nullptr ||
             builder.RetainSubmissionResource(Ref<RefCounted>(resource));
+    }
+
+    [[nodiscard]] bool IsSameBufferHandle(
+        const RGBufferHandle& lhs, const RGBufferHandle& rhs) noexcept
+    {
+        return lhs.index == rhs.index && lhs.hasRange == rhs.hasRange &&
+            lhs.rangeOffset == rhs.rangeOffset && lhs.rangeSize == rhs.rangeSize &&
+            lhs.graphIdentity == rhs.graphIdentity &&
+            lhs.recordingGeneration == rhs.recordingGeneration;
+    }
+
+    [[nodiscard]] SceneTextures::ExposureStateMetadata
+    MakeExposureStateMetadata(const ViewData& view) noexcept
+    {
+        return {
+            view.exposureStateSchemaVersion,
+            view.exposureStateStride,
+            view.exposureStateMode,
+            view.exposureStateConfigurationHash};
     }
 
     [[nodiscard]] bool IsReadyWaterItem(
@@ -455,6 +476,9 @@ private:
                                  RHIShaderStage::Pixel);
         setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
                                  RHIShaderStage::Pixel);
+        setLayoutDesc.AddBinding(RVX_WATER_EXPOSURE_STATE_BINDING,
+                                 RHIBindingType::ShaderResourceBuffer,
+                                 RHIShaderStage::Pixel);
         m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
         if (!m_descriptorSetLayout)
         {
@@ -679,6 +703,7 @@ namespace
         RGTextureHandle opaqueSnapshotHandle{};
         RGTextureHandle depthSnapshotHandle{};
         RGTextureHandle froxelVolumetricLightingHandle{};
+        RGBufferHandle exposureStateReadHandle{};
         RGTextureViewHandle colorView{};
         RGTextureViewHandle depthView{};
         RGTextureViewHandle reactiveMaskView{};
@@ -686,6 +711,7 @@ namespace
         RGTextureViewHandle depthSnapshotView{};
         RGTextureViewHandle froxelVolumetricLightingView{};
         RHITextureViewRef neutralFroxelVolumetricLightingView{};
+        uint64 exposureStateContentHash = 0;
         bool contextValid = false;
         WaterFeaturePass* owner = nullptr;
     };
@@ -737,12 +763,19 @@ namespace
     {
         if (!data.contextValid || !data.submission.IsReady() ||
             !data.waterSurface.IsCompatibleWith(data.execution.identity) ||
+            !IsSameBufferHandle(data.waterSurface.exposureState,
+                                data.execution.view.exposureState) ||
+            data.waterSurface.exposureStateContentHash !=
+                data.execution.view.exposureStateContentHash ||
+            !MakeExposureStateMetadata(data.execution.view).IsValid() ||
             !IsCompatibleFroxelVolumetricLighting(
                 data.volumetricLighting, data.execution.identity) ||
             data.pipelineCache == nullptr ||
             !data.execution.view.colorTarget.IsValid() ||
             !data.execution.view.depthTarget.IsValid() ||
-            !data.execution.view.reactiveMaskTarget.IsValid())
+            !data.execution.view.reactiveMaskTarget.IsValid() ||
+            !data.execution.view.exposureState.IsValid() ||
+            data.execution.view.exposureStateContentHash == 0)
         {
             return false;
         }
@@ -759,6 +792,8 @@ namespace
             data.volumetricLighting.identityRoute ? nullptr :
             builder.GetTextureDesc(
                 data.volumetricLighting.integratedScatteringTransmittance);
+        const RHIBufferDesc* const exposureStateDesc = builder.GetBufferDesc(
+            data.waterSurface.exposureState);
         const auto exactExtent = [&view](const RHITextureDesc* desc)
         {
             return desc != nullptr && desc->width == view.viewportWidth &&
@@ -773,6 +808,11 @@ namespace
             reactiveDesc->format != RHIFormat::R8_UNORM ||
             opaqueSnapshotDesc->format != RHIFormat::RGBA16_FLOAT ||
             depthSnapshotDesc->format != RHIFormat::D32_FLOAT ||
+            exposureStateDesc == nullptr ||
+            exposureStateDesc->size != SceneTextures::ExposureStateStride ||
+            exposureStateDesc->stride != SceneTextures::ExposureStateStride ||
+            !HasFlag(exposureStateDesc->usage, RHIBufferUsage::Structured) ||
+            !HasFlag(exposureStateDesc->usage, RHIBufferUsage::ShaderResource) ||
             (!data.volumetricLighting.identityRoute &&
              !IsExactFroxelVolumetricTexture(
                  froxelVolumetricLightingDesc, data.volumetricLighting)))
@@ -823,6 +863,11 @@ namespace
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
         data.depthSnapshotHandle = builder.Read(data.waterSurface.depthSnapshot,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
+        data.exposureStateReadHandle = builder.Read(
+            data.waterSurface.exposureState,
+            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                  RHIShaderStage::Pixel));
+        data.exposureStateContentHash = data.waterSurface.exposureStateContentHash;
         if (!data.volumetricLighting.identityRoute)
         {
             data.froxelVolumetricLightingHandle = builder.Read(
@@ -898,7 +943,8 @@ namespace
         return data.colorView.IsValid() && data.reactiveMaskView.IsValid() &&
             data.depthView.IsValid() && data.opaqueSnapshotHandle.IsValid() &&
             data.opaqueSnapshotView.IsValid() && data.depthSnapshotHandle.IsValid() &&
-            data.depthSnapshotView.IsValid() &&
+            data.depthSnapshotView.IsValid() && data.exposureStateReadHandle.IsValid() &&
+            data.exposureStateContentHash != 0 &&
             (data.volumetricLighting.identityRoute
                 ? static_cast<bool>(data.neutralFroxelVolumetricLightingView)
                 : data.froxelVolumetricLightingHandle.IsValid() &&
@@ -927,6 +973,16 @@ namespace
                 : context.GetTextureView(data.froxelVolumetricLightingView);
         if (opaqueSnapshot == nullptr || depthSnapshot == nullptr ||
             froxelVolumetricLighting == nullptr)
+        {
+            return {};
+        }
+        RHIBuffer* const exposureState = context.GetBuffer(
+            data.exposureStateReadHandle);
+        if (exposureState == nullptr ||
+            exposureState->GetSize() != SceneTextures::ExposureStateStride ||
+            exposureState->GetStride() != SceneTextures::ExposureStateStride ||
+            !HasFlag(exposureState->GetUsage(), RHIBufferUsage::Structured) ||
+            !HasFlag(exposureState->GetUsage(), RHIBufferUsage::ShaderResource))
         {
             return {};
         }
@@ -960,12 +1016,14 @@ namespace
             .BindTexture(1, opaqueSnapshot)
             .BindTexture(2, depthSnapshot)
             .BindSampler(3, data.submission.linearClampSampler.Get())
-            .BindTexture(4, froxelVolumetricLighting);
+            .BindTexture(4, froxelVolumetricLighting)
+            .BindBuffer(RVX_WATER_EXPOSURE_STATE_BINDING, exposureState);
         RHIDescriptorSetRef descriptorSet = data.submission.device->CreateDescriptorSet(
             descriptorDesc);
         if (!descriptorSet || !descriptorSet->IsReadyForBinding(
                 data.submission.descriptorSetLayout.Get()) ||
-            !context.RetainSubmissionResource(descriptorSet))
+            !context.RetainSubmissionResource(descriptorSet) ||
+            !context.RetainSubmissionResource(Ref<RefCounted>(exposureState)))
         {
             return {};
         }
@@ -1001,6 +1059,8 @@ namespace
             !data.colorView.IsValid() || !data.reactiveMaskView.IsValid() ||
             !data.depthView.IsValid() || !data.opaqueSnapshotView.IsValid() ||
             !data.depthSnapshotView.IsValid() ||
+            !data.exposureStateReadHandle.IsValid() ||
+            data.exposureStateContentHash == 0 ||
             !IsCompatibleFroxelVolumetricLighting(
                 data.volumetricLighting, data.execution.identity) ||
             (data.volumetricLighting.identityRoute
@@ -1068,9 +1128,16 @@ namespace
                 std::memory_order_acquire);
         stats.depthSnapshotReady = data.waterSurface.depthReceipt != nullptr &&
             data.waterSurface.depthReceipt->copied.load(std::memory_order_acquire);
-        if (!stats.opaqueSceneSnapshotReady || !stats.depthSnapshotReady)
+        stats.exposureStateReady = true;
+        stats.exposureStateReadDeclared = true;
+        stats.exposureStateDescriptorBound = true;
+        stats.exposureStateContentHash = data.exposureStateContentHash;
+        if (!stats.opaqueSceneSnapshotReady || !stats.depthSnapshotReady ||
+            !stats.exposureStateReady || !stats.exposureStateReadDeclared ||
+            !stats.exposureStateDescriptorBound ||
+            stats.exposureStateContentHash == 0)
         {
-            fail("Water snapshot copy receipt was not completed before draw execution");
+            fail("Water snapshot or committed exposure-state binding was not completed before draw execution");
             return;
         }
         stats.depthLinearizationReady = true;
@@ -1127,6 +1194,7 @@ WaterSurfaceRequirements WaterFeaturePass::GetRequirements() const noexcept
     requirements.opaqueSceneSnapshotRequired = requirements.requested;
     requirements.depthSnapshotRequired = requirements.requested;
     requirements.reactiveMaskRequired = requirements.requested;
+    requirements.exposureStateRequired = requirements.requested;
     return requirements;
 }
 

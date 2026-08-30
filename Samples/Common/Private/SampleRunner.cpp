@@ -4,21 +4,23 @@
 
 #include "Core/Core.h"
 #include "Core/Diagnostics/Trace.h"
+#include "Core/Hash/SHA256.h"
 #include "Engine/Engine.h"
-#include "Engine/ShippingRuntimeComposition.h"
-#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
 #include "RenderContracts/RenderPipelineProfile.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
-#include "Samples/RuntimeFrameDriver.h"
 #include "Samples/FrameworkAssessment.h"
+#include "Samples/RenderQualityPerformanceWriter.h"
+#include "Samples/RenderQualityQualificationWriter.h"
+#include "Samples/RuntimeFrameDriver.h"
 #include "Samples/SampleAnimationLoader.h"
 #include "Samples/SampleAssetCatalog.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleEnvironmentLoader.h"
+#include "Samples/SampleHostComposition.h"
 #include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleModelLoader.h"
 #include "Samples/SampleParticleEffectLoader.h"
@@ -50,12 +52,23 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#elif defined(__linux__) || defined(__APPLE__)
+#include <sys/utsname.h>
 #endif
 
 namespace RVX
 {
 namespace
 {
+    static_assert(
+        RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_UPLOAD_COVERAGE ==
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_UPLOAD_COVERAGE,
+        "Sample performance report upload coverage must match Render evidence");
+    static_assert(
+        RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_FOOTPRINT_COVERAGE ==
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE,
+        "Sample performance report footprint coverage must match Render evidence");
+
     [[nodiscard]] bool TryMapSamplePipelineRecipe(
         SamplePipelineRecipe sampleRecipe,
         RenderPipelineRecipe& outRecipe) noexcept
@@ -147,12 +160,231 @@ namespace
 #endif
     }
 
+    /**
+     * @brief Return an OS build captured at performance-session admission.
+     *
+     * Windows uses RtlGetVersion because compatibility manifests can make
+     * GetVersionEx report an older build. POSIX hosts use uname's kernel
+     * release from the running host. Unsupported hosts fail closed.
+     */
+    [[nodiscard]] std::string ResolveHostOperatingSystemBuild()
+    {
+#if defined(_WIN32)
+        struct RtlOsVersionInformation
+        {
+            ULONG size = 0;
+            ULONG major = 0;
+            ULONG minor = 0;
+            ULONG build = 0;
+            ULONG platformId = 0;
+            WCHAR servicePack[128]{};
+        };
+        using RtlGetVersionFunction = LONG(WINAPI*)(
+            RtlOsVersionInformation*);
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto getVersion = ntdll != nullptr
+            ? reinterpret_cast<RtlGetVersionFunction>(
+                  GetProcAddress(ntdll, "RtlGetVersion"))
+            : nullptr;
+        RtlOsVersionInformation version{};
+        version.size = sizeof(version);
+        if (getVersion == nullptr || getVersion(&version) != 0 ||
+            version.major == 0 || version.build == 0)
+        {
+            return {};
+        }
+        return "Windows-" + std::to_string(version.major) + "." +
+               std::to_string(version.minor) + "." +
+               std::to_string(version.build);
+#elif defined(__linux__) || defined(__APPLE__)
+        struct utsname version{};
+        if (uname(&version) != 0 || version.sysname[0] == '\0' ||
+            version.release[0] == '\0')
+        {
+            return {};
+        }
+        return std::string(version.sysname) + "-" + version.release;
+#else
+        return {};
+#endif
+    }
+
     [[nodiscard]] RenderExecutionBuildIdentity
     ReadValidationExecutionBuildIdentity()
     {
         return RenderExecutionBuildIdentity{
             ReadEnvironmentString("RVX_VALIDATION_SOURCE_COMMIT"),
             ReadEnvironmentString("RVX_VALIDATION_PRESET")};
+    }
+
+    struct FrozenRenderQualityPerformanceHostProvenance
+    {
+        std::string runId{};
+        std::string adapterName{};
+        std::string driverVersion{};
+        std::string osBuild{};
+        std::string capabilityHash{};
+    };
+
+    [[nodiscard]] float64 NanosecondsToMilliseconds(
+        const RenderQualityPerformanceDuration duration) noexcept
+    {
+        return static_cast<float64>(duration.nanoseconds) / 1000000.0;
+    }
+
+    [[nodiscard]] bool BuildRenderQualityPerformanceWriteRequest(
+        const RenderQualityPerformanceEvidence& evidence,
+        const FrozenRenderQualityPerformanceHostProvenance& host,
+        const SampleRunnerCLIOptions& options,
+        const SampleScenarioManifest& manifest,
+        RenderQualityPerformanceWriteRequest& outRequest,
+        std::string* outError)
+    {
+        const auto fail = [outError](std::string message)
+        {
+            if (outError != nullptr)
+            {
+                *outError = std::move(message);
+            }
+            return false;
+        };
+        if (!evidence.IsComplete() || evidence.samples.empty() ||
+            host.runId.empty() || host.adapterName.empty() ||
+            host.driverVersion.empty() || host.osBuild.empty() ||
+            host.capabilityHash.empty() || manifest.captureTicks.empty() ||
+            options.qualificationPerformancePath.empty() ||
+            options.qualificationPerformanceBaselineIdentity.empty() ||
+            !options.captureTickResolved || options.captureTick == 0 ||
+            evidence.hardware.capabilityReportSha256 != host.capabilityHash)
+        {
+            return fail(
+                "GFX24 performance evidence or frozen host provenance is incomplete");
+        }
+
+        const RenderQualityPerformanceReceiptBinding& firstBinding =
+            evidence.samples.front().binding;
+        if (!firstBinding.IsValid() ||
+            firstBinding.backend != evidence.hardware.backend)
+        {
+            return fail(
+                "GFX24 performance evidence has invalid frozen build or backend provenance");
+        }
+
+        RenderQualityPerformanceWriteRequest request;
+        request.outputPath = options.qualificationPerformancePath;
+        request.sourceCommit = firstBinding.sourceCommit;
+        request.runId = host.runId;
+        request.preset = firstBinding.preset;
+        request.qualificationIdentity = {
+            .sampleId = "render-quality-lab",
+            .pipeline = GetRenderPipelineRecipeName(firstBinding.recipe),
+            .quality = GetRenderQualityTierName(firstBinding.quality),
+            .backend = firstBinding.backend,
+            .view = options.viewBookmarkId,
+            .captureTick = options.captureTick,
+            .visualContractVersion = manifest.visualContractVersion};
+        request.hardwareIdentity = {
+            .backend = evidence.hardware.backend,
+            .adapterName = host.adapterName,
+            .driverVersion = host.driverVersion,
+            .osBuild = host.osBuild,
+            .capabilityHash = evidence.hardware.capabilityReportSha256};
+        request.telemetryCoverage = {
+            .schemaVersion =
+                RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION,
+            .trackedUploadCoverageMask =
+                RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_UPLOAD_COVERAGE,
+            .trackedEstimatedFootprintCoverageMask =
+                RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE};
+        request.baselineIdentity =
+            options.qualificationPerformanceBaselineIdentity;
+        request.completedWarmupFrames = evidence.completedWarmupSamples;
+        request.samples.reserve(evidence.samples.size());
+
+        for (const RenderQualityPerformanceSample& source : evidence.samples)
+        {
+            if (!source.IsValid() ||
+                source.binding.sourceCommit != firstBinding.sourceCommit ||
+                source.binding.preset != firstBinding.preset ||
+                source.binding.backend != firstBinding.backend ||
+                source.binding.recipe != firstBinding.recipe ||
+                source.binding.quality != firstBinding.quality ||
+                source.binding.viewIdentity != firstBinding.viewIdentity ||
+                !source.cpu.extraction.available ||
+                !source.cpu.visibilityAndDrawPlanning.available ||
+                !source.cpu.graphCompile.available ||
+                !source.cpu.frameEndSubmit.available)
+            {
+                return fail(
+                    "GFX24 performance samples are not uniformly frozen by one Render session");
+            }
+
+            RenderQualityPerformanceReportSample target;
+            target.frameSequence = source.binding.frameIdentity.frameSequence;
+            target.submittedFrame = source.submittedFrame;
+            target.completedFrame = source.completedFrame;
+            target.renderExecutionReceiptSha256 = Hash::FormatSHA256Digest(
+                source.binding.receiptDigest);
+            target.completionOwned = true;
+            target.extractionMilliseconds =
+                NanosecondsToMilliseconds(source.cpu.extraction);
+            target.visibilityMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.visibilityAndDrawPlanning);
+            target.graphCompileMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.graphCompile);
+            target.submissionMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.frameEndSubmit);
+            // RenderGraph's terminal critical path can be shorter than an
+            // independent pass-envelope branch. The policy-owned value is
+            // therefore the conservative maximum of both completion-owned
+            // spans, never a whole-frame, CPU-submit, or Present duration.
+            target.graphicsTerminalCommandSpanMilliseconds =
+                source.graphicsTerminalCommandSpanMilliseconds;
+            target.renderGraphPassEnvelopeMilliseconds =
+                source.graphSpanMilliseconds;
+            target.graphicsQualificationSpanMilliseconds = std::max(
+                source.graphicsTerminalCommandSpanMilliseconds,
+                source.graphSpanMilliseconds);
+            target.trackedUploadBytes = source.trackedUploadBytes;
+            target.trackedUploadCoverageMask =
+                source.trackedUploadCoverageMask;
+            target.trackedEstimatedFootprint = {
+                .schemaVersion =
+                    source.trackedEstimatedFootprint.schemaVersion,
+                .coverageMask =
+                    source.trackedEstimatedFootprint.coverageMask,
+                .transientPoolPhysicalEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .transientPoolPhysicalEstimatedBytes,
+                .importedHistoryNamedEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .importedHistoryNamedEstimatedBytes,
+                .resourceRegistryResidentEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .resourceRegistryResidentEstimatedBytes};
+            target.resourceCountsSchemaVersion =
+                source.resourceCounts.schemaVersion;
+            target.resourceCounts = {
+                {"importedBuffers", source.resourceCounts.importedBufferCount},
+                {"importedTextures", source.resourceCounts.importedTextureCount},
+                {"residentMaterials", source.resourceCounts.residentMaterialCount},
+                {"residentMeshes", source.resourceCounts.residentMeshCount},
+                {"residentTextures", source.resourceCounts.residentTextureCount},
+                {"transientBuffers", source.resourceCounts.transientBufferCount},
+                {"transientTextures", source.resourceCounts.transientTextureCount}};
+            for (const RenderQualityPerformancePassTiming& pass :
+                 source.passTimings)
+            {
+                target.passGpuTimings.push_back(
+                    {.executionIndex = pass.executionIndex,
+                     .name = pass.passName,
+                     .durationMilliseconds = pass.durationMilliseconds});
+            }
+            request.samples.push_back(std::move(target));
+        }
+
+        outRequest = std::move(request);
+        return true;
     }
 } // namespace
 
@@ -1704,6 +1936,9 @@ namespace
                    argument == "--assessment-report" ||
                    argument == "--assessment-profile" ||
                    argument == "--assessment-baseline" ||
+                   argument == "--qualification-bundle" ||
+                   argument == "--qualification-performance" ||
+                   argument == "--qualification-performance-baseline" ||
                    argument == "--lifetime-warmup-frames" ||
                    argument == "--lifetime-observation-frames" ||
                    argument == "--lifetime-min-duration-ms" ||
@@ -2204,10 +2439,26 @@ namespace
             const std::string selectedEnvironmentId =
                 options.environmentId.empty() ? info.defaultEnvironmentId
                                               : options.environmentId;
-            const std::string selectedEffectId = info.defaultEffectAssetId;
+            const std::vector<std::string>& declaredEffectIds =
+                info.requiredEffectAssetIds;
+            std::vector<std::string> selectedEffectIds = declaredEffectIds;
+            if (selectedEffectIds.empty() && !info.defaultEffectAssetId.empty())
+            {
+                selectedEffectIds.push_back(info.defaultEffectAssetId);
+            }
+            if (!declaredEffectIds.empty() &&
+                (info.defaultEffectAssetId.empty() ||
+                 selectedEffectIds.front() != info.defaultEffectAssetId))
+            {
+                outError = "Sample multi-effect declaration must retain its first effect as defaultEffectAssetId: " +
+                    info.id;
+                return false;
+            }
             sceneOptions.assetId = selectedModelId;
             sceneOptions.environmentAssetId = selectedEnvironmentId;
-            sceneOptions.effectAssetId = selectedEffectId;
+            sceneOptions.effectAssetId = selectedEffectIds.empty()
+                ? std::string{}
+                : selectedEffectIds.front();
             sceneOptions.width = options.common.width;
             sceneOptions.height = options.common.height;
             sceneOptions.quality = options.common.quality;
@@ -2298,7 +2549,7 @@ namespace
                 return false;
             }
             if (selectedModelId.empty() && options.modelPath.empty() &&
-                selectedEffectId.empty())
+                selectedEffectIds.empty())
             {
                 outError = "Sample has no default model or effect asset and --asset was not provided: " +
                            info.id;
@@ -2327,6 +2578,7 @@ namespace
                                                 !selectedEnvironmentId.empty();
             const bool animationsUseCatalog =
                 !info.requiredAnimationAssetIds.empty();
+            const bool effectsUseCatalog = !selectedEffectIds.empty();
             const bool cookedAdmissionUsesCatalog =
                 !info.requiredCookedAssetIds.empty();
 
@@ -2334,7 +2586,8 @@ namespace
             std::filesystem::path assetRoot = options.assetRoot;
             SampleAssetCatalog catalog;
             if (modelUsesCatalog || environmentUsesCatalog ||
-                animationsUseCatalog || cookedAdmissionUsesCatalog)
+                animationsUseCatalog || effectsUseCatalog ||
+                cookedAdmissionUsesCatalog)
             {
                 if (catalogPath.empty() && assetRoot.empty())
                 {
@@ -2509,8 +2762,18 @@ namespace
                 resolvedAssets.animations.push_back(std::move(animation));
             }
 
-            if (!selectedEffectId.empty())
+            for (const std::string& selectedEffectId : selectedEffectIds)
             {
+                if (selectedEffectId.empty() ||
+                    std::find(sceneOptions.effectAssetIds.begin(),
+                              sceneOptions.effectAssetIds.end(),
+                              selectedEffectId) !=
+                        sceneOptions.effectAssetIds.end())
+                {
+                    outError = "Sample declares an invalid or duplicate effect asset id: " +
+                        selectedEffectId;
+                    return false;
+                }
                 ResolvedSampleAsset effect;
                 if (!ResolveCatalogAsset(catalog,
                                          selectedEffectId,
@@ -4295,6 +4558,36 @@ namespace
                     }
                     options.captureTickExplicit = true;
                 }
+                else if (argument == "--qualification-bundle")
+                {
+                    options.qualificationBundlePath = value;
+                    if (options.qualificationBundlePath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-bundle must not be empty");
+                        return false;
+                    }
+                }
+                else if (argument == "--qualification-performance")
+                {
+                    options.qualificationPerformancePath = value;
+                    if (options.qualificationPerformancePath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-performance must not be empty");
+                        return false;
+                    }
+                }
+                else if (argument == "--qualification-performance-baseline")
+                {
+                    options.qualificationPerformanceBaselineIdentity = value;
+                    if (options.qualificationPerformanceBaselineIdentity.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-performance-baseline must not be empty");
+                        return false;
+                    }
+                }
                 else if (argument == "--render-path")
                 {
                     if (!ParseRunnerRenderPath(value, options.renderPath))
@@ -4541,7 +4834,79 @@ namespace
                     options.assessmentProfile ==
                             SampleAssessmentProfile::Smoke
                         ? 120u
-                        : 600u;
+                : 600u;
+            }
+        }
+        if (!options.qualificationBundlePath.empty())
+        {
+            if (options.sampleId != "render-quality-lab")
+            {
+                SetError(outError,
+                         "--qualification-bundle requires --sample render-quality-lab");
+                return false;
+            }
+            if (options.qualificationBundlePath.filename() != "bundle.json")
+            {
+                SetError(outError,
+                         "--qualification-bundle must name bundle.json inside its own artifact directory");
+                return false;
+            }
+        }
+        if (!options.qualificationPerformanceBaselineIdentity.empty() &&
+            options.qualificationPerformancePath.empty())
+        {
+            SetError(outError,
+                     "--qualification-performance-baseline requires --qualification-performance");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty())
+        {
+            if (options.qualificationPerformanceBaselineIdentity.empty())
+            {
+                options.qualificationPerformanceBaselineIdentity =
+                    ReadEnvironmentString(
+                        "RVX_RENDER_QUALITY_PERFORMANCE_BASELINE_ID");
+            }
+            if (options.qualificationPerformanceOsBuild.empty())
+            {
+                options.qualificationPerformanceOsBuild =
+                    ResolveHostOperatingSystemBuild();
+            }
+            if (options.qualificationPerformanceBaselineIdentity.empty())
+            {
+                SetError(outError,
+                         "--qualification-performance requires an explicit --qualification-performance-baseline or RVX_RENDER_QUALITY_PERFORMANCE_BASELINE_ID");
+                return false;
+            }
+            if (options.qualificationPerformanceOsBuild.empty())
+            {
+                SetError(outError,
+                         "--qualification-performance requires a trustworthy host OS build identity");
+                return false;
+            }
+            if (options.common.frames == 0)
+            {
+                // The fixed Render-owned session, not this generic counter,
+                // decides how many frame submissions are accepted.
+                options.common.frames = 1;
+            }
+            options.waitReady = true;
+            constexpr uint32 MinimumPerformanceHostFrameBudget = 512U;
+            if (options.readyMaxFrames < MinimumPerformanceHostFrameBudget)
+            {
+                if (options.readyMaxFramesExplicit)
+                {
+                    SetError(outError,
+                             "--qualification-performance requires --ready-max-frames of at least 512");
+                    return false;
+                }
+                options.readyMaxFrames = MinimumPerformanceHostFrameBudget;
+            }
+            if (options.common.width != 2560U || options.common.height != 1440U)
+            {
+                SetError(outError,
+                         "--qualification-performance requires the fixed 2560x1440 raster qualification extent");
+                return false;
             }
         }
         if (options.common.gpuSceneCullingQualificationEnabled &&
@@ -4549,6 +4914,15 @@ namespace
         {
             SetError(outError,
                      "GPUScene and Direct Opaque readback qualifications are mutually exclusive");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            (!options.common.screenshotPath.empty() ||
+             options.common.pixelProbeEnabled ||
+             !options.qualificationBundlePath.empty()))
+        {
+            SetError(outError,
+                     "--qualification-performance is mutually exclusive with screenshot, pixel-probe, and qualification-bundle producers");
             return false;
         }
         if (!options.runtimeOnlyComposition && !options.cookedShaderRoot.empty())
@@ -4597,14 +4971,16 @@ namespace
         {
             options.common.frames = 8;
         }
+        if (options.captureTickExplicit &&
+            options.common.screenshotPath.empty() &&
+            options.qualificationPerformancePath.empty())
+        {
+            SetError(outError,
+                     "--capture-tick requires --screenshot or --qualification-performance");
+            return false;
+        }
         if (options.captureTickExplicit)
         {
-            if (options.common.screenshotPath.empty())
-            {
-                SetError(outError,
-                         "--capture-tick requires --screenshot");
-                return false;
-            }
             options.common.frames = std::max(
                 options.common.frames,
                 static_cast<uint32>(options.captureTick));
@@ -4668,6 +5044,9 @@ namespace
             << "  --assessment-report <path.json>\n"
             << "  --assessment-profile <smoke|qualification|benchmark>\n"
             << "  --assessment-baseline <path.json>\n"
+            << "  --qualification-bundle <path.json>\n"
+            << "  --qualification-performance <path/performance.json>\n"
+            << "  --qualification-performance-baseline <opaque-id>\n"
             << "  --lifetime-warmup-frames <count>\n"
             << "  --lifetime-observation-frames <count>\n"
             << "  --lifetime-min-duration-ms <milliseconds>\n"
@@ -4682,6 +5061,14 @@ namespace
 
     SampleRunner::SampleRunner(const SampleRegistry& registry) noexcept
         : m_registry(registry)
+    {
+    }
+
+    SampleRunner::SampleRunner(
+        const SampleRegistry& registry,
+        const ISampleHostComposition& composition) noexcept
+        : m_registry(registry)
+        , m_composition(&composition)
     {
     }
 
@@ -4706,6 +5093,38 @@ namespace
     {
         return (minimumFrames == 0 || executedFrames >= minimumFrames) &&
                executedFrames < maximumFrames;
+    }
+
+    bool SampleRunner::ShouldArmRenderQualityPerformanceSession(
+        const bool sampleReady,
+        const bool deterministicEpochActive,
+        const uint64 deterministicTick,
+        const uint64 sessionStartTick) noexcept
+    {
+        return sampleReady && deterministicEpochActive &&
+               sessionStartTick != 0 && deterministicTick == sessionStartTick;
+    }
+
+    bool SampleRunner::HasMissedRenderQualityPerformanceSessionStart(
+        const bool sampleReady,
+        const bool deterministicEpochActive,
+        const uint64 deterministicTick,
+        const uint64 sessionStartTick) noexcept
+    {
+        if (!deterministicEpochActive || sessionStartTick == 0)
+        {
+            return false;
+        }
+        return deterministicTick > sessionStartTick ||
+               (deterministicTick == sessionStartTick && !sampleReady);
+    }
+
+    bool SampleRunner::ShouldDeferGenericFiniteCompletion(
+        const bool renderQualityPerformanceActive) noexcept
+    {
+        // The exact performance session owns completion independently of the
+        // generic Sample `--frames` count used to reach sessionStartTick.
+        return renderQualityPerformanceActive;
     }
 
     void SampleRunner::ConfigureFrameWaitPolicy(
@@ -4733,6 +5152,36 @@ namespace
             return false;
         }
 
+        if (!options.qualificationBundlePath.empty() &&
+            options.sampleId != "render-quality-lab")
+        {
+            SetError(&outError,
+                     "--qualification-bundle requires --sample render-quality-lab");
+            return false;
+        }
+        if (!options.qualificationBundlePath.empty() &&
+            options.qualificationBundlePath.filename() != "bundle.json")
+        {
+            SetError(&outError,
+                     "--qualification-bundle must name bundle.json inside its own artifact directory");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            options.sampleId != "render-quality-lab")
+        {
+            SetError(&outError,
+                     "--qualification-performance requires --sample render-quality-lab");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            options.qualificationPerformancePath.filename() !=
+                "performance.json")
+        {
+            SetError(&outError,
+                     "--qualification-performance must name performance.json inside an existing artifact directory");
+            return false;
+        }
+
         if (!options.pipelineExplicit)
         {
             options.pipelineRecipe = manifest.defaultRecipe;
@@ -4748,6 +5197,14 @@ namespace
         {
             outError =
                 "The selected Sample manifest did not resolve a concrete quality profile";
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            (options.pipelineRecipe != SamplePipelineRecipe::DeferredQuality ||
+             options.qualityTier != SampleQualityTier::High))
+        {
+            SetError(&outError,
+                     "--qualification-performance requires the RenderQualityLab deferred/high profile");
             return false;
         }
 
@@ -4774,7 +5231,9 @@ namespace
 
         const bool captureEvidenceRequested =
             !options.common.screenshotPath.empty() ||
-            options.common.pixelProbeEnabled;
+            options.common.pixelProbeEnabled ||
+            !options.qualificationBundlePath.empty() ||
+            !options.qualificationPerformancePath.empty();
         options.deterministicContractActive =
             manifest.deterministicQualification || captureEvidenceRequested ||
             options.fixedDeltaExplicit || options.viewBookmarkExplicit ||
@@ -5064,6 +5523,17 @@ namespace
             }
             return 0;
         }
+        if (m_composition == nullptr)
+        {
+            std::cerr << "Sample host composition was not injected\n";
+            return 1;
+        }
+        if (m_composition->RequiresCookedOnly() &&
+            !options.runtimeOnlyComposition)
+        {
+            std::cerr << "Cooked Sample host requires --runtime-only-composition\n";
+            return 2;
+        }
 
         const SampleInfo* registeredInfo = m_registry.Find(options.sampleId);
         const SampleScenarioManifest* manifest =
@@ -5271,11 +5741,16 @@ namespace
             runtimeComposition.shaderProgramProvider = "CookedShaderArtifactV2";
         }
 
-        EngineRuntimeDependencies engineDependencies =
-            options.runtimeOnlyComposition
-                ? CreateShippingEngineRuntimeDependencies(
-                      runtimeComposition.cookedShaderRoot)
-                : CreateDevelopmentEngineRuntimeDependencies();
+        EngineRuntimeDependencies engineDependencies;
+        if (!m_composition->CreateEngineRuntimeDependencies(
+                runtimeComposition, engineDependencies, error))
+        {
+            RVX_CORE_ERROR("Sample host composition could not create Engine dependencies: {}",
+                           error);
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
         Engine engine(std::move(engineDependencies));
         const std::string applicationName =
             "RenderVerseX - " + registeredInfo->displayName;
@@ -5324,10 +5799,16 @@ namespace
 
         auto* resourceSubsystem =
             engine.AddSubsystem<Resource::ResourceSubsystem>();
-        Resource::ResourceManagerConfig resourceConfig =
-            options.runtimeOnlyComposition
-                ? CreateShippingResourceManagerConfig(cookedResourceRoot)
-                : Resource::ResourceManagerConfig{};
+        Resource::ResourceManagerConfig resourceConfig;
+        if (!m_composition->CreateResourceManagerConfig(
+                runtimeComposition, resourceConfig, error))
+        {
+            RVX_CORE_ERROR("Sample host composition could not configure ResourceManager: {}",
+                           error);
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
         resourceConfig.asyncThreadCount =
             std::max(resourceConfig.asyncThreadCount, 1);
         resourceConfig.startupTraceContext = startupTraceContext;
@@ -5396,6 +5877,20 @@ namespace
         uint64 captureSurfaceGeneration = 0;
         uint64 captureConfigurationRevision = 0;
         std::optional<RenderExecutionReceipt> captureExecutionReceipt{};
+        bool renderQualityBundleRequestAccepted = false;
+        bool renderQualityBundleCompleted = false;
+        bool renderQualityBundleWritten = false;
+        uint64 renderQualityBundleSubmittedFrame = 0;
+        uint64 renderQualityBundleCompletedFrame = 0;
+        std::optional<RenderExecutionReceipt> renderQualityBundleReceipt{};
+        std::shared_ptr<const QualificationCaptureBundle>
+            renderQualityCaptureBundle{};
+        bool renderQualityPerformanceRequestAccepted = false;
+        uint32 renderQualityPerformanceHostFrames = 0;
+        std::optional<std::chrono::steady_clock::time_point>
+            renderQualityPerformanceDeadline{};
+        FrozenRenderQualityPerformanceHostProvenance
+            renderQualityPerformanceHostProvenance{};
         uint32 executedFrames = 0;
         const auto hasCompletedRequestedTicks = [&]() noexcept
         {
@@ -5616,7 +6111,8 @@ namespace
             SampleEnvironmentLoader environments(
                 *runtimeServices,
                 scene->GetSceneRuntimeId(),
-                assetRegistry);
+                assetRegistry,
+                *m_composition);
             SampleAnimationLoader animations(
                 *runtimeServices,
                 scene->GetSceneRuntimeId(),
@@ -6005,6 +6501,109 @@ namespace
                     {
                         engine.RequestShutdown();
                         break;
+                    }
+
+                    if (!options.qualificationPerformancePath.empty() &&
+                        renderQualityPerformanceRequestAccepted)
+                    {
+                        const RenderQualityPerformanceDiagnostics& performance =
+                            diagnostics.qualityPerformance;
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Rejected)
+                        {
+                            error = "GFX24 performance session failed: " +
+                                std::string(GetRenderQualityPerformanceFailureName(
+                                    performance.session.failure));
+                            if (!performance.session.diagnostic.empty())
+                            {
+                                error += ": " + performance.session.diagnostic;
+                            }
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Completed)
+                        {
+                            if (!performance.completedEvidence)
+                            {
+                                error =
+                                    "GFX24 performance session completed without immutable evidence";
+                                engine.RequestShutdown();
+                                break;
+                            }
+
+                            RenderQualityPerformanceWriteRequest writeRequest;
+                            if (!BuildRenderQualityPerformanceWriteRequest(
+                                    *performance.completedEvidence,
+                                    renderQualityPerformanceHostProvenance,
+                                    options,
+                                    *manifest,
+                                    writeRequest,
+                                    &error))
+                            {
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            RenderQualityPerformanceWriteResult writeResult;
+                            if (!WriteRenderQualityPerformanceReport(
+                                    writeRequest, writeResult, &error))
+                            {
+                                if (error.empty())
+                                {
+                                    error =
+                                        "Failed to publish GFX24 performance evidence";
+                                }
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            std::error_code expectedError;
+                            std::error_code actualError;
+                            const std::filesystem::path expected =
+                                std::filesystem::weakly_canonical(
+                                    options.qualificationPerformancePath,
+                                    expectedError);
+                            const std::filesystem::path actual =
+                                std::filesystem::weakly_canonical(
+                                    writeResult.reportPath,
+                                    actualError);
+                            if (expectedError || actualError || expected != actual)
+                            {
+                                error =
+                                    "GFX24 performance writer published an unexpected report path";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            engine.RequestShutdown();
+                            continue;
+                        }
+
+                        if (!renderQualityPerformanceDeadline.has_value() ||
+                            std::chrono::steady_clock::now() >=
+                                *renderQualityPerformanceDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "GFX24 performance session exceeded the readiness deadline";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Draining)
+                        {
+                            // All 60 warm-up and 300 measured submissions are
+                            // already fixed. Draining must not publish another
+                            // Engine frame that could alter the session data.
+                            diagnostics = frameDriver.PumpRenderProgressOnce();
+                            continue;
+                        }
+                        if (renderQualityPerformanceHostFrames >=
+                            readinessWaitBudget.maximumFrames)
+                        {
+                            error =
+                                "GFX24 performance session exceeded its finite host frame budget";
+                            engine.RequestShutdown();
+                            break;
+                        }
                     }
 
                     if (toonOutlineQualificationProbeEnabled &&
@@ -6629,6 +7228,9 @@ namespace
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool renderQualityBundleTargetFrame =
+                        !options.qualificationBundlePath.empty() &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     constexpr uint64 CaptureRequestId = 1;
                     bool captureQueued = false;
                     if (captureFrame)
@@ -6665,6 +7267,58 @@ namespace
                                 ? "Render runtime rejected final Direct Opaque raster readback qualification capture"
                                 : "Render runtime rejected final GPUScene culling qualification capture";
                             engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
+                    if (renderQualityBundleTargetFrame)
+                    {
+                        renderQualityBundleRequestAccepted =
+                            render->RequestQualificationCaptureBundle();
+                        if (!renderQualityBundleRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the GFX24 semantic attachment bundle request";
+                            engine.RequestShutdown();
+                            break;
+                        }
+
+                        // The Render owner consumes control requests
+                        // asynchronously. Do not publish the carrying frame
+                        // until diagnostics prove the one-shot capture is
+                        // armed; otherwise a completion-only pump can leave an
+                        // Armed request waiting forever for a frame that has
+                        // already been presented.
+                        while (!diagnostics.qualificationCapture.requestPending &&
+                               !engine.ShouldShutdown())
+                        {
+                            const QualificationCaptureDiagnostics& capture =
+                                diagnostics.qualificationCapture.capture;
+                            if (capture.state ==
+                                QualificationCaptureState::Rejected)
+                            {
+                                error =
+                                    "GFX24 bundle capture admission failed: " +
+                                    std::string(
+                                        GetQualificationCaptureFailureName(
+                                            capture.failure));
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            if (std::chrono::steady_clock::now() >=
+                                readinessDeadline)
+                            {
+                                readinessTimedOut = true;
+                                error =
+                                    "GFX24 bundle capture admission exceeded the sample readiness deadline";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            diagnostics =
+                                frameDriver.PumpRenderProgressOnce();
+                        }
+                        if (engine.ShouldShutdown())
+                        {
                             break;
                         }
                     }
@@ -6721,6 +7375,10 @@ namespace
                         diagnostics.lastPublishedFrameSequence;
                     diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                     ++executedFrames;
+                    if (renderQualityPerformanceRequestAccepted)
+                    {
+                        ++renderQualityPerformanceHostFrames;
+                    }
                     if (deterministicEpochActive)
                     {
                         ++deterministicTick;
@@ -6964,6 +7622,185 @@ namespace
                                                          .HasMatchingCompletedPixelProbe();
                             }
                         }
+                        if (renderQualityBundleTargetFrame &&
+                            waitResult.Reached())
+                        {
+                            const RenderExecutionReceipt& receipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            if (!receipt.available || !receipt.graphComposed ||
+                                !receipt.executionSucceeded ||
+                                !receipt.presented || !receipt.succeeded ||
+                                !receipt.IsStructurallyValid() ||
+                                receipt.frameIdentity.frameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "GFX24 bundle target did not retain an exact successful presentation receipt";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                renderQualityBundleReceipt = receipt;
+                                renderQualityBundleSubmittedFrame =
+                                    targetSequence;
+
+                                // The capture is a completion-owned artifact,
+                                // so its wait must share the same wall-clock
+                                // budget as the surrounding readiness wait.
+                                // A fixed iteration count made this path
+                                // dependent on scheduler timing and could
+                                // busy-poll long after the readiness budget
+                                // had expired. PumpRenderProgressOnce already
+                                // yields a bounded scheduling quantum; the
+                                // deadline below is the single source of
+                                // truth for how long the host may wait.
+                                while (!engine.ShouldShutdown())
+                                {
+                                    const auto pollNow =
+                                        std::chrono::steady_clock::now();
+                                    if (pollNow >= readinessDeadline)
+                                    {
+                                        readinessTimedOut = true;
+                                        error =
+                                            "GFX24 bundle capture exceeded the sample readiness deadline (state=" +
+                                            std::to_string(static_cast<uint32>(
+                                                diagnostics
+                                                    .qualificationCapture
+                                                    .capture.state)) +
+                                            ", requestPending=" +
+                                            (diagnostics
+                                                     .qualificationCapture
+                                                     .requestPending
+                                                 ? "true"
+                                                 : "false") +
+                                            ")";
+                                        engine.RequestShutdown();
+                                        break;
+                                    }
+
+                                    const RenderQualificationCaptureDiagnostics&
+                                        qualification =
+                                        diagnostics.qualificationCapture;
+                                    if (qualification.capture.state ==
+                                            QualificationCaptureState::Completed &&
+                                        qualification.completedBundle)
+                                    {
+                                        const QualificationCaptureBundle& bundle =
+                                            *qualification.completedBundle;
+                                        if (bundle.identity.frameIdentity !=
+                                                receipt.frameIdentity ||
+                                            bundle.identity.viewIdentity !=
+                                                receipt.viewIdentity ||
+                                            !bundle.identity.IsValid())
+                                        {
+                                            error =
+                                                "Completed GFX24 bundle identity does not match its frozen presentation receipt";
+                                            engine.RequestShutdown();
+                                        }
+                                        else
+                                        {
+                                            renderQualityCaptureBundle =
+                                                qualification.completedBundle;
+                                            renderQualityBundleCompletedFrame =
+                                                targetSequence;
+                                            renderQualityBundleCompleted = true;
+                                        }
+                                        break;
+                                    }
+                                    if (qualification.capture.state ==
+                                        QualificationCaptureState::Rejected)
+                                    {
+                                        error =
+                                            "GFX24 bundle capture failed: " +
+                                            std::string(
+                                                GetQualificationCaptureFailureName(
+                                                    qualification.capture.failure));
+                                        engine.RequestShutdown();
+                                        break;
+                                    }
+                                    diagnostics =
+                                        frameDriver.PumpRenderProgressOnce();
+                                }
+                                if (!renderQualityBundleCompleted &&
+                                    error.empty())
+                                {
+                                    error =
+                                        "GFX24 bundle capture did not reach exact GPU completion";
+                                    engine.RequestShutdown();
+                                }
+                                if (renderQualityBundleCompleted &&
+                                    renderQualityCaptureBundle &&
+                                    renderQualityBundleReceipt.has_value())
+                                {
+                                    RenderQualityQualificationWriteRequest
+                                        writeRequest;
+                                    writeRequest.outputRoot =
+                                        options.qualificationBundlePath
+                                                .has_parent_path()
+                                            ? options.qualificationBundlePath
+                                                  .parent_path()
+                                            : std::filesystem::path(".");
+                                    writeRequest.sampleId = registeredInfo->id;
+                                    writeRequest.cameraBookmarkId =
+                                        options.viewBookmarkId;
+                                    writeRequest.runId = ReadEnvironmentString(
+                                        "RVX_VALIDATION_RUN_ID");
+                                    writeRequest.captureTick =
+                                        options.captureTick;
+                                    writeRequest.visualContractVersion =
+                                        manifest->visualContractVersion;
+                                    writeRequest.submittedFrame =
+                                        renderQualityBundleSubmittedFrame;
+                                    writeRequest.completedFrame =
+                                        renderQualityBundleCompletedFrame;
+
+                                    RenderQualityQualificationWriteResult
+                                        writeResult;
+                                    if (!WriteRenderQualityQualificationBundle(
+                                            writeRequest,
+                                            *renderQualityCaptureBundle,
+                                            *renderQualityBundleReceipt,
+                                            writeResult,
+                                            &error))
+                                    {
+                                        if (error.empty())
+                                        {
+                                            error =
+                                                "Failed to publish the completed GFX24 qualification bundle";
+                                        }
+                                        engine.RequestShutdown();
+                                    }
+                                    else
+                                    {
+                                        std::error_code expectedError;
+                                        std::error_code actualError;
+                                        const std::filesystem::path expected =
+                                            std::filesystem::weakly_canonical(
+                                                options.qualificationBundlePath,
+                                                expectedError);
+                                        const std::filesystem::path actual =
+                                            std::filesystem::weakly_canonical(
+                                                writeResult.bundlePath,
+                                                actualError);
+                                        if (expectedError || actualError ||
+                                            expected != actual)
+                                        {
+                                            error =
+                                                "GFX24 qualification writer published an unexpected manifest path";
+                                            engine.RequestShutdown();
+                                        }
+                                        else
+                                        {
+                                            renderQualityBundleWritten = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if (!waitResult.Reached() ||
                             (!options.common.screenshotPath.empty() &&
                              captureFrame && captureQueued &&
@@ -7166,6 +8003,98 @@ namespace
                         }
                     }
 
+                    if (!options.qualificationPerformancePath.empty() &&
+                        !renderQualityPerformanceRequestAccepted &&
+                        HasMissedRenderQualityPerformanceSessionStart(
+                            sampleReady,
+                            deterministicEpochActive,
+                            deterministicTick,
+                            options.captureTick))
+                    {
+                        error = sampleReady
+                            ? "GFX24 performance session missed its declared deterministic session-start tick"
+                            : "GFX24 performance sample was not Ready at its declared deterministic session-start tick";
+                        engine.RequestShutdown();
+                        break;
+                    }
+
+                    if (!options.qualificationPerformancePath.empty() &&
+                        !renderQualityPerformanceRequestAccepted &&
+                        ShouldArmRenderQualityPerformanceSession(
+                            sampleReady,
+                            deterministicEpochActive,
+                            deterministicTick,
+                            options.captureTick))
+                    {
+                        std::error_code outputExistsError;
+                        if (std::filesystem::exists(
+                                options.qualificationPerformancePath,
+                                outputExistsError) ||
+                            outputExistsError)
+                        {
+                            error =
+                                "GFX24 performance output already exists or cannot be inspected";
+                            engine.RequestShutdown();
+                            break;
+                        }
+
+                        renderQualityPerformanceHostProvenance.runId =
+                            ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
+                        renderQualityPerformanceHostProvenance.adapterName =
+                            diagnostics.adapterName;
+                        renderQualityPerformanceHostProvenance.driverVersion =
+                            diagnostics.driverVersion;
+                        renderQualityPerformanceHostProvenance.osBuild =
+                            options.qualificationPerformanceOsBuild;
+                        renderQualityPerformanceHostProvenance.capabilityHash =
+                            diagnostics.capabilityReportSha256;
+                        if (renderQualityPerformanceHostProvenance.runId.empty() ||
+                            renderQualityPerformanceHostProvenance.adapterName.empty() ||
+                            renderQualityPerformanceHostProvenance.driverVersion.empty() ||
+                            renderQualityPerformanceHostProvenance.osBuild.empty() ||
+                            renderQualityPerformanceHostProvenance.capabilityHash.empty())
+                        {
+                            error =
+                                "GFX24 performance session cannot freeze complete host provenance";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        renderQualityPerformanceRequestAccepted =
+                            render->RequestRenderQualityPerformanceSession();
+                        if (!renderQualityPerformanceRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the GFX24 performance session request";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        // The scene readiness timeout and this fixed
+                        // completion-owned run are independent budgets.  A
+                        // slow but valid resource activation must not consume
+                        // the time reserved for its 360 session submissions
+                        // and terminal GPU drain.
+                        renderQualityPerformanceDeadline =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(
+                                readinessWaitBudget.timeoutMs);
+                        // The request is consumed by the Render owner. Begin
+                        // regular exact Graphics submissions on the next host
+                        // iteration so no pre-session frame is counted.
+                        continue;
+                    }
+
+                    if (ShouldDeferGenericFiniteCompletion(
+                            renderQualityPerformanceRequestAccepted))
+                    {
+                        // Performance owns its exact 60 + 300 submission
+                        // lifetime.  The generic finite-frame completion
+                        // policy below would otherwise see its one-frame
+                        // host sentinel as complete after the first measured
+                        // submission and tear down the session before its
+                        // Render-owned evidence can drain.
+                        continue;
+                    }
+
                     // A drain-capable sample has proved all ordinary scene,
                     // resource, and upload conditions on a completed frame.
                     // Do not let another normal host tick manufacture a new
@@ -7204,6 +8133,8 @@ namespace
                              screenshotWritten) &&
                             (!options.common.pixelProbeEnabled ||
                              pixelProbeCaptured) &&
+                            (options.qualificationBundlePath.empty() ||
+                             renderQualityBundleWritten) &&
                             (!qualificationEnabled ||
                              (gpuSceneCullingQualificationTargetFrameSequence != 0 &&
                               hasQualificationComparison(
@@ -7710,7 +8641,14 @@ namespace
             report.renderPath = report.requestedRenderPath;
             report.actualRenderPath = ResolveActualRenderPath(
                 sceneOptions.renderPath, sampleRenderDiagnostics);
-            if (options.deterministicContractActive)
+            // Performance qualification is intentionally mutually exclusive
+            // with screenshot, pixel-probe, and visual-bundle production. Its
+            // own immutable report binds the manifest, fixed epoch, build,
+            // backend, and every completion-owned execution-receipt digest.
+            // Do not require a visual capture receipt after that report has
+            // already published successfully.
+            if (options.deterministicContractActive &&
+                options.qualificationPerformancePath.empty())
             {
                 SampleVisualContractReceipt receipt;
                 receipt.manifestSchema =

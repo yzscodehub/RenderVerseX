@@ -8,6 +8,7 @@
 #include "RenderContracts/RenderFrameValidation.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <unordered_set>
@@ -546,15 +547,26 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
     const EcsFrameExtractionInput& input,
     const EcsFrozenSceneBridgeOutput& source)
 {
+    const auto extractionStart = std::chrono::steady_clock::now();
     EcsFrameExtractionResult result;
-    auto fail = [&result](EcsFrameExtractionResultCode code,
-                          RenderExtractionCode diagnosticCode)
+    const auto finalizeDuration = [&result, extractionStart]()
+    {
+        const auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - extractionStart)
+                                  .count();
+        result.diagnostics.extractionDurationNanoseconds = duration > 0
+            ? static_cast<uint64>(duration)
+            : 0;
+    };
+    auto fail = [&result, &finalizeDuration](EcsFrameExtractionResultCode code,
+                                             RenderExtractionCode diagnosticCode)
     {
         result.code = code;
         result.diagnostics.code = diagnosticCode;
         result.diagnostics.complete = false;
         result.sceneUpdate.reset();
         result.frameV5.reset();
+        finalizeDuration();
         return std::move(result);
     };
 
@@ -1376,14 +1388,6 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
     header.outputWidth = input.outputWidth;
     header.outputHeight = input.outputHeight;
     header.explicitDiscontinuity = input.explicitDiscontinuity;
-    result.frameV5 = RenderFramePacketV5::Create(
-        header, std::move(view), input.settings, input.captureRequest,
-        result.diagnostics);
-    if (result.frameV5 == nullptr)
-    {
-        return fail(EcsFrameExtractionResultCode::SealFailed,
-                    RenderExtractionCode::InvalidNumericValue);
-    }
     m_candidateFullReset = !frameOnly && sceneUpdate.fullReset;
     if (!frameOnly)
     {
@@ -1400,13 +1404,38 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         m_extractorInstanceId, m_nextCandidateIdentitySequence++);
     m_candidateExplicitRemovalIdentities =
         std::move(candidateExplicitRemovalIdentities);
-    m_lastCompletedInputSequence = input.sequence;
     result.candidateIdentity = m_candidateIdentity;
     result.sourceSceneRuntimeId = source.sceneRuntimeId;
     result.sourceSnapshotRevision = source.snapshotRevision;
     result.targetRenderSceneRevision = targetSceneRevision;
     result.frameOnly = frameOnly;
     result.code = EcsFrameExtractionResultCode::Complete;
+
+    // Candidate preparation is part of extraction. Freeze the metric only
+    // after every retained-state and transport identity is ready, immediately
+    // before the immutable contract factory validates and takes ownership of
+    // the packet inputs. The factory allocation itself is deliberately outside
+    // this update-owned preparation metric.
+    finalizeDuration();
+    result.frameV5 = RenderFramePacketV5::Create(
+        header, std::move(view), input.settings, input.captureRequest,
+        result.diagnostics);
+    if (result.frameV5 == nullptr)
+    {
+        // No immutable packet exists, so no prepared candidate may remain
+        // observable or block the next extraction attempt.
+        m_candidateScene.reset();
+        m_candidateSceneRuntimeId = {};
+        m_candidateSourceRevision = 0;
+        m_candidateSceneRevision = 0;
+        m_candidateSequence = 0;
+        m_candidateIdentity = {};
+        m_candidateFullReset = false;
+        m_candidateExplicitRemovalIdentities.clear();
+        return fail(EcsFrameExtractionResultCode::SealFailed,
+                    RenderExtractionCode::InvalidNumericValue);
+    }
+    m_lastCompletedInputSequence = input.sequence;
     return result;
 }
 

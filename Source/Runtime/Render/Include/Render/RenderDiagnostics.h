@@ -15,12 +15,16 @@
 #include "Render/GPUDriven/GPUDrivenPolicy.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
+#include "Render/Qualification/QualificationCaptureOwner.h"
+#include "Render/Qualification/RenderGraphPassTimingOwner.h"
 #include "RenderContracts/ParticleRenderSnapshot.h"
 #include "RenderContracts/WaterRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "RenderContracts/RenderQualityPerformance.h"
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -374,6 +378,7 @@ namespace RVX
     /** @brief CPU durations captured around one successfully presented frame. */
     struct RenderCpuFramePhaseDurations
     {
+        uint64 visibilityAndDrawPlanning = 0;
         uint64 frameApply = 0;
         uint64 frameBeginAcquire = 0;
         uint64 renderPrepare = 0;
@@ -1480,6 +1485,31 @@ namespace RVX
         std::vector<std::string> unsupportedFeatures{};
     };
 
+    /**
+     * @brief Completion-owned state for the optional GFX24 visual bundle.
+     *
+     * The immutable bundle is intentionally separate from `frameFeatures`:
+     * a later ordinary frame may publish while this exact earlier submission
+     * is still pending its GPU completion fence.
+     */
+    struct RenderQualificationCaptureDiagnostics
+    {
+        bool requestPending = false;
+        QualificationCaptureDiagnostics capture{};
+        std::shared_ptr<const QualificationCaptureBundle> completedBundle{};
+        RenderGraphPassTimingDiagnostics passTiming{};
+        std::vector<RenderGraphPassTimingSample> completedPassTimings{};
+    };
+
+    /** @brief Render-owned completion state for the fixed GFX24 performance run. */
+    struct RenderQualityPerformanceDiagnostics
+    {
+        bool requestPending = false;
+        RenderQualityPerformanceSessionDiagnostics session{};
+        std::shared_ptr<const RenderQualityPerformanceEvidence>
+            completedEvidence{};
+    };
+
     struct RenderDiagnosticsSnapshot
     {
         uint64 publicationSequence = 0;
@@ -1495,6 +1525,8 @@ namespace RVX
         RHIBackendType backend = RHIBackendType::None;
         std::string adapterName{};
         std::string driverVersion{};
+        /** SHA-256 of the normalized public RHI capability report JSON. */
+        std::string capabilityReportSha256{};
         uint64 surfaceGeneration = 0;
         uint32 surfaceWidth = 0;
         uint32 surfaceHeight = 0;
@@ -1522,6 +1554,8 @@ namespace RVX
         RenderMutationEvidenceDiagnostics mutationEvidence{};
         RenderFrameFeatureDiagnostics frameFeatures{};
         RenderFrameCaptureResult lastCapture{};
+        RenderQualificationCaptureDiagnostics qualificationCapture{};
+        RenderQualityPerformanceDiagnostics qualityPerformance{};
         RenderFailureDiagnostics lastFailure{};
 
         uint64 pumpIterationCount = 0;

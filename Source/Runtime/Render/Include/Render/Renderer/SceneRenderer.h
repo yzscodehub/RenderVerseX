@@ -41,6 +41,9 @@
 #include "Render/Renderer/RenderDrawPlan.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "Render/Submission/DirectRasterReadbackQualification.h"
+#include "Render/Qualification/QualificationCaptureBridge.h"
+#include "Render/Qualification/RenderGraphPassTimingOwner.h"
+#include "Render/Qualification/RenderQualityPerformanceSession.h"
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
@@ -52,6 +55,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -104,6 +108,7 @@ namespace RVX
     class TransparentPass;
     class TAA;
     struct GPUCompletionToken;
+    struct RenderGpuFrameTimingSampleBatch;
 
     enum class SceneRenderCollectionPath : uint8
     {
@@ -565,6 +570,7 @@ namespace RVX
      */
     struct SceneRendererCpuFrameTiming
     {
+        uint64 visibilityAndDrawPlanning = 0;
         uint64 renderPrepare = 0;
         uint64 policy = 0;
         uint64 graphBuild = 0;
@@ -1065,7 +1071,7 @@ namespace RVX
         /**
          * @brief Shutdown and release resources
          */
-        void Shutdown();
+        void Shutdown(bool deviceLost = false);
 
         /**
          * @brief Check if initialized
@@ -1116,6 +1122,26 @@ namespace RVX
         /** @brief Arm one post-fence Direct Opaque physical readback. */
         [[nodiscard]] bool ArmDirectOpaqueRasterReadbackQualificationCapture();
 
+        /**
+         * @brief Arm one complete same-frame GFX24 visual qualification bundle.
+         *
+         * This is independent from the legacy Color capture path. The actual
+         * RenderGraph attachments are recorded only for the next accepted
+         * frame and are mapped only after its exact graphics completion.
+         */
+        [[nodiscard]] bool ArmQualificationCaptureBundle();
+
+        /** @brief Arm one fixed 60-warmup + 300-sample performance session. */
+        [[nodiscard]] bool ArmRenderQualityPerformanceSession();
+        /** @brief Project an asynchronous runtime admission failure to GFX24 diagnostics. */
+        void RejectRenderQualityPerformanceSessionAdmission(
+            const char* diagnostic) noexcept;
+
+        /** @brief Bind exact Render-owner CPU phases after successful Present. */
+        [[nodiscard]] bool RecordRenderQualityPerformanceCpuTiming(
+            const RenderFrameIdentity& frameIdentity,
+            const RenderQualityPerformanceCpuTiming& timing) noexcept;
+
         /** @brief Arm one explicit post-fence physical-exposure state probe. */
         [[nodiscard]] bool ArmExposureQualificationProbe();
 
@@ -1132,12 +1158,53 @@ namespace RVX
         void PollGPUSceneCullingQualificationCompletion(
             const RenderSubmissionTracker& tracker);
 
+        /**
+         * @brief Bind completion-owned Graphics terminal spans before pass timing.
+         *
+         * RenderSubsystem consumes RenderContext's source-bound Graphics
+         * timing batch first, then this method binds those spans to the exact
+         * GFX24 session slots and only afterwards polls per-pass readback.
+         */
+        void PollRenderQualityPerformanceCompletion(
+            const RenderSubmissionTracker& tracker,
+            const RenderGpuFrameTimingSampleBatch& graphicsTerminalSpans);
+
         /** @brief Whether completion-only owner polling remains required. */
         [[nodiscard]] bool HasPendingGPUSceneCullingQualificationCompletion()
             const noexcept;
 
         [[nodiscard]] bool HasPendingDirectOpaqueRasterReadbackQualificationCompletion()
             const noexcept;
+
+        [[nodiscard]] bool HasPendingQualificationCaptureCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool IsQualificationCaptureAwaitingGraphRecord()
+            const noexcept;
+
+        [[nodiscard]] const QualificationCaptureDiagnostics&
+        GetQualificationCaptureDiagnostics() const noexcept;
+
+        [[nodiscard]] std::shared_ptr<const QualificationCaptureBundle>
+        GetQualificationCaptureBundle() const noexcept;
+
+        [[nodiscard]] const RenderGraphPassTimingDiagnostics&
+        GetQualificationPassTimingDiagnostics() const noexcept;
+
+        [[nodiscard]] std::span<const RenderGraphPassTimingSample>
+        GetQualificationPassTimingSamples() const noexcept;
+
+        [[nodiscard]] bool HasPendingRenderQualityPerformanceCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool IsRenderQualityPerformanceAwaitingFrame()
+            const noexcept;
+
+        [[nodiscard]] const RenderQualityPerformanceSessionDiagnostics&
+        GetRenderQualityPerformanceDiagnostics() const noexcept;
+
+        [[nodiscard]] std::shared_ptr<const RenderQualityPerformanceEvidence>
+        GetRenderQualityPerformanceEvidence() const noexcept;
 
         [[nodiscard]] bool HasPendingExposureQualificationCompletion()
             const noexcept;
@@ -1742,6 +1809,13 @@ namespace RVX
         void RefreshSubmissionQualifiedFrameDiagnostics();
         void UpdateLiveMutationEvidence();
         void FreezeMutationEvidenceForPresentedFrame();
+        [[nodiscard]] bool BuildRenderQualityPerformanceHardwareIdentity(
+            RenderQualityPerformanceHardwareIdentity& outIdentity) const noexcept;
+        [[nodiscard]] bool CollectRenderQualityPerformanceTelemetry(
+            const RenderFrameIdentity& frameIdentity,
+            RenderQualityPerformanceFrameTelemetry& outTelemetry) const noexcept;
+        [[nodiscard]] bool CollectRenderQualityCumulativeTrackedUploadBytes(
+            uint64& outTrackedUploadBytes) const noexcept;
         void FreezePresentedMaterialBindingsForPresentedFrame();
         /**
          * @brief Evaluate a newly accepted packet against presentation-qualified
@@ -1791,6 +1865,10 @@ namespace RVX
         std::unique_ptr<GPUCulling> m_depthGPUCulling;
         std::unique_ptr<GPUCulling> m_opaqueGPUCulling;
         DirectRasterReadbackQualification m_directOpaqueRasterReadbackQualification;
+        QualificationCaptureBridge m_qualificationCaptureBridge;
+        std::shared_ptr<RenderGraphPassTimingOwner> m_qualificationPassTiming =
+            std::make_shared<RenderGraphPassTimingOwner>();
+        RenderQualityPerformanceSession m_qualityPerformanceSession{};
         struct GPUCullingGraphHandles
         {
             RGBufferHandle constants;
@@ -2010,6 +2088,7 @@ namespace RVX
         uint64 m_completedPresentationCount = 0;
         bool m_completedPresentationCountSaturated = false;
         SceneRendererCpuFrameTiming m_currentCpuFrameTiming{};
+        uint64 m_pendingVisibilityAndDrawPlanningNanoseconds = 0;
         SceneRendererToolDiagnosticsSnapshot m_toolDiagnosticsSnapshot;
         uint64 m_frameDiagnosticsCounter = 0;
         /// Incremented for every graph recording so a frame-local handle slice

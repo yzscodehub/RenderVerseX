@@ -19,6 +19,8 @@
 
 namespace RVX
 {
+    class ISampleHostComposition;
+
     struct SampleEnvironmentLoadOptions
     {
         std::string quality = "default";
@@ -57,11 +59,13 @@ namespace RVX
     {
     public:
         SampleEnvironmentLoader(IWorldEcsRuntimeServices& runtimeServices,
-                                ECS::SceneRuntimeId sceneRuntimeId) noexcept;
+                                ECS::SceneRuntimeId sceneRuntimeId,
+                                const ISampleHostComposition& composition) noexcept;
 
         SampleEnvironmentLoader(IWorldEcsRuntimeServices& runtimeServices,
                                 ECS::SceneRuntimeId sceneRuntimeId,
-                                SampleAssetRegistry assetRegistry);
+                                SampleAssetRegistry assetRegistry,
+                                const ISampleHostComposition& composition);
 
         /**
          * @brief Request a runner-validated catalog environment by logical id.
@@ -107,6 +111,7 @@ namespace RVX
         IWorldEcsRuntimeServices& m_runtimeServices;
         ECS::SceneRuntimeId m_sceneRuntimeId;
         SampleAssetRegistry m_assetRegistry;
+        const ISampleHostComposition& m_composition;
         mutable std::map<std::string,
                          Resource::ResourceContentVerificationReceipt,
                          std::less<>> m_contentVerificationReceipts;

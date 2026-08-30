@@ -6706,7 +6706,8 @@ TEST_F(PipelineCacheValidationFixture,
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string source =
         ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
-    const size_t shutdownStart = source.find("void SceneRenderer::Shutdown()");
+    const size_t shutdownStart =
+        source.find("void SceneRenderer::Shutdown(bool deviceLost)");
     const size_t shutdownEnd = source.find("void SceneRenderer::RequestTemporalHistoryReset()",
                                            shutdownStart);
     ASSERT_NE(shutdownStart, std::string::npos);

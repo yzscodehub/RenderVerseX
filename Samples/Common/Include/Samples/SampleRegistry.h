@@ -33,6 +33,16 @@ namespace RVX
         [[nodiscard]] bool ValidateManifestCoverage(
             const SampleManifestCatalog& catalog,
             std::string* outError = nullptr);
+        /**
+         * @brief Seal a product registry containing an explicit manifest subset.
+         *
+         * Every registered scenario must match the full manifest exactly, but
+         * unrelated manifest scenarios may remain unregistered in a narrowed
+         * cooked product executable.
+         */
+        [[nodiscard]] bool ValidateManifestSelection(
+            const SampleManifestCatalog& catalog,
+            std::string* outError = nullptr);
         [[nodiscard]] std::string_view GetManifestContentSha256() const noexcept
         {
             return m_manifestContentSha256;

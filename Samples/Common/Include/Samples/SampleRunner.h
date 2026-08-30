@@ -20,6 +20,7 @@ namespace RVX
     struct RenderDiagnosticsSnapshot;
     struct RuntimeFrameWaitRequest;
     struct SampleRunnerTestAccess;
+    class ISampleHostComposition;
 
     enum class SampleAssessmentProfile : uint8
     {
@@ -61,6 +62,14 @@ namespace RVX
         std::filesystem::path startupReportPath;
         std::filesystem::path assessmentReportPath;
         std::filesystem::path assessmentBaselinePath;
+        /** Completion-owned GFX24 semantic attachment bundle output. */
+        std::filesystem::path qualificationBundlePath;
+        /** Completion-owned GFX24 fixed-duration performance report output. */
+        std::filesystem::path qualificationPerformancePath;
+        /** Explicit opaque baseline identity; the host never self-approves one. */
+        std::string qualificationPerformanceBaselineIdentity;
+        /** Trusted host OS build provenance resolved before the session starts. */
+        std::string qualificationPerformanceOsBuild;
         SampleAssessmentProfile assessmentProfile =
             SampleAssessmentProfile::Smoke;
         SampleWorkloadScale workloadScale = SampleWorkloadScale::PullRequest;
@@ -101,6 +110,8 @@ namespace RVX
         [[nodiscard]] bool RequiresReadinessWait() const noexcept
         {
             return waitReady || !common.screenshotPath.empty() ||
+                   !qualificationBundlePath.empty() ||
+                   !qualificationPerformancePath.empty() ||
                    common.pixelProbeEnabled ||
                    common.gpuSceneCullingQualificationEnabled ||
                    common.directOpaqueRasterReadbackQualificationEnabled ||
@@ -138,6 +149,8 @@ namespace RVX
     {
     public:
         explicit SampleRunner(const SampleRegistry& registry) noexcept;
+        SampleRunner(const SampleRegistry& registry,
+                     const ISampleHostComposition& composition) noexcept;
         int Run(int argc, char* argv[]) const;
 
     private:
@@ -149,6 +162,21 @@ namespace RVX
             uint32 executedFrames,
             uint32 minimumFrames,
             uint32 maximumFrames) noexcept;
+
+        [[nodiscard]] static bool ShouldArmRenderQualityPerformanceSession(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept;
+
+        [[nodiscard]] static bool HasMissedRenderQualityPerformanceSessionStart(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept;
+
+        [[nodiscard]] static bool ShouldDeferGenericFiniteCompletion(
+            bool renderQualityPerformanceActive) noexcept;
 
         static void ConfigureFrameWaitPolicy(
             bool deterministicEpochActive,
@@ -190,5 +218,6 @@ namespace RVX
         friend struct SampleRunnerTestAccess;
 
         const SampleRegistry& m_registry;
+        const ISampleHostComposition* m_composition = nullptr;
     };
 } // namespace RVX

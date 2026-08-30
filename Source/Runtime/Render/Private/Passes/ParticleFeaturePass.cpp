@@ -2,6 +2,7 @@
 
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
+#include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Particles/ParticleBillboardDrawPlan.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderClipConvention.h"
@@ -26,6 +27,7 @@ namespace RVX
         constexpr uint32 RVX_PARTICLE_CONSTANT_BUFFER_SIZE = 256u;
         constexpr uint32 RVX_PARTICLE_BATCH_RECEIPT_CAPACITY = 256u;
         constexpr uint32 RVX_PARTICLE_FALLBACK_TEXTURE_ROW_PITCH = 256u;
+        constexpr uint32 RVX_PARTICLE_EXPOSURE_STATE_BINDING = 6u;
         static_assert(RVX_PARTICLE_FRAME_SLOT_COUNT == 3u);
 
         struct alignas(16) ParticleBillboardGPUInstance
@@ -140,6 +142,52 @@ namespace RVX
                    builder.RetainSubmissionResource(Ref<RefCounted>(resource));
         }
 
+        [[nodiscard]] bool IsSameBufferHandle(
+            const RGBufferHandle& lhs, const RGBufferHandle& rhs) noexcept
+        {
+            return lhs.index == rhs.index && lhs.hasRange == rhs.hasRange &&
+                lhs.rangeOffset == rhs.rangeOffset && lhs.rangeSize == rhs.rangeSize &&
+                lhs.graphIdentity == rhs.graphIdentity &&
+                lhs.recordingGeneration == rhs.recordingGeneration;
+        }
+
+        [[nodiscard]] SceneTextures::ExposureStateMetadata
+        MakeExposureStateMetadata(const ViewData& view) noexcept
+        {
+            return {
+                view.exposureStateSchemaVersion,
+                view.exposureStateStride,
+                view.exposureStateMode,
+                view.exposureStateConfigurationHash};
+        }
+
+        [[nodiscard]] const char* DescribeParticleExposureRecordFailure(
+            const ParticleVfxRecordInput& input,
+            const RenderPassRecordIdentity& expected) noexcept
+        {
+            if (input.IsEmpty())
+            {
+                return "Particle VFX exposure record is absent";
+            }
+            if (input.identity != expected)
+            {
+                return "Particle VFX exposure record identity does not match the current graph";
+            }
+            if (!input.exposureState.IsValid())
+            {
+                return "Particle VFX committed exposure-state handle is absent";
+            }
+            if (!HasCurrentGraphProvenance(input.exposureState, expected))
+            {
+                return "Particle VFX committed exposure-state handle is stale";
+            }
+            if (input.exposureStateContentHash == 0)
+            {
+                return "Particle VFX committed exposure-state hash is absent";
+            }
+            return nullptr;
+        }
+
         /**
          * A descriptor may legally be bound even when the particle does not
          * sample it on a particular shader path.  Explicit APIs still require
@@ -224,6 +272,8 @@ namespace RVX
                 graph.GetTextureDesc(view.depthTarget);
             const RHITextureDesc* const reactiveMaskDesc =
                 graph.GetTextureDesc(view.reactiveMaskTarget);
+            const RHIBufferDesc* const exposureStateDesc =
+                graph.GetBufferDesc(particleVfx.exposureState);
             const auto matchesViewExtent = [&view](const RHITextureDesc* desc)
             {
                 return desc != nullptr &&
@@ -240,6 +290,23 @@ namespace RVX
             {
                 outDiagnostic =
                     "Particle VFX requires matching single-sample RGBA16F, D32 and R8 view targets";
+                return false;
+            }
+            if (!IsSameBufferHandle(
+                    particleVfx.exposureState, view.exposureState) ||
+                particleVfx.exposureStateContentHash == 0 ||
+                particleVfx.exposureStateContentHash !=
+                    view.exposureStateContentHash ||
+                !MakeExposureStateMetadata(view).IsValid() ||
+                exposureStateDesc == nullptr ||
+                exposureStateDesc->size != SceneTextures::ExposureStateStride ||
+                exposureStateDesc->stride != SceneTextures::ExposureStateStride ||
+                !HasFlag(exposureStateDesc->usage, RHIBufferUsage::Structured) ||
+                !HasFlag(exposureStateDesc->usage,
+                         RHIBufferUsage::ShaderResource))
+            {
+                outDiagnostic =
+                    "Particle VFX requires the exact committed pre-exposure state for this HDR frame";
                 return false;
             }
 
@@ -652,6 +719,9 @@ namespace RVX
             setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
                                      RHIShaderStage::Pixel);
             setLayoutDesc.AddBinding(5, RHIBindingType::Sampler,
+                                     RHIShaderStage::Pixel);
+            setLayoutDesc.AddBinding(RVX_PARTICLE_EXPOSURE_STATE_BINDING,
+                                     RHIBindingType::ShaderResourceBuffer,
                                      RHIShaderStage::Pixel);
             m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
             if (!m_descriptorSetLayout)
@@ -1141,12 +1211,14 @@ namespace RVX
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle softDepthHandle{};
             RGTextureHandle froxelVolumetricLightingHandle{};
+            RGBufferHandle exposureStateReadHandle{};
             RGTextureViewHandle colorView{};
             RGTextureViewHandle depthView{};
             RGTextureViewHandle reactiveMaskView{};
             RGTextureViewHandle softDepthView{};
             RGTextureViewHandle froxelVolumetricLightingView{};
             RHITextureViewRef neutralFroxelVolumetricLightingView{};
+            uint64 exposureStateContentHash = 0;
             RGTextureViewHandle distortionView{};
             RGTextureViewHandle compositeSourceView{};
             RGTextureViewHandle compositeTargetView{};
@@ -1217,6 +1289,13 @@ namespace RVX
         {
             if (!data.contextValid || !data.submission.IsReady() ||
                 data.pipelineCache == nullptr ||
+                !data.particleVfx.IsCompatibleWith(data.execution.identity) ||
+                !IsSameBufferHandle(data.particleVfx.exposureState,
+                                    data.execution.view.exposureState) ||
+                data.particleVfx.exposureStateContentHash !=
+                    data.execution.view.exposureStateContentHash ||
+                !MakeExposureStateMetadata(data.execution.view).IsValid() ||
+                data.execution.view.exposureStateContentHash == 0 ||
                 !IsCompatibleFroxelVolumetricLighting(
                     data.execution.volumetricLighting, data.execution.identity) ||
                 !data.execution.view.colorTarget.IsValid() ||
@@ -1229,11 +1308,19 @@ namespace RVX
             const ViewData& view = data.execution.view;
             const RHITextureDesc* const colorDesc =
                 builder.GetTextureDesc(view.colorTarget);
+            const RHIBufferDesc* const exposureStateDesc =
+                builder.GetBufferDesc(data.particleVfx.exposureState);
             if (view.viewportX != 0 || view.viewportY != 0 ||
                 view.viewportWidth == 0 || view.viewportHeight == 0 ||
                 colorDesc == nullptr || colorDesc->format != RHIFormat::RGBA16_FLOAT ||
                 colorDesc->width != view.viewportWidth ||
-                colorDesc->height != view.viewportHeight)
+                colorDesc->height != view.viewportHeight ||
+                exposureStateDesc == nullptr ||
+                exposureStateDesc->size != SceneTextures::ExposureStateStride ||
+                exposureStateDesc->stride != SceneTextures::ExposureStateStride ||
+                !HasFlag(exposureStateDesc->usage, RHIBufferUsage::Structured) ||
+                !HasFlag(exposureStateDesc->usage,
+                         RHIBufferUsage::ShaderResource))
             {
                 return false;
             }
@@ -1289,7 +1376,15 @@ namespace RVX
                 data.instanceHandle,
                 MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
                                       RHIShaderStage::Vertex));
-            if (!data.constantsHandle.IsValid() || !data.instanceHandle.IsValid())
+            data.exposureStateReadHandle = builder.Read(
+                data.particleVfx.exposureState,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Pixel));
+            data.exposureStateContentHash =
+                data.particleVfx.exposureStateContentHash;
+            if (!data.constantsHandle.IsValid() || !data.instanceHandle.IsValid() ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0)
             {
                 return false;
             }
@@ -1648,6 +1743,8 @@ namespace RVX
             if (!data.contextValid || !data.submission.IsReady() ||
                 !data.particleVfx.distortionRequested ||
                 !data.particleVfx.distortionVectors.IsValid() ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0 ||
                 !data.depthView.IsValid())
             {
                 return false;
@@ -1660,6 +1757,10 @@ namespace RVX
                 data.instanceHandle,
                 MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
                                       RHIShaderStage::Vertex));
+            data.exposureStateReadHandle = builder.Read(
+                data.exposureStateReadHandle,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Pixel));
             data.depthView = builder.Read(
                 data.depthView,
                 MakeRGAccessDesc(RHIResourceState::DepthRead,
@@ -1693,7 +1794,8 @@ namespace RVX
                 MakeRGAccessDesc(RHIResourceState::RenderTarget,
                                  RHIShaderStage::Pixel));
             return data.constantsHandle.IsValid() && data.instanceHandle.IsValid() &&
-                data.distortionView.IsValid();
+                data.exposureStateReadHandle.IsValid() &&
+                data.exposureStateContentHash != 0 && data.distortionView.IsValid();
         }
 
         [[nodiscard]] bool PrepareReusedCommonGraphResources(
@@ -1703,6 +1805,8 @@ namespace RVX
             if (!data.contextValid || !data.submission.IsReady() ||
                 !data.constantsHandle.IsValid() ||
                 !data.instanceHandle.IsValid() ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0 ||
                 !data.depthView.IsValid())
             {
                 return false;
@@ -1715,6 +1819,10 @@ namespace RVX
                 data.instanceHandle,
                 MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
                                       RHIShaderStage::Vertex));
+            data.exposureStateReadHandle = builder.Read(
+                data.exposureStateReadHandle,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Pixel));
             data.depthView = builder.Read(
                 data.depthView,
                 MakeRGAccessDesc(RHIResourceState::DepthRead,
@@ -1759,7 +1867,10 @@ namespace RVX
                 }
             }
             return data.constantsHandle.IsValid() &&
-                   data.instanceHandle.IsValid() && data.depthView.IsValid() &&
+                   data.instanceHandle.IsValid() &&
+                   data.exposureStateReadHandle.IsValid() &&
+                   data.exposureStateContentHash != 0 &&
+                   data.depthView.IsValid() &&
                    (data.execution.volumetricLighting.identityRoute
                        ? static_cast<bool>(
                              data.neutralFroxelVolumetricLightingView)
@@ -1775,6 +1886,8 @@ namespace RVX
         {
             if (!data.contextValid || !data.submission.IsReady() ||
                 !data.particleVfx.distortionRequested ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0 ||
                 !data.colorHandle.IsValid() ||
                 !data.particleVfx.distortionVectors.IsValid() ||
                 !data.particleVfx.compositedSceneColor.IsValid())
@@ -1789,6 +1902,10 @@ namespace RVX
                 data.instanceHandle,
                 MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
                                       RHIShaderStage::Vertex));
+            data.exposureStateReadHandle = builder.Read(
+                data.exposureStateReadHandle,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Pixel));
 
             data.colorHandle = builder.Read(
                 data.colorHandle,
@@ -1834,6 +1951,8 @@ namespace RVX
                 MakeRGAccessDesc(RHIResourceState::RenderTarget,
                                  RHIShaderStage::Pixel));
             return data.constantsHandle.IsValid() && data.instanceHandle.IsValid() &&
+                data.exposureStateReadHandle.IsValid() &&
+                data.exposureStateContentHash != 0 &&
                 data.compositeSourceView.IsValid() && data.distortionView.IsValid() &&
                 data.compositeTargetView.IsValid();
         }
@@ -1884,6 +2003,17 @@ namespace RVX
             {
                 return {};
             }
+            RHIBuffer* const exposureState = context.GetBuffer(
+                data.exposureStateReadHandle);
+            if (exposureState == nullptr ||
+                exposureState->GetSize() != SceneTextures::ExposureStateStride ||
+                exposureState->GetStride() != SceneTextures::ExposureStateStride ||
+                !HasFlag(exposureState->GetUsage(), RHIBufferUsage::Structured) ||
+                !HasFlag(exposureState->GetUsage(),
+                         RHIBufferUsage::ShaderResource))
+            {
+                return {};
+            }
             if (!data.execution.volumetricLighting.identityRoute)
             {
                 RHITexture* const froxelTexture = context.GetTexture(
@@ -1923,11 +2053,13 @@ namespace RVX
                 .BindTexture(2, spriteView)
                 .BindTexture(3, depthOrDistortionView)
                 .BindTexture(4, froxelVolumetricLighting)
-                .BindSampler(5, data.submission.linearClampSampler.Get());
+                .BindSampler(5, data.submission.linearClampSampler.Get())
+                .BindBuffer(RVX_PARTICLE_EXPOSURE_STATE_BINDING, exposureState);
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet || !descriptorSet->IsReadyForBinding(
                     data.submission.descriptorSetLayout.Get()) ||
-                !context.RetainSubmissionResource(descriptorSet))
+                !context.RetainSubmissionResource(descriptorSet) ||
+                !context.RetainSubmissionResource(Ref<RefCounted>(exposureState)))
             {
                 return {};
             }
@@ -1991,6 +2123,8 @@ namespace RVX
 
             if (!data.contextValid || !data.submission.IsReady() ||
                 !data.constantsHandle.IsValid() || !data.instanceHandle.IsValid() ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0 ||
                 !data.colorHandle.IsValid() || !data.colorView.IsValid() ||
                 !data.reactiveMaskHandle.IsValid() || !data.reactiveMaskView.IsValid() ||
                 !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
@@ -2023,6 +2157,18 @@ namespace RVX
                     data.submission.instanceBuffer.Get())
             {
                 fail("Particle billboard graph buffer identity mismatch");
+                return;
+            }
+            RHIBuffer* const exposureState = context.GetBuffer(
+                data.exposureStateReadHandle);
+            if (exposureState == nullptr ||
+                exposureState->GetSize() != SceneTextures::ExposureStateStride ||
+                exposureState->GetStride() != SceneTextures::ExposureStateStride ||
+                !HasFlag(exposureState->GetUsage(), RHIBufferUsage::Structured) ||
+                !HasFlag(exposureState->GetUsage(),
+                         RHIBufferUsage::ShaderResource))
+            {
+                fail("Particle billboard exact committed exposure state is unavailable");
                 return;
             }
 
@@ -2096,7 +2242,13 @@ namespace RVX
             }
             stats.drawSubmitted = stats.drawSubmitted ||
                 stageDrawCallCount != 0;
+            stats.reactiveMaskWriteEnabled =
+                stats.reactiveMaskEnabled && stageDrawCallCount != 0;
             stats.reactiveMaskWriteDrawCount = stageDrawCallCount;
+            stats.exposureStateReady = true;
+            stats.exposureStateReadDeclared = true;
+            stats.exposureStateDescriptorBound = true;
+            stats.exposureStateContentHash = data.exposureStateContentHash;
             if (data.owner != nullptr)
             {
                 data.owner->PublishExecutionStats(stats);
@@ -2119,6 +2271,14 @@ namespace RVX
                     currentStats.directGraphPassScheduled;
                 stats.distortionPassScheduled =
                     currentStats.distortionPassScheduled;
+                stats.distortionPassExecuted =
+                    currentStats.distortionPassExecuted;
+                stats.distortionCompositeExecuted =
+                    currentStats.distortionCompositeExecuted;
+                stats.reactiveMaskWriteEnabled =
+                    currentStats.reactiveMaskWriteEnabled;
+                stats.reactiveMaskWriteDrawCount =
+                    currentStats.reactiveMaskWriteDrawCount;
             }
             const auto fail = [&data, &context, &stats](const char* reason)
             {
@@ -2137,6 +2297,8 @@ namespace RVX
                 !data.submission.weightedBlendedPipeline ||
                 !data.constantsHandle.IsValid() ||
                 !data.instanceHandle.IsValid() ||
+                !data.exposureStateReadHandle.IsValid() ||
+                data.exposureStateContentHash == 0 ||
                 !data.accumulationHandle.IsValid() ||
                 !data.revealageHandle.IsValid() ||
                 !data.accumulationView.IsValid() ||
@@ -2172,6 +2334,18 @@ namespace RVX
                     data.submission.instanceBuffer.Get())
             {
                 fail("Particle weighted-blended graph resources could not be realized");
+                return;
+            }
+            RHIBuffer* const exposureState = context.GetBuffer(
+                data.exposureStateReadHandle);
+            if (exposureState == nullptr ||
+                exposureState->GetSize() != SceneTextures::ExposureStateStride ||
+                exposureState->GetStride() != SceneTextures::ExposureStateStride ||
+                !HasFlag(exposureState->GetUsage(), RHIBufferUsage::Structured) ||
+                !HasFlag(exposureState->GetUsage(),
+                         RHIBufferUsage::ShaderResource))
+            {
+                fail("Particle weighted-blended exact committed exposure state is unavailable");
                 return;
             }
 
@@ -2237,6 +2411,10 @@ namespace RVX
             stats.drawCallCount = stats.weightedDrawCallCount +
                 stats.directDrawCallCount;
             stats.drawSubmitted = stats.drawCallCount != 0;
+            stats.exposureStateReady = true;
+            stats.exposureStateReadDeclared = true;
+            stats.exposureStateDescriptorBound = true;
+            stats.exposureStateContentHash = data.exposureStateContentHash;
             if (data.owner != nullptr)
             {
                 data.owner->PublishExecutionStats(stats);
@@ -2445,6 +2623,7 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
             requirements.distortionRequested = requirements.distortionRequested ||
                 effect.distortionStrengthPixels > 0.0f;
         }
+        requirements.exposureStateRequired = requirements.requested;
         return requirements;
     }
 
@@ -2803,12 +2982,20 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
                 "Particle translucency preparation requires current graph-owned view resources");
         }
         const ParticleVfxRecordInput particleVfx = context.particleVfx;
-        if (!particleVfx.IsEmpty() &&
-            !particleVfx.IsCompatibleWith(context.identity))
+        if (const char* const exposureFailure =
+                DescribeParticleExposureRecordFailure(
+                    particleVfx, context.identity);
+            exposureFailure != nullptr)
         {
             return fail(
                 ParticleFeatureRecordingCode::InvalidRecordContext,
-                "Particle VFX inputs belong to another graph recording");
+                exposureFailure);
+        }
+        if (!particleVfx.IsCompatibleWith(context.identity))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidRecordContext,
+                "Particle VFX auxiliary graph inputs belong to another recording");
         }
         std::string graphTargetDiagnostic;
         if (!ValidateParticleGraphTargets(
@@ -3449,14 +3636,24 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
             return;
         }
         const ParticleVfxRecordInput& particleVfx = context.particleVfx;
-        if (!particleVfx.IsEmpty() &&
-            !particleVfx.IsCompatibleWith(context.identity))
+        if (const char* const exposureFailure =
+                DescribeParticleExposureRecordFailure(
+                    particleVfx, context.identity);
+            exposureFailure != nullptr)
+        {
+            ++m_stats.fallbackCount;
+            m_stats.supported = false;
+            m_stats.enabled = false;
+            m_stats.unsupportedReason = exposureFailure;
+            return;
+        }
+        if (!particleVfx.IsCompatibleWith(context.identity))
         {
             ++m_stats.fallbackCount;
             m_stats.supported = false;
             m_stats.enabled = false;
             m_stats.unsupportedReason =
-                "Particle VFX graph inputs belong to a different graph recording";
+                "Particle VFX auxiliary graph inputs belong to another recording";
             return;
         }
         std::string graphTargetDiagnostic;

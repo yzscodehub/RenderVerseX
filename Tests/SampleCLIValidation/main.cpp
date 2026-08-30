@@ -81,6 +81,39 @@ namespace RVX
                 executedFrames, minimumFrames, maximumFrames);
         }
 
+        [[nodiscard]] static bool ShouldArmRenderQualityPerformanceSession(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept
+        {
+            return SampleRunner::ShouldArmRenderQualityPerformanceSession(
+                sampleReady,
+                deterministicEpochActive,
+                deterministicTick,
+                sessionStartTick);
+        }
+
+        [[nodiscard]] static bool HasMissedRenderQualityPerformanceSessionStart(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept
+        {
+            return SampleRunner::HasMissedRenderQualityPerformanceSessionStart(
+                sampleReady,
+                deterministicEpochActive,
+                deterministicTick,
+                sessionStartTick);
+        }
+
+        [[nodiscard]] static bool ShouldDeferGenericFiniteCompletion(
+            bool renderQualityPerformanceActive) noexcept
+        {
+            return SampleRunner::ShouldDeferGenericFiniteCompletion(
+                renderQualityPerformanceActive);
+        }
+
         static void ConfigureFrameWaitPolicy(
             bool deterministicEpochActive,
             float32 deltaTime,
@@ -1790,6 +1823,140 @@ namespace
         EXPECT_TRUE(options.waitReady);
         EXPECT_EQ(options.common.frames, 1u);
         EXPECT_GE(options.readyMaxFrames, options.common.frames);
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityBundleUsesManifestBoundedReadinessWait)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample",
+            "render-quality-lab",
+            "--qualification-bundle",
+            "artifacts/render-quality/bundle.json",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_EQ(options.sampleId, "render-quality-lab");
+        EXPECT_EQ(options.qualificationBundlePath,
+                  std::filesystem::path(
+                      "artifacts/render-quality/bundle.json"));
+        EXPECT_TRUE(options.RequiresReadinessWait());
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityBundleRejectsAnUnqualifiedScenario)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample",
+            "model-viewer",
+            "--qualification-bundle",
+            "artifacts/render-quality/bundle.json",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error));
+        EXPECT_NE(error.find("render-quality-lab"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityBundleUsesAnUnambiguousManifestName)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample",
+            "render-quality-lab",
+            "--qualification-bundle",
+            "artifacts/render-quality/latest.json",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error));
+        EXPECT_NE(error.find("bundle.json"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityPerformanceUsesExplicitCompletionOwnedInputs)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample",
+            "render-quality-lab",
+            "--qualification-performance",
+            "artifacts/render-quality/performance.json",
+            "--qualification-performance-baseline",
+            "dx12-ci-candidate-v1",
+            "--capture-tick",
+            "120",
+            "--width",
+            "2560",
+            "--height",
+            "1440",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_EQ(options.sampleId, "render-quality-lab");
+        EXPECT_EQ(options.qualificationPerformancePath,
+                  std::filesystem::path(
+                      "artifacts/render-quality/performance.json"));
+        EXPECT_EQ(options.qualificationPerformanceBaselineIdentity,
+                  "dx12-ci-candidate-v1");
+        EXPECT_FALSE(options.qualificationPerformanceOsBuild.empty());
+        EXPECT_TRUE(options.captureTickExplicit);
+        EXPECT_EQ(options.captureTick, 120u);
+        EXPECT_TRUE(options.RequiresReadinessWait());
+        EXPECT_GE(options.readyMaxFrames, 512u);
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityPerformanceRejectsVisualProducerAndOrphanBaseline)
+    {
+        const char* visualArgv[] = {
+            "RenderVerseSamples",
+            "--sample",
+            "render-quality-lab",
+            "--qualification-performance",
+            "artifacts/render-quality/performance.json",
+            "--qualification-performance-baseline",
+            "dx12-ci-candidate-v1",
+            "--width",
+            "2560",
+            "--height",
+            "1440",
+            "--screenshot",
+            "artifacts/render-quality/beauty.ppm",
+        };
+        RVX::SampleRunnerCLIOptions visualOptions;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(visualArgv)), visualArgv,
+            visualOptions, &error));
+        EXPECT_NE(error.find("mutually exclusive"), std::string::npos);
+
+        const char* orphanBaselineArgv[] = {
+            "RenderVerseSamples",
+            "--qualification-performance-baseline",
+            "dx12-ci-candidate-v1",
+        };
+        RVX::SampleRunnerCLIOptions orphanBaselineOptions;
+        error.clear();
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(orphanBaselineArgv)),
+            orphanBaselineArgv, orphanBaselineOptions, &error));
+        EXPECT_NE(error.find("baseline"), std::string::npos);
     }
 
     TEST(SampleCLIValidation,
@@ -3550,6 +3717,41 @@ namespace
     }
 
     TEST(SampleCLIValidation,
+         RenderQualityPerformanceArmsOnlyAtTheReadyDeclaredStartTick)
+    {
+        EXPECT_FALSE(
+            RVX::SampleRunnerTestAccess::ShouldArmRenderQualityPerformanceSession(
+                true, true, 119u, 120u));
+        EXPECT_FALSE(
+            RVX::SampleRunnerTestAccess::ShouldArmRenderQualityPerformanceSession(
+                false, true, 120u, 120u));
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ShouldArmRenderQualityPerformanceSession(
+                true, true, 120u, 120u));
+
+        EXPECT_TRUE(RVX::SampleRunnerTestAccess::
+                        HasMissedRenderQualityPerformanceSessionStart(
+                            false, true, 120u, 120u));
+        EXPECT_TRUE(RVX::SampleRunnerTestAccess::
+                        HasMissedRenderQualityPerformanceSessionStart(
+                            true, true, 121u, 120u));
+        EXPECT_FALSE(RVX::SampleRunnerTestAccess::
+                         HasMissedRenderQualityPerformanceSessionStart(
+                             true, true, 119u, 120u));
+    }
+
+    TEST(SampleCLIValidation,
+         RenderQualityPerformancePreventsGenericFiniteFrameShutdown)
+    {
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ShouldDeferGenericFiniteCompletion(
+                true));
+        EXPECT_FALSE(
+            RVX::SampleRunnerTestAccess::ShouldDeferGenericFiniteCompletion(
+                false));
+    }
+
+    TEST(SampleCLIValidation,
          RuntimeFrameWaitUsesProducerPublicationBarrierDuringLongRender)
     {
         RVX::RuntimeFrameWaitRequest request;
@@ -3640,6 +3842,82 @@ namespace
         EXPECT_EQ(options.fixedTimeDenominator, 60u);
         EXPECT_EQ(options.deterministicSeed, 0x1234u);
         EXPECT_DOUBLE_EQ(options.fixedDeltaSeconds, 1.0 / 60.0);
+    }
+
+    TEST(SampleCLIValidation,
+         ManifestContractBindsRenderQualityBundleToDeclaredTick)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.id = "render-quality-lab";
+        manifest.defaultRecipe =
+            RVX::SamplePipelineRecipe::DeferredQuality;
+        manifest.defaultQualityProfile = RVX::SampleQualityTier::High;
+        manifest.fixedTime = {1u, 60u, 2401u};
+        RVX::SampleCameraBookmark bookmark;
+        bookmark.id = "hero";
+        manifest.cameraBookmarks.push_back(bookmark);
+        manifest.captureTicks = {120u, 360u};
+        manifest.visualContractVersion = 1u;
+
+        RVX::SampleRunnerCLIOptions options;
+        options.sampleId = manifest.id;
+        options.qualificationBundlePath =
+            "artifacts/render-quality/bundle.json";
+        std::string error;
+        ASSERT_TRUE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, options, error))
+            << error;
+        EXPECT_TRUE(options.deterministicContractActive);
+        EXPECT_TRUE(options.viewBookmarkResolved);
+        EXPECT_TRUE(options.captureTickResolved);
+        EXPECT_EQ(options.viewBookmarkId, "hero");
+        EXPECT_EQ(options.captureTick, 120u);
+        EXPECT_EQ(options.common.frames, 120u);
+        EXPECT_TRUE(options.RequiresReadinessWait());
+    }
+
+    TEST(SampleCLIValidation,
+         ManifestContractBindsPerformanceSessionToDeclaredStartTick)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.id = "render-quality-lab";
+        manifest.defaultRecipe =
+            RVX::SamplePipelineRecipe::DeferredQuality;
+        manifest.defaultQualityProfile = RVX::SampleQualityTier::High;
+        manifest.fixedTime = {1u, 60u, 2401u};
+        RVX::SampleCameraBookmark bookmark;
+        bookmark.id = "hero";
+        manifest.cameraBookmarks.push_back(bookmark);
+        manifest.captureTicks = {120u, 360u};
+        manifest.visualContractVersion = 1u;
+
+        RVX::SampleRunnerCLIOptions options;
+        options.sampleId = manifest.id;
+        options.qualificationPerformancePath =
+            "artifacts/render-quality/performance.json";
+        options.qualificationPerformanceBaselineIdentity =
+            "dx12-ci-candidate-v1";
+        options.common.width = 2560u;
+        options.common.height = 1440u;
+        std::string error;
+        ASSERT_TRUE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, options, error))
+            << error;
+        EXPECT_TRUE(options.deterministicContractActive);
+        EXPECT_TRUE(options.captureTickResolved);
+        EXPECT_EQ(options.captureTick, 120u);
+        EXPECT_EQ(options.common.frames, 120u);
+
+        RVX::SampleRunnerCLIOptions explicitTick = options;
+        explicitTick.captureTickExplicit = true;
+        explicitTick.captureTick = 360u;
+        error.clear();
+        ASSERT_TRUE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, explicitTick, error))
+            << error;
+        EXPECT_TRUE(explicitTick.captureTickResolved);
+        EXPECT_EQ(explicitTick.captureTick, 360u);
+        EXPECT_EQ(explicitTick.common.frames, 360u);
     }
 
     TEST(SampleCLIValidation,

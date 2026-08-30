@@ -62,6 +62,10 @@ namespace RVX
         /** @brief Arm one post-fence Direct Opaque raster-input readback. */
         [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
             noexcept;
+        /** @brief Request one complete same-frame RenderQuality attachment bundle. */
+        [[nodiscard]] bool RequestQualificationCaptureBundle() noexcept;
+        /** @brief Request the fixed 60-warmup + 300-sample performance run. */
+        [[nodiscard]] bool RequestRenderQualityPerformanceSession() noexcept;
         /**
          * @brief Arm one post-fence physical-exposure qualification probe.
          *

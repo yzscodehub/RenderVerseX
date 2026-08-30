@@ -101,6 +101,13 @@ namespace RVX
                 return false;
             }
         }
+        for (const std::string& assetId : info.requiredEffectAssetIds)
+        {
+            if (!requireDeclaredAsset(assetId))
+            {
+                return false;
+            }
+        }
         for (const std::string& assetId : info.requiredCookedAssetIds)
         {
             if (!requireDeclaredAsset(assetId))
@@ -203,6 +210,49 @@ namespace RVX
                 {
                     *outError = "Registered sample manifest changed during registration: " +
                                 id;
+                }
+                return false;
+            }
+        }
+        m_manifestContentSha256 = catalog.contentSha256;
+        m_manifestSchemaVersion = catalog.schemaVersion;
+        return true;
+    }
+
+    bool SampleRegistry::ValidateManifestSelection(
+        const SampleManifestCatalog& catalog,
+        std::string* outError)
+    {
+        const bool validContentHash = catalog.contentSha256.size() == 64u &&
+            std::all_of(catalog.contentSha256.begin(),
+                        catalog.contentSha256.end(),
+                        [](char character)
+                        {
+                            return (character >= '0' && character <= '9') ||
+                                   (character >= 'a' && character <= 'f');
+                        });
+        if (catalog.schema != RVX_SAMPLE_MANIFEST_SCHEMA ||
+            catalog.schemaVersion != RVX_SAMPLE_MANIFEST_SCHEMA_VERSION ||
+            !validContentHash || m_entries.empty())
+        {
+            if (outError)
+            {
+                *outError =
+                    "Selected Sample manifest identity is incomplete or non-canonical";
+            }
+            return false;
+        }
+        for (const auto& [id, entry] : m_entries)
+        {
+            const auto manifest = catalog.samples.find(id);
+            if (manifest == catalog.samples.end() ||
+                manifest->second != entry.manifest)
+            {
+                if (outError)
+                {
+                    *outError =
+                        "Selected Sample registry entry does not match the manifest: " +
+                        id;
                 }
                 return false;
             }

@@ -7614,6 +7614,42 @@
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "graph pass ownership transfers to retirement after the exact submission token completes",
       "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Qualification/RenderGraphPassTimingOwner.h",
+      "owner": "RenderGraphPassTimingOwner",
+      "symbol": "m_queryPool",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact Graphics completion token delivered to the sealed RenderGraph terminal observer",
+      "normalRelease": "the timing owner retains its query pool through terminal retirement and only resets or shuts down after its exact Graphics token completed",
+      "deviceLostRelease": "terminal observer marks timing completion lost before the timing owner releases the query pool during explicit teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Qualification/RenderGraphPassTimingOwner.h",
+      "owner": "RenderGraphPassTimingOwner",
+      "symbol": "m_readbackBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact Graphics completion token delivered to the sealed RenderGraph terminal observer",
+      "normalRelease": "the timing owner retains readback storage until that token completes and the timestamp results are mapped, then resets or shuts down only from a terminal state",
+      "deviceLostRelease": "terminal observer marks timing completion lost before the timing owner releases readback storage during explicit teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Qualification/QualificationCaptureBridge.cpp",
+      "owner": "QualificationCaptureBridge",
+      "symbol": "readback",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact Graphics token accepted by QualificationCaptureOwner for the complete qualification bundle",
+      "normalRelease": "the bridge retains each physical readback until exact completion maps every attachment, then releases GPU storage while the completed bundle retains only canonical CPU bytes",
+      "deviceLostRelease": "lost or rejected exact completion closes the bundle before the bridge clears its physical readbacks without mapping"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Qualification/QualificationCaptureBridge.cpp",
+      "owner": "CopyData",
+      "symbol": "readbackOwner",
+      "policy": "SubmissionBatch",
+      "completionSource": "exact Graphics queue token returned by RenderSubmissionTracker::Submit for the recorded copy pass",
+      "normalRelease": "the graph execution retains the copy-pass alias in its submission batch while the bridge keeps the physical readback completion-owned until mapping",
+      "deviceLostRelease": "submission abandonment or device loss releases the graph alias and the bridge later clears the rejected physical readback without mapping"
     }
   ]
 }

@@ -471,8 +471,35 @@ namespace
         {
             return true;
         }
+        if (!requirements.exposureStateRequired)
+        {
+            outFailure =
+                "Particle VFX exposure contract was not required for an active particle snapshot";
+            return false;
+        }
+        if (!context.view.exposureState.IsValid())
+        {
+            outFailure =
+                "Particle VFX requires a committed exposure-state handle in the current graph view";
+            return false;
+        }
+        if (!HasCurrentGraphProvenance(
+                context.view.exposureState, context.identity))
+        {
+            outFailure =
+                "Particle VFX exposure-state handle belongs to a stale graph recording";
+            return false;
+        }
+        if (context.view.exposureStateContentHash == 0)
+        {
+            outFailure =
+                "Particle VFX committed exposure state is missing its semantic content hash";
+            return false;
+        }
 
         outInput.identity = context.identity;
+        outInput.exposureState = context.view.exposureState;
+        outInput.exposureStateContentHash = context.view.exposureStateContentHash;
         outInput.softDepthRequested = requirements.softDepthRequested;
         outInput.softDepthRequired = requirements.softDepthRequired;
         outInput.reactiveMaskRequested = requirements.reactiveMaskRequested;

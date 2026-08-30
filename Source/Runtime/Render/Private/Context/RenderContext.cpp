@@ -812,6 +812,13 @@ void RenderContext::PollFrameTiming() noexcept
     }
 }
 
+bool RenderContext::ConsumeGpuFrameTimingSamples(
+    RenderGpuFrameTimingSampleBatch& outSamples) noexcept
+{
+    outSamples = {};
+    return m_frameTiming && m_frameTiming->ConsumeCompletedSamples(outSamples);
+}
+
 const RenderGpuFrameTimingDiagnostics&
 RenderContext::GetGpuFrameTimingDiagnostics() const noexcept
 {

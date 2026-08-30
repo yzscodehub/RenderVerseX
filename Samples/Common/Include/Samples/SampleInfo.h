@@ -308,6 +308,12 @@ namespace RVX
             SampleWorkloadScale::PullRequest;
         /** Catalog animation assets required in addition to the primary model. */
         std::vector<std::string> requiredAnimationAssetIds;
+        /**
+         * Cooked particle effects admitted in deterministic scenario order.
+         * Empty preserves the legacy single `defaultEffectAssetId` contract;
+         * non-empty is the complete runtime effect set, not a hint.
+         */
+        std::vector<std::string> requiredEffectAssetIds;
         /** Catalog assets whose CookManifest admission must pass before setup. */
         std::vector<std::string> requiredCookedAssetIds;
         /** Product-facing classification; the machine manifest is authoritative. */

@@ -6241,6 +6241,192 @@ TEST(RenderFrameTimingValidation,
 }
 
 TEST(RenderFrameTimingValidation,
+     CompletionOwnedTimingQueuesEveryBoundCompletedSlotAndConsumesInTimelineOrder)
+{
+    FakeDevice device;
+    device.EnableTimestampQueries();
+    RenderFrameTimingOwner timing;
+    ASSERT_TRUE(timing.Initialize(&device, 2u));
+    ASSERT_EQ(2u, device.createdBuffers.size());
+
+    RecordingCommandContext firstGraphics(RHICommandQueueType::Graphics);
+    RecordingCommandContext secondGraphics(RHICommandQueueType::Graphics);
+    firstGraphics.nextResolvedStartTimestamp = 100u;
+    firstGraphics.nextResolvedEndTimestamp = 120u;
+    secondGraphics.nextResolvedStartTimestamp = 200u;
+    secondGraphics.nextResolvedEndTimestamp = 240u;
+
+    const GPUCompletionPoint laterPoint{GPUQueueDomain::Graphics, 102u};
+    const GPUCompletionPoint earlierPoint{GPUQueueDomain::Graphics, 101u};
+    timing.BeginFrame(0u, firstGraphics);
+    timing.EndFrame(0u, firstGraphics);
+    timing.MarkSubmitted(0u, laterPoint);
+    ASSERT_TRUE(timing.BindSubmittedFrame(laterPoint, 1002u));
+
+    timing.BeginFrame(1u, secondGraphics);
+    timing.EndFrame(1u, secondGraphics);
+    timing.MarkSubmitted(1u, earlierPoint);
+    ASSERT_TRUE(timing.BindSubmittedFrame(earlierPoint, 1001u));
+
+    // Deliberately drain in ring-slot rather than completion-timeline order.
+    // The consumer must still see every completed sample in Graphics order.
+    timing.DrainCompletedSlot(0u, laterPoint);
+    timing.DrainCompletedSlot(1u, earlierPoint);
+
+    RenderGpuFrameTimingSampleBatch batch;
+    ASSERT_TRUE(timing.ConsumeCompletedSamples(batch));
+    ASSERT_EQ(2u, batch.count);
+    EXPECT_EQ(1001u, batch.samples[0].sourceFrameSequence);
+    EXPECT_EQ(101u, batch.samples[0].completionValue);
+    EXPECT_EQ(200u, batch.samples[0].startTimestamp);
+    EXPECT_EQ(240u, batch.samples[0].endTimestamp);
+    EXPECT_EQ(40u, batch.samples[0].elapsedTimestampTicks);
+    EXPECT_EQ(1000000u, batch.samples[0].timestampFrequency);
+    EXPECT_DOUBLE_EQ(0.04, batch.samples[0].terminalCriticalPathMilliseconds);
+    EXPECT_EQ(1002u, batch.samples[1].sourceFrameSequence);
+    EXPECT_EQ(102u, batch.samples[1].completionValue);
+    EXPECT_EQ(20u, batch.samples[1].elapsedTimestampTicks);
+    EXPECT_DOUBLE_EQ(0.02, batch.samples[1].terminalCriticalPathMilliseconds);
+
+    RenderGpuFrameTimingSampleBatch emptyBatch;
+    EXPECT_FALSE(timing.ConsumeCompletedSamples(emptyBatch));
+    EXPECT_EQ(0u, emptyBatch.count);
+    timing.Shutdown(false);
+}
+
+TEST(RenderFrameTimingValidation,
+     CompletionOwnedTimingBackpressuresTheBoundedQueueWithoutDroppingOrOverwriting)
+{
+    FakeDevice device;
+    device.EnableTimestampQueries();
+    RenderFrameTimingOwner timing;
+    ASSERT_TRUE(timing.Initialize(&device, RVX_MAX_FRAME_COUNT));
+
+    RecordingCommandContext graphics(RHICommandQueueType::Graphics);
+    uint64 nextCompletionValue = 1u;
+    uint64 nextSourceFrame = 100u;
+    for (uint32 wave = 0; wave < 2u; ++wave)
+    {
+        for (uint32 slot = 0; slot < RVX_MAX_FRAME_COUNT; ++slot)
+        {
+            graphics.nextResolvedStartTimestamp = nextCompletionValue * 10u;
+            graphics.nextResolvedEndTimestamp =
+                graphics.nextResolvedStartTimestamp + 1u;
+            const GPUCompletionPoint completion{
+                GPUQueueDomain::Graphics, nextCompletionValue++};
+            timing.BeginFrame(slot, graphics);
+            timing.EndFrame(slot, graphics);
+            timing.MarkSubmitted(slot, completion);
+            ASSERT_TRUE(timing.BindSubmittedFrame(completion, nextSourceFrame++));
+            timing.DrainCompletedSlot(slot, completion);
+        }
+    }
+
+    RenderGpuFrameTimingSampleBatch fullBatch;
+    ASSERT_TRUE(timing.ConsumeCompletedSamples(fullBatch));
+    ASSERT_EQ(RVX_RENDER_GPU_FRAME_TIMING_SAMPLE_QUEUE_CAPACITY, fullBatch.count);
+    for (uint32 index = 0; index < fullBatch.count; ++index)
+    {
+        EXPECT_EQ(100u + index, fullBatch.samples[index].sourceFrameSequence);
+        EXPECT_EQ(1u + index, fullBatch.samples[index].completionValue);
+    }
+
+    // Refill to capacity, then prove a newly completed source-bound slot stays
+    // unread until capacity exists rather than being overwritten or discarded.
+    for (uint32 slot = 0; slot < RVX_MAX_FRAME_COUNT; ++slot)
+    {
+        graphics.nextResolvedStartTimestamp = nextCompletionValue * 10u;
+        graphics.nextResolvedEndTimestamp =
+            graphics.nextResolvedStartTimestamp + 1u;
+        const GPUCompletionPoint completion{
+            GPUQueueDomain::Graphics, nextCompletionValue++};
+        timing.BeginFrame(slot, graphics);
+        timing.EndFrame(slot, graphics);
+        timing.MarkSubmitted(slot, completion);
+        ASSERT_TRUE(timing.BindSubmittedFrame(completion, nextSourceFrame++));
+        timing.DrainCompletedSlot(slot, completion);
+    }
+    for (uint32 slot = 0; slot < RVX_MAX_FRAME_COUNT; ++slot)
+    {
+        graphics.nextResolvedStartTimestamp = nextCompletionValue * 10u;
+        graphics.nextResolvedEndTimestamp =
+            graphics.nextResolvedStartTimestamp + 1u;
+        const GPUCompletionPoint completion{
+            GPUQueueDomain::Graphics, nextCompletionValue++};
+        timing.BeginFrame(slot, graphics);
+        timing.EndFrame(slot, graphics);
+        timing.MarkSubmitted(slot, completion);
+        ASSERT_TRUE(timing.BindSubmittedFrame(completion, nextSourceFrame++));
+        timing.DrainCompletedSlot(slot, completion);
+    }
+
+    const uint64 retainedSourceFrame = nextSourceFrame++;
+    const GPUCompletionPoint retainedPoint{
+        GPUQueueDomain::Graphics, nextCompletionValue++};
+    graphics.nextResolvedStartTimestamp = retainedPoint.value * 10u;
+    graphics.nextResolvedEndTimestamp =
+        graphics.nextResolvedStartTimestamp + 1u;
+    timing.BeginFrame(0u, graphics);
+    timing.EndFrame(0u, graphics);
+    timing.MarkSubmitted(0u, retainedPoint);
+    ASSERT_TRUE(timing.BindSubmittedFrame(retainedPoint, retainedSourceFrame));
+    timing.DrainCompletedSlot(0u, retainedPoint);
+
+    RenderGpuFrameTimingSampleBatch queueAtCapacity;
+    ASSERT_TRUE(timing.ConsumeCompletedSamples(queueAtCapacity));
+    ASSERT_EQ(RVX_RENDER_GPU_FRAME_TIMING_SAMPLE_QUEUE_CAPACITY,
+              queueAtCapacity.count);
+    EXPECT_EQ(retainedSourceFrame - 1u,
+              queueAtCapacity.samples[queueAtCapacity.count - 1u].sourceFrameSequence);
+
+    timing.DrainCompletedSlot(0u, retainedPoint);
+    RenderGpuFrameTimingSampleBatch retainedBatch;
+    ASSERT_TRUE(timing.ConsumeCompletedSamples(retainedBatch));
+    ASSERT_EQ(1u, retainedBatch.count);
+    EXPECT_EQ(retainedSourceFrame, retainedBatch.samples[0].sourceFrameSequence);
+    EXPECT_EQ(retainedPoint.value, retainedBatch.samples[0].completionValue);
+    timing.Shutdown(false);
+}
+
+TEST(RenderFrameTimingValidation,
+     CompletionOwnedTimingClearsUndeliveredSamplesOnDeviceLossAndShutdown)
+{
+    FakeDevice device;
+    device.EnableTimestampQueries();
+    RenderFrameTimingOwner timing;
+    ASSERT_TRUE(timing.Initialize(&device, 1u));
+
+    RecordingCommandContext graphics(RHICommandQueueType::Graphics);
+    graphics.nextResolvedStartTimestamp = 10u;
+    graphics.nextResolvedEndTimestamp = 20u;
+    const GPUCompletionPoint point{GPUQueueDomain::Graphics, 44u};
+    timing.BeginFrame(0u, graphics);
+    timing.EndFrame(0u, graphics);
+    timing.MarkSubmitted(0u, point);
+    ASSERT_TRUE(timing.BindSubmittedFrame(point, 88u));
+    timing.DrainCompletedSlot(0u, point);
+
+    timing.MarkAllLost();
+    RenderGpuFrameTimingSampleBatch afterDeviceLoss;
+    EXPECT_FALSE(timing.ConsumeCompletedSamples(afterDeviceLoss));
+    EXPECT_EQ(0u, afterDeviceLoss.count);
+
+    graphics.nextResolvedStartTimestamp = 30u;
+    graphics.nextResolvedEndTimestamp = 40u;
+    const GPUCompletionPoint secondPoint{GPUQueueDomain::Graphics, 45u};
+    timing.BeginFrame(0u, graphics);
+    timing.EndFrame(0u, graphics);
+    timing.MarkSubmitted(0u, secondPoint);
+    ASSERT_TRUE(timing.BindSubmittedFrame(secondPoint, 89u));
+    timing.DrainCompletedSlot(0u, secondPoint);
+    timing.Shutdown(false);
+
+    RenderGpuFrameTimingSampleBatch afterShutdown;
+    EXPECT_FALSE(timing.ConsumeCompletedSamples(afterShutdown));
+    EXPECT_EQ(0u, afterShutdown.count);
+}
+
+TEST(RenderFrameTimingValidation,
      CompletionOwnedTimingNeverMapsPendingLostAbortedOrZeroSubmittedSamples)
 {
     FakeDevice device;
@@ -6658,6 +6844,71 @@ TEST(RenderPassStatusValidation,
 
     RenderGraphValidationAccess::Reset(graph);
     EXPECT_FALSE(execution.IsFrameIdentityValid());
+}
+
+TEST(RenderPassStatusValidation,
+     LateBoundHdrAttachmentPreservesTheCurrentTargetWithoutMutatingTheFrameSnapshot)
+{
+    RenderGraph graph;
+    const RHITextureDesc targetDesc = RHITextureDesc::RenderTarget(
+        16, 16, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle snapshotTarget = graph.CreateTexture(targetDesc);
+    const RGTextureHandle resolvedHdrTarget = graph.CreateTexture(targetDesc);
+    ASSERT_TRUE(snapshotTarget.IsValid());
+    ASSERT_TRUE(resolvedHdrTarget.IsValid());
+
+    RenderPassRecordContext context;
+    context.identity = {
+        &graph,
+        graph.GetGraphIdentity(),
+        graph.GetRecordingGeneration(),
+        71u,
+        0u,
+        9u};
+    context.view.colorTarget = snapshotTarget;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+    ASSERT_TRUE(AreSameGraphTextureHandle(
+        snapshotTarget, context.frameSnapshot->view.colorTarget));
+
+    // Deferred volumetric composition resolves a new HDR surface after the
+    // frame snapshot has been frozen. The record must carry that replacement
+    // explicitly; changing the snapshot would invalidate other recordings.
+    context.view.colorTarget = resolvedHdrTarget;
+    context.lateBoundHdrAttachment = {
+        context.identity,
+        resolvedHdrTarget};
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    const RenderPassExecutionData execution =
+        MakeRenderPassExecutionData(context);
+    EXPECT_TRUE(execution.IsFrameIdentityValid());
+    EXPECT_TRUE(AreSameGraphTextureHandle(
+        snapshotTarget, execution.frameSnapshot->view.colorTarget));
+    EXPECT_TRUE(AreSameGraphTextureHandle(
+        resolvedHdrTarget, execution.view.colorTarget));
+    EXPECT_TRUE(AreSameGraphTextureHandle(
+        resolvedHdrTarget,
+        execution.lateBoundHdrAttachment.finalHdrSceneColor));
+
+    // A foreign attachment cannot be smuggled through the value contract.
+    RenderGraph foreignGraph;
+    const RGTextureHandle foreignTarget = foreignGraph.CreateTexture(targetDesc);
+    ASSERT_TRUE(foreignTarget.IsValid());
+    context.lateBoundHdrAttachment = {context.identity, foreignTarget};
+    EXPECT_FALSE(context.IsFrameIdentityValid());
+    EXPECT_FALSE(MakeRenderPassExecutionData(context).IsFrameIdentityValid());
+
+    // Resetting the graph invalidates every previously recorded attachment,
+    // including an otherwise correctly paired late-bound final HDR target.
+    context.lateBoundHdrAttachment = {
+        context.identity,
+        resolvedHdrTarget};
+    context.view.colorTarget = resolvedHdrTarget;
+    RenderGraphValidationAccess::Reset(graph);
+    EXPECT_FALSE(context.IsFrameIdentityValid());
+    EXPECT_FALSE(MakeRenderPassExecutionData(context).IsFrameIdentityValid());
 }
 
 TEST(RenderPassStatusValidation,
@@ -11162,6 +11413,171 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     ASSERT_FALSE(ctx.renderPasses.empty());
     EXPECT_FALSE(ctx.renderPasses[0].hasDepthStencil);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DeferredSkyboxWritesTheExplicitVolumetricResolvedHdrAttachment)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const RHITextureRef preVolumetricSceneColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    const RHITextureRef volumetricResolvedHdr = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(preVolumetricSceneColor);
+    ASSERT_TRUE(volumetricResolvedHdr);
+
+    ViewData recordView = view;
+    recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, preVolumetricSceneColor.Get(), RHIResourceState::RenderTarget);
+    recordView.viewportWidth = 64;
+    recordView.viewportHeight = 64;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, recordView, 951u));
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, recordView, scene, sky, 951u, 951u);
+    const RGTextureHandle frozenSceneColor = context.frameSnapshot->view.colorTarget;
+    const RGTextureHandle resolvedSceneColor =
+        RenderGraphValidationAccess::ImportTexture(
+            graph, volumetricResolvedHdr.Get(), RHIResourceState::RenderTarget);
+    ASSERT_TRUE(resolvedSceneColor.IsValid());
+    ASSERT_FALSE(AreSameGraphTextureHandle(
+        frozenSceneColor, resolvedSceneColor));
+
+    // This is the Deferred post-volumetric hand-off: retain the original
+    // snapshot for every pre-existing reader, and state the final HDR target
+    // in the immutable late-bound record payload used by Skybox.
+    context.view.colorTarget = resolvedSceneColor;
+    context.lateBoundHdrAttachment = {
+        context.identity,
+        resolvedSceneColor};
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, diagnostics.passes.size());
+    const auto finalHdrUsage = std::find_if(
+        diagnostics.passes[0].usages.begin(),
+        diagnostics.passes[0].usages.end(),
+        [resolvedSceneColor](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == resolvedSceneColor.index;
+        });
+    ASSERT_NE(diagnostics.passes[0].usages.end(), finalHdrUsage);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::ReadWrite,
+              finalHdrUsage->access);
+    EXPECT_EQ(RHIResourceState::RenderTarget,
+              finalHdrUsage->desiredState);
+    const auto frozenHdrUsage = std::find_if(
+        diagnostics.passes[0].usages.begin(),
+        diagnostics.passes[0].usages.end(),
+        [frozenSceneColor](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == frozenSceneColor.index;
+        });
+    EXPECT_EQ(diagnostics.passes[0].usages.end(), frozenHdrUsage);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    ASSERT_EQ(1u, commands.drawCount);
+    ASSERT_EQ(1u, commands.renderPasses.size());
+    ASSERT_EQ(1u, commands.renderPasses[0].colorAttachmentCount);
+    ASSERT_NE(nullptr, commands.renderPasses[0].colorAttachments[0].view);
+    EXPECT_EQ(volumetricResolvedHdr.Get(),
+              commands.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_NE(preVolumetricSceneColor.Get(),
+              commands.renderPasses[0].colorAttachments[0].view->GetTexture());
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxRejectsForeignAndStaleLateBoundHdrAttachmentsBeforeDeclaration)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+
+    const auto expectNoSkyboxDeclaration =
+        [&pass](RenderGraph& graph,
+                const RenderPassRecordContext& context)
+    {
+        pass.AddToGraph(graph, context);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        ASSERT_EQ(1u, graph.GetDiagnostics().passes.size());
+        EXPECT_TRUE(graph.GetDiagnostics().passes[0].usages.empty());
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(0u, commands.drawCount);
+        EXPECT_EQ(0u, commands.beginRenderPassCount);
+    };
+
+    // A foreign final HDR attachment cannot reach declaration or execution.
+    RenderGraph targetGraph;
+    RenderGraph foreignGraph;
+    RenderGraphValidationAccess::SetDevice(targetGraph, &device);
+    RenderGraphValidationAccess::SetDevice(foreignGraph, &device);
+    const RHITextureRef targetColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    const RHITextureRef foreignColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(targetColor);
+    ASSERT_TRUE(foreignColor);
+    ViewData targetView = view;
+    targetView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        targetGraph, targetColor.Get(), RHIResourceState::RenderTarget);
+    targetView.viewportWidth = 64;
+    targetView.viewportHeight = 64;
+    ASSERT_TRUE(AttachCommittedTestExposureState(targetGraph, targetView, 952u));
+    RenderPassRecordContext foreignContext = MakeSkyboxRecordContext(
+        targetGraph, targetView, scene, sky, 952u, 952u);
+    foreignContext.lateBoundHdrAttachment = {
+        foreignContext.identity,
+        RenderGraphValidationAccess::ImportTexture(
+            foreignGraph, foreignColor.Get(), RHIResourceState::RenderTarget)};
+    ASSERT_FALSE(foreignContext.IsFrameIdentityValid());
+    expectNoSkyboxDeclaration(targetGraph, foreignContext);
+
+    // A handle from a prior recording generation is equally invalid, even
+    // when it originated from the same RenderGraph instance.
+    RenderGraph staleGraph;
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
+    const RHITextureRef staleColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(staleColor);
+    ViewData staleView = view;
+    staleView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        staleGraph, staleColor.Get(), RHIResourceState::RenderTarget);
+    staleView.viewportWidth = 64;
+    staleView.viewportHeight = 64;
+    ASSERT_TRUE(AttachCommittedTestExposureState(staleGraph, staleView, 953u));
+    RenderPassRecordContext staleContext = MakeSkyboxRecordContext(
+        staleGraph, staleView, scene, sky, 953u, 953u);
+    staleContext.lateBoundHdrAttachment = {
+        staleContext.identity,
+        staleContext.view.colorTarget};
+    ASSERT_TRUE(staleContext.IsFrameIdentityValid());
+    RenderGraphValidationAccess::Reset(staleGraph);
+    ASSERT_FALSE(staleContext.IsFrameIdentityValid());
+    expectNoSkyboxDeclaration(staleGraph, staleContext);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)

@@ -14,6 +14,7 @@ from test_module_policy import write_fixture as write_policy_fixture
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "Scripts/check_rhi_ownership_inventory.py"
 HOLDER_PATH = "Source/Runtime/Render/Private/Holder.h"
+PRODUCTION_INVENTORY = REPO_ROOT / "Scripts/rhi_ownership_inventory_m1.json"
 
 
 def make_entry(**overrides) -> dict:
@@ -52,6 +53,38 @@ def run_checker(root: Path, manifest: Path, module_inventory: Path,
 
 
 class RHIOwnershipInventoryCheckerTests(unittest.TestCase):
+    def test_qualification_readback_and_timestamp_owners_remain_exactly_classified(self) -> None:
+        entries = json.loads(PRODUCTION_INVENTORY.read_text(encoding="utf-8"))["entries"]
+        classified = {
+            (entry["path"], entry["owner"], entry["symbol"]): entry
+            for entry in entries
+        }
+
+        timing_path = (
+            "Source/Runtime/Render/Include/Render/Qualification/"
+            "RenderGraphPassTimingOwner.h"
+        )
+        capture_path = (
+            "Source/Runtime/Render/Private/Qualification/"
+            "QualificationCaptureBridge.cpp"
+        )
+        expected_policies = {
+            (timing_path, "RenderGraphPassTimingOwner", "m_queryPool"): "OwnerSnapshot",
+            (timing_path, "RenderGraphPassTimingOwner", "m_readbackBuffer"): "OwnerSnapshot",
+            (capture_path, "QualificationCaptureBridge", "readback"): "OwnerSnapshot",
+            (capture_path, "CopyData", "readbackOwner"): "SubmissionBatch",
+        }
+        self.assertEqual(len(entries), len(classified), "production inventory has duplicate holders")
+        for key, policy in expected_policies.items():
+            with self.subTest(holder="::".join(key)):
+                entry = classified.get(key)
+                self.assertIsNotNone(entry, "completion-owned holder must remain in the inventory")
+                assert entry is not None
+                self.assertEqual(policy, entry["policy"])
+                self.assertIn("exact", entry["completionSource"].lower())
+                self.assertTrue(entry["normalRelease"].strip())
+                self.assertTrue(entry["deviceLostRelease"].strip())
+
     def test_complete_classified_holder_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

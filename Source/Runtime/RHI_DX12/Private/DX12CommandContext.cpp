@@ -3513,30 +3513,39 @@ namespace RVX
         m_commandList->EndQuery(dx12Pool->GetHeap(), queryType, index);
     }
 
-    void DX12CommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
+    bool DX12CommandContext::TryWriteTimestamp(RHIQueryPool* pool, uint32 index) noexcept
     {
         auto* dx12Pool = ValidateDX12QueryPoolForContext(
-            "WriteTimestamp",
+            "TryWriteTimestamp",
             *this,
             true,
             m_isRecording,
             pool,
             RHIQueryType::Timestamp);
         if (dx12Pool == nullptr ||
-            !ValidateDX12QueryRange("WriteTimestamp", *dx12Pool, index, 1))
+            !ValidateDX12QueryRange("TryWriteTimestamp", *dx12Pool, index, 1))
         {
-            return;
+            return false;
         }
 
         // In DX12, timestamps are written using EndQuery with TIMESTAMP type
         m_commandList->EndQuery(dx12Pool->GetHeap(), D3D12_QUERY_TYPE_TIMESTAMP, index);
+        return true;
     }
 
-    void DX12CommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
-                                            RHIBuffer* destBuffer, uint64 destOffset)
+    void DX12CommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
+    {
+        (void)TryWriteTimestamp(pool, index);
+    }
+
+    bool DX12CommandContext::TryResolveQueries(RHIQueryPool* pool,
+                                                uint32 firstQuery,
+                                                uint32 queryCount,
+                                                RHIBuffer* destBuffer,
+                                                uint64 destOffset) noexcept
     {
         auto* dx12Pool = ValidateDX12QueryPoolForContext(
-            "ResolveQueries",
+            "TryResolveQueries",
             *this,
             true,
             m_isRecording,
@@ -3544,13 +3553,13 @@ namespace RVX
             pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
         if (dx12Pool == nullptr)
         {
-            return;
+            return false;
         }
 
         if (destBuffer == nullptr)
         {
-            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries requires a destination buffer");
-            return;
+            RVX_RHI_ERROR("DX12CommandContext: TryResolveQueries requires a destination buffer");
+            return false;
         }
 
         const RHIQueryValidationResult resolveValidation =
@@ -3562,16 +3571,16 @@ namespace RVX
                 destOffset);
         if (!resolveValidation)
         {
-            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries rejected because {}",
+            RVX_RHI_ERROR("DX12CommandContext: TryResolveQueries rejected because {}",
                           resolveValidation.message);
-            return;
+            return false;
         }
 
         auto* dx12Buffer = dynamic_cast<DX12Buffer*>(destBuffer);
         if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
         {
-            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries requires a live DX12 destination buffer");
-            return;
+            RVX_RHI_ERROR("DX12CommandContext: TryResolveQueries requires a live DX12 destination buffer");
+            return false;
         }
 
         m_commandList->ResolveQueryData(
@@ -3581,27 +3590,45 @@ namespace RVX
             queryCount,
             dx12Buffer->GetResource(),
             destOffset);
+        return true;
     }
 
-    void DX12CommandContext::ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount)
+    void DX12CommandContext::ResolveQueries(RHIQueryPool* pool,
+                                            uint32 firstQuery,
+                                            uint32 queryCount,
+                                            RHIBuffer* destBuffer,
+                                            uint64 destOffset)
+    {
+        (void)TryResolveQueries(pool, firstQuery, queryCount, destBuffer, destOffset);
+    }
+
+    bool DX12CommandContext::TryResetQueries(RHIQueryPool* pool,
+                                              uint32 firstQuery,
+                                              uint32 queryCount) noexcept
     {
         auto* dx12Pool = ValidateDX12QueryPoolForContext(
-            "ResetQueries",
+            "TryResetQueries",
             *this,
-            false,
+            true,
             m_isRecording,
             pool,
             pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
         if (dx12Pool == nullptr ||
-            !ValidateDX12QueryRange("ResetQueries", *dx12Pool, firstQuery, queryCount))
+            !ValidateDX12QueryRange("TryResetQueries", *dx12Pool, firstQuery, queryCount))
         {
-            return;
+            return false;
         }
 
         // D3D12 queries don't need explicit reset like Vulkan
         // The ResolveQueryData operation handles this implicitly
-        // This function is provided for API compatibility
+        // The no-op is reportable only after full context, metadata, and range validation.
         (void)dx12Pool;
+        return true;
+    }
+
+    void DX12CommandContext::ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount)
+    {
+        (void)TryResetQueries(pool, firstQuery, queryCount);
     }
 
     // =============================================================================

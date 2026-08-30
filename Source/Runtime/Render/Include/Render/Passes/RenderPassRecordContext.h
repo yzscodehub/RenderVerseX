@@ -498,6 +498,60 @@ namespace RVX
                     identity.graphRecordingGeneration);
     }
 
+    /** @brief Compare the complete identity of two graph texture handles. */
+    [[nodiscard]] inline bool AreSameGraphTextureHandle(
+        const RGTextureHandle& left,
+        const RGTextureHandle& right) noexcept
+    {
+        if (left.index != right.index ||
+            left.graphIdentity != right.graphIdentity ||
+            left.recordingGeneration != right.recordingGeneration ||
+            left.hasSubresourceRange != right.hasSubresourceRange)
+        {
+            return false;
+        }
+        if (!left.hasSubresourceRange)
+        {
+            return true;
+        }
+        return left.subresourceRange.baseMipLevel ==
+                   right.subresourceRange.baseMipLevel &&
+               left.subresourceRange.mipLevelCount ==
+                   right.subresourceRange.mipLevelCount &&
+               left.subresourceRange.baseArrayLayer ==
+                   right.subresourceRange.baseArrayLayer &&
+               left.subresourceRange.arrayLayerCount ==
+                   right.subresourceRange.arrayLayerCount &&
+               left.subresourceRange.aspect == right.subresourceRange.aspect;
+    }
+
+    /**
+     * @brief Explicit final HDR attachment selected after the frame snapshot.
+     *
+     * A frame snapshot is deliberately frozen before graph features begin to
+     * publish late outputs.  A later feature must therefore never mutate that
+     * snapshot just to redirect a surface pass.  This narrow value contract
+     * carries the one final HDR attachment across that boundary and makes the
+     * replacement independently provenance-checkable.
+     */
+    struct RenderPassLateBoundHdrAttachment
+    {
+        RenderPassRecordIdentity identity{};
+        RGTextureHandle finalHdrSceneColor{};
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && !finalHdrSceneColor.IsValid();
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            return identity == expected && finalHdrSceneColor.IsValid() &&
+                   HasCurrentGraphProvenance(finalHdrSceneColor, expected);
+        }
+    };
+
     /**
      * @brief Immutable execution proof for one graph-owned opaque HDR copy.
      *
@@ -601,6 +655,9 @@ namespace RVX
      * Water samples immutable copies instead of the active HDR/depth
      * attachments. This keeps refraction/thickness legal on explicit APIs and
      * makes accidental sampled/render-target aliasing structurally impossible.
+     * The exact committed exposure-state handle is frozen alongside the HDR
+     * snapshot: the snapshot is already pre-exposed, while authored water
+     * radiance must enter that same domain exactly once.
      */
     struct WaterSurfaceRecordInput
     {
@@ -608,11 +665,16 @@ namespace RVX
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         RGTextureHandle depthSnapshot{};
         std::shared_ptr<WaterDepthSnapshotCopyReceipt> depthReceipt{};
+        /** Exact committed producer state that authored opaqueSceneSnapshot. */
+        RGBufferHandle exposureState{};
+        /** Semantic identity of the frozen committed exposure state. */
+        uint64 exposureStateContentHash = 0;
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
             return !identity.IsValid() && opaqueSceneSnapshot.IsEmpty() &&
-                   !depthSnapshot.IsValid() && !depthReceipt;
+                   !depthSnapshot.IsValid() && !depthReceipt &&
+                   !exposureState.IsValid() && exposureStateContentHash == 0;
         }
 
         [[nodiscard]] bool IsCompatibleWith(
@@ -622,7 +684,9 @@ namespace RVX
                    opaqueSceneSnapshot.IsCompatibleWith(expected) &&
                    depthSnapshot.IsValid() &&
                    HasCurrentGraphProvenance(depthSnapshot, expected) &&
-                   depthReceipt != nullptr;
+                   depthReceipt != nullptr && exposureState.IsValid() &&
+                   HasCurrentGraphProvenance(exposureState, expected) &&
+                   exposureStateContentHash != 0;
         }
     };
 
@@ -632,6 +696,9 @@ namespace RVX
      * The color destination is deliberately distinct from the particle color
      * attachment: DistortionComposite samples the latter and writes the
      * former, so graph recording can reject accidental HDR read/write aliasing.
+     * The committed exposure state is frozen with the authored particle
+     * packets: fire/smoke radiance enters the HDR producer domain once, while
+     * scene/depth/froxel graph inputs already retain their own domains.
      */
     struct ParticleVfxRecordInput
     {
@@ -639,6 +706,10 @@ namespace RVX
         RGTextureHandle softDepthSnapshot{};
         RGTextureHandle distortionVectors{};
         RGTextureHandle compositedSceneColor{};
+        /** Exact committed producer state for this particle frame. */
+        RGBufferHandle exposureState{};
+        /** Semantic identity paired with the frozen committed state. */
+        uint64 exposureStateContentHash = 0;
         bool softDepthRequested = false;
         bool softDepthRequired = false;
         bool reactiveMaskRequested = false;
@@ -648,6 +719,7 @@ namespace RVX
         {
             return !identity.IsValid() && !softDepthSnapshot.IsValid() &&
                    !distortionVectors.IsValid() && !compositedSceneColor.IsValid() &&
+                   !exposureState.IsValid() && exposureStateContentHash == 0 &&
                    !softDepthRequested && !softDepthRequired &&
                    !reactiveMaskRequested && !distortionRequested;
         }
@@ -662,7 +734,9 @@ namespace RVX
                 (HasCurrentGraphProvenance(distortionVectors, expected) &&
                  HasCurrentGraphProvenance(compositedSceneColor, expected));
             return identity == expected && softDepthCompatible &&
-                   distortionCompatible;
+                   distortionCompatible && exposureState.IsValid() &&
+                   HasCurrentGraphProvenance(exposureState, expected) &&
+                   exposureStateContentHash != 0;
         }
     };
 
@@ -1716,6 +1790,8 @@ namespace RVX
         AmbientOcclusionRecordInput ambientOcclusion{};
         /** Shared froxel field selected before water/mesh/particle translucency. */
         VolumetricLightingRecordInput volumetricLighting{};
+        /** Final HDR surface resolved after the frozen frame snapshot. */
+        RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         /** Opaque HDR plus copied D32 inputs late-bound for deterministic water. */
@@ -1836,6 +1912,14 @@ namespace RVX
             {
                 return false;
             }
+            if (!lateBoundHdrAttachment.IsEmpty() &&
+                (!lateBoundHdrAttachment.IsCompatibleWith(identity) ||
+                 !AreSameGraphTextureHandle(
+                     view.colorTarget,
+                     lateBoundHdrAttachment.finalHdrSceneColor)))
+            {
+                return false;
+            }
             if (!rayTracingScene.IsEmpty() &&
                 !rayTracingScene.IsCompatibleWith(identity))
             {
@@ -1866,6 +1950,7 @@ namespace RVX
         RayTracingSceneRecordInput rayTracingScene{};
         AmbientOcclusionRecordInput ambientOcclusion{};
         VolumetricLightingRecordInput volumetricLighting{};
+        RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
 
@@ -1906,6 +1991,14 @@ namespace RVX
             }
             if (!volumetricLighting.IsEmpty() &&
                 !volumetricLighting.IsCompatibleWith(identity))
+            {
+                return false;
+            }
+            if (!lateBoundHdrAttachment.IsEmpty() &&
+                (!lateBoundHdrAttachment.IsCompatibleWith(identity) ||
+                 !AreSameGraphTextureHandle(
+                     view.colorTarget,
+                     lateBoundHdrAttachment.finalHdrSceneColor)))
             {
                 return false;
             }
@@ -2130,6 +2223,16 @@ namespace RVX
         result.rayTracingScene = context.rayTracingScene;
         result.ambientOcclusion = context.ambientOcclusion;
         result.volumetricLighting = context.volumetricLighting;
+        result.lateBoundHdrAttachment = context.lateBoundHdrAttachment;
+        // The value-owned frame snapshot intentionally retains the original
+        // attachment.  Only an explicit, current-graph late-bound contract is
+        // permitted to replace it for recording; never infer a target from a
+        // pass or mutate the frozen snapshot.
+        if (result.lateBoundHdrAttachment.IsCompatibleWith(result.identity))
+        {
+            result.view.colorTarget =
+                result.lateBoundHdrAttachment.finalHdrSceneColor;
+        }
         result.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
         result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;

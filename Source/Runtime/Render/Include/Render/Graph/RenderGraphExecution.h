@@ -16,6 +16,25 @@ namespace RVX
     class TransientBufferLease;
     struct GPUCompletionToken;
 
+    /**
+     * @brief Optional terminal observer carried by one physical graph execution.
+     *
+     * Observers receive the exact completion token committed by RenderContext.
+     * They are telemetry-only: callback results can never change physical
+     * resource ownership or frame-submission success.
+     */
+    class IRenderGraphExecutionTerminalObserver
+    {
+    public:
+        virtual ~IRenderGraphExecutionTerminalObserver() = default;
+
+        virtual void OnRenderGraphSubmitted(
+            const GPUCompletionToken& completion) noexcept = 0;
+        virtual void OnRenderGraphAborted() noexcept = 0;
+        virtual void OnRenderGraphDeviceLost() noexcept = 0;
+        virtual void OnRenderGraphRetired() noexcept = 0;
+    };
+
     enum class RenderGraphExecutionState : uint8
     {
         Invalid = 0,
@@ -72,6 +91,8 @@ namespace RVX
         void RetainBuffer(RHIBufferRef buffer);
         void RetainHeap(RHIHeapRef heap);
         void RetainResource(Ref<RefCounted> resource);
+        void RetainTerminalObserver(
+            std::shared_ptr<IRenderGraphExecutionTerminalObserver> observer);
         void SetQueueSubmission(
             RHIQueueSubmissionPlan plan,
             std::vector<RHICommandContextRef> ownedContexts);

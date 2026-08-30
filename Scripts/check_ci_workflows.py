@@ -90,6 +90,20 @@ GFX18_REQUIRED_EVIDENCE = {
     "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.json",
 }
 
+# The hermetic GFX24 contract suite stays independent from native candidate
+# producers.  Candidate artifacts have no human-approved baseline and must
+# never be mistaken for an automatic visual/performance pass.
+GFX24_CONFIGURE_PRESET = "win_x64_debug"
+GFX24_BUILD_PRESET = "win_x64_debug"
+GFX24_TEST_PRESET = "win_x64_debug_gfx24_qualification"
+GFX24_LABEL = "suite.gfx24-qualification"
+GFX24_CANDIDATE_CONFIGURE_PRESET = "win_x64_gfx24_candidate_release"
+GFX24_CANDIDATE_BUILD_PRESET = "win_x64_gfx24_candidate_release"
+GFX24_CANDIDATE_TEST_BASE = "win_x64_gfx24_candidate_release_lane_base"
+GFX24_CANDIDATE_TEST_PRESET = "win_x64_gfx24_candidate_release_gfx24_candidate"
+GFX24_CANDIDATE_BUILD_TARGET = "RVXValidationSuiteGfx24Candidate"
+GFX24_CANDIDATE_LABEL = "suite.gfx24-candidate"
+
 
 def _read(path: Path) -> str:
     try:
@@ -223,6 +237,134 @@ def validate(root: Path) -> list[str]:
         if filter_object != expected_filter:
             findings.append(
                 "GFX18 water test preset must select exactly suite.gfx18-water"
+            )
+
+    if (
+        GFX24_CONFIGURE_PRESET not in configure_names
+        or GFX24_BUILD_PRESET not in build_names
+        or GFX24_TEST_PRESET not in test_names
+    ):
+        findings.append(
+            "GFX24 contract qualification preset triplet is incomplete: "
+            f"{GFX24_CONFIGURE_PRESET}/{GFX24_TEST_PRESET}"
+        )
+    else:
+        gfx24_configure_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == GFX24_CONFIGURE_PRESET
+        )
+        cache_variables = gfx24_configure_preset.get("cacheVariables")
+        if not isinstance(cache_variables, dict) or cache_variables.get(
+            "RVX_ENABLE_GFX24_QUALIFICATION"
+        ) != "ON":
+            findings.append(
+                "GFX24 contract qualification must be enabled in the shared "
+                "Windows Debug preset"
+            )
+        gfx24_test_preset = next(
+            entry
+            for entry in presets["testPresets"]
+            if entry["name"] == GFX24_TEST_PRESET
+        )
+        expected_filter = {"include": {"label": "^suite\\.gfx24-qualification$"}}
+        if gfx24_test_preset.get("filter") != expected_filter:
+            findings.append(
+                "GFX24 contract qualification test preset must select exactly "
+                "suite.gfx24-qualification"
+            )
+
+    if (
+        GFX24_CANDIDATE_CONFIGURE_PRESET not in configure_names
+        or GFX24_CANDIDATE_BUILD_PRESET not in build_names
+        or GFX24_CANDIDATE_TEST_BASE not in test_names
+        or GFX24_CANDIDATE_TEST_PRESET not in test_names
+    ):
+        findings.append(
+            "GFX24 native candidate preset triplet is incomplete: "
+            f"{GFX24_CANDIDATE_CONFIGURE_PRESET}/{GFX24_CANDIDATE_TEST_PRESET}"
+        )
+    else:
+        gfx24_candidate_configure_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == GFX24_CANDIDATE_CONFIGURE_PRESET
+        )
+        candidate_cache_variables = gfx24_candidate_configure_preset.get(
+            "cacheVariables"
+        )
+        if (
+            not isinstance(candidate_cache_variables, dict)
+            or candidate_cache_variables.get("CMAKE_BUILD_TYPE") != "Release"
+            or candidate_cache_variables.get("RVX_ENABLE_GFX24_NATIVE_CANDIDATES")
+            != "ON"
+            or candidate_cache_variables.get("RVX_ENABLE_GFX24_QUALIFICATION")
+            != "OFF"
+        ):
+            findings.append(
+                "GFX24 native candidate configure preset must be isolated "
+                "Release evidence with only RVX_ENABLE_GFX24_NATIVE_CANDIDATES enabled"
+            )
+        gfx24_candidate_build_preset = next(
+            entry
+            for entry in presets["buildPresets"]
+            if entry["name"] == GFX24_CANDIDATE_BUILD_PRESET
+        )
+        if (
+            gfx24_candidate_build_preset.get("configurePreset")
+            != GFX24_CANDIDATE_CONFIGURE_PRESET
+            or gfx24_candidate_build_preset.get("configuration") != "Release"
+            or gfx24_candidate_build_preset.get("targets")
+            != [GFX24_CANDIDATE_BUILD_TARGET]
+        ):
+            findings.append(
+                "GFX24 native candidate build preset must build only "
+                "RVXValidationSuiteGfx24Candidate in its Release tree"
+            )
+        gfx24_candidate_test_preset = next(
+            entry
+            for entry in presets["testPresets"]
+            if entry["name"] == GFX24_CANDIDATE_TEST_PRESET
+        )
+        gfx24_candidate_test_base = next(
+            entry
+            for entry in presets["testPresets"]
+            if entry["name"] == GFX24_CANDIDATE_TEST_BASE
+        )
+        if (
+            gfx24_candidate_test_preset.get("inherits")
+            != GFX24_CANDIDATE_TEST_BASE
+            or gfx24_candidate_test_base.get("configurePreset")
+            != GFX24_CANDIDATE_CONFIGURE_PRESET
+            or gfx24_candidate_test_base.get("configuration") != "Release"
+        ):
+            findings.append(
+                "GFX24 native candidate test preset must inherit its fixed "
+                "Release candidate configure preset"
+            )
+        expected_filter = {
+            "include": {"label": "^suite\\.gfx24-candidate$"}
+        }
+        if gfx24_candidate_test_preset.get("filter") != expected_filter:
+            findings.append(
+                "GFX24 native candidate test preset must select exactly "
+                "suite.gfx24-candidate"
+            )
+    if "win_x64_release" in configure_names:
+        generic_release_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == "win_x64_release"
+        )
+        generic_release_cache = generic_release_preset.get("cacheVariables")
+        if (
+            isinstance(generic_release_cache, dict)
+            and generic_release_cache.get("RVX_ENABLE_GFX24_NATIVE_CANDIDATES")
+            == "ON"
+        ):
+            findings.append(
+                "GFX24 native candidates must remain out of the generic "
+                "Windows Release preset"
             )
 
     for configure, test in PR_SMOKE_PRESETS.items():
@@ -444,6 +586,116 @@ def validate(root: Path) -> list[str]:
         if token not in weekly:
             findings.append(f"weekly.yml is missing required soak token {token}")
     qualification = _read(root / "Tests" / "CMake" / "QualificationTests.cmake")
+    test_support = _read(root / "Tests" / "CMake" / "TestSupport.cmake")
+    unit = _read(root / "Tests" / "CMake" / "UnitTests.cmake")
+    pass_timing = _read(
+        root / "Tests" / "RenderGraphPassTimingValidation" / "CMakeLists.txt"
+    )
+    for token in (
+        "if(RVX_ENABLE_GFX24_QUALIFICATION)",
+        "RenderQualityMetricsValidation",
+        "RenderQualityMetricsValidationSelfTest",
+        "Scripts/test_render_quality_qualification.py",
+        "SUITE gfx24-qualification",
+    ):
+        if token not in unit:
+            findings.append(
+                f"GFX24 contract qualification registration is missing {token}"
+            )
+    for token in (
+        "option(RVX_ENABLE_GFX24_NATIVE_CANDIDATES",
+        "Register opt-in DX12 cooked RenderQualityLab visual/performance evidence producers",
+    ):
+        if token not in test_support:
+            findings.append(
+                f"GFX24 native candidate opt-in registration is missing {token}"
+            )
+
+    gfx24_candidate_function_match = re.search(
+        r"function\(rvx_add_renderverse_gfx24_native_candidates\b(?P<body>.*?)\nendfunction\(\)",
+        qualification,
+        re.DOTALL,
+    )
+    gfx24_candidate_function = (
+        gfx24_candidate_function_match.group("body")
+        if gfx24_candidate_function_match
+        else ""
+    )
+    if not gfx24_candidate_function:
+        findings.append("GFX24 native candidate producer implementation function is missing")
+    else:
+        for token in (
+            "RenderVerseSamplesCooked",
+            "RVXCook",
+            "--cooked-shader-root",
+            "--pipeline deferred",
+            "--quality high",
+            "--fixed-delta 0.0166666666666667",
+            "foreach(capture_tick IN ITEMS 120 360)",
+            "--width 1280",
+            "--height 720",
+            "beauty-preview.ppm",
+            "--qualification-bundle",
+            "bundle.json",
+            "--width 2560",
+            "--height 1440",
+            "--qualification-performance",
+            "performance.json",
+            "--qualification-performance-baseline gfx24-dx12-candidate-unapproved",
+            "--capture-tick 120",
+            "SUITE gfx24-candidate",
+        ):
+            if token not in gfx24_candidate_function:
+                findings.append(
+                    f"GFX24 native candidate producer is missing required token {token}"
+                )
+        # One CMake registration is expanded by the fixed 120/360 capture-tick
+        # loop, so two registrations yield exactly three CTest producers.
+        if gfx24_candidate_function.count("SUITE gfx24-candidate") != 2:
+            findings.append(
+                "GFX24 native candidate suite must register one fixed visual "
+                "producer loop and one performance producer"
+            )
+        if len(re.findall(r"\bRESOURCE_LOCK rvx_gpu\b", gfx24_candidate_function)) != 2:
+            findings.append(
+                "GFX24 native candidate GPU lock must be held only by its "
+                "visual producer loop and performance producer"
+            )
+        for forbidden in (
+            "$<TARGET_FILE:RenderVerseSamples>",
+            "--sample",
+            "--runtime-only-composition",
+            "--asset-root",
+            "--catalog",
+            "ImageContentValidation",
+            "VisualGoldenValidation",
+            "SampleReportContentValidation",
+            "RenderQualityMetricsValidation",
+        ):
+            if forbidden in gfx24_candidate_function:
+                findings.append(
+                    "GFX24 native candidate producer violates the cooked-only "
+                    f"candidate boundary with forbidden token {forbidden}"
+                )
+    for token in (
+        "if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES requires Windows DX12, "
+        "RenderVerseSamplesCooked, and RVXCook",
+        "rvx_add_renderverse_gfx24_native_candidates()",
+    ):
+        if token not in qualification:
+            findings.append(
+                f"GFX24 native candidate registration is missing {token}"
+            )
+    for token in (
+        "NAME RenderGraphPassTimingValidation",
+        "RVX::RenderFoundation",
+        "SUITE gfx24-qualification",
+    ):
+        if token not in pass_timing:
+            findings.append(
+                f"GFX24 pass timestamp contract registration is missing {token}"
+            )
     gfx18_function_match = re.search(
         r"function\(rvx_add_renderverse_gfx18_water_native\b(?P<body>.*?)\nendfunction\(\)",
         qualification,

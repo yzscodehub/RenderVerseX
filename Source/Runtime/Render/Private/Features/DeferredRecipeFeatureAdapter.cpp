@@ -228,6 +228,16 @@ namespace
             outFailure = "Water requires the current graph's immutable HDR opaque snapshot";
             return false;
         }
+        if (!requirements.exposureStateRequired ||
+            !context.view.exposureState.IsValid() ||
+            !HasCurrentGraphProvenance(
+                context.view.exposureState, context.identity) ||
+            context.view.exposureStateContentHash == 0)
+        {
+            outFailure =
+                "Water requires the exact committed exposure state paired with the HDR opaque snapshot";
+            return false;
+        }
         const RHITextureDesc* const depthDesc = builder.GetGraph().GetTextureDesc(
             context.view.depthTarget);
         const bool validDepthSource = context.view.depthTarget.IsValid() &&
@@ -248,6 +258,8 @@ namespace
         depthSnapshotDesc.debugName = "WaterDepthSnapshot";
         outInput.identity = context.identity;
         outInput.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
+        outInput.exposureState = context.view.exposureState;
+        outInput.exposureStateContentHash = context.view.exposureStateContentHash;
         outInput.depthSnapshot = builder.CreateTexture(depthSnapshotDesc);
         outInput.depthReceipt = std::make_shared<WaterDepthSnapshotCopyReceipt>();
         if (!outInput.depthSnapshot.IsValid() ||
@@ -282,8 +294,20 @@ namespace
         {
             return true;
         }
+        if (!requirements.exposureStateRequired ||
+            !context.view.exposureState.IsValid() ||
+            !HasCurrentGraphProvenance(
+                context.view.exposureState, context.identity) ||
+            context.view.exposureStateContentHash == 0)
+        {
+            outFailure =
+                "Particle VFX requires the exact committed exposure state for authored HDR radiance";
+            return false;
+        }
 
         outInput.identity = context.identity;
+        outInput.exposureState = context.view.exposureState;
+        outInput.exposureStateContentHash = context.view.exposureStateContentHash;
         outInput.softDepthRequested = requirements.softDepthRequested;
         outInput.softDepthRequired = requirements.softDepthRequired;
         outInput.reactiveMaskRequested = requirements.reactiveMaskRequested;
@@ -1706,6 +1730,9 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     if (volumetricLighting == nullptr ||
         code != RenderGraphBlackboardCode::Success ||
         !volumetricLighting->resolvedSceneColor.IsValid() ||
+        !HasCurrentGraphProvenance(
+            volumetricLighting->resolvedSceneColor,
+            m_recordContext.identity) ||
         volumetricLighting->frameIdentity != m_preparedContext.frameIdentity ||
         volumetricLighting->viewIdentity != m_preparedContext.viewIdentity)
     {
@@ -1771,6 +1798,12 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     RenderPassRecordContext reflectionResolvedContext = m_recordContext;
     reflectionResolvedContext.view.colorTarget =
         volumetricLighting->resolvedSceneColor;
+    // The frozen frame snapshot still names the pre-volumetric HDR target.
+    // Surface passes receive this explicit value-owned attachment instead of
+    // mutating that snapshot or inferring the target from pass ordering.
+    reflectionResolvedContext.lateBoundHdrAttachment = {
+        reflectionResolvedContext.identity,
+        volumetricLighting->resolvedSceneColor};
     reflectionResolvedContext.volumetricLighting =
         VolumetricLightingRecordInput{
             reflectionResolvedContext.identity,

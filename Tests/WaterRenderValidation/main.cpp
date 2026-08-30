@@ -2,9 +2,11 @@
 #include "Render/Passes/WaterFeaturePass.h"
 #include "Render/Renderer/RenderClipConvention.h"
 #include "Render/Water/GerstnerReference.h"
+#include "RenderContracts/RenderExposure.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -193,6 +195,125 @@ TEST(WaterOpticalReferenceValidation, ZeroAbsorptionAndZeroResponsePreserveOpaqu
     // zero response must stay exact; a second alpha blend would darken it.
     EXPECT_EQ(RVX::ComposeWaterSurfaceColor(
         opaque, {0.1f, 0.2f, 0.3f}, 0.0f), opaque);
+}
+
+TEST(WaterPreExposureValidation,
+     AuthoredWaterRadianceReconstructsPhysicalResponseAtEV0AndEV85)
+{
+    // Mirror WaterSurface.hlsl: the opaque/refraction sample already carries
+    // the producer scale, while every authored water term enters it once.
+    constexpr float opaquePhysical = 3.75f;
+    constexpr float authoredWaterPhysical = 1.25f;
+    constexpr float transmission = 0.35f;
+    const float expectedPhysical = opaquePhysical * transmission +
+        authoredWaterPhysical * (1.0f - transmission);
+    for (const float ev100 : std::array<float, 2>{0.0f, 8.5f})
+    {
+        float producerPreExposure = 0.0f;
+        ASSERT_TRUE(RVX::TryCalculateRenderExposureScale(
+            ev100, 0.0f, producerPreExposure));
+        ASSERT_GT(producerPreExposure, 0.0f);
+
+        const float opaqueSnapshotPreExposed = opaquePhysical * producerPreExposure;
+        const float authoredWaterPreExposed =
+            authoredWaterPhysical * producerPreExposure;
+        const float composedPreExposed =
+            opaqueSnapshotPreExposed * transmission +
+            authoredWaterPreExposed * (1.0f - transmission);
+        EXPECT_NEAR(composedPreExposed / producerPreExposure,
+                    expectedPhysical, 1.0e-5f);
+    }
+}
+
+TEST(WaterPreExposureValidation,
+     RefractionSnapshotIsNotScaledAgainWhenComposingWaterResponse)
+{
+    constexpr float opaquePhysical = 4.0f;
+    constexpr float authoredWaterPhysical = 1.5f;
+    constexpr float transmission = 0.4f;
+    float producerPreExposure = 0.0f;
+    ASSERT_TRUE(RVX::TryCalculateRenderExposureScale(
+        8.5f, 0.0f, producerPreExposure));
+
+    const float refractedSnapshot = opaquePhysical * producerPreExposure;
+    const float correctPreExposed = refractedSnapshot * transmission +
+        authoredWaterPhysical * producerPreExposure * (1.0f - transmission);
+    const float doubleScaledSnapshot = refractedSnapshot * producerPreExposure *
+        transmission + authoredWaterPhysical * producerPreExposure *
+        (1.0f - transmission);
+    const float expectedPhysical = opaquePhysical * transmission +
+        authoredWaterPhysical * (1.0f - transmission);
+
+    EXPECT_NEAR(correctPreExposed / producerPreExposure,
+                expectedPhysical, 1.0e-5f);
+    EXPECT_GT(std::abs(doubleScaledSnapshot / producerPreExposure -
+                       expectedPhysical),
+              0.5f);
+}
+
+TEST(WaterPreExposureValidation,
+     WaterRecordFreezesAndBindsTheExactCommittedExposureIdentity)
+{
+    const std::filesystem::path root{RVX_SOURCE_DIR};
+    const std::string recordContext = ReadTextFile(
+        root / "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h");
+    const std::string deferredAdapter = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Features/DeferredRecipeFeatureAdapter.cpp");
+    const std::string forwardAdapter = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Features/LegacyForwardFeatureAdapter.cpp");
+    const std::string water = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp");
+    const std::string shader = ReadTextFile(
+        root / "Source/Runtime/Render/Shaders/Water/WaterSurface.hlsl");
+
+    EXPECT_NE(recordContext.find("RGBufferHandle exposureState{};"),
+              std::string::npos);
+    EXPECT_NE(recordContext.find("uint64 exposureStateContentHash = 0;"),
+              std::string::npos);
+    EXPECT_NE(recordContext.find("HasCurrentGraphProvenance(exposureState, expected)"),
+              std::string::npos);
+    for (const std::string* adapter : {&deferredAdapter, &forwardAdapter})
+    {
+        EXPECT_NE(adapter->find(
+                      "outInput.exposureState = context.view.exposureState;"),
+                  std::string::npos);
+        EXPECT_NE(adapter->find(
+                      "outInput.exposureStateContentHash = context.view.exposureStateContentHash;"),
+                  std::string::npos);
+    }
+    EXPECT_NE(water.find("IsSameBufferHandle(data.waterSurface.exposureState,"),
+              std::string::npos);
+    EXPECT_NE(water.find("data.execution.view.exposureState)"),
+              std::string::npos);
+    EXPECT_NE(water.find("data.exposureStateReadHandle = builder.Read("),
+              std::string::npos);
+    EXPECT_NE(water.find(".BindBuffer(RVX_WATER_EXPOSURE_STATE_BINDING, exposureState)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("#include \"../Include/Exposure.hlsli\""),
+              std::string::npos);
+    EXPECT_NE(shader.find(
+                  "StructuredBuffer<RVXExposureState> gExposureState : register(t5, space0)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("RVXExposureProducerScale(exposureState)"),
+              std::string::npos);
+}
+
+TEST(WaterPreExposureValidation,
+     HlslScalesOnlyAuthoredRadianceAndNeverTheOpaqueRefractionSnapshot)
+{
+    const std::filesystem::path root{RVX_SOURCE_DIR};
+    const std::string shader = ReadTextFile(
+        root / "Source/Runtime/Render/Shaders/Water/WaterSurface.hlsl");
+
+    EXPECT_NE(shader.find("const float3 refracted = gOpaqueSceneSnapshot.Sample("),
+              std::string::npos);
+    EXPECT_NE(shader.find("* producerPreExposure;"), std::string::npos);
+    EXPECT_NE(shader.find("FoamColorAndParameters.xyz * producerPreExposure"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("refracted * producerPreExposure"), std::string::npos);
+    EXPECT_NE(shader.find("RVXExposureStateIsValid(exposureState)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("clip(-1.0f);"), std::string::npos);
 }
 
 TEST(WaterPassPriorityValidation, WaterRunsAfterSkyBeforeTransparency)

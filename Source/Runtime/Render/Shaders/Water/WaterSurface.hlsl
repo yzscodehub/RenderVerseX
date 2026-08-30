@@ -3,6 +3,8 @@
 // wall time. The two sampled inputs are immutable graph copies, never active
 // color/depth attachments.
 
+#include "../Include/Exposure.hlsli"
+
 cbuffer WaterSurfaceConstants : register(b0, space0)
 {
     float4x4 ViewProjection;
@@ -27,6 +29,10 @@ cbuffer WaterSurfaceConstants : register(b0, space0)
 Texture2D gOpaqueSceneSnapshot : register(t1, space0);
 Texture2D gWaterDepthSnapshot : register(t2, space0);
 Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0);
+// The exact committed producer state frozen with the opaque snapshot. Water
+// authored radiance enters this pre-exposed HDR domain once; the snapshot is
+// already in that domain and must never be scaled again.
+StructuredBuffer<RVXExposureState> gExposureState : register(t5, space0);
 SamplerState gLinearClamp : register(s3, space0);
 
 struct VSInput
@@ -141,6 +147,18 @@ struct WaterTargets
 
 WaterTargets PSMain(VSOutput input)
 {
+    const RVXExposureState exposureState = gExposureState[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        // A malformed binding must not become an implicit unit-exposure
+        // fallback, because that would mix physical and pre-exposed HDR data.
+        clip(-1.0f);
+        WaterTargets invalidOutput;
+        invalidOutput.Color = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        invalidOutput.Reactive = 0.0f;
+        return invalidOutput;
+    }
+    const float producerPreExposure = RVXExposureProducerScale(exposureState);
     const float2 uv = input.Position.xy * InverseExtentAndReverseZ.xy;
     const uint2 pixel = uint2(max(input.Position.xy, float2(0.0f, 0.0f)));
     const float sceneDeviceDepth = gWaterDepthSnapshot.Load(int3(pixel, 0)).r;
@@ -153,9 +171,12 @@ WaterTargets PSMain(VSOutput input)
         18.0f * InverseExtentAndReverseZ.xy;
     const float3 refracted = gOpaqueSceneSnapshot.Sample(
         gLinearClamp, saturate(uv + refractOffset)).rgb;
+    // Authored shallow/deep water radiance is physical. Convert it once into
+    // the committed producer domain before composing with the already
+    // pre-exposed opaque/refraction snapshot.
     const float3 absorbedWater = lerp(DeepColorAndReflection.xyz,
         ShallowColorAndRefraction.xyz, saturate(thickness / max(
-            SurfacePositionAndDepth.w, 0.001f)));
+            SurfacePositionAndDepth.w, 0.001f))) * producerPreExposure;
     const float3 throughWater = refracted * transmission +
         absorbedWater * (1.0f - transmission);
     const float3 viewDirection = normalize(
@@ -168,8 +189,9 @@ WaterTargets PSMain(VSOutput input)
     // the rendered response without exposing arbitrary RHI sampler state.
     const float reflectionLobe = (1.0f - roughness * 0.65f) *
         DeepColorAndReflection.w * FoamAndFeatureParameters.z;
-    const float3 reflected = lerp(absorbedWater, ShallowColorAndRefraction.xyz,
-        0.5f + 0.5f * input.WorldNormal.y);
+    const float3 reflected = lerp(DeepColorAndReflection.xyz,
+        ShallowColorAndRefraction.xyz,
+        0.5f + 0.5f * input.WorldNormal.y) * producerPreExposure;
     const float3 surfaceColor = lerp(throughWater, reflected,
         saturate(schlickFresnel * reflectionLobe));
     const float foam = saturate((input.Crest - FoamAndFeatureParameters.y) *
@@ -183,8 +205,12 @@ WaterTargets PSMain(VSOutput input)
     // how much optical/reflection response replaces the refracted snapshot.
     const float waterResponse = saturate(max(opticalOpacity,
         SurfaceSizeAndTransparency.z * 0.15f));
+    // Foam is also authored physical radiance. There is no independent water
+    // emissive parameter in this ABI; any future authored emissive term must
+    // be added to this physical-to-pre-exposed conversion exactly once.
     const float3 composed = lerp(refracted,
-        lerp(surfaceColor, FoamColorAndParameters.xyz, foam), waterResponse);
+        lerp(surfaceColor, FoamColorAndParameters.xyz * producerPreExposure,
+             foam), waterResponse);
     const float canonicalDepth = InverseExtentAndReverseZ.z > 0.5f
         ? 1.0f - saturate(input.Position.z)
         : saturate(input.Position.z);

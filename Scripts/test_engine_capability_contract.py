@@ -399,12 +399,22 @@ class EngineCapabilityContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("configurePresets", result.stdout)
 
-    def test_internal_validation_preset_does_not_expand_public_contract(self) -> None:
+    def test_internal_validation_presets_do_not_expand_public_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture(root)
             presets = root / "CMakePresets.json"
             value = json.loads(presets.read_text(encoding="utf-8"))
+            value["configurePresets"].append(
+                {
+                    "name": "fixture_candidate_evidence",
+                    "vendor": {
+                        "renderversex.com/validation/1.0": {
+                            "visibility": "internal"
+                        }
+                    },
+                }
+            )
             value["testPresets"].append(
                 {
                     "name": "fixture_checkpoint",

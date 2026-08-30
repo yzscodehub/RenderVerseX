@@ -39,6 +39,9 @@ namespace RVX
         bool uploadPublished = false;
         bool opaqueSceneSnapshotReady = false;
         bool depthSnapshotReady = false;
+        bool exposureStateReady = false;
+        bool exposureStateReadDeclared = false;
+        bool exposureStateDescriptorBound = false;
         bool depthLinearizationReady = false;
         bool layeredNormalsEvaluated = false;
         bool fresnelEvaluated = false;
@@ -58,6 +61,7 @@ namespace RVX
         uint64 pipelineCreationCount = 0;
         uint64 gridVertexCount = 0;
         uint64 gridIndexCount = 0;
+        uint64 exposureStateContentHash = 0;
         RenderFrameIdentity recordFrameIdentity{};
         uint64 recordGraphIdentity = 0;
         uint64 recordGraphGeneration = 0;
@@ -74,6 +78,7 @@ namespace RVX
         bool opaqueSceneSnapshotRequired = false;
         bool depthSnapshotRequired = false;
         bool reactiveMaskRequired = false;
+        bool exposureStateRequired = false;
     };
 
     class IShaderProgramProvider;

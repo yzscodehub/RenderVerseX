@@ -2566,14 +2566,26 @@ namespace RVX
 
         m_impl->device = environment.device;
         m_impl->transientResourcePool = environment.transientResourcePool;
+        m_impl->passTimestampRecorder = environment.passTimestampRecorder;
         if (m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue)
         {
+            if (m_impl->passTimestampRecorder != nullptr)
+            {
+                m_impl->passTimestampRecorder->AbortExactGraphicsExecution(
+                    "Per-pass timestamp qualification does not support MultiQueue execution.");
+                captureExecutionTelemetry();
+                m_impl->device = nullptr;
+                m_impl->transientResourcePool = nullptr;
+                m_impl->passTimestampRecorder = nullptr;
+                return execution;
+            }
             RecordedQueueSubmission submission;
             if (!RecordQueueSubmissionInternal(submission))
             {
                 captureExecutionTelemetry();
                 m_impl->device = nullptr;
                 m_impl->transientResourcePool = nullptr;
+                m_impl->passTimestampRecorder = nullptr;
                 return execution;
             }
             execution = TakeExecutionInternal(std::move(submission));
@@ -2582,9 +2594,15 @@ namespace RVX
         {
             if (!environment.graphicsContext)
             {
+                if (m_impl->passTimestampRecorder != nullptr)
+                {
+                    m_impl->passTimestampRecorder->AbortExactGraphicsExecution(
+                        "Per-pass timestamp qualification requires a Graphics command context.");
+                }
                 captureExecutionTelemetry();
                 m_impl->device = nullptr;
                 m_impl->transientResourcePool = nullptr;
+                m_impl->passTimestampRecorder = nullptr;
                 return execution;
             }
             RecordGraphicsPlanInternal(*environment.graphicsContext);
@@ -2593,6 +2611,7 @@ namespace RVX
         captureExecutionTelemetry();
         m_impl->device = nullptr;
         m_impl->transientResourcePool = nullptr;
+        m_impl->passTimestampRecorder = nullptr;
         return execution;
     }
 
@@ -2617,6 +2636,14 @@ namespace RVX
         }
 
         execution.Prepare();
+        if (m_impl->passTimestampRecorder != nullptr)
+        {
+            std::shared_ptr<IRenderGraphExecutionTerminalObserver> observer =
+                m_impl->passTimestampRecorder
+                    ->SealExecutionTerminalObserver();
+            if (observer)
+                execution.RetainTerminalObserver(std::move(observer));
+        }
         for (uint32 index = 0; index < m_impl->textures.size(); ++index)
         {
             TextureResource& texture = m_impl->textures[index];

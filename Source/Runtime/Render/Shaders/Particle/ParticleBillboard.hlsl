@@ -4,6 +4,7 @@
 // DSV used for depth testing, which keeps DSV/SRV hazards out of the graph.
 
 #include "../Include/FullscreenTriangle.hlsli"
+#include "../Include/Exposure.hlsli"
 #include "../Translucency/WeightedBlendedOIT.hlsli"
 
 cbuffer ParticleBillboardFrameConstants : register(b0, space0)
@@ -36,6 +37,10 @@ Texture2D gParticleSprite : register(t2, space0);
 // sampled through the same narrow descriptor layout.
 Texture2D gAuxiliaryTexture : register(t3, space0);
 Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0);
+// Exact committed producer state frozen with the particle graph record.
+// Particle tint/sprite radiance is authored physical HDR; scene, depth and
+// froxel inputs are already in their own established graph domains.
+StructuredBuffer<RVXExposureState> gExposureState : register(t6, space0);
 // s5 is the renderer's portable frame linear-clamp slot. Logical s4 is not
 // representable by the DX11/OpenGL public binding ABI.
 SamplerState gLinearClamp : register(s5, space0);
@@ -50,6 +55,18 @@ float GetParticleVolumetricTransmittance(float4 pixelPosition)
         : saturate(pixelPosition.z);
     return saturate(gFroxelVolumetricLighting.SampleLevel(
         gLinearClamp, float3(uv, canonicalDepth), 0.0f).a);
+}
+
+bool TryGetParticleProducerPreExposure(out float outPreExposure)
+{
+    const RVXExposureState exposureState = gExposureState[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        outPreExposure = 0.0f;
+        return false;
+    }
+    outPreExposure = RVXExposureProducerScale(exposureState);
+    return true;
 }
 
 struct VSOutput
@@ -203,8 +220,22 @@ ParticleColorTargets PSMain(VSOutput input)
 {
     float radialFade = 0.0f;
     ParticleColorTargets output;
+    float producerPreExposure = 0.0f;
+    if (!TryGetParticleProducerPreExposure(producerPreExposure))
+    {
+        // Never silently mix physical particle radiance into a pre-exposed
+        // scene when the committed state is missing or malformed.
+        discard;
+        output.Color = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.Reactive = 0.0f;
+        return output;
+    }
     output.Color = EvaluateParticleColor(input, radialFade);
-    output.Color.rgb *= GetParticleVolumetricTransmittance(input.Position);
+    // Direct additive fire and premultiplied smoke both convert their authored
+    // physical radiance exactly once. The froxel sample contributes only
+    // transmittance here and must not receive another exposure scale.
+    output.Color.rgb *= GetParticleVolumetricTransmittance(input.Position) *
+        producerPreExposure;
     output.Reactive = saturate(
         input.SoftDepthDistortionReactive.w * output.Color.a);
     return output;
@@ -221,10 +252,18 @@ RVXWeightedBlendedOITTargets PSWeightedBlendedOIT(VSOutput input)
     }
 
     float radialFade = 0.0f;
+    float producerPreExposure = 0.0f;
+    if (!TryGetParticleProducerPreExposure(producerPreExposure))
+    {
+        discard;
+        return RVXEncodeWeightedBlendedOIT(float3(0.0f, 0.0f, 0.0f),
+                                           0.0f, 0.0f);
+    }
     const float4 straightColor =
         EvaluateParticleStraightColor(input, radialFade);
     return RVXEncodeWeightedBlendedOIT(
-        straightColor.rgb * GetParticleVolumetricTransmittance(input.Position),
+        straightColor.rgb * GetParticleVolumetricTransmittance(input.Position) *
+            producerPreExposure,
         straightColor.a,
         RVXCanonicalizeWeightedBlendedOITDepth(
             input.Position.z, InverseExtentAndReverseZ.z > 0.5f));
