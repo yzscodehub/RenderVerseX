@@ -65,8 +65,8 @@ namespace
         request.runId = "writer-validation-run";
         request.preset = "win_x64_debug_gfx24_qualification";
         request.qualificationIdentity = {
-            "render-quality-lab", "deferred", "high", "dx12", "hero", 0,
-            1};
+            "render-quality-lab", "deferred", "high", "dx12", "hero",
+            2560, 1440, 0, 1};
         request.hardwareIdentity = {
             "dx12", "Test Adapter", "1.2.3", "Windows-10.0.19045",
             std::string(64, 'b')};
@@ -106,11 +106,19 @@ namespace
                 RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION,
                 RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_FOOTPRINT_COVERAGE,
                 4096,
-                1024,
+                4096,
+                88473600,
                 2048};
             sample.resourceCountsSchemaVersion =
                 RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION;
-            sample.resourceCounts = {{"buffers", 8}, {"textures", 12}};
+            sample.resourceCounts = {
+                {"stableImportedBuffers", 1},
+                {"stableImportedTextures", 7},
+                {"residentMaterials", 6},
+                {"residentMeshes", 4},
+                {"residentTextures", 5},
+                {"transientBuffers", 2},
+                {"transientTextures", 3}};
             request.samples.push_back(std::move(sample));
         }
         return request;
@@ -131,15 +139,26 @@ TEST(RenderQualityPerformanceWriterValidation,
     const std::string json((std::istreambuf_iterator<char>(stream)), {});
     EXPECT_NE(std::string::npos,
               json.find("\"schema\": \"RVX.RenderQualityPerformanceReport\""));
-    EXPECT_NE(std::string::npos, json.find("\"schemaVersion\": 2"));
+    EXPECT_NE(std::string::npos, json.find("\"schemaVersion\": 3"));
     EXPECT_NE(std::string::npos, json.find("\"completedWarmupFrames\": 60"));
     EXPECT_NE(std::string::npos, json.find("\"backend\": \"DX12\""));
+    EXPECT_NE(std::string::npos,
+              json.find("\"qualificationWidth\": 2560"));
+    EXPECT_NE(std::string::npos,
+              json.find("\"qualificationHeight\": 1440"));
     EXPECT_NE(std::string::npos,
               json.find("\"trackedUploadCoverageMask\": 7"));
     EXPECT_NE(std::string::npos,
               json.find("\"trackedEstimatedFootprint\""));
     EXPECT_NE(std::string::npos,
-              json.find("\"trackedEstimatedFootprintCoverageMask\": 7"));
+              json.find("\"trackedEstimatedFootprintCoverageMask\": 15"));
+    EXPECT_NE(std::string::npos, json.find("\"schemaVersion\": 2"));
+    EXPECT_NE(std::string::npos,
+              json.find("\"importedHistoryEstimatedBytes\": 88473600"));
+    EXPECT_NE(std::string::npos,
+              json.find("\"importedPersistentEstimatedBytes\": 4096"));
+    EXPECT_EQ(std::string::npos,
+              json.find("\"importedHistoryNamedEstimatedBytes\""));
     EXPECT_NE(std::string::npos,
               json.find("\"graphicsTerminalCommandSpanMs\": 1"));
     EXPECT_NE(std::string::npos,
@@ -149,7 +168,10 @@ TEST(RenderQualityPerformanceWriterValidation,
     EXPECT_NE(std::string::npos, json.find("\"passes\": ["));
     EXPECT_NE(std::string::npos, json.find("\"executionIndex\": 2"));
     EXPECT_NE(std::string::npos,
-              json.find("\"resourceCounts\": {\n        \"schemaVersion\": 1"));
+              json.find("\"resourceCounts\": {\n        \"schemaVersion\": 2"));
+    EXPECT_NE(std::string::npos,
+              json.find("\"stableImportedTextures\": 7"));
+    EXPECT_EQ(std::string::npos, json.find("\"importedTextures\""));
     EXPECT_EQ(std::string::npos, json.find("\"uploadBytes\""));
     EXPECT_EQ(std::string::npos, json.find("\"memoryBytes\""));
     EXPECT_EQ(std::string::npos, json.find("\"wholeFrameMs\""));
@@ -197,23 +219,73 @@ TEST(RenderQualityPerformanceWriterValidation,
     EXPECT_NE(std::string::npos, error.find("telemetry"));
 
     coverage = MakeRequest(temporary.Get());
+    coverage.telemetryCoverage.trackedEstimatedFootprintCoverageMask = 7;
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(coverage, result, &error));
+    EXPECT_NE(std::string::npos, error.find("telemetry"));
+
+    coverage = MakeRequest(temporary.Get());
+    coverage.samples.back().resourceCounts.erase("stableImportedTextures");
+    coverage.samples.back().resourceCounts.emplace("persistentImportedTextures", 7);
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(coverage, result, &error));
+    EXPECT_NE(std::string::npos, error.find("resource counter schema"));
+
+    coverage = MakeRequest(temporary.Get());
     coverage.samples.back().trackedEstimatedFootprint.coverageMask = 3;
     error.clear();
     EXPECT_FALSE(WriteRenderQualityPerformanceReport(coverage, result, &error));
     EXPECT_NE(std::string::npos, error.find("telemetry"));
 
     coverage = MakeRequest(temporary.Get());
-    coverage.samples.back().resourceCountsSchemaVersion = 2;
+    coverage.samples.back().resourceCountsSchemaVersion =
+        RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION + 1U;
     error.clear();
     EXPECT_FALSE(WriteRenderQualityPerformanceReport(coverage, result, &error));
     EXPECT_NE(std::string::npos, error.find("telemetry"));
+
+    RenderQualityPerformanceWriteRequest stableCountChange =
+        MakeRequest(temporary.Get());
+    ++stableCountChange.samples.back().resourceCounts.at(
+        "stableImportedTextures");
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(
+        stableCountChange, result, &error));
+    EXPECT_NE(std::string::npos, error.find("resource telemetry changed"));
 
     RenderQualityPerformanceWriteRequest growth = MakeRequest(temporary.Get());
     ++growth.samples.back()
           .trackedEstimatedFootprint.resourceRegistryResidentEstimatedBytes;
     error.clear();
     EXPECT_FALSE(WriteRenderQualityPerformanceReport(growth, result, &error));
-    EXPECT_NE(std::string::npos, error.find("grew"));
+    EXPECT_NE(std::string::npos, error.find("changed"));
+
+    RenderQualityPerformanceWriteRequest importedHistoryGrowth =
+        MakeRequest(temporary.Get());
+    ++importedHistoryGrowth.samples.back()
+          .trackedEstimatedFootprint.importedHistoryEstimatedBytes;
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(
+        importedHistoryGrowth, result, &error));
+    EXPECT_NE(std::string::npos, error.find("changed"));
+
+    RenderQualityPerformanceWriteRequest importedPersistentGrowth =
+        MakeRequest(temporary.Get());
+    ++importedPersistentGrowth.samples.back()
+          .trackedEstimatedFootprint.importedPersistentEstimatedBytes;
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(
+        importedPersistentGrowth, result, &error));
+    EXPECT_NE(std::string::npos, error.find("changed"));
+
+    RenderQualityPerformanceWriteRequest importedPersistentDecrease =
+        MakeRequest(temporary.Get());
+    --importedPersistentDecrease.samples.back()
+          .trackedEstimatedFootprint.importedPersistentEstimatedBytes;
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(
+        importedPersistentDecrease, result, &error));
+    EXPECT_NE(std::string::npos, error.find("changed"));
 
     RenderQualityPerformanceWriteRequest mismatchedQualificationSpan =
         MakeRequest(temporary.Get());
@@ -239,6 +311,13 @@ TEST(RenderQualityPerformanceWriterValidation,
     EXPECT_FALSE(WriteRenderQualityPerformanceReport(
         invalidPassIndex, result, &error));
     EXPECT_NE(std::string::npos, error.find("ordered GPU"));
+
+    RenderQualityPerformanceWriteRequest zeroExtent =
+        MakeRequest(temporary.Get());
+    zeroExtent.qualificationIdentity.qualificationWidth = 0;
+    error.clear();
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(zeroExtent, result, &error));
+    EXPECT_NE(std::string::npos, error.find("identity"));
 }
 
 TEST(RenderQualityPerformanceWriterValidation,
@@ -257,6 +336,21 @@ TEST(RenderQualityPerformanceWriterValidation,
     std::string error;
     EXPECT_TRUE(WriteRenderQualityPerformanceReport(request, result, &error))
         << error;
+}
+
+TEST(RenderQualityPerformanceWriterValidation,
+     RejectsUnderBoundFullResolutionTAAHistory)
+{
+    TemporaryRoot temporary;
+    RenderQualityPerformanceWriteRequest request = MakeRequest(temporary.Get());
+    request.samples.front().passGpuTimings[1].name = "TAAResolve";
+    request.samples.front().trackedEstimatedFootprint
+        .importedHistoryEstimatedBytes = 88473599ULL;
+
+    RenderQualityPerformanceWriteResult result;
+    std::string error;
+    EXPECT_FALSE(WriteRenderQualityPerformanceReport(request, result, &error));
+    EXPECT_NE(std::string::npos, error.find("below 88473600"));
 }
 
 TEST(RenderQualityPerformanceWriterValidation,

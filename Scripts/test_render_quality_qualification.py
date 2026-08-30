@@ -34,6 +34,11 @@ IDENTITY = {
     "captureTick": 120,
     "visualContractVersion": 1,
 }
+PERFORMANCE_IDENTITY = {
+    **IDENTITY,
+    "qualificationWidth": 2560,
+    "qualificationHeight": 1440,
+}
 HARDWARE = {
     "backend": "DX12",
     "adapterName": "NVIDIA GeForce RTX 4080",
@@ -42,9 +47,9 @@ HARDWARE = {
     "capabilityHash": "rvx-rhi-capabilities-dx12-v1-5ef7bade",
 }
 TELEMETRY_COVERAGE = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "trackedUploadCoverageMask": 7,
-    "trackedEstimatedFootprintCoverageMask": 7,
+    "trackedEstimatedFootprintCoverageMask": 15,
 }
 
 
@@ -191,7 +196,12 @@ def run_bundle(*arguments: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(BUNDLE_CHECKER), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True, check=False)
 
 
-def sample(frame: int, *, textures: int = 12) -> dict[str, object]:
+def sample(
+    frame: int,
+    *,
+    textures: int = 12,
+    imported_history_bytes: int = 88_473_600,
+) -> dict[str, object]:
     return {
         "frameSequence": frame + 1,
         "submittedFrame": frame,
@@ -212,15 +222,24 @@ def sample(frame: int, *, textures: int = 12) -> dict[str, object]:
         "trackedUploadBytes": 2048,
         "trackedUploadCoverageMask": 7,
         "trackedEstimatedFootprint": {
-            "schemaVersion": 1,
-            "coverageMask": 7,
+            "schemaVersion": 2,
+            "coverageMask": 15,
             "transientPoolPhysicalEstimatedBytes": 4096,
-            "importedHistoryNamedEstimatedBytes": 1024,
+            "importedPersistentEstimatedBytes": 4096,
+            "importedHistoryEstimatedBytes": imported_history_bytes,
             "resourceRegistryResidentEstimatedBytes": 2048,
         },
         "resourceCounts": {
-            "schemaVersion": 1,
-            "counts": {"textures": textures, "buffers": 8, "pipelines": 4, "descriptors": 20},
+            "schemaVersion": 2,
+            "counts": {
+                "stableImportedBuffers": 1,
+                "stableImportedTextures": 7,
+                "residentMaterials": 6,
+                "residentMeshes": 4,
+                "residentTextures": textures,
+                "transientBuffers": 2,
+                "transientTextures": 3,
+            },
         },
     }
 
@@ -228,14 +247,14 @@ def sample(frame: int, *, textures: int = 12) -> dict[str, object]:
 def write_performance(path: Path, *, warmup: int = 60, count: int = 300, hardware: dict[str, str] | None = None, grow: bool = False) -> Path:
     samples = [sample(warmup + index) for index in range(count)]
     if grow and samples:
-        samples[-1]["resourceCounts"]["counts"]["textures"] = 13
+        samples[-1]["resourceCounts"]["counts"]["residentTextures"] = 13
     write_json(path, {
         "schema": "RVX.RenderQualityPerformanceReport",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "sourceCommit": "commit-a",
         "runId": "run-a",
         "preset": "win_x64_debug_gfx24_qualification",
-        "qualificationIdentity": IDENTITY,
+        "qualificationIdentity": PERFORMANCE_IDENTITY,
         "hardwareIdentity": HARDWARE if hardware is None else hardware,
         "telemetryCoverage": TELEMETRY_COVERAGE,
         "baselineIdentity": "dx12-rtx4080-ci-v1",
@@ -248,8 +267,8 @@ def write_performance(path: Path, *, warmup: int = 60, count: int = 300, hardwar
 def write_performance_policy(path: Path) -> Path:
     write_json(path, {
         "schema": "RVX.RenderQualityPerformancePolicy",
-        "schemaVersion": 2,
-        "qualificationIdentity": IDENTITY,
+        "schemaVersion": 3,
+        "qualificationIdentity": PERFORMANCE_IDENTITY,
         "requiredHardwareIdentity": HARDWARE,
         "telemetryCoverage": TELEMETRY_COVERAGE,
         "warmupCompletedFrames": 60,
@@ -265,7 +284,9 @@ def write_performance_policy(path: Path) -> Path:
             ],
             "maxTrackedUploadBytes": 4096,
             "maxTransientPoolPhysicalEstimatedBytes": 8192,
-            "maxImportedHistoryNamedEstimatedBytes": 2048,
+            "maxImportedPersistentEstimatedBytes": 8192,
+            "minImportedHistoryEstimatedBytes": 88_473_600,
+            "maxImportedHistoryEstimatedBytes": 90_000_000,
             "maxResourceRegistryResidentEstimatedBytes": 4096,
         },
     })
@@ -620,7 +641,7 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             write_performance(Path(arguments[1]), grow=True)
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("growth", result.stderr)
+            self.assertIn("count changed", result.stderr)
             write_performance(Path(arguments[1]))
             document = json.loads(Path(arguments[1]).read_text())
             del document["samples"][0]["cpuMs"]["visibility"]
@@ -629,13 +650,54 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("missing", result.stderr)
 
+            write_performance(Path(arguments[1]))
+            document = json.loads(Path(arguments[1]).read_text())
+            document["samples"][-1]["trackedEstimatedFootprint"][
+                "importedHistoryEstimatedBytes"
+            ] += 1
+            write_json(Path(arguments[1]), document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("footprint changed", result.stderr)
+
+            write_performance(Path(arguments[1]))
+            document = json.loads(Path(arguments[1]).read_text())
+            document["samples"][-1]["trackedEstimatedFootprint"][
+                "importedPersistentEstimatedBytes"
+            ] += 1
+            write_json(Path(arguments[1]), document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("footprint changed", result.stderr)
+
+            write_performance(Path(arguments[1]))
+            document = json.loads(Path(arguments[1]).read_text())
+            document["samples"][-1]["trackedEstimatedFootprint"][
+                "importedPersistentEstimatedBytes"
+            ] -= 1
+            write_json(Path(arguments[1]), document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("footprint changed", result.stderr)
+
     def test_tracked_telemetry_coverage_and_legacy_fields_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arguments = self._valid_arguments(root)
             current = Path(arguments[1])
+            baseline = Path(arguments[3])
             document = json.loads(current.read_text())
             document["telemetryCoverage"]["trackedUploadCoverageMask"] = 3
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("coverage", result.stderr)
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            document["telemetryCoverage"][
+                "trackedEstimatedFootprintCoverageMask"
+            ] = 7
             write_json(current, document)
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 1)
@@ -660,13 +722,135 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             self.assertIn("fields", result.stderr)
 
             write_performance(current)
-            baseline = Path(arguments[3])
+            write_performance(baseline)
+            policy = Path(arguments[5])
+            document = json.loads(policy.read_text())
+            del document["thresholds"]["maxImportedPersistentEstimatedBytes"]
+            write_json(policy, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("thresholds", result.stderr)
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            counts = document["samples"][0]["resourceCounts"]["counts"]
+            counts["persistentImportedTextures"] = counts.pop(
+                "stableImportedTextures"
+            )
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("persistent/history", result.stderr)
+
+            write_performance(current)
             document = json.loads(baseline.read_text())
             del document["telemetryCoverage"]
             write_json(baseline, document)
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 1)
             self.assertIn("telemetryCoverage", result.stderr)
+
+            write_performance(baseline)
+            write_performance(current)
+            document = json.loads(current.read_text())
+            footprint = document["samples"][0]["trackedEstimatedFootprint"]
+            footprint["importedHistoryNamedEstimatedBytes"] = footprint.pop(
+                "importedHistoryEstimatedBytes"
+            )
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("fields", result.stderr)
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            del document["samples"][0]["trackedEstimatedFootprint"][
+                "importedPersistentEstimatedBytes"
+            ]
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("fields", result.stderr)
+
+    def test_v2_reports_and_policies_are_rejected_without_compatibility_readers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            baseline = Path(arguments[3])
+            policy = Path(arguments[5])
+
+            document = json.loads(current.read_text())
+            document["schemaVersion"] = 2
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("schema/version", result.stderr)
+
+            write_performance(current)
+            document = json.loads(baseline.read_text())
+            document["schemaVersion"] = 2
+            write_json(baseline, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("schema/version", result.stderr)
+
+            write_performance(baseline)
+            document = json.loads(policy.read_text())
+            document["schemaVersion"] = 2
+            write_json(policy, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("schema/version", result.stderr)
+
+    def test_imported_history_minimum_and_qualification_extent_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+
+            document = json.loads(current.read_text())
+            document["samples"][0]["trackedEstimatedFootprint"][
+                "importedHistoryEstimatedBytes"
+            ] = 0
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("below policy minimum", result.stderr)
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            document["samples"][0]["trackedEstimatedFootprint"][
+                "importedHistoryEstimatedBytes"
+            ] = 88_473_599
+            write_json(current, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("below policy minimum", result.stderr)
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            document["qualificationIdentity"]["qualificationWidth"] = 1920
+            write_json(current, document)
+            result = run_performance(*arguments, "--out", root / "result.json")
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(
+                json.loads((root / "result.json").read_text())["status"],
+                "notComparable",
+            )
+
+            write_performance(current)
+            document = json.loads(current.read_text())
+            for report_sample in document["samples"]:
+                report_sample["gpu"]["passes"][2]["name"] = "TAAResolve"
+            write_json(current, document)
+            policy = Path(arguments[5])
+            document = json.loads(policy.read_text())
+            document["thresholds"]["minImportedHistoryEstimatedBytes"] = 1
+            write_json(policy, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("below 88473600", result.stderr)
 
     def test_legacy_gpu_fields_and_invalid_qualification_span_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

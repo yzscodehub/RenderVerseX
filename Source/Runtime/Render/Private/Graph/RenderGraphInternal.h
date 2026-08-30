@@ -4,6 +4,7 @@
 #include "Render/Graph/TransientResourcePool.h"
 #include "RHI/RHIHeap.h"
 #include <deque>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -11,6 +12,115 @@
 
 namespace RVX
 {
+    inline constexpr uint64 RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED =
+        std::numeric_limits<uint64>::max();
+
+    [[nodiscard]] constexpr uint64 SaturatingAddRenderGraphEstimatedMemory(
+        uint64 left,
+        uint64 right) noexcept
+    {
+        return right > RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED - left
+            ? RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED
+            : left + right;
+    }
+
+    [[nodiscard]] constexpr uint64 SaturatingMultiplyRenderGraphEstimatedMemory(
+        uint64 left,
+        uint64 right) noexcept
+    {
+        return left != 0 &&
+                right > RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED / left
+            ? RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED
+            : left * right;
+    }
+
+    [[nodiscard]] constexpr uint64 AlignRenderGraphEstimatedMemory(
+        uint64 value,
+        uint64 alignment) noexcept
+    {
+        if (alignment == 0 || value == 0)
+        {
+            return value;
+        }
+
+        const uint64 remainder = value % alignment;
+        if (remainder == 0)
+        {
+            return value;
+        }
+
+        const uint64 padding = alignment - remainder;
+        return SaturatingAddRenderGraphEstimatedMemory(value, padding);
+    }
+
+    /**
+     * @brief Conservative, overflow-safe backend-neutral texture estimate.
+     *
+     * Saturation is intentional: callers must prefer an unmistakable maximum
+     * estimate to a wrapped low footprint that could pass a memory policy.
+     */
+    [[nodiscard]] inline uint64 EstimateRenderGraphTextureMemorySize(
+        const RHITextureDesc& desc) noexcept
+    {
+        const uint64 formatBytesPerPixel = GetFormatBytesPerPixel(desc.format);
+        const uint64 bytesPerPixel = formatBytesPerPixel != 0
+            ? formatBytesPerPixel
+            : 4u;
+        const uint64 arraySize = desc.arraySize != 0 ? desc.arraySize : 1u;
+        const uint32 mipLevels = desc.mipLevels != 0 ? desc.mipLevels : 1u;
+        const uint64 sampleCount = static_cast<uint32>(desc.sampleCount) != 0
+            ? static_cast<uint32>(desc.sampleCount)
+            : 1u;
+        uint64 width = desc.width != 0 ? desc.width : 1u;
+        uint64 height = desc.height != 0 ? desc.height : 1u;
+        uint64 depth = desc.depth != 0 ? desc.depth : 1u;
+        uint64 totalSize = 0;
+
+        for (uint32 mip = 0; mip < mipLevels; ++mip)
+        {
+            uint64 mipSize = SaturatingMultiplyRenderGraphEstimatedMemory(
+                width, height);
+            mipSize = SaturatingMultiplyRenderGraphEstimatedMemory(
+                mipSize, depth);
+            mipSize = SaturatingMultiplyRenderGraphEstimatedMemory(
+                mipSize, bytesPerPixel);
+            mipSize = SaturatingMultiplyRenderGraphEstimatedMemory(
+                mipSize, arraySize);
+            totalSize = SaturatingAddRenderGraphEstimatedMemory(
+                totalSize, mipSize);
+            if (totalSize == RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED)
+            {
+                return totalSize;
+            }
+
+            if (width == 1 && height == 1 && depth == 1)
+            {
+                const uint64 remainingMipCount =
+                    static_cast<uint64>(mipLevels - mip - 1u);
+                totalSize = SaturatingAddRenderGraphEstimatedMemory(
+                    totalSize,
+                    SaturatingMultiplyRenderGraphEstimatedMemory(
+                        mipSize, remainingMipCount));
+                break;
+            }
+
+            width = width > 1 ? width / 2u : 1u;
+            height = height > 1 ? height / 2u : 1u;
+            depth = depth > 1 ? depth / 2u : 1u;
+        }
+
+        totalSize = SaturatingMultiplyRenderGraphEstimatedMemory(
+            totalSize, sampleCount);
+        return AlignRenderGraphEstimatedMemory(totalSize, 65536u);
+    }
+
+    /** @brief Conservative, overflow-safe aligned buffer estimate. */
+    [[nodiscard]] constexpr uint64 EstimateRenderGraphBufferMemorySize(
+        const RHIBufferDesc& desc) noexcept
+    {
+        return AlignRenderGraphEstimatedMemory(desc.size, 256u);
+    }
+
     enum class ResourceType
     {
         Texture,
@@ -110,6 +220,9 @@ namespace RVX
         std::optional<RHIAccessSnapshot> exportAccess;
         std::optional<RHIAccessSnapshot> poolTerminalAccess;
         bool imported = false;
+        std::string importedDiagnosticName;
+        RGImportedResourceClass importedResourceClass =
+            RGImportedResourceClass::External;
         
         // Memory aliasing
         ResourceLifetime lifetime;
@@ -159,6 +272,9 @@ namespace RVX
         std::vector<RangeState> rangeStates;
         bool hasRangeTracking = false;
         bool imported = false;
+        std::string importedDiagnosticName;
+        RGImportedResourceClass importedResourceClass =
+            RGImportedResourceClass::External;
         
         // Memory aliasing
         ResourceLifetime lifetime;

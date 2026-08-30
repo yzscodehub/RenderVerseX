@@ -20,9 +20,21 @@ namespace RVX
 {
 namespace
 {
+    inline constexpr uint64 RequiredFullResolutionTAAHistoryBytes =
+        88473600ULL;
+
     inline constexpr uint32 RequiredWarmupFrameCount = 60U;
     inline constexpr uint32 RequiredMeasuredFrameCount = 300U;
     inline constexpr float64 QualificationSpanRelativeTolerance = 1e-9;
+    inline constexpr std::array<std::string_view, 7>
+        RequiredResourceCountNames = {
+            "stableImportedBuffers",
+            "stableImportedTextures",
+            "residentMaterials",
+            "residentMeshes",
+            "residentTextures",
+            "transientBuffers",
+            "transientTextures"};
 
     void SetError(std::string* outError, std::string value)
     {
@@ -92,6 +104,22 @@ namespace
                QualificationSpanRelativeTolerance * scale;
     }
 
+    [[nodiscard]] bool HasRequiredResourceCountSchema(
+        const std::map<std::string, uint64>& counts) noexcept
+    {
+        if (counts.size() != RequiredResourceCountNames.size())
+        {
+            return false;
+        }
+        return std::all_of(
+            RequiredResourceCountNames.begin(),
+            RequiredResourceCountNames.end(),
+            [&counts](const std::string_view name)
+            {
+                return counts.contains(std::string(name));
+            });
+    }
+
     /**
      * Policies use the public RHI spelling (DX12/Vulkan/Metal), while the
      * Render session uses lower-case machine identifiers. Normalize only this
@@ -117,6 +145,8 @@ namespace
             !IsSafeIdentifier(identity.quality) ||
             GetCanonicalBackendName(identity.backend).empty() ||
             !IsSafeIdentifier(identity.view) ||
+            identity.qualificationWidth == 0 ||
+            identity.qualificationHeight == 0 ||
             identity.visualContractVersion == 0)
         {
             SetError(outError,
@@ -220,15 +250,11 @@ namespace
                 return false;
             }
         }
-        for (const auto& [name, count] : sample.resourceCounts)
+        if (!HasRequiredResourceCountSchema(sample.resourceCounts))
         {
-            static_cast<void>(count);
-            if (!IsNonEmptyText(name))
-            {
-                SetError(outError,
-                         "RenderQuality performance sample has an invalid resource counter");
-                return false;
-            }
+            SetError(outError,
+                     "RenderQuality performance sample has an unsupported resource counter schema");
+            return false;
         }
         return true;
     }
@@ -251,6 +277,25 @@ namespace
             }
         }
         return true;
+    }
+
+    [[nodiscard]] bool RequiresFullResolutionTAAHistory(
+        const RenderQualityPerformanceReportIdentity& identity,
+        const RenderQualityPerformanceReportSample& sample) noexcept
+    {
+        if (identity.pipeline != "deferred" || identity.quality != "high" ||
+            identity.qualificationWidth != 2560U ||
+            identity.qualificationHeight != 1440U)
+        {
+            return false;
+        }
+        return std::any_of(
+            sample.passGpuTimings.begin(),
+            sample.passGpuTimings.end(),
+            [](const RenderQualityPerformanceReportPassTiming& pass)
+            {
+                return pass.name == "TAAResolve";
+            });
     }
 
     [[nodiscard]] bool ValidateRequest(
@@ -284,7 +329,7 @@ namespace
         uint64 previousCompletedFrame = request.completedWarmupFrames - 1U;
         std::vector<RenderQualityPerformanceReportPassTiming> passSchema;
         std::map<std::string, uint64> resourceSchema;
-        std::array<uint64, 3> trackedFootprintCeilings{};
+        std::array<uint64, 4> trackedFootprintCeilings{};
         std::set<std::string> observedReceipts;
         for (uint32 index = 0; index < request.samples.size(); ++index)
         {
@@ -304,6 +349,19 @@ namespace
                 }
                 return false;
             }
+            if (RequiresFullResolutionTAAHistory(
+                    request.qualificationIdentity, sample) &&
+                sample.trackedEstimatedFootprint
+                        .importedHistoryEstimatedBytes <
+                    RequiredFullResolutionTAAHistoryBytes)
+            {
+                SetError(
+                    outError,
+                    "RenderQuality performance sample " +
+                        std::to_string(index) +
+                        " imported TAA history is below 88473600 bytes");
+                return false;
+            }
             if (index == 0)
             {
                 passSchema = sample.passGpuTimings;
@@ -312,7 +370,9 @@ namespace
                     sample.trackedEstimatedFootprint
                         .transientPoolPhysicalEstimatedBytes,
                     sample.trackedEstimatedFootprint
-                        .importedHistoryNamedEstimatedBytes,
+                        .importedPersistentEstimatedBytes,
+                    sample.trackedEstimatedFootprint
+                        .importedHistoryEstimatedBytes,
                     sample.trackedEstimatedFootprint
                         .resourceRegistryResidentEstimatedBytes};
             }
@@ -336,25 +396,28 @@ namespace
                     static_cast<void>(ignored);
                     const auto candidate = sample.resourceCounts.find(name);
                     if (candidate == sample.resourceCounts.end() ||
-                        candidate->second > resourceSchema.at(name))
+                        candidate->second != resourceSchema.at(name))
                     {
                         SetError(outError,
-                                 "RenderQuality performance resource telemetry grew or changed after warmup");
+                                 "RenderQuality performance resource telemetry changed after warmup");
                         return false;
                     }
                 }
                 if (sample.trackedEstimatedFootprint
-                        .transientPoolPhysicalEstimatedBytes >
+                        .transientPoolPhysicalEstimatedBytes !=
                         trackedFootprintCeilings[0] ||
                     sample.trackedEstimatedFootprint
-                        .importedHistoryNamedEstimatedBytes >
+                        .importedPersistentEstimatedBytes !=
                         trackedFootprintCeilings[1] ||
                     sample.trackedEstimatedFootprint
-                        .resourceRegistryResidentEstimatedBytes >
-                        trackedFootprintCeilings[2])
+                        .importedHistoryEstimatedBytes !=
+                        trackedFootprintCeilings[2] ||
+                    sample.trackedEstimatedFootprint
+                        .resourceRegistryResidentEstimatedBytes !=
+                        trackedFootprintCeilings[3])
                 {
                     SetError(outError,
-                             "RenderQuality performance tracked estimated footprint grew after warmup");
+                             "RenderQuality performance tracked estimated footprint changed after warmup");
                     return false;
                 }
             }
@@ -475,9 +538,13 @@ namespace
                << sample.trackedEstimatedFootprint
                       .transientPoolPhysicalEstimatedBytes
                << ",\n";
-        stream << "        \"importedHistoryNamedEstimatedBytes\": "
+        stream << "        \"importedPersistentEstimatedBytes\": "
                << sample.trackedEstimatedFootprint
-                      .importedHistoryNamedEstimatedBytes
+                      .importedPersistentEstimatedBytes
+               << ",\n";
+        stream << "        \"importedHistoryEstimatedBytes\": "
+               << sample.trackedEstimatedFootprint
+                      .importedHistoryEstimatedBytes
                << ",\n";
         stream << "        \"resourceRegistryResidentEstimatedBytes\": "
                << sample.trackedEstimatedFootprint
@@ -554,6 +621,10 @@ bool WriteRenderQualityPerformanceReport(
          << ",\n";
     json << "    \"view\": "
          << Diagnostics::JsonString(request.qualificationIdentity.view) << ",\n";
+    json << "    \"qualificationWidth\": "
+         << request.qualificationIdentity.qualificationWidth << ",\n";
+    json << "    \"qualificationHeight\": "
+         << request.qualificationIdentity.qualificationHeight << ",\n";
     json << "    \"captureTick\": "
          << request.qualificationIdentity.captureTick << ",\n";
     json << "    \"visualContractVersion\": "

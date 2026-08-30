@@ -84,6 +84,10 @@ namespace RVX
                 HashPlanValue(hash, texture.desc.sampleCount);
                 HashPlanValue(hash, texture.desc.usage);
                 HashPlanValue(hash, texture.imported);
+                if (texture.imported)
+                {
+                    HashPlanValue(hash, texture.importedResourceClass);
+                }
                 HashPlanAccess(hash,
                                texture.initialAccessSnapshot.uniformAccess);
                 HashPlanValue(hash, texture.lifetime.firstUsePass);
@@ -100,6 +104,10 @@ namespace RVX
                 HashPlanValue(hash, buffer.desc.usage);
                 HashPlanValue(hash, buffer.desc.memoryType);
                 HashPlanValue(hash, buffer.imported);
+                if (buffer.imported)
+                {
+                    HashPlanValue(hash, buffer.importedResourceClass);
+                }
                 HashPlanAccess(hash,
                                buffer.initialAccessSnapshot.uniformAccess);
                 HashPlanValue(hash, buffer.lifetime.firstUsePass);
@@ -849,41 +857,6 @@ namespace RVX
             return beforeCount - static_cast<uint32>(barriers.size());
         }
 
-        // Estimate texture memory size based on format and dimensions
-        uint64 EstimateTextureMemorySize(const RHITextureDesc& desc)
-        {
-            uint64 bpp = GetFormatBytesPerPixel(desc.format);
-            if (bpp == 0) bpp = 4;  // Fallback for compressed formats
-
-            uint64 totalSize = 0;
-            uint32 width = desc.width;
-            uint32 height = desc.height;
-            uint32 depth = desc.depth;
-
-            for (uint32 mip = 0; mip < desc.mipLevels; ++mip)
-            {
-                uint64 mipSize = static_cast<uint64>(width) * height * depth * bpp;
-                totalSize += mipSize * desc.arraySize;
-
-                width = std::max(1u, width / 2);
-                height = std::max(1u, height / 2);
-                depth = std::max(1u, depth / 2);
-            }
-
-            // Account for MSAA
-            totalSize *= static_cast<uint32>(desc.sampleCount);
-
-            // Align to 64KB (D3D12 default heap alignment)
-            return (totalSize + 65535) & ~65535ULL;
-        }
-
-        // Estimate buffer memory size
-        uint64 EstimateBufferMemorySize(const RHIBufferDesc& desc)
-        {
-            // Align to 256 bytes (constant buffer alignment)
-            return (desc.size + 255) & ~255ULL;
-        }
-
         // Check if two lifetimes overlap
         bool LifetimesOverlap(const ResourceLifetime& a, const ResourceLifetime& b)
         {
@@ -1241,15 +1214,17 @@ namespace RVX
         // uses conservative backend-neutral estimates; realization validates
         // physical allocation requirements before creating placed resources.
         auto getTextureMemReqs = [&](const RHITextureDesc& desc) -> std::pair<uint64, uint64> {
-            return {EstimateTextureMemorySize(desc), 65536};
+            return {EstimateRenderGraphTextureMemorySize(desc), 65536};
         };
 
         auto getBufferMemReqs = [&](const RHIBufferDesc& desc) -> std::pair<uint64, uint64> {
-            return {EstimateBufferMemorySize(desc), 256};
+            return {EstimateRenderGraphBufferMemorySize(desc), 256};
         };
 
-        // Calculate lifetimes based on execution order (not insertion order)
-        // This is critical for correct memory aliasing after topological sort
+        // Calculate lifetimes for every resource based on execution order (not
+        // insertion order). Imported resources are intentionally included for
+        // diagnostics; ComputeMemoryAliases independently excludes them from
+        // transient alias candidates.
         if (graph.executionOrder.empty())
         {
             // Fallback to insertion order if execution order not yet computed
@@ -1264,7 +1239,6 @@ namespace RVX
                     {
                         if (usage.index >= graph.textures.size()) continue;
                         auto& texture = graph.textures[usage.index];
-                        if (texture.imported) continue;
 
                         texture.lifetime.isUsed = true;
                         texture.lifetime.firstUsePass = std::min(texture.lifetime.firstUsePass, passIndex);
@@ -1277,7 +1251,6 @@ namespace RVX
                     {
                         if (usage.index >= graph.buffers.size()) continue;
                         auto& buffer = graph.buffers[usage.index];
-                        if (buffer.imported) continue;
 
                         buffer.lifetime.isUsed = true;
                         buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, passIndex);
@@ -1304,7 +1277,6 @@ namespace RVX
                 {
                     if (usage.index >= graph.textures.size()) continue;
                     auto& texture = graph.textures[usage.index];
-                    if (texture.imported) continue;  // Don't alias imported resources
 
                     texture.lifetime.isUsed = true;
                     // Use 'order' (execution timeline) not 'passIndex' (insertion order)
@@ -1318,7 +1290,6 @@ namespace RVX
                 {
                     if (usage.index >= graph.buffers.size()) continue;
                     auto& buffer = graph.buffers[usage.index];
-                    if (buffer.imported) continue;
 
                     buffer.lifetime.isUsed = true;
                     buffer.lifetime.firstUsePass = std::min(buffer.lifetime.firstUsePass, order);
@@ -1354,9 +1325,24 @@ namespace RVX
             auto& texture = graph.textures[i];
             if (!texture.imported && texture.lifetime.isUsed)
             {
-                resources.push_back({ResourceType::Texture, i, &texture.lifetime, &texture.alias});
-                graph.totalMemoryWithoutAliasing += texture.lifetime.memorySize;
+                graph.totalMemoryWithoutAliasing =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        graph.totalMemoryWithoutAliasing,
+                        texture.lifetime.memorySize);
                 graph.stats.totalTransientTextures++;
+                // A saturated estimate is deliberately never assigned to an
+                // alias heap. Keeping the default no-alias binding is safer
+                // than allowing offset arithmetic to turn an unknowable
+                // footprint into a wrapped placed-resource layout.
+                if (texture.lifetime.memorySize !=
+                    RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED)
+                {
+                    resources.push_back(
+                        {ResourceType::Texture,
+                         i,
+                         &texture.lifetime,
+                         &texture.alias});
+                }
             }
         }
         for (uint32 i = 0; i < graph.buffers.size(); ++i)
@@ -1364,14 +1350,33 @@ namespace RVX
             auto& buffer = graph.buffers[i];
             if (!buffer.imported && buffer.lifetime.isUsed)
             {
-                resources.push_back({ResourceType::Buffer, i, &buffer.lifetime, &buffer.alias});
-                graph.totalMemoryWithoutAliasing += buffer.lifetime.memorySize;
+                graph.totalMemoryWithoutAliasing =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        graph.totalMemoryWithoutAliasing,
+                        buffer.lifetime.memorySize);
                 graph.stats.totalTransientBuffers++;
+                if (buffer.lifetime.memorySize !=
+                    RVX_RENDER_GRAPH_ESTIMATED_MEMORY_SATURATED)
+                {
+                    resources.push_back(
+                        {ResourceType::Buffer,
+                         i,
+                         &buffer.lifetime,
+                         &buffer.alias});
+                }
             }
         }
 
         if (resources.empty())
+        {
+            graph.stats.aliasedTextureCount = graph.aliasedTextureCount;
+            graph.stats.aliasedBufferCount = graph.aliasedBufferCount;
+            graph.stats.memoryWithoutAliasing =
+                graph.totalMemoryWithoutAliasing;
+            graph.stats.memoryWithAliasing = graph.totalMemoryWithAliasing;
+            graph.stats.transientHeapCount = 0;
             return;
+        }
 
         // Sort by first use pass (earliest first), then by memory size (largest first)
         std::sort(resources.begin(), resources.end(),
@@ -1423,9 +1428,17 @@ namespace RVX
                     if (alloc.lastUsePass < firstUse)
                     {
                         // Check if we can fit in this space
-                        uint64 alignedOffset = (alloc.offset + alignment - 1) & ~(alignment - 1);
+                        const uint64 alignedOffset =
+                            AlignRenderGraphEstimatedMemory(
+                                alloc.offset, alignment);
+                        const uint64 requestedEnd =
+                            SaturatingAddRenderGraphEstimatedMemory(
+                                alignedOffset, requiredSize);
+                        const uint64 allocationEnd =
+                            SaturatingAddRenderGraphEstimatedMemory(
+                                alloc.offset, alloc.size);
                         if (alignedOffset >= alloc.offset &&
-                            alignedOffset + requiredSize <= alloc.offset + alloc.size)
+                            requestedEnd <= allocationEnd)
                         {
                             const bool overlapsLiveAllocation =
                                 std::any_of(
@@ -1436,8 +1449,14 @@ namespace RVX
                                      firstUse](const HeapAllocation& existing)
                                     {
                                         const bool rangesOverlap =
-                                            alignedOffset < existing.offset + existing.size &&
-                                            existing.offset < alignedOffset + requiredSize;
+                                            alignedOffset <
+                                                SaturatingAddRenderGraphEstimatedMemory(
+                                                    existing.offset,
+                                                    existing.size) &&
+                                            existing.offset <
+                                                SaturatingAddRenderGraphEstimatedMemory(
+                                                    alignedOffset,
+                                                    requiredSize);
                                         return rangesOverlap &&
                                                existing.lastUsePass >= firstUse;
                                     });
@@ -1447,7 +1466,7 @@ namespace RVX
                             }
 
                             const uint64 usableSize =
-                                alloc.offset + alloc.size - alignedOffset;
+                                allocationEnd - alignedOffset;
                             uint64 waste = usableSize - requiredSize;
                             if (waste < bestWaste)
                             {
@@ -1476,15 +1495,24 @@ namespace RVX
                         if (alloc.lastUsePass >= firstUse)
                         {
                             // Lifetime overlaps, need to place after this allocation
-                            maxEndOffset = std::max(maxEndOffset, alloc.offset + alloc.size);
+                            maxEndOffset = std::max(
+                                maxEndOffset,
+                                SaturatingAddRenderGraphEstimatedMemory(
+                                    alloc.offset, alloc.size));
                         }
                     }
 
                     // Try to fit after all overlapping allocations
-                    uint64 alignedOffset = (maxEndOffset + alignment - 1) & ~(alignment - 1);
+                    const uint64 alignedOffset =
+                        AlignRenderGraphEstimatedMemory(maxEndOffset, alignment);
 
                     // Accept this heap if the growth is reasonable
-                    if (alignedOffset + requiredSize <= heap.totalSize * 2 + requiredSize)
+                    if (SaturatingAddRenderGraphEstimatedMemory(
+                            alignedOffset, requiredSize) <=
+                        SaturatingAddRenderGraphEstimatedMemory(
+                            SaturatingMultiplyRenderGraphEstimatedMemory(
+                                heap.totalSize, 2u),
+                            requiredSize))
                     {
                         bestHeap = static_cast<int32>(heapIdx);
                         bestOffset = alignedOffset;
@@ -1507,8 +1535,10 @@ namespace RVX
             for (const HeapAllocation& allocation : heap.allocations)
             {
                 const bool rangesOverlap =
-                    bestOffset < allocation.offset + allocation.size &&
-                    allocation.offset < bestOffset + requiredSize;
+                    bestOffset < SaturatingAddRenderGraphEstimatedMemory(
+                        allocation.offset, allocation.size) &&
+                    allocation.offset < SaturatingAddRenderGraphEstimatedMemory(
+                        bestOffset, requiredSize);
                 if (rangesOverlap && allocation.lastUsePass < firstUse &&
                     (!predecessor ||
                      allocation.lastUsePass > predecessor->lastUsePass))
@@ -1531,7 +1561,10 @@ namespace RVX
                                         res.type,
                                         res.index,
                                         res.alias});
-            heap.totalSize = std::max(heap.totalSize, bestOffset + requiredSize);
+            heap.totalSize = std::max(
+                heap.totalSize,
+                SaturatingAddRenderGraphEstimatedMemory(
+                    bestOffset, requiredSize));
 
             res.alias->heapIndex = static_cast<uint32>(bestHeap);
             res.alias->heapOffset = bestOffset;
@@ -1551,8 +1584,10 @@ namespace RVX
                     const HeapAllocation& a = heap.allocations[first];
                     const HeapAllocation& b = heap.allocations[second];
                     const bool rangesOverlap =
-                        a.offset < b.offset + b.size &&
-                        b.offset < a.offset + a.size;
+                        a.offset < SaturatingAddRenderGraphEstimatedMemory(
+                            b.offset, b.size) &&
+                        b.offset < SaturatingAddRenderGraphEstimatedMemory(
+                            a.offset, a.size);
                     if (rangesOverlap)
                     {
                         a.alias->isAliased = true;
@@ -1587,7 +1622,9 @@ namespace RVX
             th.size = heap.totalSize;
             th.resourceCount = static_cast<uint32>(heap.allocations.size());
             graph.transientHeaps.push_back(th);
-            graph.totalMemoryWithAliasing += heap.totalSize;
+            graph.totalMemoryWithAliasing =
+                SaturatingAddRenderGraphEstimatedMemory(
+                    graph.totalMemoryWithAliasing, heap.totalSize);
         }
 
         // Update stats

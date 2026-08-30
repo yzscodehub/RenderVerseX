@@ -19,7 +19,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 8;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 9;
 
     class RenderGraph;
     class RenderGraphCompiler;
@@ -91,6 +91,29 @@ namespace RVX
     {
         GraphicsOnly = 0,
         PreferMultiQueue,
+    };
+
+    /** @brief Lifetime ownership category for an imported graph resource. */
+    enum class RGImportedResourceClass : uint8
+    {
+        /** @brief Resource is supplied by a caller for one graph execution. */
+        External = 0,
+        /** @brief Resource persists independently of this graph execution. */
+        Persistent,
+        /** @brief Resource stores temporal history across frames. */
+        History,
+    };
+
+    /**
+     * @brief Optional diagnostic metadata copied when importing a resource.
+     *
+     * The classification is graph-owned metadata. RHI debug names are only
+     * diagnostic labels and must never select an imported resource class.
+     */
+    struct RGImportedResourceMetadata
+    {
+        std::string diagnosticName;
+        RGImportedResourceClass resourceClass = RGImportedResourceClass::External;
     };
 
     /** @brief Value-only inputs consumed by the allocation-free compiler. */
@@ -229,17 +252,21 @@ namespace RVX
         /** @brief Import a strongly-owned texture binding for this execution. */
         RGTextureHandle ImportTexture(
             RHITextureRef texture,
-            RHIResourceState initialState);
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {});
         RGTextureHandle ImportTexture(
             RHITextureRef texture,
-            const RHITextureAccessSnapshot& initialAccess);
+            const RHITextureAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
         /** @brief Import a strongly-owned buffer binding for this execution. */
         RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
-            RHIResourceState initialState);
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {});
         RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
-            const RHIBufferAccessSnapshot& initialAccess);
+            const RHIBufferAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
         /** @brief Query an address-stable description for this recording generation. */
         const RHITextureDesc* GetTextureDesc(
             RGTextureHandle texture) const;
@@ -377,16 +404,20 @@ namespace RVX
         // Import external resources
         RGTextureHandle ImportTexture(
             RHITextureRef texture,
-            RHIResourceState initialState);
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {});
         RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
-            RHIResourceState initialState);
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {});
         RGTextureHandle ImportTexture(
             RHITextureRef texture,
-            const RHITextureAccessSnapshot& initialAccess);
+            const RHITextureAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
         RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
-            const RHIBufferAccessSnapshot& initialAccess);
+            const RHIBufferAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
 
         // Export final state for external usage
         void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
@@ -603,6 +634,8 @@ namespace RVX
             uint32 index = RVX_INVALID_INDEX;
             std::string name;
             bool imported = false;
+            RGImportedResourceClass importedResourceClass =
+                RGImportedResourceClass::External;
             bool pooled = false;
             bool used = false;
             uint32 firstUsePass = RVX_INVALID_INDEX;
@@ -747,6 +780,7 @@ namespace RVX
             uint64 estimatedTransientMemoryBytes = 0;
             uint64 estimatedUsedTransientMemoryBytes = 0;
             uint64 estimatedImportedMemoryBytes = 0;
+            uint64 estimatedUsedImportedMemoryBytes = 0;
         };
 
         const CompileStats& GetCompileStats() const;
@@ -787,10 +821,12 @@ namespace RVX
         void ResetDefinitionForValidation();
         RGTextureHandle ImportTextureBorrowedForValidation(
             RHITexture* texture,
-            const RHITextureAccessSnapshot& initialAccess);
+            const RHITextureAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
         RGBufferHandle ImportBufferBorrowedForValidation(
             RHIBuffer* buffer,
-            const RHIBufferAccessSnapshot& initialAccess);
+            const RHIBufferAccessSnapshot& initialAccess,
+            const RGImportedResourceMetadata& metadata = {});
         [[nodiscard]] bool FinalizeInternal(
             const RenderGraphCompileOptions& options);
         [[nodiscard]] RenderGraphExecution PrepareExecutionInternal(

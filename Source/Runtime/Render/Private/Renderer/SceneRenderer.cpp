@@ -3606,28 +3606,51 @@ bool SceneRenderer::CollectRenderQualityPerformanceTelemetry(
             return false;
         }
 
-        uint64 historyBytes = 0;
-        uint32 importedTextureCount = 0;
-        uint32 importedBufferCount = 0;
+        uint64 importedHistoryBytes = 0;
+        uint64 importedPersistentBytes = 0;
+        uint32 stableImportedTextureCount = 0;
+        uint32 stableImportedBufferCount = 0;
         for (const RenderGraph::ResourceDiagnostic& resource :
              graphDiagnostics.resources)
         {
             if (!resource.used || !resource.imported)
                 continue;
+            if (resource.importedResourceClass !=
+                    RGImportedResourceClass::Persistent &&
+                resource.importedResourceClass !=
+                    RGImportedResourceClass::History)
+            {
+                continue;
+            }
+            // A saturated diagnostic cannot be a trustworthy performance
+            // footprint. Reject it at the renderer projection boundary before
+            // a later policy check could mistake it for usable telemetry.
+            if (resource.estimatedMemoryBytes ==
+                std::numeric_limits<uint64>::max())
+            {
+                return false;
+            }
             uint32& importedCount = resource.type ==
                     RenderGraph::DiagnosticResourceType::Texture
-                ? importedTextureCount
-                : importedBufferCount;
+                ? stableImportedTextureCount
+                : stableImportedBufferCount;
             if (importedCount == std::numeric_limits<uint32>::max())
                 return false;
             ++importedCount;
 
-            // Imported resources with an explicit History name are the exact
-            // temporal backing consumed by this graph. This deliberately
-            // excludes ordinary imported scene assets and the swapchain.
-            if (resource.name.find("History") != std::string::npos &&
+            // Lifetime class is explicit import metadata. RHI/debug names are
+            // diagnostic-only and must never decide performance accounting.
+            if (resource.importedResourceClass ==
+                    RGImportedResourceClass::History &&
                 !TryAccumulatePerformanceBytes(
-                    historyBytes, resource.estimatedMemoryBytes))
+                    importedHistoryBytes, resource.estimatedMemoryBytes))
+            {
+                return false;
+            }
+            if (resource.importedResourceClass ==
+                    RGImportedResourceClass::Persistent &&
+                !TryAccumulatePerformanceBytes(
+                    importedPersistentBytes, resource.estimatedMemoryBytes))
             {
                 return false;
             }
@@ -3667,14 +3690,16 @@ bool SceneRenderer::CollectRenderQualityPerformanceTelemetry(
         outTelemetry.frameTrackedUploadBytes = frameTrackedUploadBytes;
         outTelemetry.cumulativeTrackedUploadBytesAvailable = true;
         // These are deliberately tracked estimated footprint domains, not a
-        // full GPU memory report.  In particular, imported history remains a
-        // name-classified graph subset until RenderGraph gains lifetime tags.
+        // full GPU memory report. Imported temporal history is an explicit
+        // RenderGraph lifetime class, never a name-derived heuristic.
         outTelemetry.trackedEstimatedFootprint.coverageMask =
             RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE;
         outTelemetry.trackedEstimatedFootprint
             .transientPoolPhysicalEstimatedBytes = poolStats.totalPooledMemory;
         outTelemetry.trackedEstimatedFootprint
-            .importedHistoryNamedEstimatedBytes = historyBytes;
+            .importedPersistentEstimatedBytes = importedPersistentBytes;
+        outTelemetry.trackedEstimatedFootprint
+            .importedHistoryEstimatedBytes = importedHistoryBytes;
         outTelemetry.trackedEstimatedFootprint
             .resourceRegistryResidentEstimatedBytes =
             static_cast<uint64>(registryStats.usedMemory);
@@ -3683,10 +3708,10 @@ bool SceneRenderer::CollectRenderQualityPerformanceTelemetry(
             poolStats.texturePoolSize;
         outTelemetry.resourceCounts.transientBufferCount =
             poolStats.bufferPoolSize;
-        outTelemetry.resourceCounts.importedTextureCount =
-            importedTextureCount;
-        outTelemetry.resourceCounts.importedBufferCount =
-            importedBufferCount;
+        outTelemetry.resourceCounts.stableImportedTextureCount =
+            stableImportedTextureCount;
+        outTelemetry.resourceCounts.stableImportedBufferCount =
+            stableImportedBufferCount;
         outTelemetry.resourceCounts.residentMeshCount =
             static_cast<uint32>(registryStats.residentMeshCount);
         outTelemetry.resourceCounts.residentTextureCount =
@@ -11933,7 +11958,8 @@ void SceneRenderer::BuildRenderGraph()
     m_viewData.resetTemporalHistory = effectiveTemporalHistory.reset;
     m_viewData.exposureState = m_renderGraph->ImportBuffer(
         exposureFrameInput.stateBuffer,
-        RHIResourceState::ShaderResource);
+        RHIResourceState::ShaderResource,
+        {"ExposureCommittedState", RGImportedResourceClass::History});
     if (!m_viewData.exposureState.IsValid())
     {
         m_featureCompositionFailureReason =

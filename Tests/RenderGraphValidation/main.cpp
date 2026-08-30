@@ -2440,6 +2440,312 @@ TEST(RenderGraphValidation, ExplicitAliasingReusesMemoryAndEmitsOwnershipBarrier
               context.aliasingBarriers[0].resourceAfter);
 }
 
+TEST(RenderGraphValidation,
+     ImportedResourcesReportMetadataLifetimesMemoryAndNoAliasing)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    device.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(graph, true);
+
+    const RHITextureDesc historyDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle history = graph.ImportTexture(
+        RHITextureRef(new FakeTexture(historyDesc)),
+        RHIResourceState::ShaderResource,
+        {"HistoryInput", RGImportedResourceClass::History});
+    const RGTextureHandle unusedExternal = graph.ImportTexture(
+        RHITextureRef(new FakeTexture(historyDesc)),
+        RHIResourceState::ShaderResource,
+        {"UnusedExternal", RGImportedResourceClass::External});
+
+    RHIBufferDesc persistentDesc;
+    persistentDesc.size = 1024;
+    persistentDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+    const RGBufferHandle persistent = graph.ImportBuffer(
+        RHIBufferRef(new FakeBuffer(persistentDesc)),
+        RHIResourceState::Common,
+        {"PersistentOutput", RGImportedResourceClass::Persistent});
+    const RGTextureHandle transient = graph.CreateTexture(historyDesc);
+
+    struct ProduceData
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+    graph.AddPass<ProduceData>(
+        "UseHistory",
+        RenderGraphPassType::Graphics,
+        [history, transient](RenderGraphBuilder& builder, ProduceData& data)
+        {
+            data.input = builder.Read(history);
+            data.output = builder.Write(transient);
+        },
+        [](const ProduceData&, RHICommandContext&) {});
+
+    struct ConsumeData
+    {
+        RGTextureHandle input;
+        RGBufferHandle output;
+    };
+    graph.AddPass<ConsumeData>(
+        "PublishPersistent",
+        RenderGraphPassType::Compute,
+        [transient, persistent](RenderGraphBuilder& builder, ConsumeData& data)
+        {
+            data.input = builder.Read(transient, RHIShaderStage::Compute);
+            data.output = builder.Write(
+                persistent,
+                RHIResourceState::UnorderedAccess);
+        },
+        [](const ConsumeData&, RHICommandContext&) {});
+    graph.SetExportState(persistent, RHIResourceState::ShaderResource);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_TRUE(graph.IsMemoryAliasingEnabled());
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto findResource = [&diagnostics](std::string_view name)
+        -> const RenderGraph::ResourceDiagnostic*
+    {
+        const auto it = std::find_if(
+            diagnostics.resources.begin(),
+            diagnostics.resources.end(),
+            [name](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.name == name;
+            });
+        return it == diagnostics.resources.end() ? nullptr : &*it;
+    };
+
+    const auto* historyDiagnostic = findResource("HistoryInput");
+    ASSERT_NE(historyDiagnostic, nullptr);
+    EXPECT_TRUE(historyDiagnostic->imported);
+    EXPECT_EQ(historyDiagnostic->importedResourceClass,
+              RGImportedResourceClass::History);
+    EXPECT_TRUE(historyDiagnostic->used);
+    EXPECT_EQ(historyDiagnostic->firstUsePass, 0u);
+    EXPECT_EQ(historyDiagnostic->lastUsePass, 0u);
+    EXPECT_GT(historyDiagnostic->estimatedMemoryBytes, 0u);
+    EXPECT_FALSE(historyDiagnostic->aliased);
+    EXPECT_EQ(historyDiagnostic->aliasHeapIndex, RVX_INVALID_INDEX);
+
+    const auto* unusedDiagnostic = findResource("UnusedExternal");
+    ASSERT_NE(unusedDiagnostic, nullptr);
+    EXPECT_TRUE(unusedDiagnostic->imported);
+    EXPECT_EQ(unusedDiagnostic->importedResourceClass,
+              RGImportedResourceClass::External);
+    EXPECT_FALSE(unusedDiagnostic->used);
+    EXPECT_EQ(unusedDiagnostic->firstUsePass, RVX_INVALID_INDEX);
+    EXPECT_EQ(unusedDiagnostic->lastUsePass, RVX_INVALID_INDEX);
+    EXPECT_GT(unusedDiagnostic->estimatedMemoryBytes, 0u);
+    EXPECT_FALSE(unusedDiagnostic->aliased);
+
+    const auto* persistentDiagnostic = findResource("PersistentOutput");
+    ASSERT_NE(persistentDiagnostic, nullptr);
+    EXPECT_TRUE(persistentDiagnostic->imported);
+    EXPECT_EQ(persistentDiagnostic->importedResourceClass,
+              RGImportedResourceClass::Persistent);
+    EXPECT_TRUE(persistentDiagnostic->used);
+    EXPECT_EQ(persistentDiagnostic->firstUsePass, 1u);
+    EXPECT_EQ(persistentDiagnostic->lastUsePass, 1u);
+    EXPECT_GT(persistentDiagnostic->estimatedMemoryBytes, 0u);
+    EXPECT_FALSE(persistentDiagnostic->aliased);
+
+    const auto* transientDiagnostic = findResource("Texture2");
+    ASSERT_NE(transientDiagnostic, nullptr);
+    EXPECT_FALSE(transientDiagnostic->imported);
+    EXPECT_TRUE(transientDiagnostic->used);
+    EXPECT_EQ(transientDiagnostic->firstUsePass, 0u);
+    EXPECT_EQ(transientDiagnostic->lastUsePass, 1u);
+    EXPECT_GT(transientDiagnostic->estimatedMemoryBytes, 0u);
+
+    EXPECT_EQ(
+        diagnostics.estimatedImportedMemoryBytes,
+        historyDiagnostic->estimatedMemoryBytes +
+            unusedDiagnostic->estimatedMemoryBytes +
+            persistentDiagnostic->estimatedMemoryBytes);
+    EXPECT_EQ(
+        diagnostics.estimatedUsedImportedMemoryBytes,
+        historyDiagnostic->estimatedMemoryBytes +
+            persistentDiagnostic->estimatedMemoryBytes);
+
+    const std::string json = graph.ExportDiagnosticsJson();
+    EXPECT_NE(json.find("\"importedResourceClass\": \"History\""),
+              std::string::npos);
+    EXPECT_NE(json.find("\"importedResourceClass\": \"Persistent\""),
+              std::string::npos);
+    EXPECT_NE(json.find("\"estimatedUsedImportedMemoryBytes\":"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation,
+     ImportedResourceDiagnosticNamesDoNotChangeClassifiedPlanHash)
+{
+    const auto compilePlanHash = [](std::string diagnosticName,
+                                    RGImportedResourceClass resourceClass)
+    {
+        RenderGraph graph;
+        const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+            32, 32, RHIFormat::RGBA8_UNORM);
+        const RGTextureHandle imported = graph.ImportTexture(
+            RHITextureRef(new FakeTexture(desc)),
+            RHIResourceState::ShaderResource,
+            {std::move(diagnosticName), resourceClass});
+        graph.SetExportState(imported, RHIResourceState::ShaderResource);
+        RenderGraphValidationAccess::Compile(graph);
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        return graph.GetCompileStats().planHash;
+    };
+
+    const uint64 firstExternal = compilePlanHash(
+        "RHI_Debug_Name_A", RGImportedResourceClass::External);
+    const uint64 secondExternal = compilePlanHash(
+        "RHI_Debug_Name_B", RGImportedResourceClass::External);
+    const uint64 history = compilePlanHash(
+        "RHI_Debug_Name_A", RGImportedResourceClass::History);
+
+    EXPECT_NE(firstExternal, 0u);
+    EXPECT_EQ(firstExternal, secondExternal);
+    EXPECT_NE(firstExternal, history);
+}
+
+TEST(RenderGraphValidation,
+     ImportedResourceClassRejectsInvalidTextureAndBufferMetadata)
+{
+    RenderGraph graph;
+    const auto invalidClass = static_cast<RGImportedResourceClass>(255u);
+
+    const RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    const RGTextureHandle texture = graph.ImportTexture(
+        RHITextureRef(new FakeTexture(textureDesc)),
+        RHIResourceState::ShaderResource,
+        {"InvalidTextureClass", invalidClass});
+    EXPECT_FALSE(texture.IsValid());
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::Structured;
+    const RGBufferHandle buffer = graph.ImportBuffer(
+        RHIBufferRef(new FakeBuffer(bufferDesc)),
+        RHIResourceState::ShaderResource,
+        {"InvalidBufferClass", invalidClass});
+    EXPECT_FALSE(buffer.IsValid());
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    EXPECT_TRUE(diagnostics.resources.empty());
+}
+
+TEST(RenderGraphValidation,
+     ExtremeEstimatedMemorySaturatesWithoutWrappingImportedOrTransientTotals)
+{
+    constexpr uint64 maximum = std::numeric_limits<uint64>::max();
+    RHITextureDesc extremeTextureDesc = RHITextureDesc::RenderTarget(
+        std::numeric_limits<uint32>::max(),
+        std::numeric_limits<uint32>::max(),
+        RHIFormat::RGBA32_FLOAT);
+    // One mip, layer, and depth slice keep graph subresource tracking bounded;
+    // width * height * bytes-per-pixel * sample-count still overflows a raw
+    // uint64 estimate and exercises the checked multiplication path.
+    extremeTextureDesc.depth = 1;
+    extremeTextureDesc.arraySize = 1;
+    extremeTextureDesc.sampleCount = RHISampleCount::Count16;
+
+    RHIBufferDesc extremeBufferDesc;
+    extremeBufferDesc.size = maximum;
+    extremeBufferDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+
+    struct ExtremePassData
+    {
+        RGTextureHandle texture{};
+        RGBufferHandle buffer{};
+    };
+
+    const auto addExtremeWrites = [](RenderGraph& graph,
+                                     RGTextureHandle texture,
+                                     RGBufferHandle buffer)
+    {
+        graph.AddPass<ExtremePassData>(
+            "ExtremeEstimateUse",
+            RenderGraphPassType::Graphics,
+            [texture, buffer](RenderGraphBuilder& builder,
+                              ExtremePassData& data)
+            {
+                data.texture = builder.Write(
+                    texture, RHIResourceState::RenderTarget);
+                data.buffer = builder.Write(
+                    buffer, RHIResourceState::UnorderedAccess);
+            },
+            [](const ExtremePassData&, RHICommandContext&) {});
+        graph.SetExportState(texture, RHIResourceState::ShaderResource);
+        graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    };
+
+    RenderGraph importedGraph;
+    const RGTextureHandle importedTexture = importedGraph.ImportTexture(
+        RHITextureRef(new FakeTexture(extremeTextureDesc)),
+        RHIResourceState::ShaderResource,
+        {"ExtremeImportedTexture", RGImportedResourceClass::History});
+    const RGBufferHandle importedBuffer = importedGraph.ImportBuffer(
+        RHIBufferRef(new FakeBuffer(extremeBufferDesc)),
+        RHIResourceState::ShaderResource,
+        {"ExtremeImportedBuffer", RGImportedResourceClass::Persistent});
+    addExtremeWrites(importedGraph, importedTexture, importedBuffer);
+    RenderGraphValidationAccess::Compile(importedGraph);
+    ASSERT_TRUE(importedGraph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics importedDiagnostics =
+        importedGraph.GetDiagnostics();
+    ASSERT_EQ(importedDiagnostics.resources.size(), 2u);
+    EXPECT_EQ(importedDiagnostics.resources[0].estimatedMemoryBytes, maximum);
+    EXPECT_EQ(importedDiagnostics.resources[1].estimatedMemoryBytes, maximum);
+    EXPECT_EQ(importedDiagnostics.estimatedImportedMemoryBytes, maximum);
+    EXPECT_EQ(importedDiagnostics.estimatedUsedImportedMemoryBytes, maximum);
+
+    RenderGraph transientGraph;
+    const RGTextureHandle transientTexture = transientGraph.CreateTexture(
+        extremeTextureDesc);
+    const RGBufferHandle transientBuffer = transientGraph.CreateBuffer(
+        extremeBufferDesc);
+    addExtremeWrites(transientGraph, transientTexture, transientBuffer);
+    RenderGraphValidationAccess::Compile(transientGraph);
+    ASSERT_TRUE(transientGraph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics transientDiagnostics =
+        transientGraph.GetDiagnostics();
+    ASSERT_EQ(transientDiagnostics.resources.size(), 2u);
+    EXPECT_EQ(transientDiagnostics.resources[0].estimatedMemoryBytes, maximum);
+    EXPECT_EQ(transientDiagnostics.resources[1].estimatedMemoryBytes, maximum);
+    EXPECT_EQ(transientDiagnostics.estimatedTransientMemoryBytes, maximum);
+    EXPECT_EQ(transientDiagnostics.estimatedUsedTransientMemoryBytes, maximum);
+
+    FakeDevice aliasingDevice;
+    aliasingDevice.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    aliasingDevice.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+    RenderGraph aliasingGraph;
+    RenderGraphValidationAccess::SetDevice(aliasingGraph, &aliasingDevice);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(aliasingGraph, true);
+    const RGTextureHandle aliasingTexture = aliasingGraph.CreateTexture(
+        extremeTextureDesc);
+    const RGBufferHandle aliasingBuffer = aliasingGraph.CreateBuffer(
+        extremeBufferDesc);
+    addExtremeWrites(aliasingGraph, aliasingTexture, aliasingBuffer);
+    RenderGraphValidationAccess::Compile(aliasingGraph);
+    ASSERT_TRUE(aliasingGraph.GetCompileStats().compileValid);
+    EXPECT_TRUE(aliasingGraph.IsMemoryAliasingEnabled());
+    EXPECT_EQ(aliasingGraph.GetCompileStats().memoryWithoutAliasing, maximum);
+    EXPECT_EQ(aliasingGraph.GetCompileStats().memoryWithAliasing, 0u);
+    EXPECT_EQ(aliasingGraph.GetCompileStats().aliasedTextureCount, 0u);
+    EXPECT_EQ(aliasingGraph.GetCompileStats().aliasedBufferCount, 0u);
+}
+
 TEST(RenderGraphValidation, AliasingNeverOverlapsAStillLiveReplacement)
 {
     FakeDevice device;

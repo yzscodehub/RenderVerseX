@@ -62,6 +62,7 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
 #include "Render/Passes/TransparentPass.h"
+#include "Render/Passes/WaterFeaturePass.h"
 #include "Render/PostProcess/Bloom.h"
 #include "Render/PostProcess/ChromaticAberration.h"
 #include "Render/PostProcess/ColorGrading.h"
@@ -795,6 +796,70 @@ namespace RVX
             RenderGraphValidationAccess::SetDevice(
                 *renderer.m_renderGraph,
                 &device);
+        }
+
+        static RenderGraph* GetGraphForTesting(
+            SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_renderGraph.get();
+        }
+
+        static bool PreparePerformanceTelemetryProjectionForTesting(
+            SceneRenderer& renderer,
+            IRHIDevice& device,
+            RenderResourceRegistry& registry,
+            const RenderFrameIdentity& frameIdentity)
+        {
+            if (renderer.m_renderGraph == nullptr ||
+                !frameIdentity.IsValid())
+            {
+                return false;
+            }
+
+            renderer.m_transientResourcePool =
+                std::make_unique<TransientResourcePool>();
+            renderer.m_transientResourcePool->Initialize(&device);
+            renderer.m_renderResourceRegistry = &registry;
+            renderer.m_completedMutationEvidence = {};
+            renderer.m_completedMutationEvidence.completion.available = true;
+            renderer.m_completedMutationEvidence.completion.completedFrameSequence =
+                frameIdentity.frameSequence;
+
+            DefaultRenderPassBundle& bundle = GetPassBundleForTesting(renderer);
+            ParticleFeaturePass* particle =
+                bundle.FindPass<ParticleFeaturePass>();
+            if (particle == nullptr)
+            {
+                auto pass = std::make_unique<ParticleFeaturePass>();
+                particle = pass.get();
+                bundle.AddPass(std::move(pass), nullptr);
+            }
+            WaterFeaturePass* water = bundle.FindPass<WaterFeaturePass>();
+            if (water == nullptr)
+            {
+                auto pass = std::make_unique<WaterFeaturePass>();
+                water = pass.get();
+                bundle.AddPass(std::move(pass), nullptr);
+            }
+            if (particle == nullptr || water == nullptr)
+                return false;
+
+            ParticleFeaturePassStats particleStats;
+            particleStats.recordFrameIdentity = frameIdentity;
+            particle->PublishExecutionStats(particleStats);
+            WaterFeaturePassStats waterStats;
+            waterStats.recordFrameIdentity = frameIdentity;
+            water->PublishExecutionStats(waterStats);
+            return true;
+        }
+
+        static bool CollectPerformanceTelemetryForTesting(
+            const SceneRenderer& renderer,
+            const RenderFrameIdentity& frameIdentity,
+            RenderQualityPerformanceFrameTelemetry& outTelemetry) noexcept
+        {
+            return renderer.CollectRenderQualityPerformanceTelemetry(
+                frameIdentity, outTelemetry);
         }
 
         static void InstallGPUSceneResources(
@@ -30571,6 +30636,409 @@ TEST_F(RenderPassValidationFixture, TAADeclaresStrictGraphOnlyFrameInputContract
 }
 
 TEST_F(RenderPassValidationFixture,
+       ImportedResourceLifetimeClassIsIndependentOfDiagnosticName)
+{
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        16, 16, RHIFormat::RGBA8_UNORM);
+    desc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureRef explicitlyHistoryTexture = device.CreateTexture(desc);
+    RHITextureRef historyNamedExternalTexture = device.CreateTexture(desc);
+    ASSERT_TRUE(explicitlyHistoryTexture);
+    ASSERT_TRUE(historyNamedExternalTexture);
+
+    const RGTextureHandle explicitlyHistory = graph.ImportTexture(
+        RHITextureRef(explicitlyHistoryTexture),
+        RHIResourceState::ShaderResource,
+        {"StableBacking", RGImportedResourceClass::History});
+    const RGTextureHandle historyNamedExternal = graph.ImportTexture(
+        RHITextureRef(historyNamedExternalTexture),
+        RHIResourceState::ShaderResource,
+        {"LooksLikeHistory", RGImportedResourceClass::External});
+    ASSERT_TRUE(explicitlyHistory.IsValid());
+    ASSERT_TRUE(historyNamedExternal.IsValid());
+
+    struct ImportedLifetimeClassData
+    {
+        RGTextureHandle explicitlyHistory{};
+        RGTextureHandle historyNamedExternal{};
+    };
+    graph.AddPass<ImportedLifetimeClassData>(
+        "ImportedLifetimeClassUse",
+        RenderGraphPassType::Graphics,
+        [explicitlyHistory, historyNamedExternal](
+            RenderGraphBuilder& builder,
+            ImportedLifetimeClassData& data)
+        {
+            data.explicitlyHistory = builder.Write(
+                explicitlyHistory, RHIResourceState::RenderTarget);
+            data.historyNamedExternal = builder.Write(
+                historyNamedExternal, RHIResourceState::RenderTarget);
+        },
+        [](const ImportedLifetimeClassData&, RHICommandContext&) {});
+    graph.SetExportState(
+        explicitlyHistory, RHIResourceState::ShaderResource);
+    graph.SetExportState(
+        historyNamedExternal, RHIResourceState::ShaderResource);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto findResource = [&diagnostics](uint32 index)
+        -> const RenderGraph::ResourceDiagnostic*
+    {
+        const auto it = std::find_if(
+            diagnostics.resources.begin(), diagnostics.resources.end(),
+            [index](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.type ==
+                           RenderGraph::DiagnosticResourceType::Texture &&
+                       resource.index == index;
+            });
+        return it != diagnostics.resources.end() ? &*it : nullptr;
+    };
+
+    const RenderGraph::ResourceDiagnostic* const historyResource =
+        findResource(explicitlyHistory.index);
+    const RenderGraph::ResourceDiagnostic* const externalResource =
+        findResource(historyNamedExternal.index);
+    ASSERT_NE(historyResource, nullptr);
+    ASSERT_NE(externalResource, nullptr);
+    EXPECT_EQ(historyResource->name, "StableBacking");
+    EXPECT_EQ(historyResource->importedResourceClass,
+              RGImportedResourceClass::History);
+    EXPECT_TRUE(historyResource->used);
+    EXPECT_FALSE(historyResource->aliased);
+    EXPECT_EQ(externalResource->name, "LooksLikeHistory");
+    EXPECT_EQ(externalResource->importedResourceClass,
+              RGImportedResourceClass::External);
+    EXPECT_TRUE(externalResource->used);
+    EXPECT_FALSE(externalResource->aliased);
+}
+
+TEST_F(RenderPassValidationFixture,
+       RenderOwnedParticleAndWaterBuffersArePersistentAndNeverAliased)
+{
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    const fs::path renderRoot = shaderDirectory.parent_path();
+    const std::string particleSource = ReadTextFile(
+        renderRoot / "Private" / "Passes" / "ParticleFeaturePass.cpp");
+    const std::string waterSource = ReadTextFile(
+        renderRoot / "Private" / "Passes" / "WaterFeaturePass.cpp");
+    const auto expectPersistentImport = [](const std::string& source,
+                                           const char* diagnosticName)
+    {
+        const size_t namePosition = source.find(diagnosticName);
+        ASSERT_NE(namePosition, std::string::npos);
+        const size_t importEnd = source.find(");", namePosition);
+        ASSERT_NE(importEnd, std::string::npos);
+        EXPECT_NE(source.substr(namePosition, importEnd - namePosition)
+                      .find("RGImportedResourceClass::Persistent"),
+                  std::string::npos);
+    };
+    expectPersistentImport(particleSource, "ParticleFeatureConstants");
+    expectPersistentImport(particleSource, "ParticleFeatureInstances");
+    expectPersistentImport(waterSource, "WaterFeatureConstants");
+    expectPersistentImport(waterSource, "WaterFeatureGridVertices");
+    expectPersistentImport(waterSource, "WaterFeatureGridIndices");
+
+    const size_t particleTextureImport = particleSource.find(
+        "binding.graphTexture = builder.ImportTexture(");
+    ASSERT_NE(particleTextureImport, std::string::npos);
+    const size_t particleTextureImportEnd = particleSource.find(
+        ");", particleTextureImport);
+    ASSERT_NE(particleTextureImportEnd, std::string::npos);
+    EXPECT_EQ(
+        particleSource.substr(
+            particleTextureImport,
+            particleTextureImportEnd - particleTextureImport)
+            .find("RGImportedResourceClass"),
+        std::string::npos);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(graph, true);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.stride = 4;
+    bufferDesc.usage =
+        RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource |
+        RHIBufferUsage::UnorderedAccess;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    const std::array<const char*, 5> persistentNames = {
+        "ParticleFeatureConstants",
+        "ParticleFeatureInstances",
+        "WaterFeatureConstants",
+        "WaterFeatureGridVertices",
+        "WaterFeatureGridIndices"};
+    std::array<RHIBufferRef, 5> buffers{};
+    std::array<RGBufferHandle, 5> handles{};
+    for (uint32 index = 0; index < persistentNames.size(); ++index)
+    {
+        buffers[index] = device.CreateBuffer(bufferDesc);
+        ASSERT_TRUE(buffers[index]);
+        handles[index] = graph.ImportBuffer(
+            RHIBufferRef(buffers[index]),
+            RHIResourceState::ShaderResource,
+            {persistentNames[index], RGImportedResourceClass::Persistent});
+        ASSERT_TRUE(handles[index].IsValid());
+    }
+
+    RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+        16, 16, RHIFormat::RGBA8_UNORM);
+    textureDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    const RHITextureRef particleTexture = device.CreateTexture(textureDesc);
+    ASSERT_TRUE(particleTexture);
+    const RGTextureHandle particleTextureHandle = graph.ImportTexture(
+        RHITextureRef(particleTexture), RHIResourceState::ShaderResource);
+    ASSERT_TRUE(particleTextureHandle.IsValid());
+
+    struct RenderOwnedBufferClassificationData
+    {
+        std::array<RGBufferHandle, 5> buffers{};
+        RGTextureHandle particleTexture{};
+    };
+    graph.AddPass<RenderOwnedBufferClassificationData>(
+        "RenderOwnedBufferClassificationUse",
+        RenderGraphPassType::Graphics,
+        [handles, particleTextureHandle](RenderGraphBuilder& builder,
+                                         RenderOwnedBufferClassificationData& data)
+        {
+            for (uint32 index = 0; index < handles.size(); ++index)
+            {
+                data.buffers[index] = builder.Write(
+                    handles[index], RHIResourceState::UnorderedAccess);
+            }
+            data.particleTexture = builder.Write(
+                particleTextureHandle, RHIResourceState::RenderTarget);
+        },
+        [](const RenderOwnedBufferClassificationData&, RHICommandContext&) {});
+    for (const RGBufferHandle handle : handles)
+    {
+        graph.SetExportState(handle, RHIResourceState::ShaderResource);
+    }
+    graph.SetExportState(
+        particleTextureHandle, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    for (uint32 index = 0; index < handles.size(); ++index)
+    {
+        const auto it = std::find_if(
+            diagnostics.resources.begin(), diagnostics.resources.end(),
+            [handle = handles[index]](
+                const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.type ==
+                           RenderGraph::DiagnosticResourceType::Buffer &&
+                       resource.index == handle.index;
+            });
+        ASSERT_NE(it, diagnostics.resources.end());
+        EXPECT_EQ(it->name, persistentNames[index]);
+        EXPECT_TRUE(it->used);
+        EXPECT_EQ(it->importedResourceClass,
+                  RGImportedResourceClass::Persistent);
+        EXPECT_FALSE(it->aliased);
+    }
+
+    const auto particleTextureIt = std::find_if(
+        diagnostics.resources.begin(), diagnostics.resources.end(),
+        [particleTextureHandle](const RenderGraph::ResourceDiagnostic& resource)
+        {
+            return resource.type ==
+                       RenderGraph::DiagnosticResourceType::Texture &&
+                   resource.index == particleTextureHandle.index;
+        });
+    ASSERT_NE(particleTextureIt, diagnostics.resources.end());
+    EXPECT_EQ(particleTextureIt->importedResourceClass,
+              RGImportedResourceClass::External);
+    EXPECT_FALSE(particleTextureIt->aliased);
+}
+
+TEST_F(RenderPassValidationFixture,
+       PerformanceTelemetryCountsOnlyPersistentAndHistoryImports)
+{
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    const std::string sceneRendererSource = ReadTextFile(
+        shaderDirectory.parent_path() / "Private" / "Renderer" /
+        "SceneRenderer.cpp");
+    const size_t saturatedGuard = sceneRendererSource.find(
+        "resource.estimatedMemoryBytes ==\n"
+        "                std::numeric_limits<uint64>::max()");
+    ASSERT_NE(saturatedGuard, std::string::npos);
+    const size_t stableClassFilter = sceneRendererSource.rfind(
+        "RGImportedResourceClass::Persistent", saturatedGuard);
+    ASSERT_NE(stableClassFilter, std::string::npos);
+    EXPECT_LT(stableClassFilter, saturatedGuard);
+
+    RenderResourceRegistry registry;
+    SceneRenderer renderer;
+    SceneRendererTestAccess::InstallGraph(renderer, device);
+    RenderGraph* const graph =
+        SceneRendererTestAccess::GetGraphForTesting(renderer);
+    ASSERT_NE(graph, nullptr);
+
+    RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+        16, 16, RHIFormat::RGBA8_UNORM);
+    textureDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.stride = 4;
+    bufferDesc.usage =
+        RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource |
+        RHIBufferUsage::UnorderedAccess;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+
+    const RHITextureRef externalTexture = device.CreateTexture(textureDesc);
+    const RHITextureRef extraExternalTexture = device.CreateTexture(textureDesc);
+    const RHITextureRef persistentTexture = device.CreateTexture(textureDesc);
+    const RHITextureRef historyTexture = device.CreateTexture(textureDesc);
+    const RHIBufferRef externalBuffer = device.CreateBuffer(bufferDesc);
+    const RHIBufferRef extraExternalBuffer = device.CreateBuffer(bufferDesc);
+    const RHIBufferRef persistentBuffer = device.CreateBuffer(bufferDesc);
+    const RHIBufferRef historyBuffer = device.CreateBuffer(bufferDesc);
+    ASSERT_TRUE(externalTexture);
+    ASSERT_TRUE(extraExternalTexture);
+    ASSERT_TRUE(persistentTexture);
+    ASSERT_TRUE(historyTexture);
+    ASSERT_TRUE(externalBuffer);
+    ASSERT_TRUE(extraExternalBuffer);
+    ASSERT_TRUE(persistentBuffer);
+    ASSERT_TRUE(historyBuffer);
+
+    const RGTextureHandle externalTextureHandle = graph->ImportTexture(
+        RHITextureRef(externalTexture),
+        RHIResourceState::ShaderResource,
+        {"HistoryLookingExternalTexture", RGImportedResourceClass::External});
+    const RGTextureHandle extraExternalTextureHandle = graph->ImportTexture(
+        RHITextureRef(extraExternalTexture),
+        RHIResourceState::ShaderResource,
+        {"AnotherExternalTexture", RGImportedResourceClass::External});
+    const RGTextureHandle persistentTextureHandle = graph->ImportTexture(
+        RHITextureRef(persistentTexture),
+        RHIResourceState::ShaderResource,
+        {"PersistentTexture", RGImportedResourceClass::Persistent});
+    const RGTextureHandle historyTextureHandle = graph->ImportTexture(
+        RHITextureRef(historyTexture),
+        RHIResourceState::ShaderResource,
+        {"TemporalTexture", RGImportedResourceClass::History});
+    const RGBufferHandle externalBufferHandle = graph->ImportBuffer(
+        RHIBufferRef(externalBuffer),
+        RHIResourceState::ShaderResource,
+        {"HistoryLookingExternalBuffer", RGImportedResourceClass::External});
+    const RGBufferHandle extraExternalBufferHandle = graph->ImportBuffer(
+        RHIBufferRef(extraExternalBuffer),
+        RHIResourceState::ShaderResource,
+        {"AnotherExternalBuffer", RGImportedResourceClass::External});
+    const RGBufferHandle persistentBufferHandle = graph->ImportBuffer(
+        RHIBufferRef(persistentBuffer),
+        RHIResourceState::ShaderResource,
+        {"PersistentBuffer", RGImportedResourceClass::Persistent});
+    const RGBufferHandle historyBufferHandle = graph->ImportBuffer(
+        RHIBufferRef(historyBuffer),
+        RHIResourceState::ShaderResource,
+        {"TemporalBuffer", RGImportedResourceClass::History});
+    ASSERT_TRUE(externalTextureHandle.IsValid());
+    ASSERT_TRUE(extraExternalTextureHandle.IsValid());
+    ASSERT_TRUE(persistentTextureHandle.IsValid());
+    ASSERT_TRUE(historyTextureHandle.IsValid());
+    ASSERT_TRUE(externalBufferHandle.IsValid());
+    ASSERT_TRUE(extraExternalBufferHandle.IsValid());
+    ASSERT_TRUE(persistentBufferHandle.IsValid());
+    ASSERT_TRUE(historyBufferHandle.IsValid());
+
+    struct TelemetryImportData
+    {
+        RGTextureHandle externalTexture{};
+        RGTextureHandle extraExternalTexture{};
+        RGTextureHandle persistentTexture{};
+        RGTextureHandle historyTexture{};
+        RGBufferHandle externalBuffer{};
+        RGBufferHandle extraExternalBuffer{};
+        RGBufferHandle persistentBuffer{};
+        RGBufferHandle historyBuffer{};
+    };
+    graph->AddPass<TelemetryImportData>(
+        "PerformanceTelemetryImportUse",
+        RenderGraphPassType::Graphics,
+        [externalTextureHandle,
+         extraExternalTextureHandle,
+         persistentTextureHandle,
+         historyTextureHandle,
+         externalBufferHandle,
+         extraExternalBufferHandle,
+         persistentBufferHandle,
+         historyBufferHandle](RenderGraphBuilder& builder,
+                              TelemetryImportData& data)
+        {
+            data.externalTexture = builder.Write(
+                externalTextureHandle, RHIResourceState::RenderTarget);
+            data.extraExternalTexture = builder.Write(
+                extraExternalTextureHandle, RHIResourceState::RenderTarget);
+            data.persistentTexture = builder.Write(
+                persistentTextureHandle, RHIResourceState::RenderTarget);
+            data.historyTexture = builder.Write(
+                historyTextureHandle, RHIResourceState::RenderTarget);
+            data.externalBuffer = builder.Write(
+                externalBufferHandle, RHIResourceState::UnorderedAccess);
+            data.extraExternalBuffer = builder.Write(
+                extraExternalBufferHandle, RHIResourceState::UnorderedAccess);
+            data.persistentBuffer = builder.Write(
+                persistentBufferHandle, RHIResourceState::UnorderedAccess);
+            data.historyBuffer = builder.Write(
+                historyBufferHandle, RHIResourceState::UnorderedAccess);
+        },
+        [](const TelemetryImportData&, RHICommandContext&) {});
+    graph->SetExportState(
+        externalTextureHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        extraExternalTextureHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        persistentTextureHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        historyTextureHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        externalBufferHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        extraExternalBufferHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        persistentBufferHandle, RHIResourceState::ShaderResource);
+    graph->SetExportState(
+        historyBufferHandle, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(*graph);
+    ASSERT_TRUE(graph->GetCompileStats().compileValid);
+
+    const RenderFrameIdentity frameIdentity{
+        .frameSequence = 11,
+        .sceneRevision = 12,
+        .surfaceGeneration = 13,
+        .configurationRevision = 14};
+    ASSERT_TRUE(
+        SceneRendererTestAccess::PreparePerformanceTelemetryProjectionForTesting(
+            renderer, device, registry, frameIdentity));
+
+    RenderQualityPerformanceFrameTelemetry telemetry;
+    ASSERT_TRUE(SceneRendererTestAccess::CollectPerformanceTelemetryForTesting(
+        renderer, frameIdentity, telemetry));
+    EXPECT_EQ(telemetry.resourceCounts.stableImportedTextureCount, 2U);
+    EXPECT_EQ(telemetry.resourceCounts.stableImportedBufferCount, 2U);
+    constexpr uint64 expectedStableClassBytes = 65536U + 256U;
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint
+                  .importedPersistentEstimatedBytes,
+              expectedStableClassBytes);
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint.importedHistoryEstimatedBytes,
+              expectedStableClassBytes);
+}
+
+TEST_F(RenderPassValidationFixture,
        TAAAddsResolveAndCandidateHistoryStoreWithoutCopyingOrPrematureCommit)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -30587,20 +31055,27 @@ TEST_F(RenderPassValidationFixture,
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
+    constexpr uint32 renderWidth = 2560U;
+    constexpr uint32 renderHeight = 1440U;
+
     RHITextureDesc colorDesc =
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+        RHITextureDesc::RenderTarget(
+            renderWidth, renderHeight, RHIFormat::RGBA16_FLOAT);
     colorDesc.usage =
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
     RHITextureDesc depthDesc =
-        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+        RHITextureDesc::DepthStencil(
+            renderWidth, renderHeight, RHIFormat::D32_FLOAT);
     depthDesc.usage = RHITextureUsage::DepthStencil |
                       RHITextureUsage::ShaderResource;
     RHITextureDesc velocityDesc =
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
+        RHITextureDesc::RenderTarget(
+            renderWidth, renderHeight, RHIFormat::RG16_FLOAT);
     velocityDesc.usage =
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
     RHITextureDesc reactiveMaskDesc =
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::R8_UNORM);
+        RHITextureDesc::RenderTarget(
+            renderWidth, renderHeight, RHIFormat::R8_UNORM);
     reactiveMaskDesc.usage =
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
 
@@ -30628,7 +31103,7 @@ TEST_F(RenderPassValidationFixture,
         .subViewIndex = 0,
         .role = ViewRole::Main,
     };
-    historyIdentity.extent = {.width = 64, .height = 64};
+    historyIdentity.extent = {.width = renderWidth, .height = renderHeight};
     historyIdentity.familyId = 1;
     historyIdentity.worldRevision = 1;
     historyIdentity.temporalEpoch = 1;
@@ -30767,11 +31242,17 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_EQ(historyResources.size(), static_cast<size_t>(4));
     uint32 historyColorCount = 0;
     uint32 historyDepthCount = 0;
+    uint64 historyEstimatedBytes = 0;
     for (const RenderGraph::ResourceDiagnostic* const resource :
          historyResources)
     {
         ASSERT_NE(resource, nullptr);
         EXPECT_TRUE(resource->imported);
+        EXPECT_TRUE(resource->used);
+        EXPECT_EQ(resource->importedResourceClass,
+                  RGImportedResourceClass::History);
+        EXPECT_FALSE(resource->aliased);
+        EXPECT_EQ(resource->aliasHeapIndex, RVX_INVALID_INDEX);
         EXPECT_EQ(resource->initialState, RHIResourceState::Undefined);
         EXPECT_EQ(resource->initialAccess.layout,
                   RHIResourceLayout::Undefined);
@@ -30781,6 +31262,9 @@ TEST_F(RenderPassValidationFixture,
             resource->format == RHIFormat::RGBA16_FLOAT ? 1u : 0u;
         historyDepthCount +=
             resource->format == RHIFormat::R32_FLOAT ? 1u : 0u;
+        ASSERT_LE(resource->estimatedMemoryBytes,
+                  std::numeric_limits<uint64>::max() - historyEstimatedBytes);
+        historyEstimatedBytes += resource->estimatedMemoryBytes;
         const bool isHistoryWrite =
             std::find(historyWriteIndices.begin(),
                       historyWriteIndices.end(),
@@ -30801,6 +31285,7 @@ TEST_F(RenderPassValidationFixture,
     }
     EXPECT_EQ(historyColorCount, 2u);
     EXPECT_EQ(historyDepthCount, 2u);
+    EXPECT_EQ(historyEstimatedBytes, 88473600ULL);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);

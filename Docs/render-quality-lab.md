@@ -180,15 +180,27 @@ py Scripts/check_render_quality_performance.py `
   --out <build>/RenderQualityLab/performance-result.json
 ```
 
-Both report files use `RVX.RenderQualityPerformanceReport` v2. Its matching
-`RVX.RenderQualityPerformancePolicy` is also v2, so reports or policies with
-the legacy whole-frame field are rejected rather than interpreted loosely:
+Both report files use `RVX.RenderQualityPerformanceReport` v3. Its matching
+`RVX.RenderQualityPerformancePolicy` is also v3. V2 reports, V2 baselines,
+V2 policies, and legacy whole-frame fields are rejected rather than
+interpreted loosely:
 
 ```text
 schema, schemaVersion, sourceCommit, runId, preset,
 qualificationIdentity, hardwareIdentity,
 telemetryCoverage, baselineIdentity, completedWarmupFrames, samples
 ```
+
+`qualificationIdentity` additionally binds each report and baseline to the
+exact qualification render extent:
+
+```text
+qualificationWidth, qualificationHeight
+```
+
+The DX12 High Deferred performance contract is specifically `2560x1440`.
+Changing either dimension makes evidence non-comparable to that policy and
+baseline; a zero extent is invalid evidence.
 
 `hardwareIdentity` is intentionally exact:
 
@@ -253,24 +265,42 @@ machine-readable:
 
 ```text
 telemetryCoverage:
-  schemaVersion=1
+  schemaVersion=2
   trackedUploadCoverageMask=7
-  trackedEstimatedFootprintCoverageMask=7
+  trackedEstimatedFootprintCoverageMask=15
 
 per sample:
   trackedUploadBytes, trackedUploadCoverageMask=7
   trackedEstimatedFootprint:
-    schemaVersion=1, coverageMask=7,
+    schemaVersion=2, coverageMask=15,
     transientPoolPhysicalEstimatedBytes,
-    importedHistoryNamedEstimatedBytes,
+    importedPersistentEstimatedBytes,
+    importedHistoryEstimatedBytes,
     resourceRegistryResidentEstimatedBytes
-  resourceCounts: schemaVersion=1, counts
+  resourceCounts: schemaVersion=2, counts
 ```
+
+`resourceCounts.counts` is the stable inventory below. The two stable-imported
+entries count only backing classified by RenderGraph as `Persistent` or
+`History`; per-frame `External` imports are deliberately absent and may vary
+between qualified frames without implying warm-up growth:
+
+```text
+stableImportedBuffers, stableImportedTextures,
+residentMaterials, residentMeshes, residentTextures,
+transientBuffers, transientTextures
+```
+
+Legacy `importedBuffers`, `importedTextures`, `persistentImportedBuffers`, and
+`persistentImportedTextures` names are rejected. A change to either
+stable-imported count remains fail-closed, just like a
+transient or resident count change.
 
 `trackedUploadBytes` covers completion-qualified mutation streams, particle
 frame uploads, and water frame uploads only. `trackedEstimatedFootprint`
-contains estimates for the transient-pool physical allocation, named imported
-history resources, and registry-resident resources only. These values are not
+contains estimates for the transient-pool physical allocation, distinct
+imported Persistent and History resources, and registry-resident resources
+only. These values are not
 driver-wide or allocator-wide GPU counters. The report, approved baseline
 (which is another report), and policy must declare exactly the same coverage;
 missing, partial, or changed coverage is rejected. The policy requires at
@@ -280,13 +310,20 @@ The result contains nearest-rank p95 values for the conservative Graphics
 qualification span, both raw components, each CPU phase, and every GPU pass.
 Only `graphicsQualificationSpanP95Ms` is constrained by the 16.67 ms GPU
 policy budget; the raw spans are reported for diagnosis, not thresholding.
-It checks maximum tracked-upload and named estimated-footprint budgets. It rejects
-post-warm-up resource-count or named estimated-footprint growth. The policy
+It checks maximum tracked-upload and estimated-footprint budgets. It rejects
+post-warm-up resource-count or estimated-footprint change. The policy
 supplies exact hardware identity, baseline id, the same telemetry coverage,
-those bounded budgets, and a permitted percentage regression against the
+those bounded budgets (including `maxImportedPersistentEstimatedBytes`,
+`minImportedHistoryEstimatedBytes`, and `maxImportedHistoryEstimatedBytes`),
+and a permitted percentage regression against the
 baseline p95 data. Any hardware, baseline, or qualification identity mismatch
 yields `status: "notComparable"` and exit code `2`; it can never pass or
 silently establish a new baseline.
+
+When the ordered pass schema includes `TAAResolve`, a Deferred/High
+`2560x1440` report and its policy must both retain at least `88,473,600` bytes
+of imported history. The checker rejects zero, under-bound, growing, or
+legacy-name history telemetry before evaluating performance thresholds.
 
 The current native performance producer is deliberately limited to the fixed
 DX12 qualification GPU. Vulkan and Metal timestamp recording are not yet

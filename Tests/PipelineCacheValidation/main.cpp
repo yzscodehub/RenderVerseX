@@ -8008,8 +8008,35 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
               std::string::npos);
     EXPECT_NE(passSource.find("std::vector<HistorySlot> slots;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)"),
-              std::string::npos);
+    const auto expectImportedTextureClass =
+        [&passSource](std::string_view diagnosticName,
+                      std::string_view resourceClass)
+    {
+        const size_t namePosition = passSource.find(diagnosticName);
+        ASSERT_NE(namePosition, std::string::npos);
+        const size_t classPosition = passSource.find(resourceClass, namePosition);
+        ASSERT_NE(classPosition, std::string::npos);
+        EXPECT_LT(classPosition, namePosition + 160u);
+    };
+    for (const std::string_view historyName : {
+             "\"RayTracedShadowHistoryMaskRead\"",
+             "\"RayTracedShadowHistoryDepthRead\"",
+             "\"RayTracedShadowHistoryNormalRead\"",
+             "\"RayTracedShadowHistoryMaskWrite\"",
+             "\"RayTracedShadowHistoryDepthWrite\"",
+             "\"RayTracedShadowHistoryNormalWrite\""})
+    {
+        expectImportedTextureClass(
+            historyName, "RGImportedResourceClass::History");
+    }
+    for (const std::string_view fallbackName : {
+             "\"RayTracedShadowFallbackHistoryMask\"",
+             "\"RayTracedShadowFallbackHistoryDepth\"",
+             "\"RayTracedShadowFallbackHistoryNormal\""})
+    {
+        expectImportedTextureClass(
+            fallbackName, "RGImportedResourceClass::Persistent");
+    }
     EXPECT_NE(passSource.find("recordedGraph->GetRealizedAccess(reservation->shadowMaskHandle)"),
               std::string::npos);
     const auto applyRayTracingBudget = sceneRendererSource.find(
@@ -14986,7 +15013,17 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(std::string::npos,
               builder.find("RGTextureHandle ImportTexture("));
     EXPECT_NE(std::string::npos,
+              builder.find("m_graph->ImportTexture("));
+    EXPECT_NE(std::string::npos,
+              builder.find("m_graph->ImportBuffer("));
+    EXPECT_NE(std::string::npos,
+              builder.find("std::move(texture), initialState, metadata"));
+    EXPECT_NE(std::string::npos,
+              builder.find("std::move(buffer), initialState, metadata"));
+    EXPECT_EQ(std::string::npos,
               builder.find("m_graph->ImportTexture(std::move(texture), initialState)"));
+    EXPECT_EQ(std::string::npos,
+              builder.find("m_graph->ImportBuffer(std::move(buffer), initialState)"));
     EXPECT_NE(std::string::npos,
               adapter.find("inputs.expectedLightingPlanIdentity = lightingPlanIdentity;"));
     EXPECT_NE(std::string::npos,

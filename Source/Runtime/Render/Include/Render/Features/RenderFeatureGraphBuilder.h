@@ -81,20 +81,24 @@ namespace RVX
         /** @brief Import an owned buffer into this exact feature recording. */
         [[nodiscard]] RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
-            RHIResourceState initialState)
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {})
         {
             return IsValid() && buffer
-                ? m_graph->ImportBuffer(std::move(buffer), initialState)
+                ? m_graph->ImportBuffer(
+                    std::move(buffer), initialState, metadata)
                 : RGBufferHandle{};
         }
 
         /** @brief Import an owned texture into this exact feature recording. */
         [[nodiscard]] RGTextureHandle ImportTexture(
             RHITextureRef texture,
-            RHIResourceState initialState)
+            RHIResourceState initialState,
+            const RGImportedResourceMetadata& metadata = {})
         {
             return IsValid() && texture
-                ? m_graph->ImportTexture(std::move(texture), initialState)
+                ? m_graph->ImportTexture(
+                    std::move(texture), initialState, metadata)
                 : RGTextureHandle{};
         }
 

@@ -81,14 +81,16 @@ namespace
         telemetry.trackedEstimatedFootprint
             .transientPoolPhysicalEstimatedBytes = 4096;
         telemetry.trackedEstimatedFootprint
-            .importedHistoryNamedEstimatedBytes = 2048;
+            .importedPersistentEstimatedBytes = 1024;
+        telemetry.trackedEstimatedFootprint
+            .importedHistoryEstimatedBytes = 2048;
         telemetry.trackedEstimatedFootprint
             .resourceRegistryResidentEstimatedBytes = 8192;
         telemetry.trackedEstimatedFootprint.available = true;
         telemetry.resourceCounts.transientTextureCount = 3;
         telemetry.resourceCounts.transientBufferCount = 2;
-        telemetry.resourceCounts.importedTextureCount = 7;
-        telemetry.resourceCounts.importedBufferCount = 1;
+        telemetry.resourceCounts.stableImportedTextureCount = 7;
+        telemetry.resourceCounts.stableImportedBufferCount = 1;
         telemetry.resourceCounts.residentMeshCount = 4;
         telemetry.resourceCounts.residentTextureCount = 5;
         telemetry.resourceCounts.residentMaterialCount = 6;
@@ -214,6 +216,46 @@ TEST(RenderQualityPerformanceSessionValidation,
     EXPECT_DOUBLE_EQ(evidence->samples.front()
                          .graphicsTerminalCommandSpanMilliseconds,
                      0.4);
+}
+
+TEST(RenderQualityPerformanceSessionValidation,
+     TelemetrySchemaAndFootprintCoverageMustRemainConsistent)
+{
+    RVX::RenderQualityPerformanceFrameTelemetry telemetry = MakeTelemetry(1);
+    EXPECT_EQ(telemetry.schemaVersion,
+              RVX::RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION);
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint.schemaVersion,
+              RVX::RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION);
+    EXPECT_EQ(telemetry.resourceCounts.schemaVersion,
+              RVX::RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION);
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint.coverageMask,
+              RVX::RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE);
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint.importedHistoryEstimatedBytes,
+              2048U);
+    EXPECT_EQ(telemetry.trackedEstimatedFootprint.importedPersistentEstimatedBytes,
+              1024U);
+    EXPECT_TRUE(telemetry.IsValid());
+
+    telemetry.trackedEstimatedFootprint.schemaVersion =
+        RVX::RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION - 1U;
+    EXPECT_FALSE(telemetry.trackedEstimatedFootprint.IsValid());
+    EXPECT_FALSE(telemetry.IsValid());
+
+    telemetry = MakeTelemetry(1);
+    telemetry.trackedEstimatedFootprint.coverageMask &=
+        ~static_cast<RVX::uint32>(
+        RVX::RenderQualityPerformanceTrackedFootprintCoverage::
+            ImportedHistoryResourceEstimate);
+    EXPECT_FALSE(telemetry.trackedEstimatedFootprint.IsValid());
+    EXPECT_FALSE(telemetry.IsValid());
+
+    telemetry = MakeTelemetry(1);
+    telemetry.trackedEstimatedFootprint.coverageMask &=
+        ~static_cast<RVX::uint32>(
+        RVX::RenderQualityPerformanceTrackedFootprintCoverage::
+            ImportedPersistentResourceEstimate);
+    EXPECT_FALSE(telemetry.trackedEstimatedFootprint.IsValid());
+    EXPECT_FALSE(telemetry.IsValid());
 }
 
 TEST(RenderQualityPerformanceSessionValidation,
@@ -555,7 +597,7 @@ TEST(RenderQualityPerformanceSessionValidation,
 }
 
 TEST(RenderQualityPerformanceSessionValidation,
-     ResourceCountChangeAfterWarmupRejectsMeasurementEvidence)
+     PersistentOrHistoryImportedCountChangeAfterWarmupRejectsMeasurementEvidence)
 {
     RVX::RenderQualityPerformanceSession session;
     ASSERT_TRUE(
@@ -565,7 +607,7 @@ TEST(RenderQualityPerformanceSessionValidation,
     const auto secondBinding = MakeBinding(62);
     const auto stableTelemetry = MakeTelemetry(61, 1024);
     auto changedTelemetry = MakeTelemetry(62, 1088);
-    ++changedTelemetry.resourceCounts.residentTextureCount;
+    ++changedTelemetry.resourceCounts.stableImportedTextureCount;
 
     ASSERT_TRUE(RVX::RenderQualityPerformanceSessionTestAccess::
         CommitCompletedSample(
@@ -593,6 +635,95 @@ TEST(RenderQualityPerformanceSessionValidation,
             timings));
     EXPECT_EQ(session.GetDiagnostics().failure,
               RVX::RenderQualityPerformanceFailure::ResourceCountsChanged);
+    EXPECT_NE(session.GetDiagnostics().diagnostic.find("stableImportedTextures"),
+              std::string::npos);
+}
+
+TEST(RenderQualityPerformanceSessionValidation,
+     ExternalImportedCountVariationDoesNotDestabilizeMeasurementEvidence)
+{
+    RVX::RenderQualityPerformanceSession session;
+    ASSERT_TRUE(
+        RVX::RenderQualityPerformanceSessionTestAccess::ArmSynthetic(session));
+    const auto timings = MakePassTimings();
+
+    // External imported resources are intentionally not present in
+    // RenderQualityPerformanceResourceCounts. Their per-frame graph use may
+    // vary while Persistent/History backing remains stable.
+    constexpr RVX::uint32 firstExternalImportedTextureCount = 1;
+    constexpr RVX::uint32 secondExternalImportedTextureCount = 17;
+    static_assert(firstExternalImportedTextureCount !=
+                  secondExternalImportedTextureCount);
+
+    ASSERT_TRUE(RVX::RenderQualityPerformanceSessionTestAccess::
+        CommitCompletedSample(
+            session,
+            60,
+            MakeBinding(61),
+            MakeCpuTiming(),
+            MakeTelemetry(61, 1024),
+            61,
+            61,
+            160,
+            1'000'000,
+            timings));
+    ASSERT_TRUE(RVX::RenderQualityPerformanceSessionTestAccess::
+        CommitCompletedSample(
+            session,
+            61,
+            MakeBinding(62),
+            MakeCpuTiming(),
+            MakeTelemetry(62, 1088),
+            62,
+            62,
+            161,
+            1'000'000,
+            timings));
+    EXPECT_NE(session.GetDiagnostics().failure,
+              RVX::RenderQualityPerformanceFailure::ResourceCountsChanged);
+}
+
+TEST(RenderQualityPerformanceSessionValidation,
+     ImportedPersistentFootprintChangeAfterWarmupRejectsMeasurementEvidence)
+{
+    RVX::RenderQualityPerformanceSession session;
+    ASSERT_TRUE(
+        RVX::RenderQualityPerformanceSessionTestAccess::ArmSynthetic(session));
+    const auto timings = MakePassTimings();
+    const auto firstBinding = MakeBinding(61);
+    const auto secondBinding = MakeBinding(62);
+    const auto stableTelemetry = MakeTelemetry(61, 1024);
+    auto changedTelemetry = MakeTelemetry(62, 1088);
+    ++changedTelemetry.trackedEstimatedFootprint
+          .importedPersistentEstimatedBytes;
+
+    ASSERT_TRUE(RVX::RenderQualityPerformanceSessionTestAccess::
+        CommitCompletedSample(
+            session,
+            60,
+            firstBinding,
+            MakeCpuTiming(),
+            stableTelemetry,
+            61,
+            61,
+            160,
+            1'000'000,
+            timings));
+    EXPECT_FALSE(RVX::RenderQualityPerformanceSessionTestAccess::
+        CommitCompletedSample(
+            session,
+            61,
+            secondBinding,
+            MakeCpuTiming(),
+            changedTelemetry,
+            62,
+            62,
+            161,
+            1'000'000,
+            timings));
+    EXPECT_EQ(session.GetDiagnostics().failure,
+              RVX::RenderQualityPerformanceFailure::
+                  TrackedEstimatedFootprintChanged);
 }
 
 TEST(RenderQualityPerformanceSessionValidation,

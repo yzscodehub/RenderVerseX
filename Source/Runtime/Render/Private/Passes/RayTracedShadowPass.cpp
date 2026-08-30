@@ -848,22 +848,57 @@ namespace RVX
                     ? view.velocityTarget
                     : builder.ImportTexture(
                         data->fallbackVelocityTexture,
-                        RHIResourceState::Undefined);
+                        RHIResourceState::Undefined,
+                        {"RayTracedShadowFallbackVelocity",
+                         RGImportedResourceClass::Persistent});
                 const RGTextureHandle historyRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)
-                    : builder.ImportTexture(data->fallbackHistoryMaskTexture, RHIResourceState::Undefined);
+                    ? builder.ImportTexture(
+                        owner.slots[read].mask,
+                        owner.slots[read].maskAccess,
+                        {"RayTracedShadowHistoryMaskRead",
+                         RGImportedResourceClass::History})
+                    : builder.ImportTexture(
+                        data->fallbackHistoryMaskTexture,
+                        RHIResourceState::Undefined,
+                        {"RayTracedShadowFallbackHistoryMask",
+                         RGImportedResourceClass::Persistent});
                 const RGTextureHandle historyDepthRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.slots[read].depth, owner.slots[read].depthAccess)
-                    : builder.ImportTexture(data->fallbackHistoryDepthTexture, RHIResourceState::Undefined);
+                    ? builder.ImportTexture(
+                        owner.slots[read].depth,
+                        owner.slots[read].depthAccess,
+                        {"RayTracedShadowHistoryDepthRead",
+                         RGImportedResourceClass::History})
+                    : builder.ImportTexture(
+                        data->fallbackHistoryDepthTexture,
+                        RHIResourceState::Undefined,
+                        {"RayTracedShadowFallbackHistoryDepth",
+                         RGImportedResourceClass::Persistent});
                 const RGTextureHandle historyNormalRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.slots[read].normal, owner.slots[read].normalAccess)
-                    : builder.ImportTexture(data->fallbackHistoryNormalTexture, RHIResourceState::Undefined);
+                    ? builder.ImportTexture(
+                        owner.slots[read].normal,
+                        owner.slots[read].normalAccess,
+                        {"RayTracedShadowHistoryNormalRead",
+                         RGImportedResourceClass::History})
+                    : builder.ImportTexture(
+                        data->fallbackHistoryNormalTexture,
+                        RHIResourceState::Undefined,
+                        {"RayTracedShadowFallbackHistoryNormal",
+                         RGImportedResourceClass::Persistent});
                 const RGTextureHandle shadowMask = builder.ImportTexture(
-                    owner.slots[write].mask, owner.slots[write].maskAccess);
+                    owner.slots[write].mask,
+                    owner.slots[write].maskAccess,
+                    {"RayTracedShadowHistoryMaskWrite",
+                     RGImportedResourceClass::History});
                 const RGTextureHandle historyDepthWrite = builder.ImportTexture(
-                    owner.slots[write].depth, owner.slots[write].depthAccess);
+                    owner.slots[write].depth,
+                    owner.slots[write].depthAccess,
+                    {"RayTracedShadowHistoryDepthWrite",
+                     RGImportedResourceClass::History});
                 const RGTextureHandle historyNormalWrite = builder.ImportTexture(
-                    owner.slots[write].normal, owner.slots[write].normalAccess);
+                    owner.slots[write].normal,
+                    owner.slots[write].normalAccess,
+                    {"RayTracedShadowHistoryNormalWrite",
+                     RGImportedResourceClass::History});
 
                 const auto declareView = [&builder](
                     RGTextureHandle texture,

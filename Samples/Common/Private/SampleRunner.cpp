@@ -260,6 +260,11 @@ namespace
             return fail(
                 "GFX24 performance evidence or frozen host provenance is incomplete");
         }
+        if (options.common.width != 2560U || options.common.height != 1440U)
+        {
+            return fail(
+                "GFX24 performance qualification requires the exact 2560x1440 extent");
+        }
 
         const RenderQualityPerformanceReceiptBinding& firstBinding =
             evidence.samples.front().binding;
@@ -281,6 +286,8 @@ namespace
             .quality = GetRenderQualityTierName(firstBinding.quality),
             .backend = firstBinding.backend,
             .view = options.viewBookmarkId,
+            .qualificationWidth = options.common.width,
+            .qualificationHeight = options.common.height,
             .captureTick = options.captureTick,
             .visualContractVersion = manifest.visualContractVersion};
         request.hardwareIdentity = {
@@ -356,17 +363,22 @@ namespace
                 .transientPoolPhysicalEstimatedBytes =
                     source.trackedEstimatedFootprint
                         .transientPoolPhysicalEstimatedBytes,
-                .importedHistoryNamedEstimatedBytes =
+                .importedPersistentEstimatedBytes =
                     source.trackedEstimatedFootprint
-                        .importedHistoryNamedEstimatedBytes,
+                        .importedPersistentEstimatedBytes,
+                .importedHistoryEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .importedHistoryEstimatedBytes,
                 .resourceRegistryResidentEstimatedBytes =
                     source.trackedEstimatedFootprint
                         .resourceRegistryResidentEstimatedBytes};
             target.resourceCountsSchemaVersion =
                 source.resourceCounts.schemaVersion;
             target.resourceCounts = {
-                {"importedBuffers", source.resourceCounts.importedBufferCount},
-                {"importedTextures", source.resourceCounts.importedTextureCount},
+                {"stableImportedBuffers",
+                 source.resourceCounts.stableImportedBufferCount},
+                {"stableImportedTextures",
+                 source.resourceCounts.stableImportedTextureCount},
                 {"residentMaterials", source.resourceCounts.residentMaterialCount},
                 {"residentMeshes", source.resourceCounts.residentMeshCount},
                 {"residentTextures", source.resourceCounts.residentTextureCount},

@@ -1363,11 +1363,15 @@ namespace RVX
             data.constantsHandle = builder.ImportBuffer(
                 data.submission.constantsBuffer,
                 MakeRHIBufferAccessSnapshot(RHIResourceState::ConstantBuffer,
-                                            RHIShaderStage::Vertex));
+                                            RHIShaderStage::Vertex),
+                {"ParticleFeatureConstants",
+                 RGImportedResourceClass::Persistent});
             data.instanceHandle = builder.ImportBuffer(
                 data.submission.instanceBuffer,
                 MakeRHIBufferAccessSnapshot(RHIResourceState::ShaderResource,
-                                            RHIShaderStage::Vertex));
+                                            RHIShaderStage::Vertex),
+                {"ParticleFeatureInstances",
+                 RGImportedResourceClass::Persistent});
             data.constantsHandle = builder.Read(
                 data.constantsHandle,
                 MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,

@@ -834,15 +834,20 @@ namespace
         data.constantsHandle = builder.ImportBuffer(
             data.submission.constantsBuffer,
             MakeRHIBufferAccessSnapshot(RHIResourceState::ConstantBuffer,
-                                        RHIShaderStage::Vertex | RHIShaderStage::Pixel));
+                                        RHIShaderStage::Vertex | RHIShaderStage::Pixel),
+            {"WaterFeatureConstants", RGImportedResourceClass::Persistent});
         data.gridVertexHandle = builder.ImportBuffer(
             data.submission.gridVertexBuffer,
             MakeRHIBufferAccessSnapshot(RHIResourceState::VertexBuffer,
-                                        RHIShaderStage::Vertex));
+                                        RHIShaderStage::Vertex),
+            {"WaterFeatureGridVertices",
+             RGImportedResourceClass::Persistent});
         data.gridIndexHandle = builder.ImportBuffer(
             data.submission.gridIndexBuffer,
             MakeRHIBufferAccessSnapshot(RHIResourceState::IndexBuffer,
-                                        RHIShaderStage::Vertex));
+                                        RHIShaderStage::Vertex),
+            {"WaterFeatureGridIndices",
+             RGImportedResourceClass::Persistent});
         data.constantsHandle = builder.Read(data.constantsHandle,
             MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
                                   RHIShaderStage::Vertex | RHIShaderStage::Pixel));

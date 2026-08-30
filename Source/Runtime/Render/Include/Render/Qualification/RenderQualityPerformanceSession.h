@@ -233,10 +233,13 @@ namespace RVX
         uint32 m_sessionReceiptSchemaVersion = 0;
         RenderQualityPerformanceHardwareIdentity m_hardware{};
         RenderQualityPerformanceResourceCounts m_measurementResourceCounts{};
+        RenderQualityPerformanceTrackedEstimatedFootprint
+            m_measurementTrackedEstimatedFootprint{};
         uint64 m_lastCumulativeTrackedUploadBytes = 0;
         uint64 m_lastPresentedSubmissionFrame = 0;
         uint64 m_lastCompletedSubmissionFrame = 0;
         bool m_measurementResourceCountsCaptured = false;
+        bool m_measurementTrackedEstimatedFootprintCaptured = false;
         std::string m_sessionSourceCommit{};
         std::string m_sessionPreset{};
         std::string m_sessionBackend{};

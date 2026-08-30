@@ -860,7 +860,9 @@ namespace RVX
                 return;
             m_velocityReadHandle = builder.ImportTexture(
                 m_fallbackVelocityTexture,
-                RHIResourceState::Undefined);
+                RHIResourceState::Undefined,
+                {"RayTracedReflectionFallbackVelocity",
+                 RGImportedResourceClass::Persistent});
         }
         m_velocityViewHandle = createReadView(
             m_velocityReadHandle, "RayTracedReflectionVelocitySRV");
@@ -877,26 +879,34 @@ namespace RVX
 
         m_historyReadHandle = builder.ImportTexture(
             m_historyTextures[m_currentHistoryReadIndex],
-            m_historyTextureStates[m_currentHistoryReadIndex]);
+            m_historyTextureStates[m_currentHistoryReadIndex],
+            {"RayTracedReflectionHistoryColorRead",
+             RGImportedResourceClass::History});
         m_historyViewHandle = createReadView(
             m_historyReadHandle, "RayTracedReflectionPreviousSRV");
 
         m_historyDepthReadHandle = builder.ImportTexture(
             m_historyDepthTextures[m_currentHistoryReadIndex],
-            m_historyDepthTextureStates[m_currentHistoryReadIndex]);
+            m_historyDepthTextureStates[m_currentHistoryReadIndex],
+            {"RayTracedReflectionHistoryDepthRead",
+             RGImportedResourceClass::History});
         m_historyDepthReadViewHandle = createReadView(
             m_historyDepthReadHandle, "RayTracedReflectionPreviousDepthSRV");
 
         m_historyNormalReadHandle = builder.ImportTexture(
             m_historyNormalTextures[m_currentHistoryReadIndex],
-            m_historyNormalTextureStates[m_currentHistoryReadIndex]);
+            m_historyNormalTextureStates[m_currentHistoryReadIndex],
+            {"RayTracedReflectionHistoryNormalRead",
+             RGImportedResourceClass::History});
         m_historyNormalReadViewHandle = createReadView(
             m_historyNormalReadHandle, "RayTracedReflectionPreviousNormalSRV");
 
         m_reflectionTexture = m_historyTextures[m_currentHistoryWriteIndex];
         m_reflectionHandle = builder.ImportTexture(
             m_historyTextures[m_currentHistoryWriteIndex],
-            m_historyTextureStates[m_currentHistoryWriteIndex]);
+            m_historyTextureStates[m_currentHistoryWriteIndex],
+            {"RayTracedReflectionHistoryColorWrite",
+             RGImportedResourceClass::History});
         m_reflectionViewHandle = createWriteView(
             m_reflectionHandle, "RayTracedReflectionOutputUAV");
         builder.SetExportState(
@@ -904,7 +914,9 @@ namespace RVX
 
         m_historyDepthWriteHandle = builder.ImportTexture(
             m_historyDepthTextures[m_currentHistoryWriteIndex],
-            m_historyDepthTextureStates[m_currentHistoryWriteIndex]);
+            m_historyDepthTextureStates[m_currentHistoryWriteIndex],
+            {"RayTracedReflectionHistoryDepthWrite",
+             RGImportedResourceClass::History});
         m_historyDepthWriteViewHandle = createWriteView(
             m_historyDepthWriteHandle, "RayTracedReflectionOutputDepthUAV");
         builder.SetExportState(
@@ -912,7 +924,9 @@ namespace RVX
 
         m_historyNormalWriteHandle = builder.ImportTexture(
             m_historyNormalTextures[m_currentHistoryWriteIndex],
-            m_historyNormalTextureStates[m_currentHistoryWriteIndex]);
+            m_historyNormalTextureStates[m_currentHistoryWriteIndex],
+            {"RayTracedReflectionHistoryNormalWrite",
+             RGImportedResourceClass::History});
         m_historyNormalWriteViewHandle = createWriteView(
             m_historyNormalWriteHandle, "RayTracedReflectionOutputNormalUAV");
         builder.SetExportState(

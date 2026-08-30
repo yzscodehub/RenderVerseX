@@ -54,44 +54,35 @@ namespace RVX
             return false;
         }
 
+        bool IsValidImportedResourceClass(
+            RGImportedResourceClass resourceClass) noexcept
+        {
+            switch (resourceClass)
+            {
+                case RGImportedResourceClass::External:
+                case RGImportedResourceClass::Persistent:
+                case RGImportedResourceClass::History:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        bool IsValidImportedResourceMetadata(
+            const RGImportedResourceMetadata& metadata,
+            const char* resourceKind) noexcept
+        {
+            if (IsValidImportedResourceClass(metadata.resourceClass))
+                return true;
+
+            RVX_CORE_ERROR(
+                "RenderGraph rejected {} import with an invalid lifetime class",
+                resourceKind != nullptr ? resourceKind : "resource");
+            return false;
+        }
+
         using Diagnostics::JsonBool;
         using Diagnostics::JsonString;
-
-        uint64 AlignUp(uint64 value, uint64 alignment)
-        {
-            return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
-        }
-
-        uint64 EstimateTextureMemorySize(const RHITextureDesc& desc)
-        {
-            uint64 bytesPerPixel = GetFormatBytesPerPixel(desc.format);
-            if (bytesPerPixel == 0)
-            {
-                bytesPerPixel = 4;
-            }
-
-            uint64 totalSize = 0;
-            uint32 width = std::max(1u, desc.width);
-            uint32 height = std::max(1u, desc.height);
-            uint32 depth = std::max(1u, desc.depth);
-            const uint32 mipLevels = std::max(1u, desc.mipLevels);
-
-            for (uint32 mip = 0; mip < mipLevels; ++mip)
-            {
-                totalSize += static_cast<uint64>(width) * height * depth * bytesPerPixel * std::max(1u, desc.arraySize);
-                width = std::max(1u, width / 2);
-                height = std::max(1u, height / 2);
-                depth = std::max(1u, depth / 2);
-            }
-
-            totalSize *= static_cast<uint32>(desc.sampleCount);
-            return AlignUp(totalSize, 65536);
-        }
-
-        uint64 EstimateBufferMemorySize(const RHIBufferDesc& desc)
-        {
-            return AlignUp(desc.size, 256);
-        }
 
         GPUQueueDomain GetPhysicalDomain(
             const RHICapabilities* capabilities,
@@ -235,6 +226,21 @@ namespace RVX
         const char* ToDiagnosticString(RenderGraph::DiagnosticResourceType type)
         {
             return type == RenderGraph::DiagnosticResourceType::Texture ? "Texture" : "Buffer";
+        }
+
+        const char* ToDiagnosticString(RGImportedResourceClass resourceClass)
+        {
+            switch (resourceClass)
+            {
+                case RGImportedResourceClass::External:
+                    return "External";
+                case RGImportedResourceClass::Persistent:
+                    return "Persistent";
+                case RGImportedResourceClass::History:
+                    return "History";
+                default:
+                    return "Unknown";
+            }
         }
 
         const char* ToDiagnosticString(RenderGraph::DiagnosticAccessType access)
@@ -1295,21 +1301,26 @@ namespace RVX
 
     RGTextureHandle RenderGraph::ImportTexture(
         RHITextureRef texture,
-        RHIResourceState initialState)
+        RHIResourceState initialState,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "texture import"))
+        if (!CanMutateDefinition(*m_impl, "texture import") ||
+            !IsValidImportedResourceMetadata(metadata, "texture"))
             return {};
         ++m_impl->compatibilityStateProjectionCount;
         return ImportTexture(
             std::move(texture),
-            MakeRHITextureAccessSnapshot(initialState));
+            MakeRHITextureAccessSnapshot(initialState),
+            metadata);
     }
 
     RGTextureHandle RenderGraph::ImportTexture(
         RHITextureRef texture,
-        const RHITextureAccessSnapshot& initialAccess)
+        const RHITextureAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "texture import"))
+        if (!CanMutateDefinition(*m_impl, "texture import") ||
+            !IsValidImportedResourceMetadata(metadata, "texture"))
             return {};
 
         TextureResource resource;
@@ -1333,6 +1344,8 @@ namespace RVX
         resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
+        resource.importedDiagnosticName = metadata.diagnosticName;
+        resource.importedResourceClass = metadata.resourceClass;
         m_impl->AppendTextureResource(std::move(resource));
         return RGTextureHandle{
             static_cast<uint32>(m_impl->textures.size() - 1),
@@ -1344,21 +1357,26 @@ namespace RVX
 
     RGBufferHandle RenderGraph::ImportBuffer(
         RHIBufferRef buffer,
-        RHIResourceState initialState)
+        RHIResourceState initialState,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "buffer import"))
+        if (!CanMutateDefinition(*m_impl, "buffer import") ||
+            !IsValidImportedResourceMetadata(metadata, "buffer"))
             return {};
         ++m_impl->compatibilityStateProjectionCount;
         return ImportBuffer(
             std::move(buffer),
-            MakeRHIBufferAccessSnapshot(initialState));
+            MakeRHIBufferAccessSnapshot(initialState),
+            metadata);
     }
 
     RGBufferHandle RenderGraph::ImportBuffer(
         RHIBufferRef buffer,
-        const RHIBufferAccessSnapshot& initialAccess)
+        const RHIBufferAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "buffer import"))
+        if (!CanMutateDefinition(*m_impl, "buffer import") ||
+            !IsValidImportedResourceMetadata(metadata, "buffer"))
             return {};
 
         BufferResource resource;
@@ -1377,6 +1395,8 @@ namespace RVX
         resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
+        resource.importedDiagnosticName = metadata.diagnosticName;
+        resource.importedResourceClass = metadata.resourceClass;
         m_impl->AppendBufferResource(std::move(resource));
         return RGBufferHandle{
             static_cast<uint32>(m_impl->buffers.size() - 1),
@@ -1389,9 +1409,11 @@ namespace RVX
 
     RGTextureHandle RenderGraph::ImportTextureBorrowedForValidation(
         RHITexture* texture,
-        const RHITextureAccessSnapshot& initialAccess)
+        const RHITextureAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "borrowed texture import"))
+        if (!CanMutateDefinition(*m_impl, "borrowed texture import") ||
+            !IsValidImportedResourceMetadata(metadata, "texture"))
             return {};
 
         TextureResource resource;
@@ -1415,6 +1437,8 @@ namespace RVX
             ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
+        resource.importedDiagnosticName = metadata.diagnosticName;
+        resource.importedResourceClass = metadata.resourceClass;
         m_impl->AppendTextureResource(std::move(resource));
         return RGTextureHandle{
             static_cast<uint32>(m_impl->textures.size() - 1),
@@ -1426,9 +1450,11 @@ namespace RVX
 
     RGBufferHandle RenderGraph::ImportBufferBorrowedForValidation(
         RHIBuffer* buffer,
-        const RHIBufferAccessSnapshot& initialAccess)
+        const RHIBufferAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
-        if (!CanMutateDefinition(*m_impl, "borrowed buffer import"))
+        if (!CanMutateDefinition(*m_impl, "borrowed buffer import") ||
+            !IsValidImportedResourceMetadata(metadata, "buffer"))
             return {};
 
         BufferResource resource;
@@ -1447,6 +1473,8 @@ namespace RVX
             ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
+        resource.importedDiagnosticName = metadata.diagnosticName;
+        resource.importedResourceClass = metadata.resourceClass;
         m_impl->AppendBufferResource(std::move(resource));
         return RGBufferHandle{
             static_cast<uint32>(m_impl->buffers.size() - 1),
@@ -1751,45 +1779,49 @@ namespace RVX
 
     RGTextureHandle RenderGraphBuilder::ImportTexture(
         RHITextureRef texture,
-        RHIResourceState initialState)
+        RHIResourceState initialState,
+        const RGImportedResourceMetadata& metadata)
     {
         if (!m_impl || !m_impl->graph || !texture)
             return {};
         const RGTextureHandle handle =
-            m_impl->graph->ImportTexture(std::move(texture), initialState);
+            m_impl->graph->ImportTexture(std::move(texture), initialState, metadata);
         return handle;
     }
 
     RGTextureHandle RenderGraphBuilder::ImportTexture(
         RHITextureRef texture,
-        const RHITextureAccessSnapshot& initialAccess)
+        const RHITextureAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
         if (!m_impl || !m_impl->graph || !texture)
             return {};
         const RGTextureHandle handle =
-            m_impl->graph->ImportTexture(std::move(texture), initialAccess);
+            m_impl->graph->ImportTexture(std::move(texture), initialAccess, metadata);
         return handle;
     }
 
     RGBufferHandle RenderGraphBuilder::ImportBuffer(
         RHIBufferRef buffer,
-        RHIResourceState initialState)
+        RHIResourceState initialState,
+        const RGImportedResourceMetadata& metadata)
     {
         if (!m_impl || !m_impl->graph || !buffer)
             return {};
         const RGBufferHandle handle =
-            m_impl->graph->ImportBuffer(std::move(buffer), initialState);
+            m_impl->graph->ImportBuffer(std::move(buffer), initialState, metadata);
         return handle;
     }
 
     RGBufferHandle RenderGraphBuilder::ImportBuffer(
         RHIBufferRef buffer,
-        const RHIBufferAccessSnapshot& initialAccess)
+        const RHIBufferAccessSnapshot& initialAccess,
+        const RGImportedResourceMetadata& metadata)
     {
         if (!m_impl || !m_impl->graph || !buffer)
             return {};
         const RGBufferHandle handle =
-            m_impl->graph->ImportBuffer(std::move(buffer), initialAccess);
+            m_impl->graph->ImportBuffer(std::move(buffer), initialAccess, metadata);
         return handle;
     }
 
@@ -2919,15 +2951,21 @@ namespace RVX
             ResourceDiagnostic resource;
             resource.type = DiagnosticResourceType::Texture;
             resource.index = textureIndex;
-            resource.name = texture.desc.debugName ? texture.desc.debugName : ("Texture" + std::to_string(textureIndex));
+            resource.name = !texture.importedDiagnosticName.empty()
+                ? texture.importedDiagnosticName
+                : (texture.desc.debugName
+                       ? texture.desc.debugName
+                       : ("Texture" + std::to_string(textureIndex)));
             resource.imported = texture.imported;
+            resource.importedResourceClass = texture.importedResourceClass;
             resource.pooled = texture.IsPooled();
             resource.used = texture.lifetime.isUsed;
             resource.firstUsePass = texture.lifetime.isUsed ? texture.lifetime.firstUsePass : RVX_INVALID_INDEX;
             resource.lastUsePass = texture.lifetime.isUsed ? texture.lifetime.lastUsePass : RVX_INVALID_INDEX;
             resource.estimatedMemoryBytes = texture.lifetime.memorySize != 0
                                                 ? texture.lifetime.memorySize
-                                                : EstimateTextureMemorySize(texture.desc);
+                                                : EstimateRenderGraphTextureMemorySize(
+                                                      texture.desc);
             resource.aliased = texture.alias.isAliased;
             resource.aliasHeapIndex = texture.alias.heapIndex;
             resource.aliasHeapOffset = texture.alias.heapOffset;
@@ -2948,14 +2986,30 @@ namespace RVX
 
             if (resource.imported)
             {
-                diagnostics.estimatedImportedMemoryBytes += resource.estimatedMemoryBytes;
+                diagnostics.estimatedImportedMemoryBytes =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        diagnostics.estimatedImportedMemoryBytes,
+                        resource.estimatedMemoryBytes);
+                if (resource.used)
+                {
+                    diagnostics.estimatedUsedImportedMemoryBytes =
+                        SaturatingAddRenderGraphEstimatedMemory(
+                            diagnostics.estimatedUsedImportedMemoryBytes,
+                            resource.estimatedMemoryBytes);
+                }
             }
             else
             {
-                diagnostics.estimatedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                diagnostics.estimatedTransientMemoryBytes =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        diagnostics.estimatedTransientMemoryBytes,
+                        resource.estimatedMemoryBytes);
                 if (resource.used)
                 {
-                    diagnostics.estimatedUsedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                    diagnostics.estimatedUsedTransientMemoryBytes =
+                        SaturatingAddRenderGraphEstimatedMemory(
+                            diagnostics.estimatedUsedTransientMemoryBytes,
+                            resource.estimatedMemoryBytes);
                 }
             }
 
@@ -2968,15 +3022,21 @@ namespace RVX
             ResourceDiagnostic resource;
             resource.type = DiagnosticResourceType::Buffer;
             resource.index = bufferIndex;
-            resource.name = buffer.desc.debugName ? buffer.desc.debugName : ("Buffer" + std::to_string(bufferIndex));
+            resource.name = !buffer.importedDiagnosticName.empty()
+                ? buffer.importedDiagnosticName
+                : (buffer.desc.debugName
+                       ? buffer.desc.debugName
+                       : ("Buffer" + std::to_string(bufferIndex)));
             resource.imported = buffer.imported;
+            resource.importedResourceClass = buffer.importedResourceClass;
             resource.pooled = buffer.IsPooled();
             resource.used = buffer.lifetime.isUsed;
             resource.firstUsePass = buffer.lifetime.isUsed ? buffer.lifetime.firstUsePass : RVX_INVALID_INDEX;
             resource.lastUsePass = buffer.lifetime.isUsed ? buffer.lifetime.lastUsePass : RVX_INVALID_INDEX;
             resource.estimatedMemoryBytes = buffer.lifetime.memorySize != 0
                                                 ? buffer.lifetime.memorySize
-                                                : EstimateBufferMemorySize(buffer.desc);
+                                                : EstimateRenderGraphBufferMemorySize(
+                                                      buffer.desc);
             resource.aliased = buffer.alias.isAliased;
             resource.aliasHeapIndex = buffer.alias.heapIndex;
             resource.aliasHeapOffset = buffer.alias.heapOffset;
@@ -2993,14 +3053,30 @@ namespace RVX
 
             if (resource.imported)
             {
-                diagnostics.estimatedImportedMemoryBytes += resource.estimatedMemoryBytes;
+                diagnostics.estimatedImportedMemoryBytes =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        diagnostics.estimatedImportedMemoryBytes,
+                        resource.estimatedMemoryBytes);
+                if (resource.used)
+                {
+                    diagnostics.estimatedUsedImportedMemoryBytes =
+                        SaturatingAddRenderGraphEstimatedMemory(
+                            diagnostics.estimatedUsedImportedMemoryBytes,
+                            resource.estimatedMemoryBytes);
+                }
             }
             else
             {
-                diagnostics.estimatedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                diagnostics.estimatedTransientMemoryBytes =
+                    SaturatingAddRenderGraphEstimatedMemory(
+                        diagnostics.estimatedTransientMemoryBytes,
+                        resource.estimatedMemoryBytes);
                 if (resource.used)
                 {
-                    diagnostics.estimatedUsedTransientMemoryBytes += resource.estimatedMemoryBytes;
+                    diagnostics.estimatedUsedTransientMemoryBytes =
+                        SaturatingAddRenderGraphEstimatedMemory(
+                            diagnostics.estimatedUsedTransientMemoryBytes,
+                            resource.estimatedMemoryBytes);
                 }
             }
 
@@ -3073,6 +3149,8 @@ namespace RVX
         ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
         ss << "Estimated used transient memory: " << diagnostics.estimatedUsedTransientMemoryBytes << " bytes\n";
         ss << "Estimated imported memory: " << diagnostics.estimatedImportedMemoryBytes << " bytes\n";
+        ss << "Estimated used imported memory: "
+           << diagnostics.estimatedUsedImportedMemoryBytes << " bytes\n";
         ss << "Aliasing: " << (diagnostics.compileStats.memoryAliasingEnabled ? "enabled" : "disabled")
            << ", memory without aliasing " << diagnostics.compileStats.memoryWithoutAliasing
            << " bytes, memory with aliasing " << diagnostics.compileStats.memoryWithAliasing << " bytes\n";
@@ -3266,6 +3344,8 @@ namespace RVX
             ss << "  " << ToDiagnosticString(resource.type)
                << "[" << resource.index << "] " << resource.name
                << " imported=" << (resource.imported ? "true" : "false")
+               << " importedClass="
+               << ToDiagnosticString(resource.importedResourceClass)
                << " used=" << (resource.used ? "true" : "false")
                << " memory=" << resource.estimatedMemoryBytes;
             if (resource.used)
@@ -3428,7 +3508,9 @@ namespace RVX
         ss << "    \"memoryWithAliasing\": " << stats.memoryWithAliasing << ",\n";
         ss << "    \"estimatedTransientMemoryBytes\": " << diagnostics.estimatedTransientMemoryBytes << ",\n";
         ss << "    \"estimatedUsedTransientMemoryBytes\": " << diagnostics.estimatedUsedTransientMemoryBytes << ",\n";
-        ss << "    \"estimatedImportedMemoryBytes\": " << diagnostics.estimatedImportedMemoryBytes << "\n";
+        ss << "    \"estimatedImportedMemoryBytes\": " << diagnostics.estimatedImportedMemoryBytes << ",\n";
+        ss << "    \"estimatedUsedImportedMemoryBytes\": "
+           << diagnostics.estimatedUsedImportedMemoryBytes << "\n";
         ss << "  },\n";
 
         ss << "  \"schedule\": {\n";
@@ -3525,6 +3607,9 @@ namespace RVX
             ss << "      \"index\": " << resource.index << ",\n";
             ss << "      \"name\": " << JsonString(resource.name) << ",\n";
             ss << "      \"imported\": " << JsonBool(resource.imported) << ",\n";
+            ss << "      \"importedResourceClass\": "
+               << JsonString(ToDiagnosticString(resource.importedResourceClass))
+               << ",\n";
             ss << "      \"pooled\": " << JsonBool(resource.pooled) << ",\n";
             ss << "      \"used\": " << JsonBool(resource.used) << ",\n";
             ss << "      \"firstUsePass\": ";

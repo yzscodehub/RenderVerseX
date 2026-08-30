@@ -23,17 +23,31 @@ from typing import Any
 
 
 SCHEMA = "RVX.RenderQualityPerformanceReport"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 POLICY_SCHEMA = "RVX.RenderQualityPerformancePolicy"
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 CPU_PHASES = ("extraction", "visibility", "graphCompile", "submission")
-TELEMETRY_COVERAGE_SCHEMA_VERSION = 1
+TELEMETRY_COVERAGE_SCHEMA_VERSION = 2
 REQUIRED_TRACKED_UPLOAD_COVERAGE = (1 << 0) | (1 << 1) | (1 << 2)
-REQUIRED_TRACKED_ESTIMATED_FOOTPRINT_COVERAGE = (1 << 0) | (1 << 1) | (1 << 2)
+REQUIRED_TRACKED_ESTIMATED_FOOTPRINT_COVERAGE = (
+    (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
+)
 TRACKED_FOOTPRINT_FIELDS = (
     "transientPoolPhysicalEstimatedBytes",
-    "importedHistoryNamedEstimatedBytes",
+    "importedPersistentEstimatedBytes",
+    "importedHistoryEstimatedBytes",
     "resourceRegistryResidentEstimatedBytes",
+)
+RESOURCE_COUNT_FIELDS = frozenset(
+    {
+        "stableImportedBuffers",
+        "stableImportedTextures",
+        "residentMaterials",
+        "residentMeshes",
+        "residentTextures",
+        "transientBuffers",
+        "transientTextures",
+    }
 )
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -94,11 +108,23 @@ def _number(value: Any, context: str, minimum: float = 0.0) -> float:
 def _qualification_identity(value: Any, context: str) -> dict[str, str | int]:
     if not isinstance(value, dict):
         raise ContractError(f"{context} must be an object")
-    keys = {"sampleId", "pipeline", "quality", "backend", "view", "captureTick", "visualContractVersion"}
+    keys = {
+        "sampleId",
+        "pipeline",
+        "quality",
+        "backend",
+        "view",
+        "qualificationWidth",
+        "qualificationHeight",
+        "captureTick",
+        "visualContractVersion",
+    }
     _require_keys(value, keys, context)
     result: dict[str, str | int] = {}
     for key in ("sampleId", "pipeline", "quality", "backend", "view"):
         result[key] = _string(value[key], f"{context}.{key}")
+    for key in ("qualificationWidth", "qualificationHeight"):
+        result[key] = _integer(value[key], f"{context}.{key}", 1)
     for key in ("captureTick", "visualContractVersion"):
         result[key] = _integer(value[key], f"{context}.{key}", 0)
     return result
@@ -185,14 +211,19 @@ def _resource_counts(value: Any, context: str) -> dict[str, Any]:
         raise ContractError(f"{context}.schemaVersion is unsupported")
     if not isinstance(counts, dict) or not counts:
         raise ContractError(f"{context}.counts must be a non-empty object")
+    parsed_counts = {
+        _string(name, f"{context} count name"): _integer(
+            count, f"{context}.counts.{name}", 0
+        )
+        for name, count in counts.items()
+    }
+    if set(parsed_counts) != RESOURCE_COUNT_FIELDS:
+        raise ContractError(
+            f"{context}.counts must declare the stable persistent/history resource inventory"
+        )
     return {
         "schemaVersion": schema_version,
-        "counts": {
-            _string(name, f"{context} count name"): _integer(
-                count, f"{context}.counts.{name}", 0
-            )
-            for name, count in counts.items()
-        },
+        "counts": parsed_counts,
     }
 
 
@@ -416,7 +447,9 @@ def load_policy(path: Path) -> dict[str, Any]:
             "passGpuP95Ms",
             "maxTrackedUploadBytes",
             "maxTransientPoolPhysicalEstimatedBytes",
-            "maxImportedHistoryNamedEstimatedBytes",
+            "maxImportedPersistentEstimatedBytes",
+            "minImportedHistoryEstimatedBytes",
+            "maxImportedHistoryEstimatedBytes",
             "maxResourceRegistryResidentEstimatedBytes",
         },
         "performance policy thresholds",
@@ -454,6 +487,20 @@ def load_policy(path: Path) -> dict[str, Any]:
                 "p95Ms": _number(pass_value["p95Ms"], f"{pass_context}.p95Ms"),
             }
         )
+    minimum_imported_history_bytes = _integer(
+        thresholds["minImportedHistoryEstimatedBytes"],
+        "minImportedHistoryEstimatedBytes",
+        0,
+    )
+    maximum_imported_history_bytes = _integer(
+        thresholds["maxImportedHistoryEstimatedBytes"],
+        "maxImportedHistoryEstimatedBytes",
+        0,
+    )
+    if minimum_imported_history_bytes > maximum_imported_history_bytes:
+        raise ContractError(
+            "minImportedHistoryEstimatedBytes exceeds maxImportedHistoryEstimatedBytes"
+        )
     return {
         "qualificationIdentity": _qualification_identity(document["qualificationIdentity"], "policy qualificationIdentity"),
         "requiredHardwareIdentity": _hardware_identity(document["requiredHardwareIdentity"], "policy requiredHardwareIdentity"),
@@ -476,11 +523,13 @@ def load_policy(path: Path) -> dict[str, Any]:
                 "maxTransientPoolPhysicalEstimatedBytes",
                 0,
             ),
-            "maxImportedHistoryNamedEstimatedBytes": _integer(
-                thresholds["maxImportedHistoryNamedEstimatedBytes"],
-                "maxImportedHistoryNamedEstimatedBytes",
+            "maxImportedPersistentEstimatedBytes": _integer(
+                thresholds["maxImportedPersistentEstimatedBytes"],
+                "maxImportedPersistentEstimatedBytes",
                 0,
             ),
+            "minImportedHistoryEstimatedBytes": minimum_imported_history_bytes,
+            "maxImportedHistoryEstimatedBytes": maximum_imported_history_bytes,
             "maxResourceRegistryResidentEstimatedBytes": _integer(
                 thresholds["maxResourceRegistryResidentEstimatedBytes"],
                 "maxResourceRegistryResidentEstimatedBytes",
@@ -512,6 +561,29 @@ def _validate_sample_series(report: dict[str, Any], policy: dict[str, Any]) -> N
     reference_counts: dict[str, int] | None = None
     reference_footprint: dict[str, int] | None = None
     expected_passes: list[tuple[int, str]] | None = None
+    minimum_imported_history_bytes = policy["thresholds"][
+        "minImportedHistoryEstimatedBytes"
+    ]
+    qualification = report["qualificationIdentity"]
+    requires_full_resolution_taa_history = (
+        qualification["pipeline"].casefold() == "deferred"
+        and qualification["quality"].casefold() == "high"
+        and qualification["qualificationWidth"] == 2560
+        and qualification["qualificationHeight"] == 1440
+        and any(
+            pass_value["name"] == "TAAResolve"
+            for pass_value in samples[0]["gpu"]["passes"]
+        )
+    )
+    required_full_resolution_taa_history_bytes = 88_473_600
+    if (
+        requires_full_resolution_taa_history
+        and minimum_imported_history_bytes
+        < required_full_resolution_taa_history_bytes
+    ):
+        raise ContractError(
+            "Deferred/High 2560x1440 TAA policy minimum imported history is below 88473600 bytes"
+        )
     for index, sample in enumerate(samples):
         if sample["completedFrame"] <= last_frame:
             raise ContractError(f"samples[{index}] completion frame is stale or before warmup")
@@ -526,6 +598,13 @@ def _validate_sample_series(report: dict[str, Any], policy: dict[str, Any]) -> N
         if receipt in observed_receipts:
             raise ContractError(f"samples[{index}] reuses a render execution receipt")
         observed_receipts.add(receipt)
+        if (
+            sample["trackedEstimatedFootprint"]["importedHistoryEstimatedBytes"]
+            < minimum_imported_history_bytes
+        ):
+            raise ContractError(
+                f"samples[{index}] imported history estimated bytes are below policy minimum"
+            )
         if reference_counts is None:
             reference_counts = sample["resourceCounts"]["counts"]
             reference_footprint = sample["trackedEstimatedFootprint"]
@@ -543,12 +622,12 @@ def _validate_sample_series(report: dict[str, Any], policy: dict[str, Any]) -> N
             if actual_passes != expected_passes:
                 raise ContractError("post-warmup ordered GPU pass timing schema changed")
             for name, count in sample["resourceCounts"]["counts"].items():
-                if count > reference_counts[name]:
-                    raise ContractError(f"post-warmup resource growth detected for {name}")
+                if count != reference_counts[name]:
+                    raise ContractError(f"post-warmup resource count changed for {name}")
             for name in TRACKED_FOOTPRINT_FIELDS:
-                if sample["trackedEstimatedFootprint"][name] > reference_footprint[name]:
+                if sample["trackedEstimatedFootprint"][name] != reference_footprint[name]:
                     raise ContractError(
-                        f"post-warmup tracked estimated footprint growth detected for {name}"
+                        f"post-warmup tracked estimated footprint changed for {name}"
                     )
 
 
@@ -637,8 +716,12 @@ def _threshold_failures(summary: dict[str, Any], policy: dict[str, Any]) -> list
             "maxTransientPoolPhysicalEstimatedBytes",
         ),
         (
-            "importedHistoryNamedEstimatedBytes",
-            "maxImportedHistoryNamedEstimatedBytes",
+            "importedPersistentEstimatedBytes",
+            "maxImportedPersistentEstimatedBytes",
+        ),
+        (
+            "importedHistoryEstimatedBytes",
+            "maxImportedHistoryEstimatedBytes",
         ),
         (
             "resourceRegistryResidentEstimatedBytes",

@@ -141,12 +141,12 @@ namespace
                 ", transientBuffers " +
                 std::to_string(expected.transientBufferCount) + "->" +
                 std::to_string(observed.transientBufferCount) +
-                ", importedTextures " +
-                std::to_string(expected.importedTextureCount) + "->" +
-                std::to_string(observed.importedTextureCount) +
-                ", importedBuffers " +
-                std::to_string(expected.importedBufferCount) + "->" +
-                std::to_string(observed.importedBufferCount) +
+                ", stableImportedTextures " +
+                std::to_string(expected.stableImportedTextureCount) + "->" +
+                std::to_string(observed.stableImportedTextureCount) +
+                ", stableImportedBuffers " +
+                std::to_string(expected.stableImportedBufferCount) + "->" +
+                std::to_string(observed.stableImportedBufferCount) +
                 ", residentMeshes " +
                 std::to_string(expected.residentMeshCount) + "->" +
                 std::to_string(observed.residentMeshCount) +
@@ -308,10 +308,12 @@ bool RenderQualityPerformanceSession::Arm(
     m_sessionViewIdentity = {};
     m_sessionReceiptSchemaVersion = 0;
     m_measurementResourceCounts = {};
+    m_measurementTrackedEstimatedFootprint = {};
     m_lastCumulativeTrackedUploadBytes = initialCumulativeTrackedUploadBytes;
     m_lastPresentedSubmissionFrame = 0;
     m_lastCompletedSubmissionFrame = 0;
     m_measurementResourceCountsCaptured = false;
+    m_measurementTrackedEstimatedFootprintCaptured = false;
     m_sessionSourceCommit.clear();
     m_sessionPreset.clear();
     m_sessionBackend.clear();
@@ -1161,6 +1163,20 @@ bool RenderQualityPerformanceSession::CommitCompletedSample(
                 diagnostic.empty()
                     ? "Stable resource counts changed after performance warmup."
                     : diagnostic.c_str());
+        }
+        if (!m_measurementTrackedEstimatedFootprintCaptured)
+        {
+            m_measurementTrackedEstimatedFootprint =
+                trackedEstimatedFootprint;
+            m_measurementTrackedEstimatedFootprintCaptured = true;
+        }
+        else if (trackedEstimatedFootprint !=
+                 m_measurementTrackedEstimatedFootprint)
+        {
+            return Reject(
+                RenderQualityPerformanceFailure::
+                    TrackedEstimatedFootprintChanged,
+                "Tracked estimated footprint changed after performance warmup.");
         }
     }
 

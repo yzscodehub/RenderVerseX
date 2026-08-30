@@ -16,7 +16,11 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION = 1;
+    // This internal telemetry schema is intentionally versioned separately
+    // from the host-authored JSON report.  V2 replaces the former
+    // name-classified imported-history metric with the actual imported
+    // history inventory produced by RenderGraph.
+    inline constexpr uint32 RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION = 2;
     inline constexpr uint32 RVX_RENDER_QUALITY_PERFORMANCE_WARMUP_SAMPLE_COUNT =
         60;
     inline constexpr uint32 RVX_RENDER_QUALITY_PERFORMANCE_MEASURED_SAMPLE_COUNT =
@@ -148,6 +152,7 @@ namespace RVX
         TelemetryUnavailable,
         UploadCounterDecreased,
         ResourceCountsChanged,
+        TrackedEstimatedFootprintChanged,
         FrameOrdinalInvalid,
         SampleCountMismatch,
         DeviceLost,
@@ -199,6 +204,8 @@ namespace RVX
                 return "UploadCounterDecreased";
             case RenderQualityPerformanceFailure::ResourceCountsChanged:
                 return "ResourceCountsChanged";
+            case RenderQualityPerformanceFailure::TrackedEstimatedFootprintChanged:
+                return "TrackedEstimatedFootprintChanged";
             case RenderQualityPerformanceFailure::FrameOrdinalInvalid:
                 return "FrameOrdinalInvalid";
             case RenderQualityPerformanceFailure::SampleCountMismatch:
@@ -366,14 +373,16 @@ namespace RVX
      *
      * No field in this structure represents total GPU memory.  The coverage
      * mask records precisely which renderer inventories contributed to the
-     * estimate, including the name-based imported-history classification.
+     * estimate, distinct imported Persistent and History inventories, and the
+     * resource registry.
      */
     enum class RenderQualityPerformanceTrackedFootprintCoverage : uint32
     {
         None = 0,
         TransientPoolPhysicalEstimate = 1U << 0U,
-        ImportedHistoryNamedResourceEstimate = 1U << 1U,
+        ImportedHistoryResourceEstimate = 1U << 1U,
         ResourceRegistryResidentEstimate = 1U << 2U,
+        ImportedPersistentResourceEstimate = 1U << 3U,
     };
 
     inline constexpr uint32
@@ -383,10 +392,13 @@ namespace RVX
                     TransientPoolPhysicalEstimate) |
             static_cast<uint32>(
                 RenderQualityPerformanceTrackedFootprintCoverage::
-                    ImportedHistoryNamedResourceEstimate) |
+                    ImportedHistoryResourceEstimate) |
             static_cast<uint32>(
                 RenderQualityPerformanceTrackedFootprintCoverage::
-                    ResourceRegistryResidentEstimate);
+                    ResourceRegistryResidentEstimate) |
+            static_cast<uint32>(
+                RenderQualityPerformanceTrackedFootprintCoverage::
+                    ImportedPersistentResourceEstimate);
 
     /**
      * @brief Same-frame tracked estimated footprint, not total GPU memory.
@@ -400,7 +412,8 @@ namespace RVX
         uint32 schemaVersion = RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION;
         uint32 coverageMask = 0;
         uint64 transientPoolPhysicalEstimatedBytes = 0;
-        uint64 importedHistoryNamedEstimatedBytes = 0;
+        uint64 importedPersistentEstimatedBytes = 0;
+        uint64 importedHistoryEstimatedBytes = 0;
         uint64 resourceRegistryResidentEstimatedBytes = 0;
         bool available = false;
 
@@ -421,16 +434,19 @@ namespace RVX
     /**
      * @brief Stable resource inventory captured with the accepted frame.
      *
-     * Transient counts describe actual pooled physical allocations; imported
-     * counts describe the exact graph resources consumed by this frame.
+     * Transient counts describe actual pooled physical allocations.
+     * Stable-imported counts describe only imported backing that has a stable
+     * Persistent or History lifetime. Per-frame External imports are
+     * intentionally excluded: their graph use can vary frame-to-frame without
+     * representing warm-up resource growth.
      */
     struct RenderQualityPerformanceResourceCounts
     {
         uint32 schemaVersion = RVX_RENDER_QUALITY_PERFORMANCE_SCHEMA_VERSION;
         uint32 transientTextureCount = 0;
         uint32 transientBufferCount = 0;
-        uint32 importedTextureCount = 0;
-        uint32 importedBufferCount = 0;
+        uint32 stableImportedTextureCount = 0;
+        uint32 stableImportedBufferCount = 0;
         uint32 residentMeshCount = 0;
         uint32 residentTextureCount = 0;
         uint32 residentMaterialCount = 0;

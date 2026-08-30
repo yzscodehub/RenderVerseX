@@ -415,13 +415,21 @@ void TAA::AddToGraph(RenderGraph& graph,
             ? RHIResourceState::ShaderResource
             : RHIResourceState::Undefined;
     const RGTextureHandle historyColorRead = graph.ImportTexture(
-        m_historyColor[readHistoryIndex], historyInitialState);
+        m_historyColor[readHistoryIndex],
+        historyInitialState,
+        {"TAAHistoryColorRead", RGImportedResourceClass::History});
     const RGTextureHandle historyDepthRead = graph.ImportTexture(
-        m_historyDepth[readHistoryIndex], historyInitialState);
+        m_historyDepth[readHistoryIndex],
+        historyInitialState,
+        {"TAAHistoryDepthRead", RGImportedResourceClass::History});
     const RGTextureHandle historyColorWrite = graph.ImportTexture(
-        m_historyColor[writeHistoryIndex], historyInitialState);
+        m_historyColor[writeHistoryIndex],
+        historyInitialState,
+        {"TAAHistoryColorWrite", RGImportedResourceClass::History});
     const RGTextureHandle historyDepthWrite = graph.ImportTexture(
-        m_historyDepth[writeHistoryIndex], historyInitialState);
+        m_historyDepth[writeHistoryIndex],
+        historyInitialState,
+        {"TAAHistoryDepthWrite", RGImportedResourceClass::History});
     if (!historyColorRead.IsValid() || !historyDepthRead.IsValid() ||
         !historyColorWrite.IsValid() || !historyDepthWrite.IsValid())
     {

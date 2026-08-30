@@ -510,9 +510,13 @@ ExposureGraphOutputs ExposureController::AddToGraph(
         static_cast<uint32>(candidateStateContentHash >> 32u);
 
     const RGBufferHandle histogram = graph.ImportBuffer(
-        RHIBufferRef(m_histogramBuffer), RHIResourceState::UnorderedAccess);
+        RHIBufferRef(m_histogramBuffer),
+        RHIResourceState::UnorderedAccess,
+        {"ExposureHistogram", RGImportedResourceClass::Persistent});
     const RGBufferHandle candidateState = graph.ImportBuffer(
-        RHIBufferRef(m_stateBuffers[candidateIndex]), RHIResourceState::ShaderResource);
+        RHIBufferRef(m_stateBuffers[candidateIndex]),
+        RHIResourceState::ShaderResource,
+        {"ExposureHistoryState", RGImportedResourceClass::History});
     auto record = std::make_shared<FrameRecord>();
     record->expectedCommittedState = expectedCommitted;
     record->candidateState = m_stateBuffers[candidateIndex];
@@ -685,7 +689,10 @@ ExposureGraphOutputs ExposureController::AddToGraph(
     if (requestProbe)
     {
         const RGBufferHandle probeReadback = graph.ImportBuffer(
-            RHIBufferRef(m_probeReadback), RHIResourceState::CopyDest);
+            RHIBufferRef(m_probeReadback),
+            RHIResourceState::CopyDest,
+            {"ExposureQualificationReadback",
+             RGImportedResourceClass::Persistent});
         struct ProbeCopyData
         {
             RGBufferHandle candidateState{};

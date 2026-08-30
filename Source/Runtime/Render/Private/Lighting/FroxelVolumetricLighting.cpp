@@ -690,11 +690,17 @@ namespace RVX
         const RHIResourceState historyInitialState = m_historyResourceStatesInitialized
             ? RHIResourceState::ShaderResource : RHIResourceState::Undefined;
         const RGTextureHandle historyRead = featureBuilder.ImportTexture(
-            RHITextureRef(m_historyTextures[readIndex]), historyInitialState);
+            RHITextureRef(m_historyTextures[readIndex]),
+            historyInitialState,
+            {"FroxelVolumetricHistoryRead", RGImportedResourceClass::History});
         const RGTextureHandle historyWrite = featureBuilder.ImportTexture(
-            RHITextureRef(m_historyTextures[writeIndex]), historyInitialState);
+            RHITextureRef(m_historyTextures[writeIndex]),
+            historyInitialState,
+            {"FroxelVolumetricHistoryWrite", RGImportedResourceClass::History});
         const RGTextureHandle neutralShadow = featureBuilder.ImportTexture(
-            RHITextureRef(m_neutralShadowTexture), RHIResourceState::Undefined);
+            RHITextureRef(m_neutralShadowTexture),
+            RHIResourceState::Undefined,
+            {"FroxelVolumetricNeutralShadow", RGImportedResourceClass::Persistent});
         if (!injected.IsValid() || !integrated.IsValid() || !resolved.IsValid() ||
             !historyRead.IsValid() || !historyWrite.IsValid() ||
             !neutralShadow.IsValid())

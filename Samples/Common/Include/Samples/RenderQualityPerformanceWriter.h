@@ -19,15 +19,15 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_QUALITY_PERFORMANCE_REPORT_SCHEMA_VERSION =
-        2;
+        3;
     inline constexpr uint32
-        RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION = 1;
+        RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION = 2;
     inline constexpr uint32
         RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_UPLOAD_COVERAGE =
             (1U << 0U) | (1U << 1U) | (1U << 2U);
     inline constexpr uint32
         RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_FOOTPRINT_COVERAGE =
-            (1U << 0U) | (1U << 1U) | (1U << 2U);
+            (1U << 0U) | (1U << 1U) | (1U << 2U) | (1U << 3U);
 
     struct RenderQualityPerformanceReportIdentity
     {
@@ -36,6 +36,8 @@ namespace RVX
         std::string quality{};
         std::string backend{};
         std::string view{};
+        uint32 qualificationWidth = 0;
+        uint32 qualificationHeight = 0;
         uint64 captureTick = 0;
         uint32 visualContractVersion = 0;
     };
@@ -61,7 +63,8 @@ namespace RVX
      *
      * Upload values cover only completion-qualified mutations plus particle
      * and water frame uploads. Footprint values are estimates from the
-     * transient pool, named imported history, and the resource registry; they
+     * transient pool, imported Persistent and History resources, and the
+     * resource registry; they
      * are not allocator- or driver-wide GPU-memory counters.
      */
     struct RenderQualityPerformanceTelemetryCoverage
@@ -79,7 +82,8 @@ namespace RVX
             RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION;
         uint32 coverageMask = 0;
         uint64 transientPoolPhysicalEstimatedBytes = 0;
-        uint64 importedHistoryNamedEstimatedBytes = 0;
+        uint64 importedPersistentEstimatedBytes = 0;
+        uint64 importedHistoryEstimatedBytes = 0;
         uint64 resourceRegistryResidentEstimatedBytes = 0;
     };
 

@@ -588,13 +588,21 @@ GroundTruthAmbientOcclusionOutput GroundTruthAmbientOcclusion::AddToGraph(
         ? RHIResourceState::ShaderResource
         : RHIResourceState::Undefined;
     const RGTextureHandle historyVisibilityRead = graph.ImportTexture(
-        m_historyVisibility[readHistoryIndex], historyInitialState);
+        m_historyVisibility[readHistoryIndex],
+        historyInitialState,
+        {"GTAOHistoryVisibilityRead", RGImportedResourceClass::History});
     const RGTextureHandle historyVisibilityWrite = graph.ImportTexture(
-        m_historyVisibility[writeHistoryIndex], historyInitialState);
+        m_historyVisibility[writeHistoryIndex],
+        historyInitialState,
+        {"GTAOHistoryVisibilityWrite", RGImportedResourceClass::History});
     const RGTextureHandle historyDepthRead = graph.ImportTexture(
-        m_historyDepth[readHistoryIndex], historyInitialState);
+        m_historyDepth[readHistoryIndex],
+        historyInitialState,
+        {"GTAOHistoryDepthRead", RGImportedResourceClass::History});
     const RGTextureHandle historyDepthWrite = graph.ImportTexture(
-        m_historyDepth[writeHistoryIndex], historyInitialState);
+        m_historyDepth[writeHistoryIndex],
+        historyInitialState,
+        {"GTAOHistoryDepthWrite", RGImportedResourceClass::History});
     if (!historyVisibilityRead.IsValid() || !historyVisibilityWrite.IsValid() ||
         !historyDepthRead.IsValid() || !historyDepthWrite.IsValid())
     {
