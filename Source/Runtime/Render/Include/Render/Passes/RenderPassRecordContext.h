@@ -552,19 +552,6 @@ namespace RVX
         }
     };
 
-    /**
-     * @brief Immutable execution proof for one graph-owned opaque HDR copy.
-     *
-     * The graph copy pass is the sole writer. The receipt is deliberately
-     * paired with the typed record input rather than ViewData so late-bound
-     * graph work cannot mutate a frozen frame snapshot.
-     */
-    /** @brief Immutable execution proof for the copied D32 surface consumed by water. */
-    struct WaterDepthSnapshotCopyReceipt
-    {
-        std::atomic_bool copied{false};
-    };
-
     [[nodiscard]] inline bool HasCurrentGraphProvenance(
         const RGBufferHandle& handle,
         const RenderPassRecordIdentity& identity) noexcept
@@ -650,6 +637,41 @@ namespace RVX
     };
 
     /**
+     * @brief Immutable graph-owned D32 surface shared by special surfaces.
+     *
+     * This value is produced after opaque Terrain/Sky work and before Water.
+     * It is late-bound graph state rather than ViewData, so Water and Particle
+     * must borrow this exact texture and execution receipt instead of creating
+     * their own copies.
+     */
+    struct SceneDepthSnapshotRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        RGTextureHandle texture{};
+        RenderOutputExtent extent{};
+        RHIFormat format = RHIFormat::Unknown;
+        RHISampleCount sampleCount = RHISampleCount::Count1;
+        std::shared_ptr<SceneDepthSnapshotCopyReceipt> receipt{};
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && !texture.IsValid() &&
+                   !extent.IsValid() && format == RHIFormat::Unknown &&
+                   sampleCount == RHISampleCount::Count1 && !receipt;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected,
+            RenderOutputExtent expectedExtent) const noexcept
+        {
+            return identity == expected && texture.IsValid() &&
+                   HasCurrentGraphProvenance(texture, expected) &&
+                   extent == expectedExtent && format == RHIFormat::D32_FLOAT &&
+                   sampleCount == RHISampleCount::Count1 && receipt != nullptr;
+        }
+    };
+
+    /**
      * Graph-owned inputs consumed exclusively by WaterFeaturePass.
      *
      * Water samples immutable copies instead of the active HDR/depth
@@ -663,8 +685,7 @@ namespace RVX
     {
         RenderPassRecordIdentity identity{};
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
-        RGTextureHandle depthSnapshot{};
-        std::shared_ptr<WaterDepthSnapshotCopyReceipt> depthReceipt{};
+        SceneDepthSnapshotRecordInput depthSnapshot{};
         /** Exact committed producer state that authored opaqueSceneSnapshot. */
         RGBufferHandle exposureState{};
         /** Semantic identity of the frozen committed exposure state. */
@@ -673,18 +694,18 @@ namespace RVX
         [[nodiscard]] bool IsEmpty() const noexcept
         {
             return !identity.IsValid() && opaqueSceneSnapshot.IsEmpty() &&
-                   !depthSnapshot.IsValid() && !depthReceipt &&
-                   !exposureState.IsValid() && exposureStateContentHash == 0;
+                   depthSnapshot.IsEmpty() && !exposureState.IsValid() &&
+                   exposureStateContentHash == 0;
         }
 
         [[nodiscard]] bool IsCompatibleWith(
-            const RenderPassRecordIdentity& expected) const noexcept
+            const RenderPassRecordIdentity& expected,
+            RenderOutputExtent expectedExtent) const noexcept
         {
             return identity == expected &&
                    opaqueSceneSnapshot.IsCompatibleWith(expected) &&
-                   depthSnapshot.IsValid() &&
-                   HasCurrentGraphProvenance(depthSnapshot, expected) &&
-                   depthReceipt != nullptr && exposureState.IsValid() &&
+                   depthSnapshot.IsCompatibleWith(expected, expectedExtent) &&
+                   exposureState.IsValid() &&
                    HasCurrentGraphProvenance(exposureState, expected) &&
                    exposureStateContentHash != 0;
         }
@@ -703,7 +724,7 @@ namespace RVX
     struct ParticleVfxRecordInput
     {
         RenderPassRecordIdentity identity{};
-        RGTextureHandle softDepthSnapshot{};
+        SceneDepthSnapshotRecordInput softDepthSnapshot{};
         RGTextureHandle distortionVectors{};
         RGTextureHandle compositedSceneColor{};
         /** Exact committed producer state for this particle frame. */
@@ -717,7 +738,7 @@ namespace RVX
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
-            return !identity.IsValid() && !softDepthSnapshot.IsValid() &&
+            return !identity.IsValid() && softDepthSnapshot.IsEmpty() &&
                    !distortionVectors.IsValid() && !compositedSceneColor.IsValid() &&
                    !exposureState.IsValid() && exposureStateContentHash == 0 &&
                    !softDepthRequested && !softDepthRequired &&
@@ -725,11 +746,18 @@ namespace RVX
         }
 
         [[nodiscard]] bool IsCompatibleWith(
-            const RenderPassRecordIdentity& expected) const noexcept
+            const RenderPassRecordIdentity& expected,
+            RenderOutputExtent expectedExtent) const noexcept
         {
-            const bool softDepthCompatible = softDepthSnapshot.IsValid()
-                ? HasCurrentGraphProvenance(softDepthSnapshot, expected)
-                : !softDepthRequired;
+            if (softDepthRequired && !softDepthRequested)
+            {
+                return false;
+            }
+            const bool softDepthCompatible = !softDepthRequested
+                ? softDepthSnapshot.IsEmpty()
+                : softDepthSnapshot.IsEmpty()
+                ? !softDepthRequired
+                : softDepthSnapshot.IsCompatibleWith(expected, expectedExtent);
             const bool distortionCompatible = !distortionRequested ||
                 (HasCurrentGraphProvenance(distortionVectors, expected) &&
                  HasCurrentGraphProvenance(compositedSceneColor, expected));
@@ -1794,6 +1822,8 @@ namespace RVX
         RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        /** Single D32 snapshot shared by Water and Particle for this graph view. */
+        SceneDepthSnapshotRecordInput sceneDepthSnapshot{};
         /** Opaque HDR plus copied D32 inputs late-bound for deterministic water. */
         WaterSurfaceRecordInput waterSurface{};
         /** Graph-owned soft-depth/distortion chain late-bound by composition. */

@@ -17,6 +17,17 @@
 
 namespace RVX
 {
+bool AreWaterSnapshotCopiesReady(
+    const WaterSurfaceRecordInput& input) noexcept
+{
+    return input.opaqueSceneSnapshot.receipt != nullptr &&
+           input.depthSnapshot.receipt != nullptr &&
+           input.opaqueSceneSnapshot.receipt->copied.load(
+               std::memory_order_acquire) &&
+           input.depthSnapshot.receipt->copied.load(
+               std::memory_order_acquire);
+}
+
 namespace
 {
     constexpr uint32 RVX_WATER_FRAME_SLOT_COUNT = RVX_MAX_FRAME_COUNT;
@@ -761,8 +772,11 @@ namespace
     [[nodiscard]] bool PrepareGraphResources(WaterGraphPassData& data,
                                              RenderGraphBuilder& builder)
     {
+        const RenderOutputExtent outputExtent{
+            data.execution.view.viewportWidth, data.execution.view.viewportHeight};
         if (!data.contextValid || !data.submission.IsReady() ||
-            !data.waterSurface.IsCompatibleWith(data.execution.identity) ||
+            !data.waterSurface.IsCompatibleWith(
+                data.execution.identity, outputExtent) ||
             !IsSameBufferHandle(data.waterSurface.exposureState,
                                 data.execution.view.exposureState) ||
             data.waterSurface.exposureStateContentHash !=
@@ -787,7 +801,7 @@ namespace
         const RHITextureDesc* const opaqueSnapshotDesc = builder.GetTextureDesc(
             data.waterSurface.opaqueSceneSnapshot.texture);
         const RHITextureDesc* const depthSnapshotDesc = builder.GetTextureDesc(
-            data.waterSurface.depthSnapshot);
+            data.waterSurface.depthSnapshot.texture);
         const RHITextureDesc* const froxelVolumetricLightingDesc =
             data.volumetricLighting.identityRoute ? nullptr :
             builder.GetTextureDesc(
@@ -866,7 +880,8 @@ namespace
         data.opaqueSnapshotHandle = builder.Read(
             data.waterSurface.opaqueSceneSnapshot.texture,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
-        data.depthSnapshotHandle = builder.Read(data.waterSurface.depthSnapshot,
+        data.depthSnapshotHandle = builder.Read(
+            data.waterSurface.depthSnapshot.texture,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
         data.exposureStateReadHandle = builder.Read(
             data.waterSurface.exposureState,
@@ -1076,6 +1091,19 @@ namespace
             fail("Water graph recording prerequisites are unavailable");
             return;
         }
+        stats.opaqueSceneSnapshotReady =
+            data.waterSurface.opaqueSceneSnapshot.receipt != nullptr &&
+            data.waterSurface.opaqueSceneSnapshot.receipt->copied.load(
+                std::memory_order_acquire);
+        stats.depthSnapshotReady =
+            data.waterSurface.depthSnapshot.receipt != nullptr &&
+            data.waterSurface.depthSnapshot.receipt->copied.load(
+                std::memory_order_acquire);
+        if (!AreWaterSnapshotCopiesReady(data.waterSurface))
+        {
+            fail("Water snapshot copies were not completed before draw execution");
+            return;
+        }
         RHITexture* const colorTexture = context.GetTexture(data.colorHandle);
         RHITextureView* const colorView = context.GetTextureView(data.colorView);
         RHITextureView* const reactiveMaskView = context.GetTextureView(
@@ -1128,17 +1156,11 @@ namespace
         stats.drawSubmitted = true;
         stats.supported = true;
         stats.enabled = true;
-        stats.opaqueSceneSnapshotReady = data.waterSurface.opaqueSceneSnapshot.receipt != nullptr &&
-            data.waterSurface.opaqueSceneSnapshot.receipt->copied.load(
-                std::memory_order_acquire);
-        stats.depthSnapshotReady = data.waterSurface.depthReceipt != nullptr &&
-            data.waterSurface.depthReceipt->copied.load(std::memory_order_acquire);
         stats.exposureStateReady = true;
         stats.exposureStateReadDeclared = true;
         stats.exposureStateDescriptorBound = true;
         stats.exposureStateContentHash = data.exposureStateContentHash;
-        if (!stats.opaqueSceneSnapshotReady || !stats.depthSnapshotReady ||
-            !stats.exposureStateReady || !stats.exposureStateReadDeclared ||
+        if (!stats.exposureStateReady || !stats.exposureStateReadDeclared ||
             !stats.exposureStateDescriptorBound ||
             stats.exposureStateContentHash == 0)
         {
@@ -1259,7 +1281,10 @@ void WaterFeaturePass::AddToGraph(RenderGraph& graph,
     const RenderPassExecutionData execution = MakeRenderPassExecutionData(context);
     const bool contextValid = context.MatchesTargetGraph(graph) &&
         execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
-        context.waterSurface.IsCompatibleWith(context.identity) &&
+        context.waterSurface.IsCompatibleWith(
+            context.identity,
+            RenderOutputExtent{
+                execution.view.viewportWidth, execution.view.viewportHeight}) &&
         IsCompatibleFroxelVolumetricLighting(
             context.volumetricLighting, context.identity) &&
         m_pipelineCache != nullptr;

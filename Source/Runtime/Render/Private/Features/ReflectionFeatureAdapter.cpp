@@ -93,6 +93,9 @@ void ReflectionFeatureAdapter::SetRecordContext(
     m_reflectionPlan.reset();
     m_probeTextures = {};
     m_probeReady = {};
+    m_ssrQualityPolicy.reset();
+    m_ssrConfigurationIdentity = 0;
+    m_ssrPipelineIdentity = 0;
     m_hybridRayTracingPlan.reset();
     m_hasRecordContext = true;
     m_requiresReflectionPlan = false;
@@ -114,6 +117,9 @@ void ReflectionFeatureAdapter::SetRecordContext(
     m_reflectionPlan = std::move(context.plan);
     m_probeTextures = context.probeTextures;
     m_probeReady = context.probeReady;
+    m_ssrQualityPolicy = std::move(context.ssrQualityPolicy);
+    m_ssrConfigurationIdentity = context.ssrConfigurationIdentity;
+    m_ssrPipelineIdentity = context.ssrPipelineIdentity;
     m_hybridRayTracingPlan = std::move(context.hybridRayTracingPlan);
     m_hasRecordContext = true;
     m_requiresReflectionPlan = true;
@@ -172,6 +178,7 @@ void ReflectionFeatureAdapter::Prepare(const RenderFeatureContext& context)
     m_readiness.pipelineReady = m_readiness.implementationSupported;
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
         HasValidLightingPlan(context) && HasValidReflectionPlan(context) &&
+        HasValidSSRPolicyAndPlan(context) &&
         HasValidHybridRayTracingPlan(context);
 
     if (!m_readiness.hardwareSupported)
@@ -185,7 +192,9 @@ void ReflectionFeatureAdapter::Prepare(const RenderFeatureContext& context)
     }
     else if (!m_readiness.inputsReady)
     {
-        m_readiness.diagnostic = context.resolvedRecipe ==
+        m_readiness.diagnostic = !HasValidSSRPolicyAndPlan(context)
+            ? "Reflection resolve SSR policy, pipeline, or depth identity is stale or missing"
+            : context.resolvedRecipe ==
                 RenderPipelineRecipe::HybridRayTracing
             ? "Hybrid reflection resolve requires the exact frame/view reflection and RT plans"
             : "Reflection resolve requires the current frame/view lighting and reflection plans";
@@ -298,6 +307,25 @@ void ReflectionFeatureAdapter::AddPasses(
         (m_reflectionPlan->GetSSRIdentity().requested ||
          !m_reflectionPlan->GetSelectedProbes().empty()))
     {
+        if (!HasValidSSRPolicyAndPlan(m_preparedContext) ||
+            !m_ssrQualityPolicy.has_value())
+        {
+            SetCompositionFailure(
+                "Reflection resolve SSR policy, pipeline, or depth identity is stale or missing");
+            return;
+        }
+        const bool acceptedQualityPolicy = m_ssr.SetResolvedQualityPolicy(
+            m_preparedContext.resolvedQuality, *m_ssrQualityPolicy);
+        const std::optional<SSRConfig> acceptedPolicy =
+            m_ssr.GetResolvedQualityPolicy();
+        if (!acceptedQualityPolicy || !acceptedPolicy.has_value() ||
+            ComputeSSRConfigurationIdentity(*acceptedPolicy) !=
+                m_ssrConfigurationIdentity)
+        {
+            SetCompositionFailure(
+                "Reflection resolve SSR implementation did not accept the frozen quality policy");
+            return;
+        }
         const ReflectionSSRIdentity& ssrIdentity =
             m_reflectionPlan->GetSSRIdentity();
         SSRFrameInputs inputs;
@@ -305,9 +333,17 @@ void ReflectionFeatureAdapter::AddPasses(
         inputs.viewIdentity = m_preparedContext.viewIdentity;
         inputs.reflectionPlanIdentity = m_reflectionPlan->GetIdentityHash();
         inputs.lightingPlanIdentity = lighting->lightingPlanIdentity;
+        inputs.configurationIdentity = m_ssrConfigurationIdentity;
+        inputs.pipelineIdentity = m_ssrPipelineIdentity;
         inputs.depthPyramidIdentity =
-            ssrIdentity.depthPyramidIdentityHash;
+            ssrIdentity.inputsReady
+                ? ssrIdentity.depthPyramidIdentityHash
+                : 0;
+        // Preserve immutable requested intent even when the sealed plan did
+        // not admit trace inputs. The SSR primitive records that state and
+        // preserves typed IBL; admitted local probes can still resolve.
         inputs.screenSpaceRequested = ssrIdentity.requested;
+        inputs.screenSpaceTraceInputsReady = ssrIdentity.inputsReady;
         inputs.sceneColor = lighting->hdrSceneColor;
         inputs.deviceDepth = m_recordContext.view.depthTarget;
         inputs.normalRoughness = lighting->worldNormal;
@@ -373,6 +409,10 @@ void ReflectionFeatureAdapter::AddPasses(
             ssrOutput.reflectionPlanIdentity ==
                 m_reflectionPlan->GetIdentityHash() &&
             ssrOutput.lightingPlanIdentity == lighting->lightingPlanIdentity &&
+            (!ssrIdentity.requested ||
+             (ssrOutput.configurationIdentity ==
+                  ssrIdentity.configurationIdentityHash &&
+              ssrOutput.pipelineIdentity == ssrIdentity.pipelineIdentityHash)) &&
             (!ssrIdentity.requested ||
              ssrOutput.depthPyramidIdentity ==
                  ssrIdentity.depthPyramidIdentityHash);
@@ -462,11 +502,16 @@ void ReflectionFeatureAdapter::AddPasses(
 void ReflectionFeatureAdapter::OnGraphExecutionFinalized(
     const RenderFeatureGraphExecutionEvidence& evidence)
 {
-    const bool accepted = m_outputPublished &&
+    const bool identityMatches =
         evidence.featureId == BuiltinRenderFeatureIds::ReflectionResolve &&
         evidence.frameIdentity == m_preparedContext.frameIdentity &&
-        evidence.viewIdentity == m_preparedContext.viewIdentity &&
-        evidence.HasExactExecution();
+        evidence.viewIdentity == m_preparedContext.viewIdentity;
+    const bool dataOnlyFallbackAccepted =
+        !m_ssrScheduled && !m_rayTracedReflectionScheduled &&
+        evidence.contractCompletedWithoutGraphWork &&
+        evidence.diagnostic.empty();
+    const bool accepted = m_outputPublished && identityMatches &&
+        (evidence.HasExactExecution() || dataOnlyFallbackAccepted);
     if (m_ssrScheduled)
     {
         m_ssr.FinalizeGraphExecution(accepted);
@@ -563,6 +608,84 @@ bool ReflectionFeatureAdapter::HasValidReflectionPlan(
     // Probe residency and SSR input readiness are optional-route state. The
     // final IBL identity remains the required contract when either is absent.
     return true;
+}
+
+bool ReflectionFeatureAdapter::HasValidSSRPolicyAndPlan(
+    const RenderFeatureContext& context) const noexcept
+{
+    if (m_reflectionPlan == nullptr)
+    {
+        return !m_requiresReflectionPlan;
+    }
+
+    const ReflectionSSRIdentity& ssrIdentity =
+        m_reflectionPlan->GetSSRIdentity();
+    const bool requiresSSRPrimitive = ssrIdentity.requested ||
+        !m_reflectionPlan->GetSelectedProbes().empty();
+    if (!requiresSSRPrimitive)
+    {
+        // The renderer always carries its resolved policy, while focused
+        // data-only tests intentionally omit it. Neither case may carry an
+        // unbound SSR pipeline identity when no SSR/probe graph work exists.
+        if (!m_ssrQualityPolicy.has_value())
+        {
+            return m_ssrConfigurationIdentity == 0 &&
+                   m_ssrPipelineIdentity == 0;
+        }
+        const std::optional<SSRConfig> expectedPolicy =
+            ResolveSSRQualityPolicy(context.resolvedQuality);
+        return expectedPolicy.has_value() &&
+               *m_ssrQualityPolicy == *expectedPolicy &&
+               m_ssrConfigurationIdentity ==
+                   ComputeSSRConfigurationIdentity(*m_ssrQualityPolicy) &&
+               m_ssrPipelineIdentity == 0;
+    }
+
+    const std::optional<SSRConfig> expectedPolicy =
+        ResolveSSRQualityPolicy(context.resolvedQuality);
+    if (!m_ssrQualityPolicy.has_value() || !expectedPolicy.has_value() ||
+        *m_ssrQualityPolicy != *expectedPolicy)
+    {
+        return false;
+    }
+
+    const uint64 expectedConfigurationIdentity =
+        ComputeSSRConfigurationIdentity(*m_ssrQualityPolicy);
+    if (expectedConfigurationIdentity == 0 ||
+        m_ssrConfigurationIdentity != expectedConfigurationIdentity)
+    {
+        return false;
+    }
+
+    if (!ssrIdentity.requested)
+    {
+        // Local probes still execute through the shared reflection primitive,
+        // but they do not declare a Hi-Z/pipeline/depth identity.
+        return m_ssrPipelineIdentity == 0;
+    }
+
+    if (ssrIdentity.configurationIdentityHash !=
+        m_ssrConfigurationIdentity)
+    {
+        return false;
+    }
+    if (!ssrIdentity.inputsReady)
+    {
+        return m_ssrPipelineIdentity == 0 &&
+               ssrIdentity.pipelineIdentityHash == 0 &&
+               ssrIdentity.depthPyramidIdentityHash == 0;
+    }
+
+    const uint64 expectedDepthPyramidIdentity =
+        ComputeSSRDepthPyramidIdentity(
+            context.frameIdentity, context.viewIdentity,
+            context.outputExtent, m_ssrConfigurationIdentity,
+            m_ssrPipelineIdentity);
+    return m_ssrPipelineIdentity != 0 &&
+           ssrIdentity.pipelineIdentityHash == m_ssrPipelineIdentity &&
+           expectedDepthPyramidIdentity != 0 &&
+           ssrIdentity.depthPyramidIdentityHash ==
+               expectedDepthPyramidIdentity;
 }
 
 bool ReflectionFeatureAdapter::HasValidHybridRayTracingPlan(

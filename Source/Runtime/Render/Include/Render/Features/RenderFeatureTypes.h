@@ -98,6 +98,8 @@ namespace RVX
         TranslucencyOutputs,
         PostProcessOutputs,
         AmbientOcclusionOutputs,
+        /** Immutable, full-resolution D32 snapshot shared by special surfaces. */
+        SceneDepthSnapshot,
         Count,
     };
 

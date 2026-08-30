@@ -1,6 +1,7 @@
 #include "Features/LegacyForwardFeatureAdapter.h"
 
 #include "Features/DefaultRenderPassBundle.h"
+#include "Features/SceneDepthSnapshotBuilder.h"
 
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/CameraVelocityPass.h"
@@ -22,6 +23,14 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
+        const DefaultRenderPassBundle* bundle) noexcept
+    {
+        return bundle != nullptr
+            ? bundle->FindPass<ParticleFeaturePass>()
+            : nullptr;
+    }
+
     [[nodiscard]] bool IsHybridRayTracingReflectionPass(
         const IRenderPass& pass) noexcept
     {
@@ -97,99 +106,6 @@ namespace
             });
     }
 
-    struct ParticleSoftDepthSnapshotCopyData
-    {
-        RGTextureHandle source{};
-        RGTextureHandle destination{};
-    };
-
-    struct WaterDepthSnapshotCopyData
-    {
-        RGTextureHandle source{};
-        RGTextureHandle destination{};
-        std::shared_ptr<WaterDepthSnapshotCopyReceipt> receipt;
-    };
-
-    [[nodiscard]] bool AddWaterDepthSnapshotCopy(
-        RenderFeatureGraphBuilder& builder,
-        RGTextureHandle source,
-        RGTextureHandle destination,
-        std::shared_ptr<WaterDepthSnapshotCopyReceipt> receipt)
-    {
-        if (!receipt)
-        {
-            return false;
-        }
-        return builder.AddPass<WaterDepthSnapshotCopyData>(
-            "WaterDepthSnapshotCopy", RenderGraphPassType::Graphics,
-            [source, destination, receipt = std::move(receipt)](
-                RenderGraphBuilder& graphBuilder, WaterDepthSnapshotCopyData& data)
-            {
-                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
-                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
-                data.receipt = receipt;
-            },
-            [](const WaterDepthSnapshotCopyData& data, RenderGraphPassContext& context)
-            {
-                RHITexture* const source = context.GetTexture(data.source);
-                RHITexture* const destination = context.GetTexture(data.destination);
-                if (source == nullptr || destination == nullptr || source == destination ||
-                    source->GetWidth() != destination->GetWidth() ||
-                    source->GetHeight() != destination->GetHeight() ||
-                    source->GetFormat() != RHIFormat::D32_FLOAT ||
-                    destination->GetFormat() != RHIFormat::D32_FLOAT)
-                {
-                    context.MarkExecutionFailed("Water depth snapshot copy has invalid source/destination provenance");
-                    return;
-                }
-                context.Commands().CopyTexture(source, destination);
-                if (data.receipt)
-                {
-                    data.receipt->copied.store(true, std::memory_order_release);
-                }
-            });
-    }
-
-    [[nodiscard]] bool AddParticleSoftDepthSnapshotCopy(
-        RenderFeatureGraphBuilder& builder,
-        RGTextureHandle source,
-        RGTextureHandle destination)
-    {
-        return builder.AddPass<ParticleSoftDepthSnapshotCopyData>(
-            "ParticleSoftDepthSnapshotCopy",
-            RenderGraphPassType::Graphics,
-            [source, destination](RenderGraphBuilder& graphBuilder,
-                                  ParticleSoftDepthSnapshotCopyData& data)
-            {
-                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
-                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
-            },
-            [](const ParticleSoftDepthSnapshotCopyData& data,
-               RenderGraphPassContext& context)
-            {
-                RHITexture* const source = context.GetTexture(data.source);
-                RHITexture* const destination = context.GetTexture(data.destination);
-                if (source == nullptr || destination == nullptr || source == destination ||
-                    source->GetWidth() != destination->GetWidth() ||
-                    source->GetHeight() != destination->GetHeight() ||
-                    source->GetFormat() != destination->GetFormat())
-                {
-                    context.MarkExecutionFailed(
-                        "Particle soft-depth snapshot copy has invalid source/destination provenance");
-                    return;
-                }
-                context.Commands().CopyTexture(source, destination);
-            });
-    }
-
-    [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
-        const DefaultRenderPassBundle* bundle) noexcept
-    {
-        return bundle != nullptr
-            ? bundle->FindPass<ParticleFeaturePass>()
-            : nullptr;
-    }
-
     [[nodiscard]] const WaterFeaturePass* FindWaterFeaturePass(
         const DefaultRenderPassBundle* bundle) noexcept
     {
@@ -229,142 +145,27 @@ namespace
                 "Water requires the exact committed exposure state paired with the HDR opaque snapshot";
             return false;
         }
-        const RHITextureDesc* const depthDesc = builder.GetGraph().GetTextureDesc(
-            context.view.depthTarget);
-        const bool validDepthSource = context.view.depthTarget.IsValid() &&
-            HasCurrentGraphProvenance(context.view.depthTarget, context.identity) &&
-            depthDesc != nullptr && depthDesc->format == RHIFormat::D32_FLOAT &&
-            depthDesc->width == extent.width && depthDesc->height == extent.height &&
-            depthDesc->sampleCount == RHISampleCount::Count1 &&
-            HasFlag(depthDesc->usage, RHITextureUsage::CopySrc);
-        if (!validDepthSource)
+        const RHITextureDesc* const depthSnapshotDesc =
+            builder.GetGraph().GetTextureDesc(context.sceneDepthSnapshot.texture);
+        const bool validDepthSnapshot =
+            context.sceneDepthSnapshot.IsCompatibleWith(context.identity, extent) &&
+            depthSnapshotDesc != nullptr &&
+            depthSnapshotDesc->format == RHIFormat::D32_FLOAT &&
+            depthSnapshotDesc->width == extent.width &&
+            depthSnapshotDesc->height == extent.height &&
+            depthSnapshotDesc->sampleCount == RHISampleCount::Count1 &&
+            HasFlag(depthSnapshotDesc->usage, RHITextureUsage::ShaderResource);
+        if (!validDepthSnapshot)
         {
-            outFailure = "Water requires a D32 CopySrc depth surface matching the view extent";
+            outFailure =
+                "Water requires the current SceneDepthSnapshot D32 surface at the exact view extent";
             return false;
         }
-        RHITextureDesc depthSnapshotDesc = RHITextureDesc::DepthStencil(
-            extent.width, extent.height, RHIFormat::D32_FLOAT);
-        depthSnapshotDesc.usage = depthSnapshotDesc.usage |
-            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst;
-        depthSnapshotDesc.debugName = "WaterDepthSnapshot";
         outInput.identity = context.identity;
         outInput.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
         outInput.exposureState = context.view.exposureState;
         outInput.exposureStateContentHash = context.view.exposureStateContentHash;
-        outInput.depthSnapshot = builder.CreateTexture(depthSnapshotDesc);
-        outInput.depthReceipt = std::make_shared<WaterDepthSnapshotCopyReceipt>();
-        if (!outInput.depthSnapshot.IsValid() ||
-            outInput.depthSnapshot.index == context.view.depthTarget.index ||
-            !AddWaterDepthSnapshotCopy(
-                builder, context.view.depthTarget, outInput.depthSnapshot,
-                outInput.depthReceipt))
-        {
-            outFailure = "Water depth snapshot allocation/copy registration failed";
-            return false;
-        }
-        return true;
-    }
-
-    [[nodiscard]] bool BuildParticleVfxRecordInput(
-        RenderFeatureGraphBuilder& builder,
-        const RenderPassRecordContext& context,
-        const DefaultRenderPassBundle& bundle,
-        RenderOutputExtent extent,
-        ParticleVfxRecordInput& outInput,
-        std::string& outFailure)
-    {
-        outInput = {};
-        const ParticleFeaturePass* const particle = FindParticleFeaturePass(&bundle);
-        if (particle == nullptr)
-        {
-            return true;
-        }
-
-        const ParticleVfxRequirements requirements =
-            particle->GetVfxRequirements();
-        if (!requirements.requested)
-        {
-            return true;
-        }
-        if (!requirements.exposureStateRequired ||
-            !context.view.exposureState.IsValid() ||
-            !HasCurrentGraphProvenance(
-                context.view.exposureState, context.identity) ||
-            context.view.exposureStateContentHash == 0)
-        {
-            outFailure =
-                "Particle VFX requires the exact committed exposure state for authored HDR radiance";
-            return false;
-        }
-
-        outInput.identity = context.identity;
-        outInput.exposureState = context.view.exposureState;
-        outInput.exposureStateContentHash = context.view.exposureStateContentHash;
-        outInput.softDepthRequested = requirements.softDepthRequested;
-        outInput.softDepthRequired = requirements.softDepthRequired;
-        outInput.reactiveMaskRequested = requirements.reactiveMaskRequested;
-        outInput.distortionRequested = requirements.distortionRequested;
-
-        if (requirements.softDepthRequested)
-        {
-            const RHITextureDesc* const depthDesc = builder.GetGraph().GetTextureDesc(
-                context.view.depthTarget);
-            const bool validSource = context.view.depthTarget.IsValid() &&
-                HasCurrentGraphProvenance(context.view.depthTarget, context.identity) &&
-                depthDesc != nullptr && depthDesc->format == RHIFormat::D32_FLOAT &&
-                depthDesc->width == extent.width && depthDesc->height == extent.height &&
-                depthDesc->sampleCount == RHISampleCount::Count1 &&
-                HasFlag(depthDesc->usage, RHITextureUsage::CopySrc);
-            if (!validSource)
-            {
-                if (requirements.softDepthRequired)
-                {
-                    outFailure =
-                        "Particle required soft depth needs a D32 CopySrc depth surface matching the view extent";
-                    return false;
-                }
-            }
-            else
-            {
-                RHITextureDesc softDepthDesc = RHITextureDesc::DepthStencil(
-                    extent.width, extent.height, RHIFormat::D32_FLOAT);
-                // Explicitly retain sampled-depth capability: this transient
-                // is copied once, then bound exclusively as the particle PS
-                // SRV; the original depth stays a read-only DSV.
-                softDepthDesc.usage = softDepthDesc.usage |
-                    RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst;
-                softDepthDesc.debugName = "ParticleSoftDepthSnapshot";
-                outInput.softDepthSnapshot = builder.CreateTexture(softDepthDesc);
-                if (!outInput.softDepthSnapshot.IsValid() ||
-                    outInput.softDepthSnapshot.index == context.view.depthTarget.index ||
-                    !AddParticleSoftDepthSnapshotCopy(
-                        builder, context.view.depthTarget, outInput.softDepthSnapshot))
-                {
-                    outFailure = "Particle soft-depth snapshot allocation/copy registration failed";
-                    return false;
-                }
-            }
-        }
-
-        if (requirements.distortionRequested)
-        {
-            RHITextureDesc distortionDesc = RHITextureDesc::RenderTarget(
-                extent.width, extent.height, RHIFormat::RG16_FLOAT);
-            distortionDesc.debugName = "ParticleDistortionVectors";
-            outInput.distortionVectors = builder.CreateTexture(distortionDesc);
-
-            RHITextureDesc compositeDesc = RHITextureDesc::RenderTarget(
-                extent.width, extent.height, RHIFormat::RGBA16_FLOAT);
-            compositeDesc.debugName = "ParticleDistortionCompositeSceneColor";
-            outInput.compositedSceneColor = builder.CreateTexture(compositeDesc);
-            if (!outInput.distortionVectors.IsValid() ||
-                !outInput.compositedSceneColor.IsValid() ||
-                outInput.compositedSceneColor.index == context.view.colorTarget.index)
-            {
-                outFailure = "Particle distortion requires distinct RG16F and HDR graph outputs";
-                return false;
-            }
-        }
+        outInput.depthSnapshot = context.sceneDepthSnapshot;
         return true;
     }
     [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
@@ -1352,6 +1153,8 @@ RenderFeatureDescriptor ForwardSpecialFeatureAdapter::Describe() const
         {RenderBlackboardResourceId::LocalShadowOutputs,
          LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
+        {RenderBlackboardResourceId::SceneDepthSnapshot,
+         SceneDepthSnapshot::SchemaVersion},
         {RenderBlackboardResourceId::PreTranslucencyOutputs,
          PreTranslucencyOutputs::SchemaVersion}};
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
@@ -1551,6 +1354,47 @@ void ForwardSpecialFeatureAdapter::AddPasses(
         opaqueSnapshotReceipt =
             std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
     bool opaqueSnapshotRegistered = false;
+    SceneDepthSnapshot sceneDepthSnapshot;
+    SceneDepthSnapshotRecordInput sceneDepthSnapshotInput;
+    const WaterFeaturePass* const waterPass =
+        FindWaterFeaturePass(m_passBundle);
+    const ParticleFeaturePass* const particlePass =
+        FindParticleFeaturePass(m_passBundle);
+    const WaterSurfaceRequirements waterRequirements = waterPass != nullptr
+        ? waterPass->GetRequirements()
+        : WaterSurfaceRequirements{};
+    const RenderPassStatus waterStatus = waterPass != nullptr
+        ? waterPass->GetStatus() : RenderPassStatus{};
+    const bool waterExecutable = waterPass != nullptr &&
+        waterStatus.requestedEnabled && waterStatus.supported &&
+        waterStatus.enabled;
+    const ParticleVfxRequirements particleRequirements = particlePass != nullptr
+        ? particlePass->GetVfxRequirements()
+        : ParticleVfxRequirements{};
+    const RenderPassStatus particleStatus = particlePass != nullptr
+        ? particlePass->GetStatus() : RenderPassStatus{};
+    const bool particleExecutable = particlePass != nullptr &&
+        particleStatus.requestedEnabled && particleStatus.supported &&
+        particleStatus.enabled;
+    const SceneDepthSnapshotDemand depthDemand =
+        ResolveSceneDepthSnapshotDemand(
+            waterRequirements.depthSnapshotRequired,
+            waterExecutable,
+            particleRequirements.requested &&
+                particleRequirements.softDepthRequested,
+            particleRequirements.softDepthRequired,
+            particleExecutable);
+    if (!depthDemand.valid)
+    {
+        SetCompositionFailure(depthDemand.failureReason);
+        return;
+    }
+    sceneDepthSnapshot.provenance = builder.GetProvenance();
+    sceneDepthSnapshot.frameIdentity = m_preparedContext.frameIdentity;
+    sceneDepthSnapshot.viewIdentity = m_preparedContext.viewIdentity;
+    sceneDepthSnapshot.outputExtent = m_preparedContext.outputExtent;
+    sceneDepthSnapshot.requested = depthDemand.requested;
+    sceneDepthSnapshot.required = depthDemand.required;
 
     RGTextureHandle activeSceneColor =
         volumetricLighting->resolvedSceneColor;
@@ -1605,11 +1449,50 @@ void ForwardSpecialFeatureAdapter::AddPasses(
             ++m_lastPassChainStats.graphPassCount;
             m_lastPassChainStats.graphPassNames.push_back(
                 "OpaqueSceneSnapshotCopy");
+            if (sceneDepthSnapshot.requested)
+            {
+                const bool snapshotRequired = sceneDepthSnapshot.required;
+                std::string sceneDepthFailure;
+                if (!BuildSceneDepthSnapshot(
+                        builder,
+                        passContext,
+                        m_preparedContext.frameIdentity,
+                        m_preparedContext.viewIdentity,
+                        m_preparedContext.outputExtent,
+                        snapshotRequired,
+                        sceneDepthSnapshot,
+                        sceneDepthSnapshotInput,
+                        sceneDepthFailure))
+                {
+                    if (snapshotRequired)
+                    {
+                        SetCompositionFailure(std::move(sceneDepthFailure));
+                        return;
+                    }
+                    sceneDepthSnapshot.provenance = builder.GetProvenance();
+                    sceneDepthSnapshot.frameIdentity =
+                        m_preparedContext.frameIdentity;
+                    sceneDepthSnapshot.viewIdentity =
+                        m_preparedContext.viewIdentity;
+                    sceneDepthSnapshot.outputExtent =
+                        m_preparedContext.outputExtent;
+                    sceneDepthSnapshot.requested = true;
+                    sceneDepthSnapshot.required = false;
+                    sceneDepthSnapshot.available = false;
+                }
+                else
+                {
+                    ++m_lastPassChainStats.graphPassCount;
+                    m_lastPassChainStats.graphPassNames.push_back(
+                        "SceneDepthSnapshotCopy");
+                }
+            }
             opaqueSnapshotRegistered = true;
             passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
                 postLightingContext.identity,
                 opaqueSceneSnapshot,
                 opaqueSnapshotReceipt};
+            passContext.sceneDepthSnapshot = sceneDepthSnapshotInput;
             std::string waterSurfaceFailure;
             if (!BuildWaterSurfaceRecordInput(
                     builder,
@@ -1629,6 +1512,7 @@ void ForwardSpecialFeatureAdapter::AddPasses(
                 postLightingContext.identity,
                 opaqueSceneSnapshot,
                 opaqueSnapshotReceipt};
+            passContext.sceneDepthSnapshot = sceneDepthSnapshotInput;
         }
         passContext.waterSurface = waterSurface;
         if (!builder.AddLegacyPass(*pass, passContext))
@@ -1657,6 +1541,44 @@ void ForwardSpecialFeatureAdapter::AddPasses(
         ++m_lastPassChainStats.graphPassCount;
         m_lastPassChainStats.graphPassNames.push_back(
             "OpaqueSceneSnapshotCopy");
+        if (sceneDepthSnapshot.requested)
+        {
+            const bool snapshotRequired = sceneDepthSnapshot.required;
+            std::string sceneDepthFailure;
+            if (!BuildSceneDepthSnapshot(
+                    builder,
+                    postLightingContext,
+                    m_preparedContext.frameIdentity,
+                    m_preparedContext.viewIdentity,
+                    m_preparedContext.outputExtent,
+                    snapshotRequired,
+                    sceneDepthSnapshot,
+                    sceneDepthSnapshotInput,
+                    sceneDepthFailure))
+            {
+                if (snapshotRequired)
+                {
+                    SetCompositionFailure(std::move(sceneDepthFailure));
+                    return;
+                }
+                sceneDepthSnapshot.provenance = builder.GetProvenance();
+                sceneDepthSnapshot.frameIdentity =
+                    m_preparedContext.frameIdentity;
+                sceneDepthSnapshot.viewIdentity =
+                    m_preparedContext.viewIdentity;
+                sceneDepthSnapshot.outputExtent =
+                    m_preparedContext.outputExtent;
+                sceneDepthSnapshot.requested = true;
+                sceneDepthSnapshot.required = false;
+                sceneDepthSnapshot.available = false;
+            }
+            else
+            {
+                ++m_lastPassChainStats.graphPassCount;
+                m_lastPassChainStats.graphPassNames.push_back(
+                    "SceneDepthSnapshotCopy");
+            }
+        }
     }
 
     PreTranslucencyOutputs outputs;
@@ -1711,6 +1633,9 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
+                           Describe(), std::move(sceneDepthSnapshot)) !=
+        RenderGraphBlackboardCode::Success ||
+        blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
                            Describe(), std::move(outputs)) !=
         RenderGraphBlackboardCode::Success)
     {

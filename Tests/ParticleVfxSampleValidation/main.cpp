@@ -234,23 +234,37 @@ namespace
 
         EXPECT_NE(recordContext.find("struct ParticleVfxRecordInput"),
                   std::string::npos);
+        EXPECT_NE(recordContext.find(
+                      "SceneDepthSnapshotRecordInput softDepthSnapshot"),
+                  std::string::npos);
         EXPECT_NE(recordContext.find("RGBufferHandle exposureState{};"),
                   std::string::npos);
         EXPECT_NE(recordContext.find("exposureStateContentHash != 0"),
                   std::string::npos);
-        for (const std::string* adapter : {
-                 &deferredAdapter, &forwardAdapter, &translucencyAdapter})
-        {
-            EXPECT_NE(adapter->find(
-                          "outInput.exposureState = context.view.exposureState;"),
-                      std::string::npos);
-            EXPECT_NE(adapter->find(
-                          "outInput.exposureStateContentHash = context.view.exposureStateContentHash;"),
-                      std::string::npos);
-        }
+        EXPECT_NE(translucencyAdapter.find(
+                      "outInput.exposureState = context.view.exposureState;"),
+                  std::string::npos);
+        EXPECT_NE(translucencyAdapter.find(
+                      "outInput.exposureStateContentHash = context.view.exposureStateContentHash;"),
+                  std::string::npos);
+        const std::string legacyParticleDepthCopyName =
+            "ParticleSoftDepth" "SnapshotCopy";
+        EXPECT_EQ(forwardAdapter.find(legacyParticleDepthCopyName),
+                  std::string::npos);
+        EXPECT_EQ(deferredAdapter.find(legacyParticleDepthCopyName),
+                  std::string::npos);
+        EXPECT_EQ(translucencyAdapter.find(legacyParticleDepthCopyName),
+                  std::string::npos);
         EXPECT_NE(particle.find("RVX_PARTICLE_EXPOSURE_STATE_BINDING = 6u"),
                   std::string::npos);
         EXPECT_NE(particle.find("data.exposureStateReadHandle = builder.Read("),
+                  std::string::npos);
+        EXPECT_NE(particle.find(
+                      "data.particleVfx.softDepthSnapshot.texture"),
+                  std::string::npos);
+        EXPECT_NE(particle.find("softDepthSnapshot.receipt->copied.load"),
+                  std::string::npos);
+        EXPECT_NE(particle.find("data.softDepthHandle = builder.Read("),
                   std::string::npos);
         EXPECT_NE(particle.find(
                       "Particle VFX committed exposure-state handle is stale"),

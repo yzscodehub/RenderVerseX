@@ -81,6 +81,10 @@ namespace RVX
         bool exposureStateRequired = false;
     };
 
+    /** True only after both immutable Water sampling inputs were copied. */
+    [[nodiscard]] bool AreWaterSnapshotCopiesReady(
+        const WaterSurfaceRecordInput& input) noexcept;
+
     class IShaderProgramProvider;
     class PipelineCache;
     class WaterSurfaceRenderer;

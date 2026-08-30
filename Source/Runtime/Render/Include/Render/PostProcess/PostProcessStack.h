@@ -212,8 +212,6 @@ namespace RVX
         // SSR
         // =========================================================================
         bool enableSSR = false;
-        float ssrMaxDistance = 50.0f;
-        float ssrThickness = 0.1f;
 
         // =========================================================================
         // Ray-traced reflections

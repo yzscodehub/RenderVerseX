@@ -2026,6 +2026,8 @@ namespace RVX
             RenderViewIdentity viewIdentity{};
             uint64 reflectionPlanIdentity = 0;
             uint64 lightingPlanIdentity = 0;
+            uint64 configurationIdentity = 0;
+            uint64 pipelineIdentity = 0;
             uint64 depthPyramidIdentity = 0;
             uint64 reflectionSurfaceIdentity = 0;
             uint64 exposureStateContentHash = 0;
@@ -2036,6 +2038,8 @@ namespace RVX
                        viewIdentity.IsValid() &&
                        reflectionPlanIdentity != 0 &&
                        lightingPlanIdentity != 0 &&
+                       configurationIdentity != 0 &&
+                       pipelineIdentity != 0 &&
                        depthPyramidIdentity != 0 &&
                        reflectionSurfaceIdentity != 0 &&
                        exposureStateContentHash != 0;

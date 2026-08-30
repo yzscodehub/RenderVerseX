@@ -442,6 +442,65 @@ uint64 ComputeSSRConfigurationIdentity(const SSRConfig& config) noexcept
     return FinalizeIdentity(hash);
 }
 
+uint64 ComputeSSRPipelineIdentity(
+    uint64 hiZBasePipelineHash,
+    uint64 hiZReducePipelineHash,
+    uint64 tracePipelineHash,
+    uint64 resolvePipelineHash) noexcept
+{
+    if (hiZBasePipelineHash == 0 || hiZReducePipelineHash == 0 ||
+        tracePipelineHash == 0 || resolvePipelineHash == 0)
+    {
+        return 0;
+    }
+
+    uint64 hash = RVX_SSR_FNV1A_OFFSET;
+    MixIdentity(hash, 1U);
+    MixIdentity(hash, hiZBasePipelineHash);
+    MixIdentity(hash, hiZReducePipelineHash);
+    MixIdentity(hash, tracePipelineHash);
+    MixIdentity(hash, resolvePipelineHash);
+    return FinalizeIdentity(hash);
+}
+
+std::optional<SSRConfig> ResolveSSRQualityPolicy(
+    RenderQualityTier quality) noexcept
+{
+    // Keep every non-budget quality parameter at the established High
+    // defaults. The resolver is the only place where a quality tier changes
+    // trace work, so a plan and its graph execution cannot silently diverge.
+    SSRConfig config;
+    switch (quality)
+    {
+        case RenderQualityTier::Low:
+            config.quality = SSRQuality::Low;
+            config.maxSteps = 32U;
+            config.binarySearchSteps = 4U;
+            break;
+        case RenderQualityTier::Medium:
+            config.quality = SSRQuality::Medium;
+            config.maxSteps = 48U;
+            config.binarySearchSteps = 5U;
+            break;
+        case RenderQualityTier::High:
+            config.quality = SSRQuality::High;
+            config.maxSteps = 64U;
+            config.binarySearchSteps = 6U;
+            break;
+        case RenderQualityTier::Ultra:
+            config.quality = SSRQuality::Ultra;
+            config.maxSteps = 96U;
+            config.binarySearchSteps = 8U;
+            break;
+        case RenderQualityTier::Count:
+        default:
+            // An unknown public tier must never inherit the historical High
+            // trace budget. Callers reject this before plan or graph work.
+            return std::nullopt;
+    }
+    return config;
+}
+
 uint64 ComputeSSRDepthPyramidIdentity(
     const RenderFrameIdentity& frameIdentity,
     const RenderViewIdentity& viewIdentity,
@@ -536,18 +595,35 @@ void SSR::Shutdown() noexcept
     m_sampler.Reset();
     m_pipelineCache = nullptr;
     m_resourceDevice = nullptr;
+    m_config = {};
+    m_hasResolvedQualityPolicy = false;
     m_lastComputeStats = {};
     m_unsupportedReason = "SSR renderer resources are unavailable";
 }
 
-void SSR::SetConfig(const SSRConfig& config) noexcept
+bool SSR::SetResolvedQualityPolicy(
+    RenderQualityTier quality,
+    const SSRConfig& config) noexcept
 {
+    const std::optional<SSRConfig> expected =
+        ResolveSSRQualityPolicy(quality);
+    if (!expected.has_value() || config != *expected)
+    {
+        m_config = {};
+        m_hasResolvedQualityPolicy = false;
+        return false;
+    }
     m_config = config;
+    m_hasResolvedQualityPolicy = true;
+    return true;
 }
 
 bool SSR::ValidateConfig() const noexcept
 {
-    return IsFinitePositive(m_config.maxDistance) &&
+    return m_hasResolvedQualityPolicy &&
+           m_config.quality >= SSRQuality::Low &&
+           m_config.quality <= SSRQuality::Ultra &&
+           IsFinitePositive(m_config.maxDistance) &&
            IsFinitePositive(m_config.thickness) &&
            m_config.maxSteps >= 1U && m_config.maxSteps <= 256U &&
            m_config.binarySearchSteps <= 16U &&
@@ -572,6 +648,12 @@ bool SSR::HasPipelineResources() const noexcept
 
 bool SSR::IsSupported() const noexcept
 {
+    if (!m_hasResolvedQualityPolicy)
+    {
+        m_unsupportedReason =
+            "SSR requires an injected resolved quality policy";
+        return false;
+    }
     if (!ValidateConfig())
     {
         m_unsupportedReason =
@@ -603,31 +685,43 @@ SSROutput SSR::AddToGraph(
 {
     m_pendingExecutionState.reset();
     m_lastComputeStats = {};
-    const bool screenSpaceRequested =
-        inputs.screenSpaceRequested && m_enabled;
+    // Keep immutable frame intent distinct from the subset of inputs that
+    // permits a Hi-Z trace. A plan may intentionally request SSR yet be
+    // unready for this frame; that is a visible typed-IBL fallback, never an
+    // implicit withdrawal of the request.
+    const bool screenSpaceRequested = inputs.screenSpaceRequested;
+    const bool screenSpaceTraceInputsReady = screenSpaceRequested &&
+        inputs.screenSpaceTraceInputsReady;
+    const bool screenSpaceTraceScheduled = screenSpaceTraceInputsReady &&
+        m_enabled;
     uint32 readyProbeCount = 0;
     for (const bool ready : inputs.probeReady)
     {
         readyProbeCount += ready ? 1U : 0U;
     }
-    m_lastComputeStats.requested =
-        screenSpaceRequested || readyProbeCount != 0;
+    m_lastComputeStats.requested = screenSpaceRequested || readyProbeCount != 0;
     m_lastComputeStats.screenSpaceRequested = screenSpaceRequested;
+    m_lastComputeStats.screenSpaceTraceInputsReady =
+        screenSpaceTraceInputsReady;
     m_lastComputeStats.readyProbeCount = readyProbeCount;
     m_lastComputeStats.colorAvailable = inputs.sceneColor.IsValid();
     m_lastComputeStats.depthAvailable = inputs.deviceDepth.IsValid();
     m_lastComputeStats.normalAvailable = inputs.normalRoughness.IsValid();
     m_lastComputeStats.roughnessAvailable = inputs.normalRoughness.IsValid();
     m_lastComputeStats.temporalHistoryRequired =
-        screenSpaceRequested && m_config.temporalFilter;
+        screenSpaceTraceScheduled && m_config.temporalFilter;
     m_lastComputeStats.globalIBLReady =
         inputs.baseIndirectSpecular.IsValid() &&
         inputs.specularResponse.IsValid() && inputs.exposureState.IsValid() &&
         inputs.exposureStateContentHash != 0;
     m_lastComputeStats.reflectionPlanIdentity = inputs.reflectionPlanIdentity;
     m_lastComputeStats.lightingPlanIdentity = inputs.lightingPlanIdentity;
+    m_lastComputeStats.configurationIdentity =
+        m_hasResolvedQualityPolicy ? inputs.configurationIdentity : 0;
+    m_lastComputeStats.pipelineIdentity =
+        m_hasResolvedQualityPolicy ? inputs.pipelineIdentity : 0;
     m_lastComputeStats.depthPyramidIdentity =
-        screenSpaceRequested ? inputs.depthPyramidIdentity : 0;
+        screenSpaceTraceScheduled ? inputs.depthPyramidIdentity : 0;
     m_lastComputeStats.reflectionSurfaceIdentity =
         ComputeReflectionSurfaceIdentity(
             inputs.baseIndirectSpecular, inputs.specularResponse,
@@ -639,6 +733,38 @@ SSROutput SSR::AddToGraph(
         RecordUnsupported(
             "Reflection resolve has neither screen-space nor local-probe work");
         return {};
+    }
+    if (screenSpaceRequested && !screenSpaceTraceScheduled &&
+        readyProbeCount == 0)
+    {
+        m_lastComputeStats.missingInputReason =
+            inputs.screenSpaceTraceInputsReady
+                ? "SSR trace is disabled; preserving typed IBL fallback"
+                : "SSR plan trace inputs are unavailable; preserving typed IBL fallback";
+        RecordUnsupported(m_lastComputeStats.missingInputReason);
+        return {};
+    }
+    if (screenSpaceTraceScheduled)
+    {
+        const uint64 expectedConfigurationIdentity =
+            ComputeSSRConfigurationIdentity(m_config);
+        const uint64 expectedDepthPyramidIdentity =
+            ComputeSSRDepthPyramidIdentity(
+                inputs.frameIdentity, inputs.viewIdentity,
+                RenderOutputExtent{view.viewportWidth, view.viewportHeight},
+                expectedConfigurationIdentity, inputs.pipelineIdentity);
+        if (inputs.configurationIdentity == 0 ||
+            inputs.configurationIdentity != expectedConfigurationIdentity ||
+            inputs.pipelineIdentity == 0 ||
+            inputs.depthPyramidIdentity == 0 ||
+            expectedDepthPyramidIdentity == 0 ||
+            inputs.depthPyramidIdentity != expectedDepthPyramidIdentity)
+        {
+            m_lastComputeStats.missingInputReason =
+                "SSR policy, pipeline, or depth-pyramid identity is stale or mismatched";
+            RecordUnsupported(m_lastComputeStats.missingInputReason);
+            return {};
+        }
     }
     if (!IsSupported())
     {
@@ -654,7 +780,7 @@ SSROutput SSR::AddToGraph(
     const RHITextureDesc* const depthDesc = graph.GetTextureDesc(inputs.deviceDepth);
     if (!inputs.frameIdentity.IsValid() || !inputs.viewIdentity.IsValid() ||
         inputs.reflectionPlanIdentity == 0 || inputs.lightingPlanIdentity == 0 ||
-        (screenSpaceRequested && inputs.depthPyramidIdentity == 0) ||
+        (screenSpaceTraceScheduled && inputs.depthPyramidIdentity == 0) ||
         width == 0 || height == 0 || sceneDesc == nullptr || depthDesc == nullptr ||
         !IsFullResolution2D(*sceneDesc, width, height, RHIFormat::RGBA16_FLOAT) ||
         !IsFullResolution2D(*depthDesc, width, height, RHIFormat::D32_FLOAT) ||
@@ -803,10 +929,10 @@ SSROutput SSR::AddToGraph(
         return {};
     }
 
-    const uint32 mipCount = screenSpaceRequested
+    const uint32 mipCount = screenSpaceTraceScheduled
         ? CalculateMipCount(width, height) : 0U;
     RGTextureHandle hiZ{};
-    if (screenSpaceRequested)
+    if (screenSpaceTraceScheduled)
     {
         RHITextureDesc hiZDesc = RHITextureDesc::Texture2D(
             width, height, RHIFormat::R32_FLOAT,
@@ -833,7 +959,7 @@ SSROutput SSR::AddToGraph(
         routeMaskDesc.usage | RHITextureUsage::CopySrc;
     routeMaskDesc.debugName = "SSRReflectionRouteMask";
     const RGTextureHandle routeMask = graph.CreateTexture(routeMaskDesc);
-    if ((screenSpaceRequested && !hiZ.IsValid()) ||
+    if ((screenSpaceTraceScheduled && !hiZ.IsValid()) ||
         !rawReflection.IsValid() ||
         !resolvedSceneColor.IsValid() || !confidence.IsValid() ||
         !routeMask.IsValid())
@@ -846,7 +972,7 @@ SSROutput SSR::AddToGraph(
     SSRQualificationProbeIdentity qualificationIdentity{};
     uint64 qualificationGeneration = 0;
     RGBufferHandle qualificationReadback{};
-    if (screenSpaceRequested && m_probeRequested && !m_probeIdentityLocked)
+    if (screenSpaceTraceScheduled && m_probeRequested && !m_probeIdentityLocked)
     {
         qualificationIdentity.frameIdentity = inputs.frameIdentity;
         qualificationIdentity.viewIdentity = inputs.viewIdentity;
@@ -858,7 +984,8 @@ SSROutput SSR::AddToGraph(
         qualificationIdentity.depthPyramidIdentity =
             inputs.depthPyramidIdentity;
         qualificationIdentity.configurationIdentity =
-            ComputeSSRConfigurationIdentity(m_config);
+            inputs.configurationIdentity;
+        qualificationIdentity.pipelineIdentity = inputs.pipelineIdentity;
         qualificationIdentity.reflectionSurfaceIdentity =
             m_lastComputeStats.reflectionSurfaceIdentity;
         qualificationIdentity.exposureStateContentHash =
@@ -911,7 +1038,7 @@ SSROutput SSR::AddToGraph(
     baseConstants.traceControl[3] =
         (m_pipelineCache->IsReverseZ() ? RVX_SSR_FLAG_REVERSE_Z : 0U) |
         (inputs.normalRoughness.IsValid() ? RVX_SSR_FLAG_NORMAL_SOURCE : 0U) |
-        (screenSpaceRequested
+        (screenSpaceTraceScheduled
              ? RVX_SSR_FLAG_SCREEN_SPACE_REQUESTED : 0U) |
         (qualificationRequested
              ? RVX_SSR_FLAG_QUALIFICATION_RADIANCE_ROUTE : 0U);
@@ -924,7 +1051,7 @@ SSROutput SSR::AddToGraph(
     baseConstants.probeControl[0] = 0.0f;
     baseConstants.probeControl[1] = static_cast<float>(readyProbeCount);
     baseConstants.probeControl[2] =
-        screenSpaceRequested ? 1.0f : 0.0f;
+        screenSpaceTraceScheduled ? 1.0f : 0.0f;
     baseConstants.probeControl[3] =
         static_cast<float>(localProbeMipLevels);
     const auto setVector = [](float (&target)[4], const Vec3& value, float w)
@@ -975,7 +1102,7 @@ SSROutput SSR::AddToGraph(
 
     auto executionState = std::make_shared<SSRExecutionState>();
     executionState->expectedPassCount =
-        (screenSpaceRequested ? mipCount + 2U : 2U) +
+        (screenSpaceTraceScheduled ? mipCount + 2U : 2U) +
         (qualificationRequested ? 1U : 0U);
     executionState->qualificationCopyExpected = qualificationRequested;
     m_pendingExecutionState = executionState;
@@ -1287,7 +1414,7 @@ SSROutput SSR::AddToGraph(
             });
     };
 
-    if (screenSpaceRequested)
+    if (screenSpaceTraceScheduled)
     {
         addStage("SSRHiZBase", SSRStage::HiZBase, 0U,
                  inputs.deviceDepth, hiZ, {});
@@ -1440,10 +1567,12 @@ SSROutput SSR::AddToGraph(
     m_lastComputeStats.scheduled = true;
     m_lastComputeStats.hiZMipCount = mipCount;
     m_lastComputeStats.hiZGraphPassCount =
-        screenSpaceRequested ? mipCount : 0U;
+        screenSpaceTraceScheduled ? mipCount : 0U;
     m_lastComputeStats.traceGraphPassCount =
-        screenSpaceRequested ? 1U : 0U;
+        screenSpaceTraceScheduled ? 1U : 0U;
     m_lastComputeStats.resolveGraphPassCount = 1U;
+    m_lastComputeStats.screenSpaceTraceScheduled =
+        screenSpaceTraceScheduled;
     m_lastComputeStats.minimumFallbackRoute =
         readyProbeCount != 0
             ? ReflectionResolveRoute::LocalProbe
@@ -1458,22 +1587,24 @@ SSROutput SSR::AddToGraph(
     output.hiZMipCount = mipCount;
     output.reflectionPlanIdentity = inputs.reflectionPlanIdentity;
     output.lightingPlanIdentity = inputs.lightingPlanIdentity;
+    output.configurationIdentity = inputs.configurationIdentity;
+    output.pipelineIdentity = inputs.pipelineIdentity;
     output.depthPyramidIdentity = inputs.depthPyramidIdentity;
-    output.screenSpaceScheduled = screenSpaceRequested;
+    output.screenSpaceScheduled = screenSpaceTraceScheduled;
     output.probeResolveScheduled = true;
     return output;
 }
 
 void SSR::FinalizeGraphExecution(bool executionAccepted) noexcept
 {
-    const bool screenSpaceRequested =
-        m_lastComputeStats.screenSpaceRequested;
+    const bool screenSpaceTraceScheduled =
+        m_lastComputeStats.screenSpaceTraceScheduled;
     const bool complete = executionAccepted && m_pendingExecutionState != nullptr &&
         !m_pendingExecutionState->failed &&
         m_pendingExecutionState->expectedPassCount != 0 &&
         m_pendingExecutionState->completedPassCount ==
             m_pendingExecutionState->expectedPassCount &&
-        (screenSpaceRequested
+        (screenSpaceTraceScheduled
              ? (m_pendingExecutionState->completedHiZPassCount ==
                     m_lastComputeStats.hiZMipCount &&
                 m_pendingExecutionState->traceCompleted)
@@ -1482,7 +1613,7 @@ void SSR::FinalizeGraphExecution(bool executionAccepted) noexcept
         (!m_pendingExecutionState->qualificationCopyExpected ||
          m_pendingExecutionState->qualificationCopyCompleted);
     m_lastComputeStats.executed = complete;
-    m_lastComputeStats.hiZBuilt = complete && screenSpaceRequested;
+    m_lastComputeStats.hiZBuilt = complete && screenSpaceTraceScheduled;
     m_lastComputeStats.fallbackChainResolved = complete;
     // Graph callback completion proves that the work was recorded and
     // accepted.  Applied-route claims require the physical R8 route-mask

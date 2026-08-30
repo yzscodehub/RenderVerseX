@@ -39,6 +39,8 @@ namespace
         {
             case RenderBlackboardResourceId::SceneTextures:
                 return SceneTextures::SchemaVersion;
+            case RenderBlackboardResourceId::SceneDepthSnapshot:
+                return SceneDepthSnapshot::SchemaVersion;
             case RenderBlackboardResourceId::VisibilityOutputs:
                 return VisibilityOutputs::SchemaVersion;
             case RenderBlackboardResourceId::ShadowOutputs:

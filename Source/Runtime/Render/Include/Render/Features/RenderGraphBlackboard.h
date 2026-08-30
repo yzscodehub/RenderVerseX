@@ -168,6 +168,38 @@ namespace RVX
         PostProcessMaterialTableMetadata materialTableMetadata{};
     };
 
+    /**
+     * @brief Full-resolution sampled D32 surface produced once by the selected
+     *        special-surface composition and borrowed by Water/Particle.
+     *
+     * The blackboard captures semantic provenance and the copy receipt. It
+     * does not replace the concrete RenderGraph Read edge each consumer must
+     * register when it samples @ref depthSnapshot.
+     */
+    struct SceneDepthSnapshot
+    {
+        static constexpr RenderBlackboardResourceId ResourceId =
+            RenderBlackboardResourceId::SceneDepthSnapshot;
+        static constexpr uint32 SchemaVersion = 1;
+        inline static constexpr SceneTextures::FormatContract FormatContract{
+            RHIFormat::D32_FLOAT, RHISampleCount::Count1};
+
+        RenderGraphBlackboardProvenance provenance{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        /** Output extent negotiated by the selected composition. */
+        RenderOutputExtent outputExtent{};
+        /** At least one special surface requested sampled scene depth. */
+        bool requested = false;
+        /** A selected consumer cannot use its declared fallback without depth. */
+        bool required = false;
+        /** A current D32 CopySrc source was copied and is safe to sample. */
+        bool available = false;
+        RGTextureHandle depthSnapshot{};
+        SceneTextures::Metadata depthSnapshotMetadata{};
+        std::shared_ptr<SceneDepthSnapshotCopyReceipt> receipt{};
+    };
+
     enum class DeferredSceneTexturesValidationCode : uint8
     {
         Success = 0,
@@ -885,12 +917,14 @@ namespace RVX
             std::optional<PreTranslucencyOutputs>,
             std::optional<TranslucencyOutputs>,
             std::optional<PostProcessOutputs>,
-            std::optional<AmbientOcclusionOutputs>>;
+            std::optional<AmbientOcclusionOutputs>,
+            std::optional<SceneDepthSnapshot>>;
 
         template<typename Entry>
         [[nodiscard]] static consteval bool IsSupportedEntry()
         {
             return std::is_same_v<Entry, SceneTextures> ||
+                   std::is_same_v<Entry, SceneDepthSnapshot> ||
                    std::is_same_v<Entry, VisibilityOutputs> ||
                    std::is_same_v<Entry, ShadowOutputs> ||
                    std::is_same_v<Entry, LocalShadowOutputs> ||
@@ -916,6 +950,8 @@ namespace RVX
             {
                 case RenderBlackboardResourceId::SceneTextures:
                     return SceneTextures::SchemaVersion;
+                case RenderBlackboardResourceId::SceneDepthSnapshot:
+                    return SceneDepthSnapshot::SchemaVersion;
                 case RenderBlackboardResourceId::VisibilityOutputs:
                     return VisibilityOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::ShadowOutputs:
@@ -991,6 +1027,10 @@ namespace RVX
                        HandleMatchesGraph(entry.gBuffer2, provenance) &&
                        HandleMatchesGraph(entry.gBuffer3, provenance) &&
                        HandleMatchesGraph(entry.materialTable, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, SceneDepthSnapshot>)
+            {
+                return HandleMatchesGraph(entry.depthSnapshot, provenance);
             }
             else if constexpr (std::is_same_v<Entry, VisibilityOutputs>)
             {
@@ -1515,12 +1555,53 @@ namespace RVX
                                    AmbientOcclusionOutputs::VisibilityContract);
         }
 
+        [[nodiscard]] static bool HasValidSceneDepthSnapshot(
+            const SceneDepthSnapshot& snapshot,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            const bool hasAnyResourceState =
+                snapshot.depthSnapshot.IsValid() ||
+                snapshot.depthSnapshotMetadata.extent.IsValid() ||
+                snapshot.depthSnapshotMetadata.format != RHIFormat::Unknown ||
+                snapshot.depthSnapshotMetadata.sampleCount !=
+                    RHISampleCount::Count1 ||
+                snapshot.receipt != nullptr;
+            if (!HasMatchingFrameViewProvenance(
+                    snapshot.frameIdentity, snapshot.viewIdentity,
+                    provenance) ||
+                !snapshot.outputExtent.IsValid() ||
+                (snapshot.required && !snapshot.requested))
+            {
+                return false;
+            }
+
+            if (snapshot.available)
+            {
+                return snapshot.requested && snapshot.depthSnapshot.IsValid() &&
+                       MetadataMatches(snapshot.depthSnapshotMetadata,
+                                       SceneDepthSnapshot::FormatContract) &&
+                       snapshot.depthSnapshotMetadata.extent ==
+                           snapshot.outputExtent &&
+                       snapshot.receipt != nullptr;
+            }
+
+            // No request is a normal no-work contract. An unavailable optional
+            // request is also valid, but it must remain explicitly empty so no
+            // consumer can accidentally sample a stale or partial surface.
+            return !hasAnyResourceState && (!snapshot.requested ||
+                                            !snapshot.required);
+        }
+
         template<typename Entry>
         [[nodiscard]] static bool EntryHasValidSemanticContract(
             const Entry& entry,
             const RenderGraphBlackboardProvenance& provenance) noexcept
         {
-            if constexpr (std::is_same_v<Entry, PreTranslucencyOutputs>)
+            if constexpr (std::is_same_v<Entry, SceneDepthSnapshot>)
+            {
+                return HasValidSceneDepthSnapshot(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, PreTranslucencyOutputs>)
             {
                 return HasValidPreTranslucencyOutputs(entry, provenance);
             }

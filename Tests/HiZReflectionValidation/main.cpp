@@ -1,10 +1,13 @@
 #include "Render/PostProcess/SSR.h"
 #include "Render/Reflection/ReflectionFramePlan.h"
+#include "Render/Renderer/ViewData.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <limits>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace
@@ -321,6 +324,149 @@ TEST(HiZReflectionValidation,
                   PipelineIdentity + 1U));
 }
 
+TEST(HiZReflectionValidation,
+     QualityPolicyResolverOwnsTraceBudgetAndPreservesHighCompatibility)
+{
+    struct ExpectedPolicy
+    {
+        RVX::RenderQualityTier tier;
+        RVX::SSRQuality ssrQuality;
+        RVX::uint32 maxSteps;
+        RVX::uint32 binarySearchSteps;
+    };
+    constexpr ExpectedPolicy policies[] = {
+        {RVX::RenderQualityTier::Low, RVX::SSRQuality::Low, 32U, 4U},
+        {RVX::RenderQualityTier::Medium, RVX::SSRQuality::Medium, 48U, 5U},
+        {RVX::RenderQualityTier::High, RVX::SSRQuality::High, 64U, 6U},
+        {RVX::RenderQualityTier::Ultra, RVX::SSRQuality::Ultra, 96U, 8U}};
+
+    const RVX::SSRConfig historicalHigh{};
+    const std::optional<RVX::SSRConfig> resolvedHigh =
+        RVX::ResolveSSRQualityPolicy(RVX::RenderQualityTier::High);
+    ASSERT_TRUE(resolvedHigh.has_value());
+    EXPECT_EQ(*resolvedHigh, historicalHigh);
+
+    RVX::uint64 priorIdentity = 0;
+    for (const ExpectedPolicy& expected : policies)
+    {
+        const std::optional<RVX::SSRConfig> resolvedPolicy =
+            RVX::ResolveSSRQualityPolicy(expected.tier);
+        ASSERT_TRUE(resolvedPolicy.has_value());
+        const RVX::SSRConfig& policy = *resolvedPolicy;
+        EXPECT_EQ(policy.quality, expected.ssrQuality);
+        EXPECT_EQ(policy.maxSteps, expected.maxSteps);
+        EXPECT_EQ(policy.binarySearchSteps, expected.binarySearchSteps);
+        EXPECT_FLOAT_EQ(policy.maxDistance, historicalHigh.maxDistance);
+        EXPECT_FLOAT_EQ(policy.thickness, historicalHigh.thickness);
+        EXPECT_FLOAT_EQ(policy.roughnessThreshold,
+                        historicalHigh.roughnessThreshold);
+        EXPECT_FLOAT_EQ(policy.edgeFade, historicalHigh.edgeFade);
+        EXPECT_FALSE(policy.halfResolution);
+        EXPECT_FALSE(policy.temporalFilter);
+        EXPECT_FALSE(policy.stochastic);
+
+        const RVX::uint64 identity =
+            RVX::ComputeSSRConfigurationIdentity(policy);
+        ASSERT_NE(identity, 0U);
+        EXPECT_NE(identity, priorIdentity);
+        priorIdentity = identity;
+    }
+
+    EXPECT_FALSE(
+        RVX::ResolveSSRQualityPolicy(RVX::RenderQualityTier::Count).has_value());
+    EXPECT_FALSE(RVX::ResolveSSRQualityPolicy(
+                     static_cast<RVX::RenderQualityTier>(255U))
+                     .has_value());
+}
+
+TEST(HiZReflectionValidation,
+     SSRRejectsUnresolvedOrAlteredPublicQualityPolicies)
+{
+    RVX::SSR ssr;
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+
+    const std::optional<RVX::SSRConfig> high =
+        RVX::ResolveSSRQualityPolicy(RVX::RenderQualityTier::High);
+    ASSERT_TRUE(high.has_value());
+
+    EXPECT_FALSE(ssr.SetResolvedQualityPolicy(
+        RVX::RenderQualityTier::Low, *high));
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+
+    RVX::SSRConfig altered = *high;
+    --altered.maxSteps;
+    EXPECT_FALSE(ssr.SetResolvedQualityPolicy(
+        RVX::RenderQualityTier::High, altered));
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+
+    EXPECT_FALSE(ssr.SetResolvedQualityPolicy(
+        RVX::RenderQualityTier::Count, *high));
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+
+    EXPECT_TRUE(ssr.SetResolvedQualityPolicy(
+        RVX::RenderQualityTier::High, *high));
+    ASSERT_TRUE(ssr.GetResolvedQualityPolicy().has_value());
+    EXPECT_EQ(*ssr.GetResolvedQualityPolicy(), *high);
+
+    ssr.Shutdown();
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+}
+
+TEST(HiZReflectionValidation,
+     PipelineIdentityRequiresAllCookedSSRStagesAndTracksEachStage)
+{
+    constexpr RVX::uint64 HiZBase = 11U;
+    constexpr RVX::uint64 HiZReduce = 13U;
+    constexpr RVX::uint64 Trace = 17U;
+    constexpr RVX::uint64 Resolve = 19U;
+    const RVX::uint64 baseline = RVX::ComputeSSRPipelineIdentity(
+        HiZBase, HiZReduce, Trace, Resolve);
+    ASSERT_NE(baseline, 0U);
+    EXPECT_EQ(baseline, RVX::ComputeSSRPipelineIdentity(
+                            HiZBase, HiZReduce, Trace, Resolve));
+    EXPECT_NE(baseline, RVX::ComputeSSRPipelineIdentity(
+                            HiZBase + 1U, HiZReduce, Trace, Resolve));
+    EXPECT_NE(baseline, RVX::ComputeSSRPipelineIdentity(
+                            HiZBase, HiZReduce + 1U, Trace, Resolve));
+    EXPECT_NE(baseline, RVX::ComputeSSRPipelineIdentity(
+                            HiZBase, HiZReduce, Trace + 1U, Resolve));
+    EXPECT_NE(baseline, RVX::ComputeSSRPipelineIdentity(
+                            HiZBase, HiZReduce, Trace, Resolve + 1U));
+    EXPECT_EQ(0U, RVX::ComputeSSRPipelineIdentity(
+                      0U, HiZReduce, Trace, Resolve));
+    EXPECT_EQ(0U, RVX::ComputeSSRPipelineIdentity(
+                      HiZBase, 0U, Trace, Resolve));
+    EXPECT_EQ(0U, RVX::ComputeSSRPipelineIdentity(
+                      HiZBase, HiZReduce, 0U, Resolve));
+    EXPECT_EQ(0U, RVX::ComputeSSRPipelineIdentity(
+                      HiZBase, HiZReduce, Trace, 0U));
+}
+
+TEST(HiZReflectionValidation,
+     RequestedUnreadyTracePreservesIntentAndAddsNoGraphPass)
+{
+    RVX::RenderGraph graph;
+    RVX::ViewData view{};
+    RVX::SSRFrameInputs inputs;
+    inputs.screenSpaceRequested = true;
+    inputs.screenSpaceTraceInputsReady = false;
+
+    RVX::SSR ssr;
+    const RVX::SSROutput output = ssr.AddToGraph(graph, view, inputs);
+    const RVX::SSRComputeStats& stats = ssr.GetLastComputeStats();
+    EXPECT_FALSE(output.IsValid());
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.screenSpaceRequested);
+    EXPECT_FALSE(stats.screenSpaceTraceInputsReady);
+    EXPECT_FALSE(stats.screenSpaceTraceScheduled);
+    EXPECT_FALSE(stats.supported);
+    EXPECT_FALSE(stats.scheduled);
+    EXPECT_FALSE(stats.executed);
+    EXPECT_NE(stats.fallbackReason.find("plan trace inputs are unavailable"),
+              std::string::npos);
+    EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+}
+
 TEST(HiZReflectionValidation, DepthPyramidIdentityRejectsIncompleteInputs)
 {
     const RVX::uint64 configurationIdentity =
@@ -547,6 +693,7 @@ TEST(HiZReflectionValidation,
     stats.identity.lightingPlanIdentity = 37u;
     stats.identity.depthPyramidIdentity = 41u;
     stats.identity.configurationIdentity = 43u;
+    stats.identity.pipelineIdentity = 45u;
     stats.identity.reflectionSurfaceIdentity = 47u;
     stats.identity.exposureStateContentHash = 53u;
     stats.sampleCount = 4u;

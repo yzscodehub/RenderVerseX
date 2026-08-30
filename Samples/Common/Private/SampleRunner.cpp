@@ -3288,6 +3288,11 @@ namespace
             result.hiZBuilt = reflection.hiZBuilt;
             result.globalIBLReady = reflection.globalIBLReady;
             result.fallbackChainResolved = reflection.fallbackChainResolved;
+            result.screenSpaceRequested = reflection.screenSpaceRequested;
+            result.screenSpaceTraceInputsReady =
+                reflection.screenSpaceTraceInputsReady;
+            result.screenSpaceTraceScheduled =
+                reflection.screenSpaceTraceScheduled;
             result.screenSpaceApplied = reflection.screenSpaceApplied;
             result.probesApplied = reflection.probesApplied;
             result.reflectionRouteEvidenceReady =
@@ -3306,6 +3311,8 @@ namespace
             result.reflectionFrameSequence = reflection.frameSequence;
             result.reflectionPlanIdentity = reflection.reflectionPlanIdentity;
             result.lightingPlanIdentity = reflection.lightingPlanIdentity;
+            result.configurationIdentity = reflection.configurationIdentity;
+            result.pipelineIdentity = reflection.pipelineIdentity;
             result.depthPyramidIdentity = reflection.depthPyramidIdentity;
             result.reflectionSurfaceIdentity =
                 reflection.reflectionSurfaceIdentity;
@@ -6411,6 +6418,9 @@ namespace
                        reflection.scheduled && reflection.executed &&
                        reflection.hiZBuilt && reflection.globalIBLReady &&
                        reflection.fallbackChainResolved &&
+                       reflection.screenSpaceRequested &&
+                       reflection.screenSpaceTraceInputsReady &&
+                       reflection.screenSpaceTraceScheduled &&
                        reflection.screenSpaceApplied &&
                        reflection.probesApplied &&
                        reflection.readyProbeCount != 0 &&
@@ -6424,6 +6434,8 @@ namespace
                        reflection.resolveGraphPassCount == 1 &&
                        reflection.reflectionPlanIdentity != 0 &&
                        reflection.lightingPlanIdentity != 0 &&
+                       reflection.configurationIdentity != 0 &&
+                       reflection.pipelineIdentity != 0 &&
                        reflection.depthPyramidIdentity != 0 &&
                        reflection.reflectionSurfaceIdentity != 0 &&
                        reflection.exposureStateContentHash != 0 &&

@@ -4406,6 +4406,63 @@ namespace
         return state;
     }
 
+    [[nodiscard]] uint64 GetTestSSRPipelineIdentity(
+        const PipelineCache* pipelineCache) noexcept
+    {
+        if (pipelineCache == nullptr)
+        {
+            // A nonzero synthetic identity lets focused negative tests reach
+            // the missing-renderer-resource gate without bypassing the
+            // configuration/depth identity contract.
+            return ComputeSSRPipelineIdentity(1u, 2u, 3u, 4u);
+        }
+        const PipelineCacheStats& stats = pipelineCache->GetStats();
+        return ComputeSSRPipelineIdentity(
+            stats.ssrHiZBasePipelineHash,
+            stats.ssrHiZReducePipelineHash,
+            stats.ssrTracePipelineHash,
+            stats.ssrResolvePipelineHash);
+    }
+
+    [[nodiscard]] bool ApplyTestSSRQualityPolicy(
+        SSR& ssr,
+        SSRFrameInputs& inputs,
+        uint32 width,
+        uint32 height,
+        const PipelineCache* pipelineCache,
+        bool traceInputsReady)
+    {
+        const std::optional<SSRConfig> policy =
+            ResolveSSRQualityPolicy(RenderQualityTier::High);
+        if (!policy.has_value() ||
+            !ssr.SetResolvedQualityPolicy(
+                RenderQualityTier::High, *policy))
+        {
+            return false;
+        }
+
+        inputs.configurationIdentity =
+            ComputeSSRConfigurationIdentity(*policy);
+        inputs.screenSpaceTraceInputsReady = traceInputsReady;
+        if (!traceInputsReady)
+        {
+            inputs.pipelineIdentity = 0;
+            inputs.depthPyramidIdentity = 0;
+            return inputs.configurationIdentity != 0;
+        }
+
+        inputs.pipelineIdentity = GetTestSSRPipelineIdentity(pipelineCache);
+        inputs.depthPyramidIdentity = ComputeSSRDepthPyramidIdentity(
+            inputs.frameIdentity,
+            inputs.viewIdentity,
+            RenderOutputExtent{width, height},
+            inputs.configurationIdentity,
+            inputs.pipelineIdentity);
+        return inputs.configurationIdentity != 0 &&
+               inputs.pipelineIdentity != 0 &&
+               inputs.depthPyramidIdentity != 0;
+    }
+
     /**
      * Mirrors the public 48-byte GPU state ABI only for qualification
      * readback tests.  Normal post-process tests never inspect or synthesize
@@ -29832,10 +29889,6 @@ TEST_F(RenderPassValidationFixture,
     localDevice.EnableBasicCapabilities();
 
     SSR ssr;
-    ssr.SetEnabled(true);
-    EXPECT_FALSE(ssr.IsSupported());
-    EXPECT_FALSE(ssr.IsEnabled());
-    EXPECT_FALSE(ssr.GetUnsupportedReason().empty());
 
     RHITextureRef ssrColorTexture =
         localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 48, RHIFormat::RGBA16_FLOAT));
@@ -29857,7 +29910,6 @@ TEST_F(RenderPassValidationFixture,
     inputs.viewIdentity = {1, 1, 0, ViewRole::Main};
     inputs.reflectionPlanIdentity = 1;
     inputs.lightingPlanIdentity = 1;
-    inputs.depthPyramidIdentity = 1;
     inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
         graph, ssrColorTexture.Get(), RHIResourceState::ShaderResource);
     inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
@@ -29867,6 +29919,13 @@ TEST_F(RenderPassValidationFixture,
     ViewData view;
     view.viewportWidth = 64;
     view.viewportHeight = 48;
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        ssr, inputs, view.viewportWidth, view.viewportHeight,
+        nullptr, true));
+    ssr.SetEnabled(true);
+    EXPECT_FALSE(ssr.IsSupported());
+    EXPECT_FALSE(ssr.IsEnabled());
+    EXPECT_FALSE(ssr.GetUnsupportedReason().empty());
 
     const SSROutput output = ssr.AddToGraph(graph, view, inputs);
     EXPECT_FALSE(output.IsValid());
@@ -29928,7 +29987,6 @@ TEST_F(RenderPassValidationFixture,
     inputs.viewIdentity = {75u, 76u, 0u, ViewRole::Main};
     inputs.reflectionPlanIdentity = 77u;
     inputs.lightingPlanIdentity = 78u;
-    inputs.depthPyramidIdentity = 79u;
     inputs.screenSpaceRequested = true;
     inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
         graph, sceneColor.Get(), RHIResourceState::ShaderResource);
@@ -29949,8 +30007,33 @@ TEST_F(RenderPassValidationFixture,
     ViewData ssrView;
     ssrView.viewportWidth = width;
     ssrView.viewportHeight = height;
+    SSR identityValidator;
+    identityValidator.SetResources(&pipelineCache);
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        identityValidator, inputs, width, height, &pipelineCache, true));
+    for (size_t mismatchIndex = 0; mismatchIndex < 3u; ++mismatchIndex)
+    {
+        SSRFrameInputs mismatched = inputs;
+        if (mismatchIndex == 0u)
+            ++mismatched.configurationIdentity;
+        else if (mismatchIndex == 1u)
+            ++mismatched.pipelineIdentity;
+        else
+            ++mismatched.depthPyramidIdentity;
+
+        EXPECT_FALSE(
+            identityValidator.AddToGraph(graph, ssrView, mismatched).IsValid());
+        EXPECT_EQ(graph.GetRecordedPassCount(), static_cast<size_t>(0));
+        EXPECT_NE(
+            identityValidator.GetLastComputeStats().missingInputReason.find(
+                "stale or mismatched"),
+            std::string::npos);
+    }
+
     SSR ssr;
     ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        ssr, inputs, width, height, &pipelineCache, true));
     ssr.SetEnabled(true);
     ASSERT_TRUE(ssr.IsSupported()) << ssr.GetUnsupportedReason();
 
@@ -30098,6 +30181,16 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(normalRoughness);
     ASSERT_TRUE(localProbe);
 
+    const std::optional<SSRConfig> ssrPolicy =
+        ResolveSSRQualityPolicy(RenderQualityTier::High);
+    ASSERT_TRUE(ssrPolicy.has_value());
+    const uint64 ssrConfigurationIdentity =
+        ComputeSSRConfigurationIdentity(*ssrPolicy);
+    const uint64 ssrPipelineIdentity =
+        GetTestSSRPipelineIdentity(&pipelineCache);
+    ASSERT_NE(ssrConfigurationIdentity, 0u);
+    ASSERT_NE(ssrPipelineIdentity, 0u);
+
     const auto makeInputs = [&](RenderGraph& graph,
                                 uint64 frameSequence,
                                 uint64 reflectionPlanIdentity,
@@ -30109,8 +30202,16 @@ TEST_F(RenderPassValidationFixture,
         inputs.viewIdentity = {75u, 76u, 0u, ViewRole::Main};
         inputs.reflectionPlanIdentity = reflectionPlanIdentity;
         inputs.lightingPlanIdentity = 78u;
-        inputs.depthPyramidIdentity = 79u + frameSequence;
+        inputs.configurationIdentity = ssrConfigurationIdentity;
+        inputs.pipelineIdentity = ssrPipelineIdentity;
         inputs.screenSpaceRequested = true;
+        inputs.screenSpaceTraceInputsReady = true;
+        inputs.depthPyramidIdentity = ComputeSSRDepthPyramidIdentity(
+            inputs.frameIdentity,
+            inputs.viewIdentity,
+            RenderOutputExtent{width, height},
+            inputs.configurationIdentity,
+            inputs.pipelineIdentity);
         inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
             graph, sceneColor.Get(), RHIResourceState::ShaderResource);
         inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
@@ -30147,6 +30248,8 @@ TEST_F(RenderPassValidationFixture,
     ssrView.viewportHeight = height;
     SSR ssr;
     ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ssr.SetResolvedQualityPolicy(
+        RenderQualityTier::High, *ssrPolicy));
     ASSERT_TRUE(ssr.ArmQualificationProbe());
 
     RenderGraph probeGraph;
@@ -30399,6 +30502,8 @@ TEST_F(RenderPassValidationFixture,
     ssrView.viewportHeight = height;
     SSR ssr;
     ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        ssr, inputs, width, height, &pipelineCache, false));
     ASSERT_TRUE(ssr.IsSupported()) << ssr.GetUnsupportedReason();
 
     const size_t descriptorCountBefore = device.createdDescriptorSetDescs.size();
@@ -31859,7 +31964,16 @@ TEST_F(RenderPassValidationFixture,
     ssr.SetEnabled(true);
     RenderGraph graph;
     ViewData view;
+    view.viewportWidth = 32u;
+    view.viewportHeight = 32u;
     SSRFrameInputs inputs;
+    inputs.frameIdentity = {1u, 1u, 1u, 1u};
+    inputs.viewIdentity = {1u, 1u, 0u, ViewRole::Main};
+    inputs.reflectionPlanIdentity = 1u;
+    inputs.lightingPlanIdentity = 1u;
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        ssr, inputs, view.viewportWidth, view.viewportHeight,
+        nullptr, true));
     const SSROutput output = ssr.AddToGraph(graph, view, inputs);
     EXPECT_FALSE(output.IsValid());
     const SSRComputeStats& ssrStats = ssr.GetLastComputeStats();

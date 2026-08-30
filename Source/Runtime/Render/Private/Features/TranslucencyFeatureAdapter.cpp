@@ -389,48 +389,6 @@ namespace
             });
     }
 
-    struct ParticleSoftDepthSnapshotCopyData
-    {
-        RGTextureHandle source{};
-        RGTextureHandle destination{};
-    };
-
-    [[nodiscard]] bool AddParticleSoftDepthSnapshotCopy(
-        RenderFeatureGraphBuilder& builder,
-        RGTextureHandle source,
-        RGTextureHandle destination)
-    {
-        return builder.AddPass<ParticleSoftDepthSnapshotCopyData>(
-            "ParticleSoftDepthSnapshotCopy",
-            RenderGraphPassType::Graphics,
-            [source, destination](RenderGraphBuilder& graphBuilder,
-                                  ParticleSoftDepthSnapshotCopyData& data)
-            {
-                data.source = graphBuilder.Read(
-                    source, RHIResourceState::CopySource);
-                data.destination = graphBuilder.Write(
-                    destination, RHIResourceState::CopyDest);
-            },
-            [](const ParticleSoftDepthSnapshotCopyData& data,
-               RenderGraphPassContext& context)
-            {
-                RHITexture* const source = context.GetTexture(data.source);
-                RHITexture* const destination =
-                    context.GetTexture(data.destination);
-                if (source == nullptr || destination == nullptr ||
-                    source == destination ||
-                    source->GetWidth() != destination->GetWidth() ||
-                    source->GetHeight() != destination->GetHeight() ||
-                    source->GetFormat() != destination->GetFormat())
-                {
-                    context.MarkExecutionFailed(
-                        "Particle soft-depth snapshot copy has invalid source/destination provenance");
-                    return;
-                }
-                context.Commands().CopyTexture(source, destination);
-            });
-    }
-
     [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
         const DefaultRenderPassBundle& bundle) noexcept
     {
@@ -507,48 +465,31 @@ namespace
 
         if (requirements.softDepthRequested)
         {
-            const RHITextureDesc* const depthDesc =
-                builder.GetGraph().GetTextureDesc(context.view.depthTarget);
-            const bool validSource = context.view.depthTarget.IsValid() &&
-                HasCurrentGraphProvenance(
-                    context.view.depthTarget, context.identity) &&
-                depthDesc != nullptr &&
-                depthDesc->format == RHIFormat::D32_FLOAT &&
-                depthDesc->width == extent.width &&
-                depthDesc->height == extent.height &&
-                depthDesc->sampleCount == RHISampleCount::Count1 &&
-                HasFlag(depthDesc->usage, RHITextureUsage::CopySrc);
-            if (!validSource)
+            const RHITextureDesc* const depthSnapshotDesc =
+                builder.GetGraph().GetTextureDesc(
+                    context.sceneDepthSnapshot.texture);
+            const bool validSnapshot =
+                context.sceneDepthSnapshot.IsCompatibleWith(
+                    context.identity, extent) &&
+                depthSnapshotDesc != nullptr &&
+                depthSnapshotDesc->format == RHIFormat::D32_FLOAT &&
+                depthSnapshotDesc->width == extent.width &&
+                depthSnapshotDesc->height == extent.height &&
+                depthSnapshotDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(depthSnapshotDesc->usage,
+                        RHITextureUsage::ShaderResource);
+            if (!validSnapshot)
             {
                 if (requirements.softDepthRequired)
                 {
                     outFailure =
-                        "Particle required soft depth needs a D32 CopySrc surface matching the view extent";
+                        "Particle required soft depth needs the current SceneDepthSnapshot D32 surface at the exact view extent";
                     return false;
                 }
             }
             else
             {
-                RHITextureDesc softDepthDesc = RHITextureDesc::DepthStencil(
-                    extent.width, extent.height, RHIFormat::D32_FLOAT);
-                softDepthDesc.usage = softDepthDesc.usage |
-                    RHITextureUsage::ShaderResource |
-                    RHITextureUsage::CopyDst;
-                softDepthDesc.debugName = "ParticleSoftDepthSnapshot";
-                outInput.softDepthSnapshot =
-                    builder.CreateTexture(softDepthDesc);
-                if (!outInput.softDepthSnapshot.IsValid() ||
-                    outInput.softDepthSnapshot.index ==
-                        context.view.depthTarget.index ||
-                    !AddParticleSoftDepthSnapshotCopy(
-                        builder,
-                        context.view.depthTarget,
-                        outInput.softDepthSnapshot))
-                {
-                    outFailure =
-                        "Particle soft-depth snapshot allocation/copy registration failed";
-                    return false;
-                }
+                outInput.softDepthSnapshot = context.sceneDepthSnapshot;
             }
         }
 
@@ -622,6 +563,8 @@ RenderFeatureDescriptor TranslucencyFeatureAdapter::Describe() const
     descriptor.name = "Translucency";
     descriptor.phase = RenderFeaturePhase::Translucency;
     descriptor.consumedResources = {
+        {RenderBlackboardResourceId::SceneDepthSnapshot,
+         SceneDepthSnapshot::SchemaVersion},
         {RenderBlackboardResourceId::PreTranslucencyOutputs,
          PreTranslucencyOutputs::SchemaVersion}};
     descriptor.producedResources = {
@@ -754,6 +697,20 @@ void TranslucencyFeatureAdapter::AddPasses(
         return;
     }
 
+    code = RenderGraphBlackboardCode::Success;
+    const SceneDepthSnapshot* const sceneDepthSnapshot =
+        blackboard.Require<SceneDepthSnapshot>(
+            BuiltinRenderFeatureIds::Translucency, Describe(), &code);
+    if (sceneDepthSnapshot == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        sceneDepthSnapshot->frameIdentity != m_preparedContext.frameIdentity ||
+        sceneDepthSnapshot->viewIdentity != m_preparedContext.viewIdentity)
+    {
+        SetCompositionFailure(
+            "Translucency requires the exact SceneDepthSnapshot v1 declaration");
+        return;
+    }
+
     RenderPassRecordContext context = m_recordContext;
     context.view.colorTarget = inputs->hdrSceneColor;
     context.view.depthTarget = inputs->deviceDepth;
@@ -778,6 +735,16 @@ void TranslucencyFeatureAdapter::AddPasses(
         context.identity,
         inputs->opaqueSceneSnapshot,
         inputs->opaqueSceneSnapshotReceipt};
+    if (sceneDepthSnapshot->available)
+    {
+        context.sceneDepthSnapshot = SceneDepthSnapshotRecordInput{
+            context.identity,
+            sceneDepthSnapshot->depthSnapshot,
+            sceneDepthSnapshot->depthSnapshotMetadata.extent,
+            sceneDepthSnapshot->depthSnapshotMetadata.format,
+            sceneDepthSnapshot->depthSnapshotMetadata.sampleCount,
+            sceneDepthSnapshot->receipt};
+    }
     context.volumetricLighting = VolumetricLightingRecordInput{
         context.identity,
         inputs->volumetricPlanIdentity,

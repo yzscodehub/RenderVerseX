@@ -3545,6 +3545,17 @@ namespace RVX
             stream << "      \"fallbackChainResolved\": "
                    << Diagnostics::JsonBool(reflection.fallbackChainResolved)
                    << ",\n";
+            stream << "      \"screenSpaceRequested\": "
+                   << Diagnostics::JsonBool(reflection.screenSpaceRequested)
+                   << ",\n";
+            stream << "      \"screenSpaceTraceInputsReady\": "
+                   << Diagnostics::JsonBool(
+                          reflection.screenSpaceTraceInputsReady)
+                   << ",\n";
+            stream << "      \"screenSpaceTraceScheduled\": "
+                   << Diagnostics::JsonBool(
+                          reflection.screenSpaceTraceScheduled)
+                   << ",\n";
             stream << "      \"screenSpaceApplied\": "
                    << Diagnostics::JsonBool(reflection.screenSpaceApplied)
                    << ",\n";
@@ -3581,6 +3592,10 @@ namespace RVX
                    << reflection.reflectionPlanIdentity << ",\n";
             stream << "      \"lightingPlanIdentity\": "
                    << reflection.lightingPlanIdentity << ",\n";
+            stream << "      \"configurationIdentity\": "
+                   << reflection.configurationIdentity << ",\n";
+            stream << "      \"pipelineIdentity\": "
+                   << reflection.pipelineIdentity << ",\n";
             stream << "      \"depthPyramidIdentity\": "
                    << reflection.depthPyramidIdentity << ",\n";
             stream << "      \"reflectionSurfaceIdentity\": "

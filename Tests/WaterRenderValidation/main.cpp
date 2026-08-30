@@ -6,11 +6,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <string>
 
 namespace
@@ -412,6 +414,35 @@ TEST(WaterFeaturePassValidation, ValidV3SnapshotRequiresDistinctOpaqueDepthAndRe
     EXPECT_FALSE(pass.GetStats().enabled);
 }
 
+TEST(WaterFeaturePassValidation,
+     SnapshotCopiesMustCompleteBeforeAnyWaterDrawMayExecute)
+{
+    RVX::WaterSurfaceRecordInput input;
+    input.opaqueSceneSnapshot.receipt =
+        std::make_shared<RVX::OpaqueSceneSnapshotCopyReceipt>();
+    input.depthSnapshot.receipt =
+        std::make_shared<RVX::SceneDepthSnapshotCopyReceipt>();
+    ASSERT_FALSE(RVX::AreWaterSnapshotCopiesReady(input));
+
+    input.opaqueSceneSnapshot.receipt->copied.store(
+        true, std::memory_order_release);
+    EXPECT_FALSE(RVX::AreWaterSnapshotCopiesReady(input));
+    input.depthSnapshot.receipt->copied.store(
+        true, std::memory_order_release);
+    EXPECT_TRUE(RVX::AreWaterSnapshotCopiesReady(input));
+
+    const std::filesystem::path root{RVX_SOURCE_DIR};
+    const std::string source = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp");
+    const size_t receiptGate = source.find(
+        "if (!AreWaterSnapshotCopiesReady(data.waterSurface))");
+    const size_t beginRenderPass = source.find(
+        "commands.BeginRenderPass(renderPassDesc)", receiptGate);
+    ASSERT_NE(receiptGate, std::string::npos);
+    ASSERT_NE(beginRenderPass, std::string::npos);
+    EXPECT_LT(receiptGate, beginRenderPass);
+}
+
 TEST(WaterFeaturePassValidation, CorruptSchemaHashAndIncompleteSnapshotsFailClosed)
 {
     RVX::WaterFeaturePass pass;
@@ -459,6 +490,8 @@ TEST(WaterFeaturePassValidation, RendererCompositionAndCookedShaderCatalogAreHon
         root / "Source/Runtime/Render/Private/Features/LegacyForwardFeatureAdapter.cpp");
     const std::string deferredAdapter = ReadTextFile(
         root / "Source/Runtime/Render/Private/Features/DeferredRecipeFeatureAdapter.cpp");
+    const std::string depthSnapshotBuilder = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Features/SceneDepthSnapshotBuilder.cpp");
     EXPECT_NE(defaultComposition.find("CreateDefaultRenderPassBundle(dependencies)"),
               std::string::npos);
     EXPECT_NE(renderComposition.find("m_passBundle(std::make_unique<DefaultRenderPassBundle>())"),
@@ -473,6 +506,16 @@ TEST(WaterFeaturePassValidation, RendererCompositionAndCookedShaderCatalogAreHon
     EXPECT_NE(forwardAdapter.find("BuildWaterSurfaceRecordInput"), std::string::npos);
     EXPECT_NE(deferredAdapter.find("PassPriority::Water"), std::string::npos);
     EXPECT_NE(deferredAdapter.find("BuildWaterSurfaceRecordInput"), std::string::npos);
+    EXPECT_NE(forwardAdapter.find("BuildSceneDepthSnapshot("), std::string::npos);
+    EXPECT_NE(deferredAdapter.find("BuildSceneDepthSnapshot("), std::string::npos);
+    const std::string legacyWaterDepthCopyName =
+        "WaterDepth" "SnapshotCopy";
+    EXPECT_EQ(forwardAdapter.find(legacyWaterDepthCopyName), std::string::npos);
+    EXPECT_EQ(deferredAdapter.find(legacyWaterDepthCopyName), std::string::npos);
+    EXPECT_NE(depthSnapshotBuilder.find("SceneDepthSnapshotCopy"),
+              std::string::npos);
+    EXPECT_NE(depthSnapshotBuilder.find("RHIResourceState::CopySource"),
+              std::string::npos);
 
     const std::string waterImplementation = ReadTextFile(
         root / "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp");
@@ -484,6 +527,10 @@ TEST(WaterFeaturePassValidation, RendererCompositionAndCookedShaderCatalogAreHon
     EXPECT_NE(waterImplementation.find("if (m_initializationAttempted)"),
               std::string::npos);
     EXPECT_EQ(waterImplementation.find("WaitIdle("), std::string::npos);
+    EXPECT_NE(waterImplementation.find("depthSnapshot.texture"),
+              std::string::npos);
+    EXPECT_NE(waterImplementation.find("depthSnapshot.receipt"),
+              std::string::npos);
     EXPECT_NE(waterShader.find("WaveSteepnessTemporalPhase"), std::string::npos);
     EXPECT_NE(waterShader.find("fmod(k * dot"), std::string::npos);
     EXPECT_NE(waterShader.find("DetailTemporalPhases"), std::string::npos);

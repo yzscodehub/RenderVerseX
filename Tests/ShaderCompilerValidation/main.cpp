@@ -646,6 +646,127 @@ namespace
         }
     }
 
+    void VerifyGFX24TAAShaderMatrix(
+        RVX::IShaderCompiler& compiler,
+        RVX::RHIBackendType backend)
+    {
+        constexpr std::array<const char*, 2> entryPoints = {
+            "PSResolve",
+            "PSStore",
+        };
+        const fs::path shaderPath =
+            fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+            "Shaders" / "PostProcess" / "TAA.hlsl";
+        ASSERT_TRUE(fs::exists(shaderPath)) << shaderPath.string();
+        const std::string source = ReadTextFile(shaderPath);
+        ASSERT_FALSE(source.empty()) << shaderPath.string();
+        const std::string shaderPathString = shaderPath.string();
+
+        for (const char* const entryPoint : entryPoints)
+        {
+            SCOPED_TRACE(
+                std::string("GFX24 TAA ") + entryPoint + " backend " +
+                std::to_string(static_cast<RVX::uint32>(backend)));
+
+            RVX::ShaderCompileOptions options;
+            options.stage = RVX::RHIShaderStage::Pixel;
+            options.entryPoint = entryPoint;
+            options.sourceCode = source.c_str();
+            options.sourcePath = shaderPathString.c_str();
+            options.targetBackend = backend;
+            options.enableOptimization = false;
+            options.defines.push_back({
+                "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+                backend == RVX::RHIBackendType::Vulkan ||
+                        backend == RVX::RHIBackendType::OpenGL
+                    ? "1"
+                    : "0"});
+
+            const RVX::ShaderCompileSupport support =
+                compiler.QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported()) << support.reason;
+            const RVX::ShaderCompileResult result = compiler.Compile(options);
+            ASSERT_TRUE(result.success) << result.errorMessage;
+            ASSERT_TRUE(result.reflection.valid);
+            ASSERT_FALSE(result.bytecode.empty());
+            if (backend != RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasTrackedInclude(result, "FullscreenTriangle.hlsli"));
+                EXPECT_TRUE(HasTrackedInclude(result, "Exposure.hlsli"));
+            }
+            if (backend == RVX::RHIBackendType::DX12)
+            {
+                EXPECT_TRUE(HasDXILContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasDXBCContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::Vulkan ||
+                     backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
+            }
+            if (backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_FALSE(result.glslSource.empty());
+            }
+            else if (backend == RVX::RHIBackendType::Metal)
+            {
+                EXPECT_FALSE(result.mslSource.empty());
+                EXPECT_EQ(result.mslEntryPoint, entryPoint);
+            }
+
+            const auto findResource = [&result](const char* name)
+            {
+                return std::find_if(
+                    result.reflection.resources.begin(),
+                    result.reflection.resources.end(),
+                    [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                    {
+                        return resource.name == name;
+                    });
+            };
+            const auto expectResource = [&result, &findResource](
+                                            const char* name,
+                                            RVX::uint32 binding,
+                                            RVX::RHIBindingType type)
+            {
+                const auto resource = findResource(name);
+                ASSERT_NE(resource, result.reflection.resources.end()) << name;
+                EXPECT_EQ(resource->set, 0u) << name;
+                EXPECT_EQ(resource->binding, binding) << name;
+                EXPECT_EQ(resource->type, type) << name;
+                EXPECT_EQ(resource->count, 1u) << name;
+            };
+
+            expectResource(
+                "CurrentColor", 1u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "CurrentDepth", 3u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "LinearClampSampler", 7u, RVX::RHIBindingType::Sampler);
+
+            if (std::string_view(entryPoint) != "PSResolve")
+            {
+                continue;
+            }
+            expectResource(
+                "TAAConstants", 0u, RVX::RHIBindingType::UniformBuffer);
+            expectResource(
+                "HistoryColor", 2u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "HistoryDepth", 4u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "Velocity", 5u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "ReactiveMask", 6u, RVX::RHIBindingType::SampledTexture);
+            expectResource(
+                "ExposureState", 8u,
+                RVX::RHIBindingType::ShaderResourceBuffer);
+        }
+    }
+
     std::string TestVertexShaderSource()
     {
         return R"(
@@ -2054,6 +2175,14 @@ TEST_F(ShaderCompilerValidationFixture,
     VerifyGFX22WeightedBlendedOITShaderMatrix(
         *compiler, RVX::RHIBackendType::DX12);
 }
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX24TAAShadersCompileAsDXILWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::DX12);
+}
 #endif
 
 #if RVX_ENABLE_DX11
@@ -2083,6 +2212,14 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_NE(compiler, nullptr);
     VerifyGFX22WeightedBlendedOITShaderMatrix(
         *compiler, RVX::RHIBackendType::DX11);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX24TAAShadersCompileAsDXBCWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::DX11);
 }
 #endif
 
@@ -2123,6 +2260,14 @@ TEST_F(ShaderCompilerValidationFixture,
     VerifyGFX22WeightedBlendedOITShaderMatrix(
         *compiler, RVX::RHIBackendType::Vulkan);
 }
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX24TAAShadersCompileAsSPIRVWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::Vulkan);
+}
 #endif
 
 #if RVX_ENABLE_OPENGL
@@ -2161,6 +2306,14 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_NE(compiler, nullptr);
     VerifyGFX22WeightedBlendedOITShaderMatrix(
         *compiler, RVX::RHIBackendType::OpenGL);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX24TAAShadersCompileAsOpenGLGLSLWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::OpenGL);
 }
 
 TEST_F(ShaderCompilerValidationFixture,
@@ -2242,6 +2395,14 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_NE(compiler, nullptr);
     VerifyGFX22WeightedBlendedOITShaderMatrix(
         *compiler, RVX::RHIBackendType::Metal);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX24TAAShadersCompileAsMSLWithDescriptorABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX24TAAShaderMatrix(*compiler, RVX::RHIBackendType::Metal);
 }
 #endif
 

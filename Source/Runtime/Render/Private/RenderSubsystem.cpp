@@ -1311,6 +1311,8 @@ namespace
                         hiZQualificationReceipt.frameIdentity.frameSequence &&
                     hiZQualification.reflectionPlanIdentity != 0 &&
                     hiZQualification.lightingPlanIdentity != 0 &&
+                    hiZQualification.configurationIdentity != 0 &&
+                    hiZQualification.pipelineIdentity != 0 &&
                     hiZQualification.depthPyramidIdentity != 0 &&
                     hiZQualification.reflectionSurfaceIdentity != 0 &&
                     hiZQualification.exposureStateContentHash != 0)

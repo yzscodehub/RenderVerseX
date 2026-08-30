@@ -74,26 +74,24 @@ float SanitizeScalar(float value)
     return (value == value && abs(value) < 1.0e20) ? value : 0.0;
 }
 
-float3 SampleCurrentNeighborhoodMin(float2 uv)
+struct CurrentColorNeighborhood
 {
-    float3 minValue = RGBToYCoCg(SanitizeColor(CurrentColor.SampleLevel(LinearClampSampler, uv, 0.0).rgb));
-    [unroll]
-    for (int y = -1; y <= 1; ++y)
-    {
-        [unroll]
-        for (int x = -1; x <= 1; ++x)
-        {
-            const float2 offset = float2(x, y) * RenderSize.zw;
-            minValue = min(minValue, RGBToYCoCg(SanitizeColor(
-                CurrentColor.SampleLevel(LinearClampSampler, uv + offset, 0.0).rgb)));
-        }
-    }
-    return minValue;
-}
+    float4 center;
+    float3 minimumYCoCg;
+    float3 maximumYCoCg;
+    float3 axialAverageRGB;
+};
 
-float3 SampleCurrentNeighborhoodMax(float2 uv)
+CurrentColorNeighborhood SampleCurrentColorNeighborhood(float2 uv)
 {
-    float3 maxValue = RGBToYCoCg(SanitizeColor(CurrentColor.SampleLevel(LinearClampSampler, uv, 0.0).rgb));
+    CurrentColorNeighborhood neighborhood;
+    neighborhood.center = float4(0.0, 0.0, 0.0, 0.0);
+    neighborhood.minimumYCoCg = float3(1.0e20, 1.0e20, 1.0e20);
+    neighborhood.maximumYCoCg = float3(-1.0e20, -1.0e20, -1.0e20);
+    float3 axialSumRGB = float3(0.0, 0.0, 0.0);
+
+    // Keep the traversal row-major so all resolve consumers share exactly one
+    // deterministic 3x3 current-color window.
     [unroll]
     for (int y = -1; y <= 1; ++y)
     {
@@ -101,17 +99,36 @@ float3 SampleCurrentNeighborhoodMax(float2 uv)
         for (int x = -1; x <= 1; ++x)
         {
             const float2 offset = float2(x, y) * RenderSize.zw;
-            maxValue = max(maxValue, RGBToYCoCg(SanitizeColor(
-                CurrentColor.SampleLevel(LinearClampSampler, uv + offset, 0.0).rgb)));
+            const float4 rawSample = CurrentColor.SampleLevel(
+                LinearClampSampler, uv + offset, 0.0);
+            const float3 sampleRGB = SanitizeColor(rawSample.rgb);
+            const float3 sampleYCoCg = RGBToYCoCg(sampleRGB);
+            neighborhood.minimumYCoCg = min(
+                neighborhood.minimumYCoCg, sampleYCoCg);
+            neighborhood.maximumYCoCg = max(
+                neighborhood.maximumYCoCg, sampleYCoCg);
+
+            if (x == 0 && y == 0)
+            {
+                neighborhood.center = rawSample;
+            }
+            if (abs(x) + abs(y) == 1)
+            {
+                axialSumRGB += sampleRGB;
+            }
         }
     }
-    return maxValue;
+
+    neighborhood.axialAverageRGB = axialSumRGB * 0.25;
+    return neighborhood;
 }
 
 float4 PSResolve(VSOutput input) : SV_TARGET0
 {
     const float2 uv = input.TexCoord;
-    const float4 currentSample = CurrentColor.SampleLevel(LinearClampSampler, uv, 0.0);
+    const CurrentColorNeighborhood neighborhood =
+        SampleCurrentColorNeighborhood(uv);
+    const float4 currentSample = neighborhood.center;
     const float3 current = SanitizeColor(currentSample.rgb);
     const float reactive = saturate(ReactiveMask.SampleLevel(LinearClampSampler, uv, 0.0) *
                                       max(ResolveParams.y, 0.0));
@@ -138,8 +155,6 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
         const bool depthMatches =
             abs(currentDepth - previousDepth) <= depthTolerance;
 
-        const float3 neighborhoodMin = SampleCurrentNeighborhoodMin(uv);
-        const float3 neighborhoodMax = SampleCurrentNeighborhoodMax(uv);
         const RVXExposureState exposureState = ExposureState[0];
         const float historyRescale = RVXExposureStateIsValid(exposureState)
             ? RVXExposurePreExposure(exposureState) /
@@ -150,7 +165,10 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
                 LinearClampSampler, saturate(previousUV), 0.0).rgb) *
             historyRescale;
         float3 historyYCoCg = RGBToYCoCg(historyPreExposed);
-        historyYCoCg = clamp(historyYCoCg, neighborhoodMin, neighborhoodMax);
+        historyYCoCg = clamp(
+            historyYCoCg,
+            neighborhood.minimumYCoCg,
+            neighborhood.maximumYCoCg);
         const float3 history = SanitizeColor(YCoCgToRGB(historyYCoCg));
 
         const float velocityRejection = saturate(
@@ -166,17 +184,11 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
                 : 0.0;
         resolved = lerp(current, history, historyWeight);
     }
-    const float3 north = SanitizeColor(CurrentColor.SampleLevel(
-        LinearClampSampler, uv + float2(0.0, -RenderSize.w), 0.0).rgb);
-    const float3 south = SanitizeColor(CurrentColor.SampleLevel(
-        LinearClampSampler, uv + float2(0.0, RenderSize.w), 0.0).rgb);
-    const float3 east = SanitizeColor(CurrentColor.SampleLevel(
-        LinearClampSampler, uv + float2(RenderSize.z, 0.0), 0.0).rgb);
-    const float3 west = SanitizeColor(CurrentColor.SampleLevel(
-        LinearClampSampler, uv + float2(-RenderSize.z, 0.0), 0.0).rgb);
-    const float3 localAverage = 0.25 * (north + south + east + west);
     const float sharpenStrength = saturate(ResolveParams.z) * (1.0 - reactive);
-    resolved = max(resolved + (resolved - localAverage) * sharpenStrength, 0.0);
+    resolved = max(
+        resolved +
+            (resolved - neighborhood.axialAverageRGB) * sharpenStrength,
+        0.0);
     return float4(SanitizeColor(resolved), SanitizeScalar(currentSample.a));
 }
 

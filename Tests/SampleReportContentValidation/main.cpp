@@ -3362,6 +3362,9 @@ namespace
         bool hiZBuilt = false;
         bool globalIBLReady = false;
         bool fallbackChainResolved = false;
+        bool screenSpaceRequested = false;
+        bool screenSpaceTraceInputsReady = false;
+        bool screenSpaceTraceScheduled = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -3380,6 +3383,8 @@ namespace
         uint64_t reflectionFrameSequence = 0;
         uint64_t reflectionPlanIdentity = 0;
         uint64_t lightingPlanIdentity = 0;
+        uint64_t configurationIdentity = 0;
+        uint64_t pipelineIdentity = 0;
         uint64_t depthPyramidIdentity = 0;
         uint64_t reflectionSurfaceIdentity = 0;
         uint64_t exposureStateContentHash = 0;
@@ -3427,6 +3432,12 @@ namespace
                              Context) &&
             ReadBooleanField(*reflection, "fallbackChainResolved",
                              fallbackChainResolved, Context) &&
+            ReadBooleanField(*reflection, "screenSpaceRequested",
+                             screenSpaceRequested, Context) &&
+            ReadBooleanField(*reflection, "screenSpaceTraceInputsReady",
+                             screenSpaceTraceInputsReady, Context) &&
+            ReadBooleanField(*reflection, "screenSpaceTraceScheduled",
+                             screenSpaceTraceScheduled, Context) &&
             ReadBooleanField(*reflection, "screenSpaceApplied",
                              screenSpaceApplied, Context) &&
             ReadBooleanField(*reflection, "probesApplied", probesApplied,
@@ -3455,6 +3466,10 @@ namespace
                               reflectionPlanIdentity, Context) &&
             ReadUnsignedField(*reflection, "lightingPlanIdentity",
                               lightingPlanIdentity, Context) &&
+            ReadUnsignedField(*reflection, "configurationIdentity",
+                              configurationIdentity, Context) &&
+            ReadUnsignedField(*reflection, "pipelineIdentity",
+                              pipelineIdentity, Context) &&
             ReadUnsignedField(*reflection, "depthPyramidIdentity",
                               depthPyramidIdentity, Context) &&
             ReadUnsignedField(*reflection, "reflectionSurfaceIdentity",
@@ -3491,11 +3506,14 @@ namespace
             receiptFrameSequence == lastPresentedFrameSequence &&
             reflectionFrameSequence == receiptFrameSequence &&
             reflectionPlanIdentity != 0u && lightingPlanIdentity != 0u &&
+            configurationIdentity != 0u && pipelineIdentity != 0u &&
             depthPyramidIdentity != 0u && reflectionSurfaceIdentity != 0u &&
             exposureStateContentHash != 0u;
         const bool exactHiZRoute = graphExecutionFinalized && requested &&
             supported && scheduled && executed && hiZBuilt && globalIBLReady &&
-            fallbackChainResolved && screenSpaceApplied && probesApplied &&
+            fallbackChainResolved && screenSpaceRequested &&
+            screenSpaceTraceInputsReady && screenSpaceTraceScheduled &&
+            screenSpaceApplied && probesApplied &&
             reflectionRouteEvidenceReady &&
             routeMaskRadianceSchemaVersion == 1u &&
             localProbeRadianceQualified && globalIBLRadianceQualified &&
@@ -8062,6 +8080,9 @@ namespace
                     {"hiZBuilt", true},
                     {"globalIBLReady", true},
                     {"fallbackChainResolved", true},
+                    {"screenSpaceRequested", true},
+                    {"screenSpaceTraceInputsReady", true},
+                    {"screenSpaceTraceScheduled", true},
                     {"screenSpaceApplied", true},
                     {"probesApplied", true},
                     {"reflectionRouteEvidenceReady", true},
@@ -8076,6 +8097,8 @@ namespace
                     {"reflectionFrameSequence", 71},
                     {"reflectionPlanIdentity", 101},
                     {"lightingPlanIdentity", 202},
+                    {"configurationIdentity", 252},
+                    {"pipelineIdentity", 272},
                     {"depthPyramidIdentity", 303},
                     {"reflectionSurfaceIdentity", 404},
                     {"exposureStateContentHash", 505},

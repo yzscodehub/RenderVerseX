@@ -26,6 +26,7 @@
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
+#include "Features/SceneDepthSnapshotBuilder.h"
 #include "Features/TranslucencyFeatureAdapter.h"
 #include "Features/VolumetricLightingFeatureAdapter.h"
 #include "../Common/RenderGraphValidationAccess.h"
@@ -49,6 +50,9 @@ namespace
     constexpr RenderFeatureResourceContract SceneTexturesContract{
         RenderBlackboardResourceId::SceneTextures,
         SceneTextures::SchemaVersion};
+    constexpr RenderFeatureResourceContract SceneDepthSnapshotContract{
+        RenderBlackboardResourceId::SceneDepthSnapshot,
+        SceneDepthSnapshot::SchemaVersion};
     constexpr RenderFeatureResourceContract VisibilityOutputsContract{
         RenderBlackboardResourceId::VisibilityOutputs,
         VisibilityOutputs::SchemaVersion};
@@ -109,6 +113,162 @@ namespace
         RHIBufferDesc m_desc{};
     };
 
+    class DepthSnapshotTestTexture final : public RHITexture
+    {
+    public:
+        explicit DepthSnapshotTestTexture(const RHITextureDesc& description)
+            : m_description(description)
+        {
+        }
+
+        uint32 GetWidth() const override { return m_description.width; }
+        uint32 GetHeight() const override { return m_description.height; }
+        uint32 GetDepth() const override { return m_description.depth; }
+        uint32 GetMipLevels() const override { return m_description.mipLevels; }
+        uint32 GetArraySize() const override { return m_description.arraySize; }
+        RHIFormat GetFormat() const override { return m_description.format; }
+        RHITextureUsage GetUsage() const override { return m_description.usage; }
+        RHITextureDimension GetDimension() const override
+        {
+            return m_description.dimension;
+        }
+        RHISampleCount GetSampleCount() const override
+        {
+            return m_description.sampleCount;
+        }
+
+    private:
+        RHITextureDesc m_description{};
+    };
+
+    /** Minimal allocation device for graph-execution contract tests. */
+    class DepthSnapshotTestDevice final : public IRHIDevice
+    {
+    public:
+        DepthSnapshotTestDevice()
+        {
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+        }
+
+        RHIBufferRef CreateBuffer(const RHIBufferDesc&) override { return {}; }
+        RHITextureRef CreateTexture(const RHITextureDesc& description) override
+        {
+            ++createdTextureCount;
+            return RHITextureRef(new DepthSnapshotTestTexture(description));
+        }
+        RHITextureViewRef CreateTextureView(
+            RHITexture*, const RHITextureViewDesc& = {}) override
+        {
+            return {};
+        }
+        RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
+        RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
+        RHIHeapRef CreateHeap(const RHIHeapDesc&) override { return {}; }
+        RHITextureRef CreatePlacedTexture(
+            RHIHeap*, uint64, const RHITextureDesc&) override
+        {
+            return {};
+        }
+        RHIBufferRef CreatePlacedBuffer(
+            RHIHeap*, uint64, const RHIBufferDesc&) override
+        {
+            return {};
+        }
+        MemoryRequirements GetTextureMemoryRequirements(
+            const RHITextureDesc&) override
+        {
+            return {};
+        }
+        MemoryRequirements GetBufferMemoryRequirements(
+            const RHIBufferDesc&) override
+        {
+            return {};
+        }
+        RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(
+            const RHIDescriptorSetLayoutDesc&) override
+        {
+            return {};
+        }
+        RHIPipelineLayoutRef CreatePipelineLayout(
+            const RHIPipelineLayoutDesc&) override
+        {
+            return {};
+        }
+        RHIPipelineRef CreateGraphicsPipeline(
+            const RHIGraphicsPipelineDesc&) override
+        {
+            return {};
+        }
+        RHIPipelineRef CreateComputePipeline(
+            const RHIComputePipelineDesc&) override
+        {
+            return {};
+        }
+        RHIDescriptorSetRef CreateDescriptorSet(
+            const RHIDescriptorSetDesc&) override
+        {
+            return {};
+        }
+        RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override
+        {
+            return {};
+        }
+        RHICommandContextRef CreateCommandContext(
+            RHICommandQueueType) override
+        {
+            return {};
+        }
+        uint64 SubmitCommandContext(RHICommandContext*, RHIFence*) override
+        {
+            return 0;
+        }
+        uint64 SubmitCommandContexts(
+            std::span<RHICommandContext* const>, RHIFence*) override
+        {
+            return 0;
+        }
+        uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan&, RHIFence*) override
+        {
+            return 0;
+        }
+        RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override
+        {
+            return {};
+        }
+        RHIFenceRef CreateFence(uint64 = 0) override { return {}; }
+        void WaitForFence(RHIFence*, uint64) override {}
+        void WaitIdle() override {}
+        void BeginFrame() override {}
+        void EndFrame() override {}
+        uint32 GetCurrentFrameIndex() const override { return 0; }
+        RHIStagingBufferRef CreateStagingBuffer(
+            const RHIStagingBufferDesc&) override
+        {
+            return {};
+        }
+        RHIRingBufferRef CreateRingBuffer(const RHIRingBufferDesc&) override
+        {
+            return {};
+        }
+        RHIMemoryStats GetMemoryStats() const override { return {}; }
+        void BeginResourceGroup(const char*) override {}
+        void EndResourceGroup() override {}
+        const RHICapabilities& GetCapabilities() const override
+        {
+            return m_capabilities;
+        }
+        RHIBackendType GetBackendType() const override
+        {
+            return RHIBackendType::DX12;
+        }
+
+        uint32 createdTextureCount = 0;
+
+    private:
+        RHICapabilities m_capabilities{};
+    };
+
     class NoOpCommandContext final : public RHICommandContext
     {
     public:
@@ -153,9 +313,14 @@ namespace
         void Dispatch(uint32, uint32, uint32) override {}
         void DispatchIndirect(RHIBuffer*, uint64) override {}
         void CopyBuffer(RHIBuffer*, RHIBuffer*, uint64, uint64, uint64) override {}
-        void CopyTexture(RHITexture*,
-                         RHITexture*,
-                         const RHITextureCopyDesc& = {}) override {}
+        void CopyTexture(RHITexture* source,
+                         RHITexture* destination,
+                         const RHITextureCopyDesc& = {}) override
+        {
+            ++copyTextureCount;
+            copiedSource = source;
+            copiedDestination = destination;
+        }
         void CopyBufferToTexture(RHIBuffer*,
                                  RHITexture*,
                                  const RHIBufferTextureCopyDesc&) override {}
@@ -179,6 +344,10 @@ namespace
         void SetLineWidth(float) override {}
         void SignalFence(RHIFence*, uint64) override {}
         void WaitFence(RHIFence*, uint64) override {}
+
+        uint32 copyTextureCount = 0;
+        RHITexture* copiedSource = nullptr;
+        RHITexture* copiedDestination = nullptr;
     };
 
     struct TestLegacyPassLifecycle
@@ -915,7 +1084,8 @@ namespace
     [[nodiscard]] std::shared_ptr<const ReflectionFramePlan>
     MakeValidReflectionPlan(const RenderFeatureContext& context,
                             uint64 lightingPlanIdentity,
-                            bool requestSSR = false)
+                            bool requestSSR = false,
+                            bool ssrInputsReady = true)
     {
         ReflectionFramePlanRequest request;
         request.frameIdentity = context.frameIdentity;
@@ -928,13 +1098,27 @@ namespace
         request.ssr.requested = requestSSR;
         if (requestSSR)
         {
-            request.ssr.inputsReady = true;
+            const std::optional<SSRConfig> policy =
+                ResolveSSRQualityPolicy(context.resolvedQuality);
+            if (!policy.has_value())
+            {
+                return nullptr;
+            }
+            request.ssr.inputsReady = ssrInputsReady;
             request.ssr.configurationIdentityHash =
-                0x5245464C45435433ULL;
-            request.ssr.pipelineIdentityHash =
-                0x5245464C45435434ULL;
-            request.ssr.depthPyramidIdentityHash =
-                0x5245464C45435435ULL;
+                ComputeSSRConfigurationIdentity(*policy);
+            if (ssrInputsReady)
+            {
+                request.ssr.pipelineIdentityHash =
+                    ComputeSSRPipelineIdentity(1u, 2u, 3u, 4u);
+                request.ssr.depthPyramidIdentityHash =
+                    ComputeSSRDepthPyramidIdentity(
+                        context.frameIdentity,
+                        context.viewIdentity,
+                        context.outputExtent,
+                        request.ssr.configurationIdentityHash,
+                        request.ssr.pipelineIdentityHash);
+            }
         }
         request.ibl.source = ReflectionIBLSource::Analytic;
         request.ibl.lightingPlanIdentityHash = lightingPlanIdentity;
@@ -1382,6 +1566,33 @@ namespace
         return outputs;
     }
 
+    [[nodiscard]] SceneDepthSnapshot MakeSceneDepthSnapshot(
+        const RenderGraphBlackboardProvenance& provenance,
+        bool requested = true,
+        bool required = true,
+        bool available = true)
+    {
+        SceneDepthSnapshot snapshot;
+        snapshot.provenance = provenance;
+        snapshot.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        snapshot.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        snapshot.outputExtent = RenderOutputExtent{320, 180};
+        snapshot.requested = requested;
+        snapshot.required = required;
+        snapshot.available = available;
+        if (available)
+        {
+            snapshot.depthSnapshot = MakeTextureHandle(provenance, 81);
+            snapshot.depthSnapshotMetadata = MakeSceneTextureMetadata(
+                SceneDepthSnapshot::FormatContract);
+            snapshot.receipt =
+                std::make_shared<SceneDepthSnapshotCopyReceipt>();
+        }
+        return snapshot;
+    }
+
     void PopulateValidManualExposureReceipt(
         RenderPostProcessExecutionReceipt& receipt,
         bool committed = false)
@@ -1757,6 +1968,96 @@ namespace
         ASSERT_NE(reflectionReceipt, receipt.features.end());
         EXPECT_EQ(reflectionReceipt->graphPassCount, 0U);
         EXPECT_EQ(reflectionReceipt->executedGraphPassCount, 0U);
+        EXPECT_TRUE(reflectionReceipt->contractCompletedWithoutGraphWork);
+        EXPECT_TRUE(reflectionReceipt->readiness.executed);
+        EXPECT_TRUE(receipt.executionSucceeded);
+    }
+
+    TEST(RenderFeatureValidation,
+         ReflectionRequestedButUnreadyPreservesIntentAndTypedIblFallback)
+    {
+        RenderGraph graph;
+        RenderFeatureContext context = MakeValidContext();
+        context.resolvedRecipe = RenderPipelineRecipe::ForwardStandard;
+        context.resolvedQuality = context.pipeline.quality;
+        const std::shared_ptr<const LightingFramePlan> lightingPlan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, lightingPlan);
+        const std::shared_ptr<const ReflectionFramePlan> reflectionPlan =
+            MakeValidReflectionPlan(
+                context, lightingPlan->GetIdentityHash(), true, false);
+        ASSERT_NE(nullptr, reflectionPlan);
+        ASSERT_TRUE(reflectionPlan->GetSSRIdentity().requested);
+        ASSERT_FALSE(reflectionPlan->GetSSRIdentity().inputsReady);
+
+        const std::optional<SSRConfig> policy =
+            ResolveSSRQualityPolicy(context.resolvedQuality);
+        ASSERT_TRUE(policy.has_value());
+        auto lighting = std::make_unique<DataOnlyLightingOutputsFeature>(
+            lightingPlan->GetIdentityHash());
+        auto reflection = std::make_unique<ReflectionFeatureAdapter>();
+        ReflectionFeatureAdapter* const reflectionRaw = reflection.get();
+        ReflectionFeatureRecordContext recordContext;
+        recordContext.pass = MakeValidRecordContext(graph);
+        recordContext.pass.lightingPlan = lightingPlan;
+        recordContext.plan = reflectionPlan;
+        recordContext.ssrQualityPolicy = *policy;
+        recordContext.ssrConfigurationIdentity =
+            ComputeSSRConfigurationIdentity(*policy);
+        recordContext.ssrPipelineIdentity = 0;
+        reflection->SetRecordContext(std::move(recordContext));
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(lighting)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Register(std::move(reflection)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(context).Succeeded());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        ASSERT_TRUE(reflectionRaw->HasFinalizedSSRComputeStats());
+        const SSRComputeStats& stats =
+            reflectionRaw->GetFinalizedSSRComputeStats();
+        EXPECT_TRUE(stats.requested);
+        EXPECT_TRUE(stats.screenSpaceRequested);
+        EXPECT_FALSE(stats.screenSpaceTraceInputsReady);
+        EXPECT_FALSE(stats.screenSpaceTraceScheduled);
+        EXPECT_FALSE(stats.supported);
+        EXPECT_FALSE(stats.scheduled);
+        EXPECT_FALSE(stats.executed);
+        EXPECT_TRUE(stats.fallbackChainResolved);
+        EXPECT_NE(stats.fallbackReason.find("unavailable"),
+                  std::string::npos);
+
+        const RenderExecutionReceipt receipt =
+            registry.CollectExecutionReceipt();
+        const auto reflectionReceipt = std::find_if(
+            receipt.features.begin(), receipt.features.end(),
+            [](const RenderFeatureExecutionReceipt& feature)
+            {
+                return feature.featureId ==
+                    BuiltinRenderFeatureIds::ReflectionResolve;
+            });
+        ASSERT_NE(reflectionReceipt, receipt.features.end());
+        EXPECT_EQ(reflectionReceipt->graphPassCount, 0U);
         EXPECT_TRUE(reflectionReceipt->contractCompletedWithoutGraphWork);
         EXPECT_TRUE(reflectionReceipt->readiness.executed);
         EXPECT_TRUE(receipt.executionSucceeded);
@@ -2663,6 +2964,16 @@ namespace
         EXPECT_TRUE(std::find(
                         forwardSpecialDescriptor.producedResources.begin(),
                         forwardSpecialDescriptor.producedResources.end(),
+                        SceneDepthSnapshotContract) !=
+                    forwardSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        deferredSpecialDescriptor.producedResources.begin(),
+                        deferredSpecialDescriptor.producedResources.end(),
+                        SceneDepthSnapshotContract) !=
+                    deferredSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardSpecialDescriptor.producedResources.begin(),
+                        forwardSpecialDescriptor.producedResources.end(),
                         PreTranslucencyOutputsContract) !=
                     forwardSpecialDescriptor.producedResources.end());
         EXPECT_TRUE(std::find(
@@ -2680,6 +2991,11 @@ namespace
                         deferredSpecialDescriptor.producedResources.end(),
                         TranslucencyOutputsContract) ==
                     deferredSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        translucencyDescriptor.consumedResources.begin(),
+                        translucencyDescriptor.consumedResources.end(),
+                        SceneDepthSnapshotContract) !=
+                    translucencyDescriptor.consumedResources.end());
         EXPECT_TRUE(std::find(
                         translucencyDescriptor.consumedResources.begin(),
                         translucencyDescriptor.consumedResources.end(),
@@ -2748,6 +3064,11 @@ namespace
         ASSERT_EQ(valid.Publish(
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       producerDescriptor,
+                      MakeSceneDepthSnapshot(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        ASSERT_EQ(valid.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
                       MakePreTranslucencyOutputs(provenance)),
                   RenderGraphBlackboardCode::Success);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
@@ -2759,7 +3080,7 @@ namespace
         EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
 
         RenderFeatureDescriptor invalidSchema = producerDescriptor;
-        ASSERT_EQ(invalidSchema.producedResources.size(), 1U);
+        ASSERT_EQ(invalidSchema.producedResources.size(), 2U);
         ++invalidSchema.producedResources[0].schemaVersion;
         RenderFeatureRegistry invalidSchemaRegistry;
         EXPECT_EQ(invalidSchemaRegistry.Register(
@@ -2805,6 +3126,325 @@ namespace
                       producerDescriptor,
                       std::move(missingReceipt)),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         SceneDepthSnapshotDemandRejectsUnavailableRequiredConsumersAndSkipsOptionalCopies)
+    {
+        struct Case
+        {
+            bool waterRequired;
+            bool waterExecutable;
+            bool particleRequested;
+            bool particleRequired;
+            bool particleExecutable;
+            bool valid;
+            bool requested;
+            bool required;
+        };
+        constexpr std::array cases{
+            Case{false, false, false, false, false, true, false, false},
+            Case{true, false, false, false, false, false, false, false},
+            Case{false, false, true, true, false, false, false, false},
+            Case{false, false, true, false, false, true, false, false},
+            Case{false, false, true, false, true, true, true, false},
+            Case{true, true, true, true, true, true, true, true}};
+
+        for (const Case& value : cases)
+        {
+            const SceneDepthSnapshotDemand demand =
+                ResolveSceneDepthSnapshotDemand(
+                    value.waterRequired,
+                    value.waterExecutable,
+                    value.particleRequested,
+                    value.particleRequired,
+                    value.particleExecutable);
+            EXPECT_EQ(demand.valid, value.valid);
+            EXPECT_EQ(demand.requested, value.requested);
+            EXPECT_EQ(demand.required, value.required);
+            EXPECT_EQ(demand.failureReason.empty(), value.valid);
+        }
+    }
+
+    TEST(RenderFeatureValidation,
+         SceneDepthSnapshotDistinguishesNoWorkOptionalFallbackAndRequiredFailure)
+    {
+        constexpr RenderFeatureId producerId{81};
+        constexpr RenderFeatureId consumerId{82};
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+        RenderFeatureDescriptor producer = MakeDescriptor(
+            producerId.value, "scene-depth-producer", RenderFeaturePhase::Sky);
+        producer.producedResources.push_back(SceneDepthSnapshotContract);
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            consumerId.value, "scene-depth-consumer",
+            RenderFeaturePhase::Translucency);
+        consumer.consumedResources.push_back(SceneDepthSnapshotContract);
+
+        RenderGraphBlackboard available(provenance);
+        ASSERT_EQ(available.Publish(
+                      producerId, producer, MakeSceneDepthSnapshot(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        RenderGraphBlackboardCode consumeCode =
+            RenderGraphBlackboardCode::Success;
+        EXPECT_NE(available.Require<SceneDepthSnapshot>(
+                      consumerId, consumer, &consumeCode),
+                  nullptr);
+        EXPECT_EQ(consumeCode, RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard noWork(provenance);
+        EXPECT_EQ(noWork.Publish(
+                      producerId, producer,
+                      MakeSceneDepthSnapshot(provenance, false, false, false)),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard optionalUnavailable(provenance);
+        EXPECT_EQ(optionalUnavailable.Publish(
+                      producerId, producer,
+                      MakeSceneDepthSnapshot(provenance, true, false, false)),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard requiredUnavailable(provenance);
+        EXPECT_EQ(requiredUnavailable.Publish(
+                      producerId, producer,
+                      MakeSceneDepthSnapshot(provenance, true, true, false)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard wrongFormat(provenance);
+        SceneDepthSnapshot invalidFormat = MakeSceneDepthSnapshot(provenance);
+        invalidFormat.depthSnapshotMetadata.format = RHIFormat::R32_FLOAT;
+        EXPECT_EQ(wrongFormat.Publish(producerId, producer,
+                                      std::move(invalidFormat)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard wrongExtent(provenance);
+        SceneDepthSnapshot invalidExtent = MakeSceneDepthSnapshot(provenance);
+        ++invalidExtent.depthSnapshotMetadata.extent.width;
+        EXPECT_EQ(wrongExtent.Publish(producerId, producer,
+                                      std::move(invalidExtent)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard staleHandle(provenance);
+        SceneDepthSnapshot stale = MakeSceneDepthSnapshot(provenance);
+        ++stale.depthSnapshot.recordingGeneration;
+        EXPECT_EQ(staleHandle.Publish(producerId, producer, std::move(stale)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard missingReceipt(provenance);
+        SceneDepthSnapshot noReceipt = MakeSceneDepthSnapshot(provenance);
+        noReceipt.receipt.reset();
+        EXPECT_EQ(missingReceipt.Publish(producerId, producer,
+                                         std::move(noReceipt)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         SceneDepthSnapshotExecutesOneCopyForWaterAndParticleReads)
+    {
+        struct ConsumerPassData
+        {
+            RGTextureHandle depth{};
+            RGTextureHandle proof{};
+        };
+
+        DepthSnapshotTestDevice device;
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+
+        RHITextureDesc sourceDescription = RHITextureDesc::DepthStencil(
+            64, 32, RHIFormat::D32_FLOAT);
+        sourceDescription.usage = sourceDescription.usage |
+            RHITextureUsage::CopySrc | RHITextureUsage::ShaderResource;
+        const RHITextureRef source = device.CreateTexture(sourceDescription);
+        ASSERT_TRUE(source);
+
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.view.viewportWidth = 64;
+        recordContext.view.viewportHeight = 32;
+        recordContext.view.depthTarget =
+            RenderGraphValidationAccess::ImportTexture(
+                graph, source.Get(), RHIResourceState::DepthWrite);
+        ASSERT_TRUE(recordContext.view.depthTarget.IsValid());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(),
+            recordContext.featureFrameIdentity.frameSequence,
+            recordContext.identity.viewOrdinal,
+            recordContext.identity.recordEpoch};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        SceneDepthSnapshot snapshot;
+        SceneDepthSnapshotRecordInput recordInput;
+        std::string failure;
+        ASSERT_TRUE(BuildSceneDepthSnapshot(
+            builder,
+            recordContext,
+            recordContext.featureFrameIdentity,
+            recordContext.featureViewIdentity,
+            RenderOutputExtent{64, 32},
+            true,
+            snapshot,
+            recordInput,
+            failure))
+            << failure;
+        ASSERT_TRUE(snapshot.available);
+        ASSERT_TRUE(recordInput.IsCompatibleWith(
+            recordContext.identity, RenderOutputExtent{64, 32}));
+        ASSERT_NE(nullptr, snapshot.receipt);
+        EXPECT_FALSE(snapshot.receipt->copied.load(std::memory_order_acquire));
+
+        WaterSurfaceRecordInput waterInput;
+        waterInput.depthSnapshot = recordInput;
+        ParticleVfxRecordInput particleInput;
+        particleInput.softDepthRequested = true;
+        particleInput.softDepthRequired = true;
+        particleInput.softDepthSnapshot = recordInput;
+        EXPECT_EQ(waterInput.depthSnapshot.texture.index,
+                  particleInput.softDepthSnapshot.texture.index);
+        EXPECT_EQ(waterInput.depthSnapshot.texture.graphIdentity,
+                  particleInput.softDepthSnapshot.texture.graphIdentity);
+        EXPECT_EQ(waterInput.depthSnapshot.texture.recordingGeneration,
+                  particleInput.softDepthSnapshot.texture.recordingGeneration);
+        EXPECT_EQ(waterInput.depthSnapshot.receipt,
+                  particleInput.softDepthSnapshot.receipt);
+
+        const RHITextureDesc proofDescription = RHITextureDesc::RenderTarget(
+            1, 1, RHIFormat::R8_UNORM);
+        const RGTextureHandle waterProof = graph.CreateTexture(proofDescription);
+        const RGTextureHandle particleProof = graph.CreateTexture(proofDescription);
+        ASSERT_TRUE(waterProof.IsValid());
+        ASSERT_TRUE(particleProof.IsValid());
+        ASSERT_TRUE(builder.AddPass<ConsumerPassData>(
+            "WaterDepthConsumerRead",
+            RenderGraphPassType::Graphics,
+            [depth = waterInput.depthSnapshot.texture, waterProof](
+                RenderGraphBuilder& graphBuilder, ConsumerPassData& data)
+            {
+                data.depth = graphBuilder.Read(
+                    depth, RHIResourceState::ShaderResource);
+                data.proof = graphBuilder.Write(
+                    waterProof, RHIResourceState::RenderTarget);
+                graphBuilder.SetExportState(
+                    data.proof, RHIResourceState::ShaderResource);
+            },
+            [](const ConsumerPassData&, RHICommandContext&) {}));
+        ASSERT_TRUE(builder.AddPass<ConsumerPassData>(
+            "ParticleDepthConsumerRead",
+            RenderGraphPassType::Graphics,
+            [depth = particleInput.softDepthSnapshot.texture, particleProof](
+                RenderGraphBuilder& graphBuilder, ConsumerPassData& data)
+            {
+                data.depth = graphBuilder.Read(
+                    depth, RHIResourceState::ShaderResource);
+                data.proof = graphBuilder.Write(
+                    particleProof, RHIResourceState::RenderTarget);
+                graphBuilder.SetExportState(
+                    data.proof, RHIResourceState::ShaderResource);
+            },
+            [](const ConsumerPassData&, RHICommandContext&) {}));
+
+        const std::vector<std::string>& names = builder.GetRegisteredPassNames();
+        EXPECT_EQ(std::count(names.begin(), names.end(),
+                             "SceneDepthSnapshotCopy"),
+                  1);
+        const auto snapshotCopy = std::find(
+            names.begin(), names.end(), "SceneDepthSnapshotCopy");
+        const auto waterRead = std::find(
+            names.begin(), names.end(), "WaterDepthConsumerRead");
+        const auto particleRead = std::find(
+            names.begin(), names.end(), "ParticleDepthConsumerRead");
+        ASSERT_NE(snapshotCopy, names.end());
+        ASSERT_NE(waterRead, names.end());
+        ASSERT_NE(particleRead, names.end());
+        EXPECT_LT(snapshotCopy, waterRead);
+        EXPECT_LT(waterRead, particleRead);
+
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        const auto snapshotDiagnostic = std::find_if(
+            diagnostics.resources.begin(), diagnostics.resources.end(),
+            [](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.name == "SceneDepthSnapshot";
+            });
+        ASSERT_NE(snapshotDiagnostic, diagnostics.resources.end());
+        EXPECT_TRUE(snapshotDiagnostic->used);
+        EXPECT_EQ(snapshotDiagnostic->firstUsePass, 0U);
+        EXPECT_EQ(snapshotDiagnostic->lastUsePass, 2U);
+
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(commands.copyTextureCount, 1U);
+        EXPECT_EQ(commands.copiedSource, source.Get());
+        EXPECT_EQ(commands.copiedDestination,
+                  RenderGraphValidationAccess::GetTexture(
+                      graph, recordInput.texture));
+        EXPECT_TRUE(snapshot.receipt->copied.load(std::memory_order_acquire));
+        EXPECT_TRUE(recordInput.receipt->copied.load(std::memory_order_acquire));
+
+        RenderGraph invalidGraph;
+        RenderPassRecordContext invalidContext = MakeValidRecordContext(invalidGraph);
+        invalidContext.view.viewportWidth = 64;
+        invalidContext.view.viewportHeight = 32;
+        invalidContext.view.depthTarget = invalidGraph.CreateTexture(
+            RHITextureDesc::DepthStencil(64, 32, RHIFormat::D32_FLOAT));
+        const RenderGraphBlackboardProvenance invalidProvenance{
+            invalidGraph.GetGraphIdentity(), invalidGraph.GetRecordingGeneration(),
+            invalidContext.featureFrameIdentity.frameSequence,
+            invalidContext.identity.viewOrdinal,
+            invalidContext.identity.recordEpoch};
+        RenderFeatureGraphBuilder invalidBuilder(invalidGraph, invalidProvenance);
+        SceneDepthSnapshot rejectedSnapshot;
+        SceneDepthSnapshotRecordInput rejectedInput;
+        std::string rejectedFailure;
+        EXPECT_FALSE(BuildSceneDepthSnapshot(
+            invalidBuilder,
+            invalidContext,
+            invalidContext.featureFrameIdentity,
+            invalidContext.featureViewIdentity,
+            RenderOutputExtent{64, 32},
+            true,
+            rejectedSnapshot,
+            rejectedInput,
+            rejectedFailure));
+        EXPECT_FALSE(rejectedFailure.empty());
+        EXPECT_FALSE(rejectedSnapshot.depthSnapshot.IsValid());
+        EXPECT_TRUE(rejectedInput.IsEmpty());
+        RenderGraphBlackboard rejectedBlackboard(invalidProvenance);
+        EXPECT_FALSE(rejectedBlackboard.GetProducer(
+            RenderBlackboardResourceId::SceneDepthSnapshot).IsValid());
+
+        constexpr RenderFeatureId producerId{83};
+        constexpr RenderFeatureId consumerId{84};
+        RenderFeatureDescriptor producer = MakeDescriptor(
+            producerId.value, "optional-depth-producer", RenderFeaturePhase::Sky);
+        producer.producedResources.push_back(SceneDepthSnapshotContract);
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            consumerId.value, "optional-depth-consumer",
+            RenderFeaturePhase::Translucency);
+        consumer.consumedResources.push_back(SceneDepthSnapshotContract);
+        SceneDepthSnapshot optionalUnavailable;
+        optionalUnavailable.provenance = invalidProvenance;
+        optionalUnavailable.frameIdentity = invalidContext.featureFrameIdentity;
+        optionalUnavailable.viewIdentity = invalidContext.featureViewIdentity;
+        optionalUnavailable.outputExtent = RenderOutputExtent{64, 32};
+        optionalUnavailable.requested = true;
+        optionalUnavailable.required = false;
+        optionalUnavailable.available = false;
+        ASSERT_EQ(rejectedBlackboard.Publish(
+                      producerId, producer, std::move(optionalUnavailable)),
+                  RenderGraphBlackboardCode::Success);
+        RenderGraphBlackboardCode optionalCode =
+            RenderGraphBlackboardCode::Success;
+        const SceneDepthSnapshot* const optionalOutput =
+            rejectedBlackboard.Require<SceneDepthSnapshot>(
+                consumerId, consumer, &optionalCode);
+        ASSERT_EQ(optionalCode, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(optionalOutput, nullptr);
+        EXPECT_TRUE(optionalOutput->requested);
+        EXPECT_FALSE(optionalOutput->required);
+        EXPECT_FALSE(optionalOutput->available);
+        EXPECT_FALSE(optionalOutput->depthSnapshot.IsValid());
+        EXPECT_EQ(optionalOutput->receipt, nullptr);
     }
 
     TEST(RenderFeatureValidation,
@@ -3007,6 +3647,17 @@ namespace
             context.recordEpoch};
         RenderGraphBlackboard blackboard(provenance);
         ForwardSpecialFeatureAdapter producer(nullptr);
+        SceneDepthSnapshot sceneDepthSnapshot =
+            MakeSceneDepthSnapshot(provenance);
+        sceneDepthSnapshot.frameIdentity = context.frameIdentity;
+        sceneDepthSnapshot.viewIdentity = context.viewIdentity;
+        sceneDepthSnapshot.outputExtent = context.outputExtent;
+        sceneDepthSnapshot.depthSnapshotMetadata.extent = context.outputExtent;
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producer.Describe(),
+                      std::move(sceneDepthSnapshot)),
+                  RenderGraphBlackboardCode::Success);
         PreTranslucencyOutputs inputs =
             MakePreTranslucencyOutputs(provenance);
         inputs.frameIdentity = context.frameIdentity;

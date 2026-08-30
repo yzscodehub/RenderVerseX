@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -310,10 +311,10 @@ namespace RVX
                 return false;
             }
 
-            if (particleVfx.softDepthSnapshot.IsValid())
+            if (particleVfx.softDepthSnapshot.texture.IsValid())
             {
                 const RHITextureDesc* const softDepthDesc =
-                    graph.GetTextureDesc(particleVfx.softDepthSnapshot);
+                    graph.GetTextureDesc(particleVfx.softDepthSnapshot.texture);
                 if (!matchesViewExtent(softDepthDesc) ||
                     softDepthDesc->format != RHIFormat::D32_FLOAT ||
                     !HasFlag(softDepthDesc->usage,
@@ -1289,7 +1290,10 @@ namespace RVX
         {
             if (!data.contextValid || !data.submission.IsReady() ||
                 data.pipelineCache == nullptr ||
-                !data.particleVfx.IsCompatibleWith(data.execution.identity) ||
+                !data.particleVfx.IsCompatibleWith(
+                    data.execution.identity,
+                    RenderOutputExtent{data.execution.view.viewportWidth,
+                                       data.execution.view.viewportHeight}) ||
                 !IsSameBufferHandle(data.particleVfx.exposureState,
                                     data.execution.view.exposureState) ||
                 data.particleVfx.exposureStateContentHash !=
@@ -1560,10 +1564,10 @@ namespace RVX
             }
 
             if (data.particleVfx.softDepthRequested &&
-                data.particleVfx.softDepthSnapshot.IsValid())
+                data.particleVfx.softDepthSnapshot.texture.IsValid())
             {
                 const RHITextureDesc* const softDepthDesc = builder.GetTextureDesc(
-                    data.particleVfx.softDepthSnapshot);
+                    data.particleVfx.softDepthSnapshot.texture);
                 if (softDepthDesc == nullptr ||
                     softDepthDesc->format != RHIFormat::D32_FLOAT ||
                     softDepthDesc->width != colorDesc->width ||
@@ -1572,7 +1576,7 @@ namespace RVX
                     return false;
                 }
                 data.softDepthHandle = builder.Read(
-                    data.particleVfx.softDepthSnapshot,
+                    data.particleVfx.softDepthSnapshot.texture,
                     MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                      RHIShaderStage::Pixel));
                 RHITextureViewDesc softDepthViewDesc;
@@ -2134,12 +2138,17 @@ namespace RVX
                 !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
                 !IsCompatibleFroxelVolumetricLighting(
                     data.execution.volumetricLighting, data.execution.identity) ||
-                (data.execution.volumetricLighting.identityRoute
-                    ? !data.neutralFroxelVolumetricLightingView
-                    : !data.froxelVolumetricLightingHandle.IsValid() ||
-                        !data.froxelVolumetricLightingView.IsValid()) ||
-                (data.particleVfx.softDepthRequired &&
-                 (!data.softDepthHandle.IsValid() || !data.softDepthView.IsValid())))
+                 (data.execution.volumetricLighting.identityRoute
+                     ? !data.neutralFroxelVolumetricLightingView
+                     : !data.froxelVolumetricLightingHandle.IsValid() ||
+                         !data.froxelVolumetricLightingView.IsValid()) ||
+                 (data.particleVfx.softDepthRequired &&
+                  (!data.softDepthHandle.IsValid() || !data.softDepthView.IsValid())) ||
+                 (data.particleVfx.softDepthRequested &&
+                  data.particleVfx.softDepthSnapshot.texture.IsValid() &&
+                  (data.particleVfx.softDepthSnapshot.receipt == nullptr ||
+                   !data.particleVfx.softDepthSnapshot.receipt->copied.load(
+                       std::memory_order_acquire))))
             {
                 fail("Particle billboard graph recording prerequisites are unavailable");
                 return;
@@ -2310,13 +2319,18 @@ namespace RVX
                 !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
                 !IsCompatibleFroxelVolumetricLighting(
                     data.execution.volumetricLighting, data.execution.identity) ||
-                (data.execution.volumetricLighting.identityRoute
-                    ? !data.neutralFroxelVolumetricLightingView
-                    : !data.froxelVolumetricLightingHandle.IsValid() ||
-                        !data.froxelVolumetricLightingView.IsValid()) ||
-                (data.particleVfx.softDepthRequired &&
-                 (!data.softDepthHandle.IsValid() ||
-                  !data.softDepthView.IsValid())))
+                 (data.execution.volumetricLighting.identityRoute
+                     ? !data.neutralFroxelVolumetricLightingView
+                     : !data.froxelVolumetricLightingHandle.IsValid() ||
+                         !data.froxelVolumetricLightingView.IsValid()) ||
+                 (data.particleVfx.softDepthRequired &&
+                  (!data.softDepthHandle.IsValid() ||
+                   !data.softDepthView.IsValid())) ||
+                 (data.particleVfx.softDepthRequested &&
+                  data.particleVfx.softDepthSnapshot.texture.IsValid() &&
+                  (data.particleVfx.softDepthSnapshot.receipt == nullptr ||
+                   !data.particleVfx.softDepthSnapshot.receipt->copied.load(
+                       std::memory_order_acquire))))
             {
                 fail("Particle weighted-blended graph recording prerequisites are unavailable");
                 return;
@@ -2995,7 +3009,10 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
                 ParticleFeatureRecordingCode::InvalidRecordContext,
                 exposureFailure);
         }
-        if (!particleVfx.IsCompatibleWith(context.identity))
+        if (!particleVfx.IsCompatibleWith(
+                context.identity,
+                RenderOutputExtent{execution.view.viewportWidth,
+                                   execution.view.viewportHeight}))
         {
             return fail(
                 ParticleFeatureRecordingCode::InvalidRecordContext,
@@ -3014,7 +3031,7 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
         }
 
         const bool softDepthSnapshotReady =
-            particleVfx.softDepthSnapshot.IsValid();
+            particleVfx.softDepthSnapshot.texture.IsValid();
         Mat4 jitteredInverseProjection = Mat4Identity();
         const bool softDepthLinearizationReady = softDepthSnapshotReady &&
             TryGetFiniteJitteredInverseProjection(
@@ -3651,7 +3668,10 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
             m_stats.unsupportedReason = exposureFailure;
             return;
         }
-        if (!particleVfx.IsCompatibleWith(context.identity))
+        if (!particleVfx.IsCompatibleWith(
+                context.identity,
+                RenderOutputExtent{execution.view.viewportWidth,
+                                   execution.view.viewportHeight}))
         {
             ++m_stats.fallbackCount;
             m_stats.supported = false;
@@ -3688,7 +3708,7 @@ void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcep
         }
 
         const bool softDepthSnapshotReady =
-            particleVfx.softDepthSnapshot.IsValid();
+            particleVfx.softDepthSnapshot.texture.IsValid();
         Mat4 jitteredInverseProjection = Mat4Identity();
         const bool softDepthLinearizationReady = softDepthSnapshotReady &&
             TryGetFiniteJitteredInverseProjection(

@@ -336,6 +336,46 @@ namespace
         return seed;
     }
 
+    struct SSRPipelineIdentityResolution
+    {
+        uint64 identity = 0;
+        bool ready = false;
+    };
+
+    /**
+     * @brief Freeze the exact four-pipeline SSR family used by both
+     * reflection planning and graph recording.
+     */
+    [[nodiscard]] SSRPipelineIdentityResolution
+    ResolveSSRPipelineIdentity(const PipelineCache* pipelineCache) noexcept
+    {
+        if (pipelineCache == nullptr)
+        {
+            return {};
+        }
+
+        const PipelineCacheStats& stats = pipelineCache->GetStats();
+        const bool ready = stats.ssrHiZBasePipelineHash != 0 &&
+            stats.ssrHiZReducePipelineHash != 0 &&
+            stats.ssrTracePipelineHash != 0 &&
+            stats.ssrResolvePipelineHash != 0 &&
+            pipelineCache->GetSSRHiZBasePipeline() != nullptr &&
+            pipelineCache->GetSSRHiZReducePipeline() != nullptr &&
+            pipelineCache->GetSSRTracePipeline() != nullptr &&
+            pipelineCache->GetSSRResolvePipeline() != nullptr;
+        if (!ready)
+        {
+            return {};
+        }
+
+        const uint64 identity = ComputeSSRPipelineIdentity(
+            stats.ssrHiZBasePipelineHash,
+            stats.ssrHiZReducePipelineHash,
+            stats.ssrTracePipelineHash,
+            stats.ssrResolvePipelineHash);
+        return {identity, identity != 0};
+    }
+
     [[nodiscard]] LocalShadowAtlasConfig ResolveLocalShadowAtlasConfig(
         RenderQualityTier quality) noexcept
     {
@@ -4075,6 +4115,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
                 probeStats.identity.reflectionPlanIdentity &&
             m_hiZReflectionProbeBinding.lightingPlanIdentity ==
                 probeStats.identity.lightingPlanIdentity &&
+            m_hiZReflectionProbeBinding.configurationIdentity ==
+                probeStats.identity.configurationIdentity &&
+            m_hiZReflectionProbeBinding.pipelineIdentity ==
+                probeStats.identity.pipelineIdentity &&
             m_hiZReflectionProbeBinding.depthPyramidIdentity ==
                 probeStats.identity.depthPyramidIdentity &&
             m_hiZReflectionProbeBinding.reflectionSurfaceIdentity ==
@@ -4087,6 +4131,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
                 probeStats.identity.reflectionPlanIdentity &&
             m_reflectionProbeSourceDiagnostics->lightingPlanIdentity ==
                 probeStats.identity.lightingPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->configurationIdentity ==
+                probeStats.identity.configurationIdentity &&
+            m_reflectionProbeSourceDiagnostics->pipelineIdentity ==
+                probeStats.identity.pipelineIdentity &&
             m_reflectionProbeSourceDiagnostics->depthPyramidIdentity ==
                 probeStats.identity.depthPyramidIdentity &&
             m_reflectionProbeSourceDiagnostics->reflectionSurfaceIdentity ==
@@ -4599,6 +4647,10 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                 pendingIdentity->reflectionPlanIdentity &&
             m_pendingReflectionDiagnostics->lightingPlanIdentity ==
                 pendingIdentity->lightingPlanIdentity &&
+            m_pendingReflectionDiagnostics->configurationIdentity ==
+                pendingIdentity->configurationIdentity &&
+            m_pendingReflectionDiagnostics->pipelineIdentity ==
+                pendingIdentity->pipelineIdentity &&
             m_pendingReflectionDiagnostics->depthPyramidIdentity ==
                 pendingIdentity->depthPyramidIdentity;
         const bool accepted = exactIdentityAvailable &&
@@ -4629,6 +4681,10 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                 pendingIdentity->reflectionPlanIdentity;
             m_hiZReflectionProbeBinding.lightingPlanIdentity =
                 pendingIdentity->lightingPlanIdentity;
+            m_hiZReflectionProbeBinding.configurationIdentity =
+                pendingIdentity->configurationIdentity;
+            m_hiZReflectionProbeBinding.pipelineIdentity =
+                pendingIdentity->pipelineIdentity;
             m_hiZReflectionProbeBinding.depthPyramidIdentity =
                 pendingIdentity->depthPyramidIdentity;
             m_hiZReflectionProbeBinding.reflectionSurfaceIdentity =
@@ -5577,6 +5633,10 @@ void SceneRenderer::MarkAcceptedFramePresented(
                 m_hiZReflectionProbeBinding.reflectionPlanIdentity &&
             pendingIdentity->lightingPlanIdentity ==
                 m_hiZReflectionProbeBinding.lightingPlanIdentity &&
+            pendingIdentity->configurationIdentity ==
+                m_hiZReflectionProbeBinding.configurationIdentity &&
+            pendingIdentity->pipelineIdentity ==
+                m_hiZReflectionProbeBinding.pipelineIdentity &&
             pendingIdentity->depthPyramidIdentity ==
                 m_hiZReflectionProbeBinding.depthPyramidIdentity &&
             pendingIdentity->reflectionSurfaceIdentity ==
@@ -5591,6 +5651,10 @@ void SceneRenderer::MarkAcceptedFramePresented(
                 pendingIdentity->reflectionPlanIdentity &&
             m_reflectionProbeSourceDiagnostics->lightingPlanIdentity ==
                 pendingIdentity->lightingPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->configurationIdentity ==
+                pendingIdentity->configurationIdentity &&
+            m_reflectionProbeSourceDiagnostics->pipelineIdentity ==
+                pendingIdentity->pipelineIdentity &&
             m_reflectionProbeSourceDiagnostics->depthPyramidIdentity ==
                 pendingIdentity->depthPyramidIdentity;
         if (probeMatchesPresentation &&
@@ -8667,6 +8731,26 @@ void SceneRenderer::Render()
             FindCompositionFeature<ReflectionFeatureAdapter>()->GetFinalizedSSRComputeStats();
         const ReflectionSSRIdentity& ssrIdentity =
             m_reflectionFramePlan->GetSSRIdentity();
+        const bool screenSpaceIntentMatches =
+            stats.screenSpaceRequested == ssrIdentity.requested;
+        const bool configurationMatches = !stats.screenSpaceRequested ||
+            (stats.configurationIdentity != 0 &&
+             stats.configurationIdentity ==
+                 ssrIdentity.configurationIdentityHash);
+        const bool traceReadinessMatches = !stats.screenSpaceRequested ||
+            stats.screenSpaceTraceInputsReady == ssrIdentity.inputsReady;
+        const bool pipelineMatches = !stats.screenSpaceRequested ||
+            (stats.screenSpaceTraceInputsReady
+                ? stats.pipelineIdentity != 0 &&
+                    stats.pipelineIdentity == ssrIdentity.pipelineIdentityHash
+                : stats.pipelineIdentity == 0 &&
+                    ssrIdentity.pipelineIdentityHash == 0);
+        const bool depthPyramidMatches =
+            stats.screenSpaceTraceScheduled
+                ? stats.depthPyramidIdentity != 0 &&
+                    stats.depthPyramidIdentity ==
+                        ssrIdentity.depthPyramidIdentityHash
+                : stats.depthPyramidIdentity == 0;
         const bool identitiesMatch = m_lightingFramePlan != nullptr &&
             stats.reflectionPlanIdentity ==
                 m_reflectionFramePlan->GetIdentityHash() &&
@@ -8674,10 +8758,9 @@ void SceneRenderer::Render()
                 m_lightingFramePlan->GetIdentityHash() &&
             stats.reflectionSurfaceIdentity != 0 &&
             stats.exposureStateContentHash != 0 &&
-            (!stats.screenSpaceRequested ||
-             (stats.depthPyramidIdentity != 0 &&
-              stats.depthPyramidIdentity ==
-                  ssrIdentity.depthPyramidIdentityHash));
+            screenSpaceIntentMatches && configurationMatches &&
+            traceReadinessMatches && pipelineMatches &&
+            depthPyramidMatches;
         if (identitiesMatch)
         {
             RenderReflectionDiagnostics reflection;
@@ -8689,6 +8772,11 @@ void SceneRenderer::Render()
             reflection.hiZBuilt = stats.hiZBuilt;
             reflection.globalIBLReady = stats.globalIBLReady;
             reflection.fallbackChainResolved = stats.fallbackChainResolved;
+            reflection.screenSpaceRequested = stats.screenSpaceRequested;
+            reflection.screenSpaceTraceInputsReady =
+                stats.screenSpaceTraceInputsReady;
+            reflection.screenSpaceTraceScheduled =
+                stats.screenSpaceTraceScheduled;
             // Route-mask pixels become trustworthy only when the separately
             // armed post-present readback maps. Graph finalization is not
             // permitted to claim either route was visually applied.
@@ -8707,6 +8795,10 @@ void SceneRenderer::Render()
                 m_reflectionFramePlan->GetFrameIdentity().frameSequence;
             reflection.reflectionPlanIdentity = stats.reflectionPlanIdentity;
             reflection.lightingPlanIdentity = stats.lightingPlanIdentity;
+            reflection.configurationIdentity = stats.screenSpaceRequested
+                ? stats.configurationIdentity : 0;
+            reflection.pipelineIdentity = stats.screenSpaceRequested
+                ? stats.pipelineIdentity : 0;
             reflection.depthPyramidIdentity = stats.depthPyramidIdentity;
             reflection.reflectionSurfaceIdentity =
                 stats.reflectionSurfaceIdentity;
@@ -10091,49 +10183,33 @@ bool SceneRenderer::PrepareReflectionFramePlan(std::string& outDiagnostic)
     request.viewCullingMask = m_viewData.cullingMask;
     request.probeCandidates = m_reflectionProbeSnapshots;
 
-    const SSRConfig ssrConfig{};
+    const std::optional<SSRConfig> resolvedSSRQualityPolicy =
+        ResolveSSRQualityPolicy(settings.pipelineRequest.quality);
+    if (!resolvedSSRQualityPolicy.has_value())
+    {
+        outDiagnostic =
+            "Reflection planning rejected an undeclared SSR quality tier";
+        return false;
+    }
+    const SSRConfig& ssrConfig = *resolvedSSRQualityPolicy;
     const uint64 ssrConfigurationIdentity =
         ComputeSSRConfigurationIdentity(ssrConfig);
-    uint64 ssrPipelineIdentity = 0xCBF29CE484222325ULL;
-    bool ssrPipelinesReady = false;
-    if (m_pipelineCache != nullptr)
-    {
-        const PipelineCacheStats& stats = m_pipelineCache->GetStats();
-        for (const uint64 hash : std::array{
-                 stats.ssrHiZBasePipelineHash,
-                 stats.ssrHiZReducePipelineHash,
-                 stats.ssrTracePipelineHash,
-                 stats.ssrResolvePipelineHash})
-        {
-            ssrPipelineIdentity = MixGPUCullingQualificationIdentity(
-                ssrPipelineIdentity, hash);
-        }
-        ssrPipelinesReady =
-            stats.ssrHiZBasePipelineHash != 0 &&
-            stats.ssrHiZReducePipelineHash != 0 &&
-            stats.ssrTracePipelineHash != 0 &&
-            stats.ssrResolvePipelineHash != 0 &&
-            m_pipelineCache->GetSSRHiZBasePipeline() != nullptr &&
-            m_pipelineCache->GetSSRHiZReducePipeline() != nullptr &&
-            m_pipelineCache->GetSSRTracePipeline() != nullptr &&
-            m_pipelineCache->GetSSRResolvePipeline() != nullptr;
-    }
-    ssrPipelineIdentity = ssrPipelineIdentity == 0
-        ? 1 : ssrPipelineIdentity;
+    const SSRPipelineIdentityResolution ssrPipeline =
+        ResolveSSRPipelineIdentity(m_pipelineCache.get());
 
     request.ssr.requested = settings.postProcess.enabled &&
         settings.postProcess.enableSSR;
     if (request.ssr.requested)
     {
         request.ssr.configurationIdentityHash = ssrConfigurationIdentity;
-        request.ssr.inputsReady = ssrPipelinesReady && extent.IsValid();
+        request.ssr.inputsReady = ssrPipeline.ready && extent.IsValid();
         if (request.ssr.inputsReady)
         {
-            request.ssr.pipelineIdentityHash = ssrPipelineIdentity;
+            request.ssr.pipelineIdentityHash = ssrPipeline.identity;
             request.ssr.depthPyramidIdentityHash =
                 ComputeSSRDepthPyramidIdentity(
                     frameIdentity, view.identity, extent,
-                    ssrConfigurationIdentity, ssrPipelineIdentity);
+                    ssrConfigurationIdentity, ssrPipeline.identity);
         }
     }
 
@@ -12499,6 +12575,26 @@ void SceneRenderer::BuildRenderGraph()
     ReflectionFeatureRecordContext reflectionRecordContext;
     reflectionRecordContext.pass = passRecordContext;
     reflectionRecordContext.plan = m_reflectionFramePlan;
+    const std::optional<SSRConfig> resolvedSSRQualityPolicy =
+        ResolveSSRQualityPolicy(
+            m_renderScene.GetSettings().pipelineRequest.quality);
+    if (!resolvedSSRQualityPolicy.has_value())
+    {
+        m_featureCompositionFailureReason =
+            "Reflection composition rejected an undeclared SSR quality tier";
+        return;
+    }
+    reflectionRecordContext.ssrQualityPolicy = *resolvedSSRQualityPolicy;
+    reflectionRecordContext.ssrConfigurationIdentity =
+        ComputeSSRConfigurationIdentity(*resolvedSSRQualityPolicy);
+    if (m_reflectionFramePlan != nullptr &&
+        m_reflectionFramePlan->GetSSRIdentity().requested)
+    {
+        const SSRPipelineIdentityResolution ssrPipeline =
+            ResolveSSRPipelineIdentity(m_pipelineCache.get());
+        reflectionRecordContext.ssrPipelineIdentity =
+            ssrPipeline.ready ? ssrPipeline.identity : 0;
+    }
     if (m_hybridRayTracingFramePlan.has_value())
     {
         reflectionRecordContext.hybridRayTracingPlan =

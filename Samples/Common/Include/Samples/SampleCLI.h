@@ -774,6 +774,9 @@ namespace RVX
         bool hiZBuilt = false;
         bool globalIBLReady = false;
         bool fallbackChainResolved = false;
+        bool screenSpaceRequested = false;
+        bool screenSpaceTraceInputsReady = false;
+        bool screenSpaceTraceScheduled = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -788,6 +791,8 @@ namespace RVX
         uint64 reflectionFrameSequence = 0;
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
+        uint64 configurationIdentity = 0;
+        uint64 pipelineIdentity = 0;
         uint64 depthPyramidIdentity = 0;
         uint64 reflectionSurfaceIdentity = 0;
         uint64 exposureStateContentHash = 0;
@@ -815,6 +820,8 @@ namespace RVX
                    presentedMainView && graphExecutionFinalized && requested &&
                    supported && scheduled && executed && hiZBuilt &&
                    globalIBLReady && fallbackChainResolved &&
+                   screenSpaceRequested && screenSpaceTraceInputsReady &&
+                   screenSpaceTraceScheduled &&
                    screenSpaceApplied && probesApplied &&
                    reflectionRouteEvidenceReady &&
                    routeMaskRadianceSchemaVersion == 1 &&
@@ -824,6 +831,7 @@ namespace RVX
                    traceGraphPassCount == 1 && resolveGraphPassCount == 1 &&
                    reflectionFrameSequence == receiptFrameSequence &&
                    reflectionPlanIdentity != 0 && lightingPlanIdentity != 0 &&
+                   configurationIdentity != 0 && pipelineIdentity != 0 &&
                    depthPyramidIdentity != 0 && reflectionSurfaceIdentity != 0 &&
                    exposureStateContentHash != 0 &&
                    screenSpaceHitPixelCount != 0 &&

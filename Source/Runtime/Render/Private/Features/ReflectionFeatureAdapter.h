@@ -30,6 +30,16 @@ namespace RVX
             probeTextures{};
         std::array<bool, RVX_SSR_LOCAL_PROBE_CAPACITY> probeReady{};
         /**
+         * Complete policy sealed with the reflection plan. It is optional
+         * only for a data-only IBL reflection boundary with no SSR/probe
+         * graph work.
+         */
+        std::optional<SSRConfig> ssrQualityPolicy{};
+        /** Hash of ssrQualityPolicy, computed before reflection planning. */
+        uint64 ssrConfigurationIdentity = 0;
+        /** Exact cooked SSR pipeline-family identity for this graph. */
+        uint64 ssrPipelineIdentity = 0;
+        /**
          * @brief Immutable hybrid route selected before graph recording.
          *
          * This value is deliberately copied into the feature context.  The
@@ -112,6 +122,8 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         [[nodiscard]] bool HasValidReflectionPlan(
             const RenderFeatureContext& context) const noexcept;
+        [[nodiscard]] bool HasValidSSRPolicyAndPlan(
+            const RenderFeatureContext& context) const noexcept;
         [[nodiscard]] bool HasValidHybridRayTracingPlan(
             const RenderFeatureContext& context) const noexcept;
         [[nodiscard]] bool HasReadyRayTracedReflectionPasses() const noexcept;
@@ -124,6 +136,9 @@ namespace RVX
         std::array<RGTextureHandle, RVX_SSR_LOCAL_PROBE_CAPACITY>
             m_probeTextures{};
         std::array<bool, RVX_SSR_LOCAL_PROBE_CAPACITY> m_probeReady{};
+        std::optional<SSRConfig> m_ssrQualityPolicy{};
+        uint64 m_ssrConfigurationIdentity = 0;
+        uint64 m_ssrPipelineIdentity = 0;
         std::optional<HybridRayTracingFramePlan> m_hybridRayTracingPlan{};
         DefaultRenderPassBundle* m_passBundle = nullptr;
         SSR m_ssr{};

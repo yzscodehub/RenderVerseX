@@ -691,6 +691,12 @@ namespace RVX
         bool hiZBuilt = false;
         bool globalIBLReady = false;
         bool fallbackChainResolved = false;
+        /** Immutable profile intent, retained even when trace inputs are absent. */
+        bool screenSpaceRequested = false;
+        /** The sealed plan admitted current-frame trace inputs. */
+        bool screenSpaceTraceInputsReady = false;
+        /** A Hi-Z trace was actually registered for this graph. */
+        bool screenSpaceTraceScheduled = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         /** True only after the qualification route-mask readback completed. */
@@ -710,6 +716,10 @@ namespace RVX
         uint64 frameSequence = 0;
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
+        /** Exact resolved SSR quality-policy identity. */
+        uint64 configurationIdentity = 0;
+        /** Exact four-stage cooked SSR pipeline-family identity. */
+        uint64 pipelineIdentity = 0;
         uint64 depthPyramidIdentity = 0;
         /** Exact v5 lighting-surface bundle selected for this route. */
         uint64 reflectionSurfaceIdentity = 0;

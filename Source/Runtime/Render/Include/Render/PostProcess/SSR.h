@@ -9,6 +9,7 @@
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 
 #include <array>
 #include <memory>
@@ -85,11 +86,39 @@ namespace RVX
         bool halfResolution = false;
         bool temporalFilter = false;
         bool stochastic = false;
+
+        friend constexpr bool operator==(const SSRConfig&,
+                                         const SSRConfig&) = default;
     };
+
+    /**
+     * @brief Resolve the complete, backend-neutral Hi-Z SSR policy for a
+     *        declared renderer quality tier.
+     *
+     * This is deliberately a pure value resolver. Composition freezes its
+     * result into the reflection frame plan and the feature record context;
+     * SSR never derives a second policy from backend state or post-process
+     * settings while recording graph passes.
+     */
+    [[nodiscard]] std::optional<SSRConfig> ResolveSSRQualityPolicy(
+        RenderQualityTier quality) noexcept;
 
     /** Stable value identity of the implemented Hi-Z SSR configuration. */
     [[nodiscard]] uint64 ComputeSSRConfigurationIdentity(
         const SSRConfig& config) noexcept;
+
+    /**
+     * @brief Build the exact identity of the four cooked SSR pipelines.
+     *
+     * Returns zero unless every required pipeline hash is present. This keeps
+     * plan construction, graph composition, and focused fixtures on one
+     * backend-neutral identity contract.
+     */
+    [[nodiscard]] uint64 ComputeSSRPipelineIdentity(
+        uint64 hiZBasePipelineHash,
+        uint64 hiZReducePipelineHash,
+        uint64 tracePipelineHash,
+        uint64 resolvePipelineHash) noexcept;
 
     /**
      * @brief Predict the exact depth-pyramid identity before graph recording.
@@ -112,8 +141,15 @@ namespace RVX
         RenderViewIdentity viewIdentity{};
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
+        /** Identity of the frozen full SSR quality policy. */
+        uint64 configurationIdentity = 0;
+        /** Identity of the exact cooked SSR pipeline family. */
+        uint64 pipelineIdentity = 0;
         uint64 depthPyramidIdentity = 0;
+        /** Immutable user/profile intent, even when trace inputs are absent. */
         bool screenSpaceRequested = true;
+        /** True only when the sealed plan admitted current-frame Hi-Z trace inputs. */
+        bool screenSpaceTraceInputsReady = false;
         RGTextureHandle sceneColor{};
         RGTextureHandle deviceDepth{};
         /** Deferred GBuffer1, otherwise absent and reconstructed from depth. */
@@ -163,6 +199,8 @@ namespace RVX
         bool globalIBLReady = false;
         bool fallbackChainResolved = false;
         bool screenSpaceRequested = false;
+        bool screenSpaceTraceInputsReady = false;
+        bool screenSpaceTraceScheduled = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -173,6 +211,8 @@ namespace RVX
         uint32 resolveGraphPassCount = 0;
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
+        uint64 configurationIdentity = 0;
+        uint64 pipelineIdentity = 0;
         uint64 depthPyramidIdentity = 0;
         uint64 reflectionSurfaceIdentity = 0;
         uint64 exposureStateContentHash = 0;
@@ -200,6 +240,8 @@ namespace RVX
         uint32 hiZMipCount = 0;
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
+        uint64 configurationIdentity = 0;
+        uint64 pipelineIdentity = 0;
         uint64 depthPyramidIdentity = 0;
         bool screenSpaceScheduled = false;
         bool probeResolveScheduled = false;
@@ -208,6 +250,7 @@ namespace RVX
         {
             const bool screenSpaceResources = !screenSpaceScheduled ||
                 (hiZPyramid.IsValid() && hiZMipCount != 0 &&
+                 configurationIdentity != 0 && pipelineIdentity != 0 &&
                  depthPyramidIdentity != 0);
             return screenSpaceResources && rawReflection.IsValid() &&
                    confidence.IsValid() && resolvedSceneColor.IsValid() &&
@@ -227,6 +270,7 @@ namespace RVX
         uint64 lightingPlanIdentity = 0;
         uint64 depthPyramidIdentity = 0;
         uint64 configurationIdentity = 0;
+        uint64 pipelineIdentity = 0;
         uint64 reflectionSurfaceIdentity = 0;
         uint64 exposureStateContentHash = 0;
 
@@ -236,6 +280,7 @@ namespace RVX
                    extent.IsValid() && reflectionPlanIdentity != 0 &&
                     lightingPlanIdentity != 0 && depthPyramidIdentity != 0 &&
                     configurationIdentity != 0 &&
+                    pipelineIdentity != 0 &&
                     reflectionSurfaceIdentity != 0 &&
                     exposureStateContentHash != 0;
         }
@@ -314,10 +359,22 @@ namespace RVX
         void SetResources(PipelineCache* pipelineCache);
         void Shutdown() noexcept;
 
-        void SetConfig(const SSRConfig& config) noexcept;
-        [[nodiscard]] const SSRConfig& GetConfig() const noexcept
+        /**
+         * @brief Inject the only permitted SSR configuration: the exact
+         * resolver output for one declared renderer quality tier.
+         *
+         * A rejected value clears any older injected policy so a stale policy
+         * cannot be reused by a later graph recording.
+         */
+        [[nodiscard]] bool SetResolvedQualityPolicy(
+            RenderQualityTier quality,
+            const SSRConfig& config) noexcept;
+        [[nodiscard]] std::optional<SSRConfig> GetResolvedQualityPolicy()
+            const noexcept
         {
-            return m_config;
+            return m_hasResolvedQualityPolicy
+                ? std::optional<SSRConfig>(m_config)
+                : std::nullopt;
         }
 
         void SetEnabled(bool enabled) noexcept { m_enabled = enabled; }
@@ -375,6 +432,7 @@ namespace RVX
         PipelineCache* m_pipelineCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
         SSRConfig m_config{};
+        bool m_hasResolvedQualityPolicy = false;
         bool m_enabled = true;
         mutable std::string m_unsupportedReason =
             "SSR renderer resources are unavailable";

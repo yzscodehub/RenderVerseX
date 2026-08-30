@@ -2735,8 +2735,28 @@ TEST_F(PipelineCacheValidationFixture, TAAShaderUsesCookedResolveAndHistoryStore
     EXPECT_NE(shaderSource.find("float4 PSResolve"), std::string::npos);
     EXPECT_NE(shaderSource.find("HistoryStoreOutput PSStore"), std::string::npos);
     EXPECT_NE(shaderSource.find("RGBToYCoCg"), std::string::npos);
-    EXPECT_NE(shaderSource.find("SampleCurrentNeighborhoodMin"), std::string::npos);
-    EXPECT_NE(shaderSource.find("SampleCurrentNeighborhoodMax"), std::string::npos);
+    EXPECT_NE(shaderSource.find("struct CurrentColorNeighborhood"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SampleCurrentColorNeighborhood"), std::string::npos);
+    EXPECT_NE(shaderSource.find("minimumYCoCg"), std::string::npos);
+    EXPECT_NE(shaderSource.find("maximumYCoCg"), std::string::npos);
+    EXPECT_NE(shaderSource.find("axialAverageRGB"), std::string::npos);
+    EXPECT_NE(shaderSource.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("neighborhood.center = rawSample;"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("SampleCurrentNeighborhoodMin"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("SampleCurrentNeighborhoodMax"), std::string::npos);
+    const auto countOccurrences = [&shaderSource](const std::string_view token)
+    {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = shaderSource.find(token, offset)) != std::string::npos)
+        {
+            ++count;
+            offset += token.size();
+        }
+        return count;
+    };
+    EXPECT_EQ(countOccurrences("CurrentColor.SampleLevel("), 2u);
     EXPECT_NE(shaderSource.find("velocityNDC.x * 0.5, -velocityNDC.y * 0.5"),
               std::string::npos);
     EXPECT_NE(shaderSource.find("previousUV = uv - velocityUV"),
