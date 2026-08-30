@@ -1138,6 +1138,112 @@ function Get-BuildTruthRunnerDigest
     }
 }
 
+function Get-BuildTruthReceiptRunnerPaths
+{
+    param(
+        [Parameter(Mandatory)][ValidateSet("BuildTruth", "RequiredSuite")][string]$ReceiptKind,
+        [Parameter(Mandatory)][int]$SchemaVersion
+    )
+
+    $runnerPath = if ($ReceiptKind -eq "BuildTruth") {
+        "Scripts/run_build_truth.ps1"
+    } else {
+        "Scripts/run_required_suite.ps1"
+    }
+    if ($SchemaVersion -eq 2)
+    {
+        return @(
+            $runnerPath,
+            "Scripts/BuildTruth/BuildTruthV3.psm1"
+        )
+    }
+    if ($SchemaVersion -eq 3)
+    {
+        return @(
+            $runnerPath,
+            "Scripts/BuildTruth/ValidationProcessEnvironment.psm1",
+            "Scripts/BuildTruth/BuildTruthV3.psm1"
+        )
+    }
+    Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+        "Unsupported $ReceiptKind receipt schema version '$SchemaVersion'")
+}
+
+function Assert-BuildTruthRunnerDigest
+{
+    param(
+        [Parameter(Mandatory)][object]$RunnerDigest,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedPaths
+    )
+
+    $algorithm = Get-BuildTruthObjectPropertyValue -Value $RunnerDigest -Name "algorithm"
+    $declaredDigest = Get-BuildTruthObjectPropertyValue -Value $RunnerDigest -Name "digest"
+    $files = @(Get-BuildTruthObjectPropertyValue -Value $RunnerDigest -Name "files")
+    if ($algorithm -ne "sha256:path-content-v1" -or
+        $declaredDigest -notmatch "^[a-f0-9]{64}$" -or
+        $files.Count -eq 0)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "Runner digest has an unsupported schema")
+    }
+
+    $expectedPathsSet = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($expectedPath in $ExpectedPaths)
+    {
+        if ([string]::IsNullOrWhiteSpace($expectedPath) -or
+            -not $expectedPathsSet.Add($expectedPath))
+        {
+            Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+                "Runner digest expected path set is invalid")
+        }
+    }
+
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $identities = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $files)
+    {
+        $path = Get-BuildTruthObjectPropertyValue -Value $file -Name "path"
+        $sha256 = Get-BuildTruthObjectPropertyValue -Value $file -Name "sha256"
+        $size = Get-BuildTruthObjectPropertyValue -Value $file -Name "size"
+        if ($null -eq $path -or $null -eq $sha256 -or $null -eq $size -or
+            [string]::IsNullOrWhiteSpace([string]$path) -or
+            [string]$sha256 -notmatch "^[a-f0-9]{64}$" -or
+            [long]$size -lt 0 -or
+            -not $seenPaths.Add([string]$path) -or
+            -not $expectedPathsSet.Contains([string]$path))
+        {
+            Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+                "Runner digest contains an invalid, duplicate, or unexpected file identity")
+        }
+        $identities.Add("$path`0$sha256")
+    }
+    if ($seenPaths.Count -ne $expectedPathsSet.Count)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "Runner digest does not bind the exact expected runner file set")
+    }
+
+    $serialized = (@($identities) | Sort-Object) -join "`n"
+    $bytes = [Text.Encoding]::UTF8.GetBytes($serialized)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try
+    {
+        $actualDigest = ([BitConverter]::ToString(
+            $sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally
+    {
+        $sha.Dispose()
+    }
+    if ($actualDigest -cne [string]$declaredDigest)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+            "Runner digest does not match its runner file identities")
+    }
+}
+
 function Write-BuildTruthImmutableReceipt
 {
     param(
@@ -1190,7 +1296,7 @@ function Write-BuildTruthImmutableReceipt
     if ($null -eq $receiptSchema -or
         $receiptSchema -ne $expectedSchema -or
         $null -eq $receiptSchemaVersion -or
-        $receiptSchemaVersion -ne 2 -or
+        $receiptSchemaVersion -notin @(2, 3) -or
         $null -eq $receiptRunId -or
         $receiptRunId -ne $RunId -or
         $null -eq $receiptIdentityPath -or
@@ -1418,6 +1524,7 @@ function Write-BuildTruthReceiptPointer
 
 Export-ModuleMember -Function @(
     "Assert-BuildTruthExistingPathAncestors",
+    "Assert-BuildTruthRunnerDigest",
     "Assert-BuildTruthInventoryLanes",
     "Assert-BuildTruthJUnitOutcome",
     "Assert-BuildTruthJUnitOutcomeMatches",
@@ -1432,6 +1539,7 @@ Export-ModuleMember -Function @(
     "Get-BuildTruthNativeEvidence",
     "Get-BuildTruthPathFingerprint",
     "Get-BuildTruthPathStringComparison",
+    "Get-BuildTruthReceiptRunnerPaths",
     "Get-BuildTruthReceiptFileEvidence",
     "Get-BuildTruthRepositoryRelativePath",
     "Get-BuildTruthRunnerDigest",

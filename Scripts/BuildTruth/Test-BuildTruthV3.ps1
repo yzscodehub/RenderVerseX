@@ -485,6 +485,19 @@ try
     {
         throw "Build Truth receipt publisher does not bind softwareAdapterAllowed."
     }
+    if ($buildTruthRunnerSource -notmatch 'ValidationProcessEnvironment\.psm1' -or
+        $buildTruthRunnerSource -match 'SetEnvironmentVariable\("PATH"')
+    {
+        throw "Build Truth does not use the clean validation process environment launcher."
+    }
+    if ($buildTruthRunnerSource -notmatch '\$LaneTestPresets\s+-join\s+","')
+    {
+        throw "Build Truth no longer serializes LaneTestPresets for PowerShell -File binding."
+    }
+    if ($buildTruthRunnerSource -notmatch 'schemaVersion\s*=\s*3')
+    {
+        throw "Build Truth publisher does not emit receipt schema version 3."
+    }
     if ($buildTruthRunnerSource -notmatch '\[switch\]\$AllowSoftwareAdapter' -or
         $buildTruthRunnerSource -notmatch 'RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER\s*=\s*"1"' -or
         $buildTruthRunnerSource -notmatch 'Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER')
@@ -500,7 +513,23 @@ try
             -Value $receiptValue `
             -Status "passed" | Out-Null
     }
+    $v4ReceiptRunId = "22222222222222222222222222222222"
+    $receiptValue.schemaVersion = 4
+    $receiptValue.runId = $v4ReceiptRunId
+    $receiptValue.immutableReceiptPath =
+        ".agent-harness/receipts/BuildTruth.$v4ReceiptRunId.json"
+    Assert-BuildTruthFailure -Category "ReceiptSchema" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "BuildTruth" `
+            -RunId $v4ReceiptRunId `
+            -Value $receiptValue `
+            -Status "passed" | Out-Null
+    }
     $receiptValue.schemaVersion = 2
+    $receiptValue.runId = $receiptRunId
+    $receiptValue.immutableReceiptPath =
+        ".agent-harness/receipts/BuildTruth.$receiptRunId.json"
     $receipt = Write-BuildTruthImmutableReceipt `
         -RepositoryRoot $receiptRepository `
         -ReceiptKind "BuildTruth" `
@@ -530,6 +559,7 @@ try
     $secondReceiptRunId = "11111111111111111111111111111111"
     $receiptValue.runId = $secondReceiptRunId
     $receiptValue.immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$secondReceiptRunId.json"
+    $receiptValue.schemaVersion = 3
     $secondReceipt = Write-BuildTruthImmutableReceipt `
         -RepositoryRoot $receiptRepository `
         -ReceiptKind "BuildTruth" `
@@ -565,10 +595,62 @@ try
             -Status "passed" | Out-Null
     }
 
+    $runnerDigestRepository = Join-Path $temporaryRoot "runner-digest-repository"
+    foreach ($relativePath in @(
+        "Scripts/run_build_truth.ps1",
+        "Scripts/run_required_suite.ps1",
+        "Scripts/BuildTruth/BuildTruthV3.psm1",
+        "Scripts/BuildTruth/ValidationProcessEnvironment.psm1"))
+    {
+        $path = Join-Path $runnerDigestRepository $relativePath
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        Set-Content -LiteralPath $path -Value $relativePath -Encoding utf8
+    }
+    foreach ($receiptKind in @("BuildTruth", "RequiredSuite"))
+    {
+        $v2Paths = @(Get-BuildTruthReceiptRunnerPaths `
+            -ReceiptKind $receiptKind -SchemaVersion 2)
+        $v3Paths = @(Get-BuildTruthReceiptRunnerPaths `
+            -ReceiptKind $receiptKind -SchemaVersion 3)
+        Assert-Equal -Actual $v2Paths.Count -Expected 2 `
+            -Message "$receiptKind v2 runner path count"
+        Assert-Equal -Actual $v3Paths.Count -Expected 3 `
+            -Message "$receiptKind v3 runner path count"
+        if ($v2Paths -contains "Scripts/BuildTruth/ValidationProcessEnvironment.psm1" -or
+            $v3Paths -notcontains "Scripts/BuildTruth/ValidationProcessEnvironment.psm1")
+        {
+            throw "$receiptKind runner paths do not distinguish receipt schema versions."
+        }
+
+        $v2Digest = Get-BuildTruthRunnerDigest `
+            -RepositoryRoot $runnerDigestRepository -Paths $v2Paths
+        Assert-BuildTruthRunnerDigest -RunnerDigest $v2Digest -ExpectedPaths $v2Paths
+        $v3Digest = Get-BuildTruthRunnerDigest `
+            -RepositoryRoot $runnerDigestRepository -Paths $v3Paths
+        Assert-BuildTruthRunnerDigest -RunnerDigest $v3Digest -ExpectedPaths $v3Paths
+        Assert-BuildTruthFailure -Category "ReceiptSchema" -Action {
+            Assert-BuildTruthRunnerDigest -RunnerDigest $v3Digest -ExpectedPaths $v2Paths
+        }
+        Assert-BuildTruthFailure -Category "ReceiptSchema" -Action {
+            Assert-BuildTruthRunnerDigest -RunnerDigest $v2Digest -ExpectedPaths $v3Paths
+        }
+        $tamperedDigest = [ordered]@{
+            algorithm = $v2Digest.algorithm
+            digest = "0" * 64
+            files = @($v2Digest.files)
+        }
+        Assert-BuildTruthFailure -Category "ReceiptTampered" -Action {
+            Assert-BuildTruthRunnerDigest -RunnerDigest $tamperedDigest -ExpectedPaths $v2Paths
+        }
+    }
+    Assert-BuildTruthFailure -Category "ReceiptSchema" -Action {
+        Get-BuildTruthReceiptRunnerPaths -ReceiptKind BuildTruth -SchemaVersion 4 | Out-Null
+    }
+
     $failedRunId = "abcdefabcdefabcdefabcdefabcdefab"
     $failedReceiptValue = [ordered]@{
         schema = "RVX.AgentHarness.BuildTruthReceipt"
-        schemaVersion = 2
+        schemaVersion = 3
         runId = $failedRunId
         immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$failedRunId.json"
     }
@@ -585,7 +667,7 @@ try
         throw "A failed run wrote an immutable receipt."
     }
 
-    Write-Host "Build Truth v3 module self-test passed."
+    Write-Host "Build Truth v2/v3 receipt compatibility self-test passed."
 }
 finally
 {

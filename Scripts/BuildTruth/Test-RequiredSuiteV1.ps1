@@ -181,6 +181,20 @@ try
     {
         throw "Required Suite receipt publisher does not bind skipConfigure."
     }
+    if ($requiredSuiteRunnerSource -notmatch 'ValidationProcessEnvironment\.psm1' -or
+        $requiredSuiteRunnerSource -match 'SetEnvironmentVariable\("PATH"')
+    {
+        throw "Required Suite does not use the clean validation process environment launcher."
+    }
+    if ($requiredSuiteRunnerSource -notmatch '\$BuildTarget\s+-join\s+","' -or
+        $requiredSuiteRunnerSource -notmatch '\$RequiredEvidence\s+-join\s+";"')
+    {
+        throw "Required Suite no longer serializes array arguments for PowerShell -File binding."
+    }
+    if ($requiredSuiteRunnerSource -notmatch 'schemaVersion\s*=\s*3')
+    {
+        throw "Required Suite publisher does not emit receipt schema version 3."
+    }
     $receiptValue.schemaVersion = 1
     Assert-RequiredSuiteFailure -Category "ReceiptSchema" -Action {
         Write-BuildTruthImmutableReceipt `
@@ -211,7 +225,22 @@ try
             -Status "passed" | Out-Null
     }
 
-    Write-Host "Required Suite receipt v2 self-test passed."
+    $v3ReceiptRunId = "1234567890abcdef1234567890abcdef"
+    $receiptValue.schemaVersion = 3
+    $receiptValue.runId = $v3ReceiptRunId
+    $receiptValue.immutableReceiptPath = ".agent-harness/receipts/RequiredSuite.$v3ReceiptRunId.json"
+    $v3Receipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "RequiredSuite" `
+        -RunId $v3ReceiptRunId `
+        -Value $receiptValue `
+        -Status "passed"
+    if ($v3Receipt.immutableReceiptPath -ne ".agent-harness/receipts/RequiredSuite.$v3ReceiptRunId.json")
+    {
+        throw "Required Suite v3 immutable receipt is incomplete."
+    }
+
+    Write-Host "Required Suite receipt v2/v3 self-test passed."
 }
 finally
 {

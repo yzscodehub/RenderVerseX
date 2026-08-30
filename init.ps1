@@ -56,6 +56,38 @@ if ($PSVersionTable.PSVersion.Major -lt 7)
     throw "PowerShell 7 or newer is required, but no usable pwsh 7 executable was found"
 }
 
+Import-Module (Join-Path $PSScriptRoot "Scripts\BuildTruth\ValidationProcessEnvironment.psm1") -Force
+
+# Keep the harness bootstrap itself out of an inherited Windows environment
+# block that contains both PATH and Path. The shared launcher preserves this
+# entry point's optional arguments and exits with the child result.
+$canonicalizationArguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+    "-Mode", $Mode,
+    "-Configuration", $Configuration,
+    "-BaseRef", $BaseRef,
+    "-OutputFormat", $OutputFormat
+)
+foreach ($pair in @(
+    @("Preset", $Preset),
+    @("TestPreset", $TestPreset),
+    @("BuildDir", $BuildDir)
+))
+{
+    if (-not [string]::IsNullOrWhiteSpace([string]$pair[1]))
+    {
+        $canonicalizationArguments += @("-$($pair[0])", [string]$pair[1])
+    }
+}
+if ($AllowConfigure) { $canonicalizationArguments += "-AllowConfigure" }
+$environmentCanonicalization = Invoke-ValidationProcessEnvironmentCanonicalization `
+    -WorkingDirectory (Get-Location).Path `
+    -InvocationArguments $canonicalizationArguments
+if ($environmentCanonicalization.relaunched)
+{
+    exit $environmentCanonicalization.exitCode
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference)
@@ -1480,61 +1512,15 @@ function Assert-ReceiptRunnerDigest
         [Parameter(Mandatory)][string]$Context
     )
 
-    if ([string](Get-RequiredJsonProperty $RunnerDigest "algorithm" $Context) -cne
-        "sha256:path-content-v1")
-    {
-        throw "$Context uses an unsupported algorithm"
-    }
-    $declaredDigest = [string](Get-RequiredJsonProperty $RunnerDigest "digest" $Context)
-    if ($declaredDigest -notmatch "^[a-f0-9]{64}$")
-    {
-        throw "$Context digest is invalid"
-    }
-    $files = @(Get-RequiredJsonArrayProperty $RunnerDigest "files" $Context)
-    if ($files.Count -le 0) { throw "$Context contains no runner files" }
-    $seenPaths = [System.Collections.Generic.HashSet[string]]::new((Get-PathStringComparer))
-    $expectedPathsSet = [System.Collections.Generic.HashSet[string]]::new((Get-PathStringComparer))
-    foreach ($expectedPath in $ExpectedPaths)
-    {
-        $normalizedExpected = Get-NormalizedRelativePath $Root $expectedPath `
-            "$Context expected runner file"
-        if (-not $expectedPathsSet.Add($normalizedExpected))
-        {
-            throw "$Context expected runner file set contains duplicates"
-        }
-    }
-    $identities = [System.Collections.Generic.List[string]]::new()
-    foreach ($file in $files)
-    {
-        $path = Get-NormalizedRelativePath $Root `
-            ([string](Get-RequiredJsonProperty $file "path" "$Context file")) "$Context file path"
-        $sha256 = [string](Get-RequiredJsonProperty $file "sha256" "$Context file '$path'")
-        $size = [long](Get-RequiredJsonProperty $file "size" "$Context file '$path'")
-        if ($sha256 -notmatch "^[a-f0-9]{64}$" -or $size -lt 0 -or
-            -not $seenPaths.Add($path) -or -not $expectedPathsSet.Contains($path))
-        {
-            throw "$Context contains an invalid, duplicate, or unexpected runner file identity"
-        }
-        $identities.Add("$path`0$sha256")
-    }
-    if ($seenPaths.Count -ne $expectedPathsSet.Count)
-    {
-        throw "$Context does not bind the exact expected runner file set"
-    }
-    $serialized = (@($identities) | Sort-Object) -join "`n"
-    $bytes = [Text.Encoding]::UTF8.GetBytes($serialized)
-    $sha = [Security.Cryptography.SHA256]::Create()
     try
     {
-        $actualDigest = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+        Assert-BuildTruthRunnerDigest `
+            -RunnerDigest $RunnerDigest `
+            -ExpectedPaths $ExpectedPaths
     }
-    finally
+    catch
     {
-        $sha.Dispose()
-    }
-    if ($actualDigest -cne $declaredDigest)
-    {
-        throw "$Context digest does not match its runner file identities"
+        throw "$Context $($_.Exception.Message)"
     }
 }
 
@@ -1550,8 +1536,9 @@ function Assert-RunEvidenceReceiptIdentity
         [Parameter(Mandatory)][string]$Context
     )
 
+    $schemaVersion = [int](Get-RequiredJsonProperty $Receipt "schemaVersion" $Context)
     if ([string](Get-RequiredJsonProperty $Receipt "schema" $Context) -cne $ExpectedSchema -or
-        [int](Get-RequiredJsonProperty $Receipt "schemaVersion" $Context) -ne 2)
+        $schemaVersion -notin @(2, 3))
     {
         throw "$Context has an unsupported schema"
     }
@@ -1595,6 +1582,7 @@ function Assert-RunEvidenceReceiptIdentity
 
     return [pscustomobject]@{
         runId = $runId
+        schemaVersion = $schemaVersion
         sourceCommit = $sourceCommit
         sourceDigest = $fingerprintAfter.digest
     }
@@ -1612,9 +1600,9 @@ function Assert-BuildTruthEvidenceReceipt
 
     $receipt = $Receipt
     $context = "Evidence receipt '$ArtifactRelative'"
-    [void](Assert-RunEvidenceReceiptIdentity -Root $Root -ArtifactRelative $ArtifactRelative `
+    $receiptIdentity = Assert-RunEvidenceReceiptIdentity -Root $Root -ArtifactRelative $ArtifactRelative `
         -Receipt $receipt -Record $Record -ReceiptKind BuildTruth `
-        -ExpectedSchema "RVX.AgentHarness.BuildTruthReceipt" -Context $context)
+        -ExpectedSchema "RVX.AgentHarness.BuildTruthReceipt" -Context $context
 
     $request = Get-RequiredJsonProperty $receipt "request" $context
     $expectation = Get-ReceiptExpectation -Gate $Gate -Kind BuildTruth -Context $context
@@ -1634,7 +1622,7 @@ function Assert-BuildTruthEvidenceReceipt
         -Request $request -Expectation $expectation -Context $context
     Assert-ReceiptRunnerDigest -Root $Root `
         -RunnerDigest (Get-RequiredJsonProperty $request "runnerDigest" "$context request") `
-        -ExpectedPaths @("Scripts/run_build_truth.ps1", "Scripts/BuildTruth/BuildTruthV3.psm1") `
+        -ExpectedPaths (Get-BuildTruthReceiptRunnerPaths -ReceiptKind BuildTruth -SchemaVersion $receiptIdentity.schemaVersion) `
         -Context "$context runner digest"
     $laneTestPresets = @(Get-RequiredJsonArrayProperty $request "laneTestPresets" "$context request")
     if ($laneTestPresets.Count -le 0) { throw "$context request has no lane test presets" }
@@ -1780,9 +1768,9 @@ function Assert-RequiredSuiteEvidenceReceipt
 
     $receipt = $Receipt
     $context = "Evidence receipt '$ArtifactRelative'"
-    [void](Assert-RunEvidenceReceiptIdentity -Root $Root -ArtifactRelative $ArtifactRelative `
+    $receiptIdentity = Assert-RunEvidenceReceiptIdentity -Root $Root -ArtifactRelative $ArtifactRelative `
         -Receipt $receipt -Record $Record -ReceiptKind RequiredSuite `
-        -ExpectedSchema "RVX.AgentHarness.RequiredSuiteReceipt" -Context $context)
+        -ExpectedSchema "RVX.AgentHarness.RequiredSuiteReceipt" -Context $context
 
     $request = Get-RequiredJsonProperty $receipt "request" $context
     $expectation = Get-ReceiptExpectation -Gate $Gate -Kind RequiredSuite -Context $context
@@ -1802,7 +1790,7 @@ function Assert-RequiredSuiteEvidenceReceipt
         -Request $request -Expectation $expectation -Context $context
     Assert-ReceiptRunnerDigest -Root $Root `
         -RunnerDigest (Get-RequiredJsonProperty $request "runnerDigest" "$context request") `
-        -ExpectedPaths @("Scripts/run_required_suite.ps1", "Scripts/BuildTruth/BuildTruthV3.psm1") `
+        -ExpectedPaths (Get-BuildTruthReceiptRunnerPaths -ReceiptKind RequiredSuite -SchemaVersion $receiptIdentity.schemaVersion) `
         -Context "$context runner digest"
     $buildTargets = @(Get-RequiredJsonArrayProperty $request "buildTargets" "$context request")
     if ($buildTargets.Count -le 0) { throw "$context request has no build targets" }

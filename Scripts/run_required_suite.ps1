@@ -60,15 +60,35 @@ $BuildTarget = @($BuildTarget | ForEach-Object { $_ -split "," } |
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# Some Windows process launchers preserve both PATH and Path. MSBuild copies
-# environment variables into a case-insensitive dictionary and fails before
-# invoking CL when both spellings are present. Re-publish one canonical entry.
-if ($env:OS -eq "Windows_NT")
+Import-Module (Join-Path $PSScriptRoot "BuildTruth\ValidationProcessEnvironment.psm1") -Force
+
+# MSBuild rejects a Windows inherited environment block containing both PATH
+# and Path. Re-enter exactly once with a clean child environment rather than
+# mutating this host process's environment in place.
+$canonicalizationArguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+    "-ConfigurePreset", $ConfigurePreset,
+    "-BuildPreset", $BuildPreset,
+    "-TestPreset", $TestPreset,
+    "-BuildDir", $BuildDir,
+    "-Configuration", $Configuration,
+    "-BuildTarget", ($BuildTarget -join ","),
+    "-RequiredLabel", $RequiredLabel,
+    "-ExpectedTestCount", [string]$ExpectedTestCount,
+    "-BaseRef", $BaseRef
+)
+if ($RequiredEvidence.Count -gt 0)
 {
-    $canonicalPath = $env:Path
-    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
-    [Environment]::SetEnvironmentVariable("Path", $null, "Process")
-    [Environment]::SetEnvironmentVariable("PATH", $canonicalPath, "Process")
+    $canonicalizationArguments += @("-RequiredEvidence", ($RequiredEvidence -join ";"))
+}
+if ($Fresh) { $canonicalizationArguments += "-Fresh" }
+if ($SkipConfigure) { $canonicalizationArguments += "-SkipConfigure" }
+$environmentCanonicalization = Invoke-ValidationProcessEnvironmentCanonicalization `
+    -WorkingDirectory (Get-Location).Path `
+    -InvocationArguments $canonicalizationArguments
+if ($environmentCanonicalization.relaunched)
+{
+    exit $environmentCanonicalization.exitCode
 }
 
 Import-Module (Join-Path $PSScriptRoot "BuildTruth\BuildTruthV3.psm1") -Force
@@ -212,12 +232,13 @@ function Publish-RequiredSuiteImmutableReceipt
         -RepositoryRoot $RepositoryRoot `
         -Paths @(
             "Scripts/run_required_suite.ps1",
+            "Scripts/BuildTruth/ValidationProcessEnvironment.psm1",
             "Scripts/BuildTruth/BuildTruthV3.psm1"
         )
     $receiptPath = ".agent-harness/receipts/RequiredSuite.$RunId.json"
     $receipt = [ordered]@{
         schema = "RVX.AgentHarness.RequiredSuiteReceipt"
-        schemaVersion = 2
+        schemaVersion = 3
         runId = $RunId
         immutableReceiptPath = $receiptPath
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -341,6 +362,13 @@ try
         -FailureCategory "SelfTest" `
         -Action {
             & (Join-Path $PSScriptRoot "BuildTruth\Test-BuildTruthV3.ps1")
+        }
+    Invoke-RequiredSuiteNativeCommand `
+        -Commands $commands `
+        -Name "validation-process-environment-self-test" `
+        -FailureCategory "SelfTest" `
+        -Action {
+            & (Join-Path $PSScriptRoot "BuildTruth\Test-ValidationProcessEnvironment.ps1")
         }
     Invoke-RequiredSuiteNativeCommand `
         -Commands $commands `
