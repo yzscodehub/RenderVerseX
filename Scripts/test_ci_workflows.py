@@ -305,6 +305,15 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         findings = validate(self.root)
         self.assertTrue(any("GPU lock must be held only" in item for item in findings))
 
+    def test_gfx24_performance_candidate_must_disable_the_api_debug_layer(self) -> None:
+        self.replace_gfx24_candidate_function(
+            "--no-validation",
+            "--validation",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("performance producer must disable" in item
+                            for item in findings))
+
     def test_gfx24_contract_registration_cannot_drop_metrics_self_test(self) -> None:
         self.replace(
             "Tests/CMake/UnitTests.cmake",

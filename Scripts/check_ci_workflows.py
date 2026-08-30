@@ -642,6 +642,7 @@ def validate(root: Path) -> list[str]:
             "--qualification-performance",
             "performance.json",
             "--qualification-performance-baseline gfx24-dx12-candidate-unapproved",
+            "--no-validation",
             "--capture-tick 120",
             "SUITE gfx24-candidate",
         ):
@@ -660,6 +661,14 @@ def validate(root: Path) -> list[str]:
             findings.append(
                 "GFX24 native candidate GPU lock must be held only by its "
                 "visual producer loop and performance producer"
+            )
+        if (
+            gfx24_candidate_function.count("--validation") != 1
+            or gfx24_candidate_function.count("--no-validation") != 1
+        ):
+            findings.append(
+                "GFX24 visual producer must keep validation enabled while its "
+                "performance producer must disable the API debug layer"
             )
         for forbidden in (
             "$<TARGET_FILE:RenderVerseSamples>",

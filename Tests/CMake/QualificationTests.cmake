@@ -2346,7 +2346,7 @@ function(rvx_add_renderverse_gfx24_native_candidates)
             --qualification-performance "${performance_root}/performance.json"
             --qualification-performance-baseline gfx24-dx12-candidate-unapproved
             --diagnostics
-            --validation
+            --no-validation
         BUILD_TARGETS
             RenderVerseSamplesCooked
             ${cooked_shader_target}
