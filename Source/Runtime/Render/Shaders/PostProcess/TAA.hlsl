@@ -82,7 +82,8 @@ struct CurrentColorNeighborhood
     float3 axialAverageRGB;
 };
 
-CurrentColorNeighborhood SampleCurrentColorNeighborhood(float2 uv)
+CurrentColorNeighborhood SampleCurrentColorNeighborhood(uint2 centerPixel,
+                                                        uint2 extent)
 {
     CurrentColorNeighborhood neighborhood;
     neighborhood.center = float4(0.0, 0.0, 0.0, 0.0);
@@ -98,9 +99,11 @@ CurrentColorNeighborhood SampleCurrentColorNeighborhood(float2 uv)
         [unroll]
         for (int x = -1; x <= 1; ++x)
         {
-            const float2 offset = float2(x, y) * RenderSize.zw;
-            const float4 rawSample = CurrentColor.SampleLevel(
-                LinearClampSampler, uv + offset, 0.0);
+            const int2 samplePixel = clamp(
+                int2(centerPixel) + int2(x, y),
+                int2(0, 0), int2(extent) - int2(1, 1));
+            const float4 rawSample = CurrentColor.Load(
+                int3(samplePixel, 0));
             const float3 sampleRGB = SanitizeColor(rawSample.rgb);
             const float3 sampleYCoCg = RGBToYCoCg(sampleRGB);
             neighborhood.minimumYCoCg = min(
@@ -132,15 +135,16 @@ struct TAAResolveOutput
 
 TAAResolveOutput PSResolve(VSOutput input)
 {
+    const uint2 extent = max(uint2(RenderSize.xy), uint2(1u, 1u));
+    const uint2 pixel = min(uint2(input.Position.xy), extent - 1u);
     const float2 uv = input.TexCoord;
     const CurrentColorNeighborhood neighborhood =
-        SampleCurrentColorNeighborhood(uv);
+        SampleCurrentColorNeighborhood(pixel, extent);
     const float4 currentSample = neighborhood.center;
     const float3 current = SanitizeColor(currentSample.rgb);
-    const float currentDepth = CurrentDepth.SampleLevel(
-        LinearClampSampler, uv, 0.0);
-    const float reactive = saturate(ReactiveMask.SampleLevel(LinearClampSampler, uv, 0.0) *
-                                      max(ResolveParams.y, 0.0));
+    const float currentDepth = CurrentDepth.Load(int3(pixel, 0));
+    const float reactive = saturate(
+        ReactiveMask.Load(int3(pixel, 0)) * max(ResolveParams.y, 0.0));
     float3 resolved = current;
     if (ResolveParams.w > 0.5)
     {
@@ -148,7 +152,7 @@ TAAResolveOutput PSResolve(VSOutput input)
         // top-left UV delta once: x maps directly, while UV y opposes NDC y.
         // Current/previous velocity matrices are already jittered, so adding
         // a second correction here would double-apply the sample offset.
-        const float2 velocityNDC = Velocity.SampleLevel(LinearClampSampler, uv, 0.0);
+        const float2 velocityNDC = Velocity.Load(int3(pixel, 0));
         const float2 velocityUV = float2(velocityNDC.x * 0.5, -velocityNDC.y * 0.5);
         const float2 previousUV = uv - velocityUV * FeedbackParams.z;
         const bool previousUVInBounds =

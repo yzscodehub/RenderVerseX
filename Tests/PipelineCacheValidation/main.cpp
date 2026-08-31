@@ -2771,7 +2771,23 @@ TEST_F(PipelineCacheValidationFixture, TAAResolveUsesOneCookedThreeTargetContrac
         }
         return count;
     };
-    EXPECT_EQ(countOccurrences("CurrentColor.SampleLevel("), 1u);
+    EXPECT_EQ(countOccurrences("CurrentColor.SampleLevel("), 0u);
+    EXPECT_EQ(countOccurrences("CurrentColor.Load("), 1u);
+    EXPECT_NE(shaderSource.find("CurrentDepth.Load(int3(pixel, 0))"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("Velocity.Load(int3(pixel, 0))"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("ReactiveMask.Load(int3(pixel, 0))"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("HistoryColor.SampleLevel("),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("HistoryDepth.SampleLevel("),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find("int2 samplePixel = clamp("),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "const uint2 pixel = min(uint2(input.Position.xy), extent - 1u)"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("velocityNDC.x * 0.5, -velocityNDC.y * 0.5"),
               std::string::npos);
     EXPECT_NE(shaderSource.find("previousUV = uv - velocityUV"),
