@@ -325,7 +325,7 @@ TEST(HiZReflectionValidation,
 }
 
 TEST(HiZReflectionValidation,
-     QualityPolicyResolverOwnsTraceBudgetAndPreservesHighCompatibility)
+     QualityPolicyResolverOwnsTraceBudgetAndResolution)
 {
     struct ExpectedPolicy
     {
@@ -333,12 +333,15 @@ TEST(HiZReflectionValidation,
         RVX::SSRQuality ssrQuality;
         RVX::uint32 maxSteps;
         RVX::uint32 binarySearchSteps;
+        bool halfResolution;
     };
     constexpr ExpectedPolicy policies[] = {
-        {RVX::RenderQualityTier::Low, RVX::SSRQuality::Low, 32U, 4U},
-        {RVX::RenderQualityTier::Medium, RVX::SSRQuality::Medium, 48U, 5U},
-        {RVX::RenderQualityTier::High, RVX::SSRQuality::High, 64U, 6U},
-        {RVX::RenderQualityTier::Ultra, RVX::SSRQuality::Ultra, 96U, 8U}};
+        {RVX::RenderQualityTier::Low, RVX::SSRQuality::Low, 32U, 4U, false},
+        {RVX::RenderQualityTier::Medium, RVX::SSRQuality::Medium, 48U, 5U,
+         false},
+        {RVX::RenderQualityTier::High, RVX::SSRQuality::High, 64U, 6U, true},
+        {RVX::RenderQualityTier::Ultra, RVX::SSRQuality::Ultra, 96U, 8U,
+         false}};
 
     const RVX::SSRConfig historicalHigh{};
     const std::optional<RVX::SSRConfig> resolvedHigh =
@@ -361,7 +364,7 @@ TEST(HiZReflectionValidation,
         EXPECT_FLOAT_EQ(policy.roughnessThreshold,
                         historicalHigh.roughnessThreshold);
         EXPECT_FLOAT_EQ(policy.edgeFade, historicalHigh.edgeFade);
-        EXPECT_FALSE(policy.halfResolution);
+        EXPECT_EQ(policy.halfResolution, expected.halfResolution);
         EXPECT_FALSE(policy.temporalFilter);
         EXPECT_FALSE(policy.stochastic);
 
@@ -377,6 +380,11 @@ TEST(HiZReflectionValidation,
     EXPECT_FALSE(RVX::ResolveSSRQualityPolicy(
                      static_cast<RVX::RenderQualityTier>(255U))
                      .has_value());
+
+    RVX::SSRConfig fullResolutionHigh = historicalHigh;
+    fullResolutionHigh.halfResolution = false;
+    EXPECT_NE(RVX::ComputeSSRConfigurationIdentity(historicalHigh),
+              RVX::ComputeSSRConfigurationIdentity(fullResolutionHigh));
 }
 
 TEST(HiZReflectionValidation,
@@ -395,6 +403,12 @@ TEST(HiZReflectionValidation,
 
     RVX::SSRConfig altered = *high;
     --altered.maxSteps;
+    EXPECT_FALSE(ssr.SetResolvedQualityPolicy(
+        RVX::RenderQualityTier::High, altered));
+    EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());
+
+    altered = *high;
+    altered.halfResolution = false;
     EXPECT_FALSE(ssr.SetResolvedQualityPolicy(
         RVX::RenderQualityTier::High, altered));
     EXPECT_FALSE(ssr.GetResolvedQualityPolicy().has_value());

@@ -31,7 +31,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 34;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 35;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -61,6 +61,9 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_HIZ_REFLECTION_EXECUTION_SCHEMA_VERSION = 32;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_OPAQUE_SCENE_COLOR_PYRAMID_SCHEMA_VERSION = 33;
+    /** Schema 34 has the legacy SSR projection without A3 trace-resolution evidence. */
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_HALF_RESOLUTION_SSR_EXECUTION_SCHEMA_VERSION = 34;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -780,6 +783,9 @@ namespace RVX
         bool screenSpaceRequested = false;
         bool screenSpaceTraceInputsReady = false;
         bool screenSpaceTraceScheduled = false;
+        bool halfResolutionTrace = false;
+        bool guidedUpscaleScheduled = false;
+        bool guidedUpscaleExecuted = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -791,6 +797,8 @@ namespace RVX
         uint32 hiZGraphPassCount = 0;
         uint32 traceGraphPassCount = 0;
         uint32 resolveGraphPassCount = 0;
+        RenderOutputExtent traceExtent{};
+        RenderOutputExtent resolvedExtent{};
         uint64 reflectionFrameSequence = 0;
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
@@ -814,6 +822,16 @@ namespace RVX
                 presentedFrameAligned && frameFeatureSequence != 0 &&
                 frameFeatureSequence == receiptFrameSequence &&
                 receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const RenderOutputExtent expectedHalfExtent{
+                resolvedExtent.width / 2U + resolvedExtent.width % 2U,
+                resolvedExtent.height / 2U + resolvedExtent.height % 2U};
+            const bool traceResolutionMatches = traceExtent.IsValid() &&
+                resolvedExtent.IsValid() &&
+                (halfResolutionTrace
+                    ? (traceExtent == expectedHalfExtent &&
+                       guidedUpscaleScheduled && guidedUpscaleExecuted)
+                    : (traceExtent == resolvedExtent &&
+                       !guidedUpscaleScheduled && !guidedUpscaleExecuted));
             return available && IsCurrentRenderExecutionReceiptSchema(
                    executionReceiptSchemaVersion) &&
                    executionReceiptStructurallyValid &&
@@ -832,6 +850,7 @@ namespace RVX
                    globalIBLRadianceQualified && readyProbeCount != 0 &&
                    hiZMipCount != 0 && hiZGraphPassCount == hiZMipCount &&
                    traceGraphPassCount == 1 && resolveGraphPassCount == 1 &&
+                   traceResolutionMatches &&
                    reflectionFrameSequence == receiptFrameSequence &&
                    reflectionPlanIdentity != 0 && lightingPlanIdentity != 0 &&
                    configurationIdentity != 0 && pipelineIdentity != 0 &&

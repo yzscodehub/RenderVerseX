@@ -3561,6 +3561,29 @@ namespace RVX
                    << Diagnostics::JsonBool(
                           reflection.screenSpaceTraceScheduled)
                    << ",\n";
+            if (report.schemaVersion >
+                RVX_SAMPLE_REPORT_PRE_HALF_RESOLUTION_SSR_EXECUTION_SCHEMA_VERSION)
+            {
+                stream << "      \"halfResolutionTrace\": "
+                       << Diagnostics::JsonBool(reflection.halfResolutionTrace)
+                       << ",\n";
+                stream << "      \"guidedUpscaleScheduled\": "
+                       << Diagnostics::JsonBool(
+                              reflection.guidedUpscaleScheduled)
+                       << ",\n";
+                stream << "      \"guidedUpscaleExecuted\": "
+                       << Diagnostics::JsonBool(
+                              reflection.guidedUpscaleExecuted)
+                       << ",\n";
+                stream << "      \"traceExtent\": {\"width\": "
+                       << reflection.traceExtent.width
+                       << ", \"height\": "
+                       << reflection.traceExtent.height << "},\n";
+                stream << "      \"resolvedExtent\": {\"width\": "
+                       << reflection.resolvedExtent.width
+                       << ", \"height\": "
+                       << reflection.resolvedExtent.height << "},\n";
+            }
             stream << "      \"screenSpaceApplied\": "
                    << Diagnostics::JsonBool(reflection.screenSpaceApplied)
                    << ",\n";

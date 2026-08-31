@@ -404,8 +404,17 @@ void ReflectionFeatureAdapter::AddPasses(
                     graph, m_recordContext.view, inputs);
             });
         m_ssrStatsObserved = graphRegistered;
+        const std::optional<SSRConfig> resolvedPolicy =
+            m_ssr.GetResolvedQualityPolicy();
+        const bool expectedGuidedUpscale =
+            ssrOutput.screenSpaceScheduled && resolvedPolicy.has_value() &&
+            resolvedPolicy->halfResolution;
         const bool outputMatchesPlan = graphRegistered &&
             ssrOutput.IsValid() &&
+            ssrOutput.resolvedExtent ==
+                lighting->hdrSceneColorMetadata.extent &&
+            ssrOutput.halfResolutionTrace == expectedGuidedUpscale &&
+            ssrOutput.guidedUpscaleScheduled == expectedGuidedUpscale &&
             ssrOutput.reflectionPlanIdentity ==
                 m_reflectionPlan->GetIdentityHash() &&
             ssrOutput.lightingPlanIdentity == lighting->lightingPlanIdentity &&

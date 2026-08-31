@@ -8777,6 +8777,9 @@ void SceneRenderer::Render()
                 stats.screenSpaceTraceInputsReady;
             reflection.screenSpaceTraceScheduled =
                 stats.screenSpaceTraceScheduled;
+            reflection.halfResolutionTrace = stats.halfResolutionTrace;
+            reflection.guidedUpscaleScheduled = stats.guidedUpscaleScheduled;
+            reflection.guidedUpscaleExecuted = stats.guidedUpscaleExecuted;
             // Route-mask pixels become trustworthy only when the separately
             // armed post-present readback maps. Graph finalization is not
             // permitted to claim either route was visually applied.
@@ -8791,6 +8794,8 @@ void SceneRenderer::Render()
             reflection.hiZGraphPassCount = stats.hiZGraphPassCount;
             reflection.traceGraphPassCount = stats.traceGraphPassCount;
             reflection.resolveGraphPassCount = stats.resolveGraphPassCount;
+            reflection.traceExtent = stats.traceExtent;
+            reflection.resolvedExtent = stats.resolvedExtent;
             reflection.frameSequence =
                 m_reflectionFramePlan->GetFrameIdentity().frameSequence;
             reflection.reflectionPlanIdentity = stats.reflectionPlanIdentity;

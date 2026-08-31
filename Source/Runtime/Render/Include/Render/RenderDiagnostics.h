@@ -697,6 +697,12 @@ namespace RVX
         bool screenSpaceTraceInputsReady = false;
         /** A Hi-Z trace was actually registered for this graph. */
         bool screenSpaceTraceScheduled = false;
+        /** The trace MRT was allocated at ceil(full-resolution / 2). */
+        bool halfResolutionTrace = false;
+        /** The full-resolution resolve registered depth/normal/confidence guidance. */
+        bool guidedUpscaleScheduled = false;
+        /** The guided full-resolution resolve completed with the trace. */
+        bool guidedUpscaleExecuted = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         /** True only after the qualification route-mask readback completed. */
@@ -712,6 +718,10 @@ namespace RVX
         uint32 hiZGraphPassCount = 0;
         uint32 traceGraphPassCount = 0;
         uint32 resolveGraphPassCount = 0;
+        /** Physical trace-MRT extent. Invalid only when no trace was registered. */
+        RenderOutputExtent traceExtent{};
+        /** Full-resolution reflection resolve and route-mask extent. */
+        RenderOutputExtent resolvedExtent{};
         /** Frame that supplied the sealed reflection plan and SSR inputs. */
         uint64 frameSequence = 0;
         uint64 reflectionPlanIdentity = 0;

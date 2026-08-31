@@ -50,6 +50,7 @@ static const uint RVX_SSR_FLAG_SCREEN_SPACE_REQUESTED = 1u << 10u;
 // their existing route-mask semantics and never fail a diagnostic route for
 // valid-but-black lighting.
 static const uint RVX_SSR_FLAG_QUALIFICATION_RADIANCE_ROUTE = 1u << 11u;
+static const uint RVX_SSR_FLAG_HALF_RESOLUTION_TRACE = 1u << 12u;
 static const float RVX_SSR_EPSILON = 1.0e-5;
 
 struct FullscreenInput
@@ -266,13 +267,21 @@ SSRTraceOutput PSTrace(FullscreenInput input)
     }
 
     const uint2 renderExtent = max(uint2(RenderSize.xy), uint2(1u, 1u));
-    const uint2 sourcePixel = min(uint2(input.Position.xy), renderExtent - 1u);
-    const float2 uv = RVX_TexelCenterUV(sourcePixel, renderExtent);
+    const uint2 traceExtent = max(uint2(SourceSize.xy), uint2(1u, 1u));
+    const uint2 tracePixel = min(uint2(input.Position.xy), traceExtent - 1u);
+    const float2 uv = RVX_TexelCenterUV(tracePixel, traceExtent);
+    const uint2 sourcePixel = RVX_TexelFromUV(uv, renderExtent);
     const float deviceDepth = StageSource.Load(int3(sourcePixel, 0));
     if (RVX_IsBackgroundDepth(deviceDepth))
     {
         return output;
     }
+    // The alpha channel is not a second confidence contract. Preserve the
+    // receiver's linear depth for the full-resolution bilateral resolve,
+    // including valid rays that later miss or reject on roughness.
+    const float receiverViewDepth =
+        HiZPyramid.Load(int3(sourcePixel, 0));
+    output.radiance.a = receiverViewDepth;
 
     const float4 normalSample = NormalRoughness.Load(int3(sourcePixel, 0));
     const float roughness = (TraceControl.w & RVX_SSR_FLAG_NORMAL_SOURCE) != 0u
@@ -523,9 +532,8 @@ SSRTraceOutput PSTrace(FullscreenInput input)
     const float roughnessConfidence =
         saturate(1.0 - roughness / max(TraceParameters.z, RVX_SSR_EPSILON));
     const float confidence = edge * distanceConfidence * roughnessConfidence;
-    output.radiance = float4(
-        max(SceneColor.SampleLevel(LinearClampSampler, hitUV, 0.0).rgb, 0.0),
-        confidence);
+    output.radiance.rgb = max(
+        SceneColor.SampleLevel(LinearClampSampler, hitUV, 0.0).rgb, 0.0);
     output.confidence = confidence;
     return output;
 }
@@ -620,6 +628,99 @@ float3 RVX_LocalProbeDirection(float3 world,
     return RVX_SafeNormalize(
         worldHit - ProbePositions[probeIndex].xyz,
         reflectionDirection);
+}
+
+void RVX_ResolveScreenSpaceSample(uint2 pixel,
+                                  float2 uv,
+                                  float3 receiverWorld,
+                                  float3 receiverNormal,
+                                  out float3 radiance,
+                                  out float confidence)
+{
+    radiance = 0.0;
+    confidence = 0.0;
+    if ((TraceControl.w & RVX_SSR_FLAG_HALF_RESOLUTION_TRACE) == 0u)
+    {
+        confidence = saturate(
+            ReflectionConfidence.Load(int3(pixel, 0)));
+        radiance = max(RawReflection.Load(int3(pixel, 0)).rgb, 0.0);
+        return;
+    }
+
+    const uint2 renderExtent = max(uint2(RenderSize.xy), uint2(1u, 1u));
+    const uint2 traceExtent = max(uint2(SourceSize.xy), uint2(1u, 1u));
+    const float2 tracePosition =
+        uv * float2(traceExtent) - float2(0.5, 0.5);
+    const float2 traceBaseFloat = floor(tracePosition);
+    const int2 traceBase = int2(traceBaseFloat);
+    const float2 traceFraction = saturate(tracePosition - traceBaseFloat);
+    const float receiverViewDepth = RVX_ViewDepth(receiverWorld);
+    // Trace alpha is fp16 linear depth. Keep the edge threshold above both
+    // its maximum 100 m quantization and the authored intersection thickness.
+    const float depthTolerance = max(
+        TraceParameters.y * 2.0, receiverViewDepth * 0.002);
+
+    float guideWeightSum = 0.0;
+    float hitWeightSum = 0.0;
+    float3 weightedRadiance = 0.0;
+    [unroll]
+    for (uint offsetY = 0u; offsetY < 2u; ++offsetY)
+    {
+        [unroll]
+        for (uint offsetX = 0u; offsetX < 2u; ++offsetX)
+        {
+            const int2 candidateSigned = clamp(
+                traceBase + int2(offsetX, offsetY),
+                int2(0, 0), int2(traceExtent) - int2(1, 1));
+            const uint2 candidate = uint2(candidateSigned);
+            const float spatialWeight =
+                (offsetX == 0u ? 1.0 - traceFraction.x
+                               : traceFraction.x) *
+                (offsetY == 0u ? 1.0 - traceFraction.y
+                               : traceFraction.y);
+            const float4 raw = RawReflection.Load(int3(candidate, 0));
+            const float candidateConfidence = saturate(
+                ReflectionConfidence.Load(int3(candidate, 0)));
+            const float2 candidateUV =
+                RVX_TexelCenterUV(candidate, traceExtent);
+            const uint2 candidateFullPixel =
+                RVX_TexelFromUV(candidateUV, renderExtent);
+            const float3 candidateNormal =
+                (TraceControl.w & RVX_SSR_FLAG_NORMAL_SOURCE) != 0u
+                    ? RVX_DecodeOctNormal(
+                          NormalRoughness.Load(
+                              int3(candidateFullPixel, 0)).xy)
+                    : RVX_ReconstructNormal(candidateUV);
+            const float depthDelta = abs(raw.a - receiverViewDepth);
+            float depthWeight = saturate(
+                1.0 - depthDelta / max(depthTolerance, RVX_SSR_EPSILON));
+            depthWeight *= depthWeight;
+            float normalWeight = saturate(
+                dot(receiverNormal, candidateNormal));
+            normalWeight *= normalWeight;
+            normalWeight *= normalWeight;
+            const bool guideFinite = all(isfinite(raw)) && raw.a > 0.0 &&
+                isfinite(candidateConfidence) &&
+                all(isfinite(candidateNormal));
+            const float guideWeight = guideFinite
+                ? spatialWeight * depthWeight * normalWeight : 0.0;
+            const float hitWeight = guideWeight * candidateConfidence;
+            guideWeightSum += guideWeight;
+            hitWeightSum += hitWeight;
+            if (hitWeight > RVX_SSR_EPSILON)
+            {
+                weightedRadiance += max(raw.rgb, 0.0) * hitWeight;
+            }
+        }
+    }
+
+    if (guideWeightSum <= RVX_SSR_EPSILON ||
+        hitWeightSum <= RVX_SSR_EPSILON)
+    {
+        return;
+    }
+    radiance = weightedRadiance / hitWeightSum;
+    confidence = saturate(hitWeightSum / guideWeightSum);
 }
 
 SSRResolveOutput PSResolve(FullscreenInput input)
@@ -762,14 +863,15 @@ SSRResolveOutput PSResolve(FullscreenInput input)
             baseIndirectSpecular, materializedLocal, probeTotal);
     }
 
-    const float confidence = saturate(
-        ReflectionConfidence.Load(int3(pixel, 0)));
+    float3 screenSpaceRadiance = 0.0;
+    float confidence = 0.0;
+    RVX_ResolveScreenSpaceSample(
+        pixel, uv, world, normal, screenSpaceRadiance, confidence);
     // Screen-space source radiance was sampled from the producer's already
     // pre-exposed HDR scene, so it receives only the destination material
     // response. Local cubemap radiance above receives both response and the
     // producer pre-exposure. The existing exact baseline is subtracted once.
-    const float3 ssr = max(
-        RawReflection.Load(int3(pixel, 0)).rgb, 0.0) * specularResponse;
+    const float3 ssr = screenSpaceRadiance * specularResponse;
     const float3 routed = lerp(probeSpecular, ssr, confidence);
     const float3 resolved = max(
         scene.rgb - baseIndirectSpecular + routed,

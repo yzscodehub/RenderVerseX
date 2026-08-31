@@ -48,6 +48,8 @@ namespace
      * an armed physical readback opts into radiance-qualified fallback tags.
      */
     constexpr uint32 RVX_SSR_FLAG_QUALIFICATION_RADIANCE_ROUTE = 1U << 11U;
+    /** The trace MRTs are ceil-half while resolve remains full resolution. */
+    constexpr uint32 RVX_SSR_FLAG_HALF_RESOLUTION_TRACE = 1U << 12U;
 
     enum class SSRStage : uint8
     {
@@ -476,21 +478,25 @@ std::optional<SSRConfig> ResolveSSRQualityPolicy(
             config.quality = SSRQuality::Low;
             config.maxSteps = 32U;
             config.binarySearchSteps = 4U;
+            config.halfResolution = false;
             break;
         case RenderQualityTier::Medium:
             config.quality = SSRQuality::Medium;
             config.maxSteps = 48U;
             config.binarySearchSteps = 5U;
+            config.halfResolution = false;
             break;
         case RenderQualityTier::High:
             config.quality = SSRQuality::High;
             config.maxSteps = 64U;
             config.binarySearchSteps = 6U;
+            config.halfResolution = true;
             break;
         case RenderQualityTier::Ultra:
             config.quality = SSRQuality::Ultra;
             config.maxSteps = 96U;
             config.binarySearchSteps = 8U;
+            config.halfResolution = false;
             break;
         case RenderQualityTier::Count:
         default:
@@ -630,7 +636,7 @@ bool SSR::ValidateConfig() const noexcept
            IsFinitePositive(m_config.roughnessThreshold) &&
            m_config.roughnessThreshold <= 1.0f &&
            IsFiniteNonNegative(m_config.edgeFade) &&
-           m_config.edgeFade <= 0.5f && !m_config.halfResolution &&
+           m_config.edgeFade <= 0.5f &&
            !m_config.temporalFilter && !m_config.stochastic;
 }
 
@@ -931,6 +937,12 @@ SSROutput SSR::AddToGraph(
 
     const uint32 mipCount = screenSpaceTraceScheduled
         ? CalculateMipCount(width, height) : 0U;
+    const bool halfResolutionTrace =
+        screenSpaceTraceScheduled && m_config.halfResolution;
+    const uint32 traceWidth = halfResolutionTrace
+        ? width / 2U + width % 2U : width;
+    const uint32 traceHeight = halfResolutionTrace
+        ? height / 2U + height % 2U : height;
     RGTextureHandle hiZ{};
     if (screenSpaceTraceScheduled)
     {
@@ -942,21 +954,27 @@ SSROutput SSR::AddToGraph(
         hiZ = graph.CreateTexture(hiZDesc);
     }
 
-    RHITextureDesc reflectionDesc = RHITextureDesc::Texture2D(
+    RHITextureDesc rawReflectionDesc = RHITextureDesc::Texture2D(
+        traceWidth, traceHeight, RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    rawReflectionDesc.debugName = "SSRRawReflection";
+    const RGTextureHandle rawReflection =
+        graph.CreateTexture(rawReflectionDesc);
+    RHITextureDesc resolvedSceneColorDesc = RHITextureDesc::Texture2D(
         width, height, RHIFormat::RGBA16_FLOAT,
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
-    reflectionDesc.debugName = "SSRRawReflection";
-    const RGTextureHandle rawReflection = graph.CreateTexture(reflectionDesc);
-    reflectionDesc.debugName = "SSRResolvedSceneColor";
-    const RGTextureHandle resolvedSceneColor = graph.CreateTexture(reflectionDesc);
+    resolvedSceneColorDesc.debugName = "SSRResolvedSceneColor";
+    const RGTextureHandle resolvedSceneColor =
+        graph.CreateTexture(resolvedSceneColorDesc);
     RHITextureDesc confidenceDesc = RHITextureDesc::Texture2D(
-        width, height, RHIFormat::R8_UNORM,
+        traceWidth, traceHeight, RHIFormat::R8_UNORM,
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
     confidenceDesc.debugName = "SSRConfidence";
     const RGTextureHandle confidence = graph.CreateTexture(confidenceDesc);
-    RHITextureDesc routeMaskDesc = confidenceDesc;
-    routeMaskDesc.usage =
-        routeMaskDesc.usage | RHITextureUsage::CopySrc;
+    RHITextureDesc routeMaskDesc = RHITextureDesc::Texture2D(
+        width, height, RHIFormat::R8_UNORM,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+            RHITextureUsage::CopySrc);
     routeMaskDesc.debugName = "SSRReflectionRouteMask";
     const RGTextureHandle routeMask = graph.CreateTexture(routeMaskDesc);
     if ((screenSpaceTraceScheduled && !hiZ.IsValid()) ||
@@ -1024,10 +1042,10 @@ SSROutput SSR::AddToGraph(
     baseConstants.renderSize[1] = static_cast<float>(height);
     baseConstants.renderSize[2] = 1.0f / baseConstants.renderSize[0];
     baseConstants.renderSize[3] = 1.0f / baseConstants.renderSize[1];
-    baseConstants.sourceSize[0] = baseConstants.renderSize[0];
-    baseConstants.sourceSize[1] = baseConstants.renderSize[1];
-    baseConstants.sourceSize[2] = baseConstants.renderSize[2];
-    baseConstants.sourceSize[3] = baseConstants.renderSize[3];
+    baseConstants.sourceSize[0] = static_cast<float>(traceWidth);
+    baseConstants.sourceSize[1] = static_cast<float>(traceHeight);
+    baseConstants.sourceSize[2] = 1.0f / baseConstants.sourceSize[0];
+    baseConstants.sourceSize[3] = 1.0f / baseConstants.sourceSize[1];
     baseConstants.traceParameters[0] = m_config.maxDistance;
     baseConstants.traceParameters[1] = m_config.thickness;
     baseConstants.traceParameters[2] = m_config.roughnessThreshold;
@@ -1041,7 +1059,9 @@ SSROutput SSR::AddToGraph(
         (screenSpaceTraceScheduled
              ? RVX_SSR_FLAG_SCREEN_SPACE_REQUESTED : 0U) |
         (qualificationRequested
-             ? RVX_SSR_FLAG_QUALIFICATION_RADIANCE_ROUTE : 0U);
+             ? RVX_SSR_FLAG_QUALIFICATION_RADIANCE_ROUTE : 0U) |
+        (halfResolutionTrace
+             ? RVX_SSR_FLAG_HALF_RESOLUTION_TRACE : 0U);
     baseConstants.cameraPosition[0] = view.cameraPosition.x;
     baseConstants.cameraPosition[1] = view.cameraPosition.y;
     baseConstants.cameraPosition[2] = view.cameraPosition.z;
@@ -1573,6 +1593,12 @@ SSROutput SSR::AddToGraph(
     m_lastComputeStats.resolveGraphPassCount = 1U;
     m_lastComputeStats.screenSpaceTraceScheduled =
         screenSpaceTraceScheduled;
+    m_lastComputeStats.halfResolutionTrace = halfResolutionTrace;
+    m_lastComputeStats.guidedUpscaleScheduled = halfResolutionTrace;
+    m_lastComputeStats.traceExtent = screenSpaceTraceScheduled
+        ? RenderOutputExtent{traceWidth, traceHeight}
+        : RenderOutputExtent{};
+    m_lastComputeStats.resolvedExtent = RenderOutputExtent{width, height};
     m_lastComputeStats.minimumFallbackRoute =
         readyProbeCount != 0
             ? ReflectionResolveRoute::LocalProbe
@@ -1592,6 +1618,12 @@ SSROutput SSR::AddToGraph(
     output.depthPyramidIdentity = inputs.depthPyramidIdentity;
     output.screenSpaceScheduled = screenSpaceTraceScheduled;
     output.probeResolveScheduled = true;
+    output.traceExtent = screenSpaceTraceScheduled
+        ? RenderOutputExtent{traceWidth, traceHeight}
+        : RenderOutputExtent{};
+    output.resolvedExtent = RenderOutputExtent{width, height};
+    output.halfResolutionTrace = halfResolutionTrace;
+    output.guidedUpscaleScheduled = halfResolutionTrace;
     return output;
 }
 
@@ -1615,6 +1647,8 @@ void SSR::FinalizeGraphExecution(bool executionAccepted) noexcept
     m_lastComputeStats.executed = complete;
     m_lastComputeStats.hiZBuilt = complete && screenSpaceTraceScheduled;
     m_lastComputeStats.fallbackChainResolved = complete;
+    m_lastComputeStats.guidedUpscaleExecuted =
+        complete && m_lastComputeStats.guidedUpscaleScheduled;
     // Graph callback completion proves that the work was recorded and
     // accepted.  Applied-route claims require the physical R8 route-mask
     // readback observed after the exact Graphics completion and present.

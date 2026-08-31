@@ -3293,6 +3293,9 @@ namespace
                 reflection.screenSpaceTraceInputsReady;
             result.screenSpaceTraceScheduled =
                 reflection.screenSpaceTraceScheduled;
+            result.halfResolutionTrace = reflection.halfResolutionTrace;
+            result.guidedUpscaleScheduled = reflection.guidedUpscaleScheduled;
+            result.guidedUpscaleExecuted = reflection.guidedUpscaleExecuted;
             result.screenSpaceApplied = reflection.screenSpaceApplied;
             result.probesApplied = reflection.probesApplied;
             result.reflectionRouteEvidenceReady =
@@ -3308,6 +3311,8 @@ namespace
             result.hiZGraphPassCount = reflection.hiZGraphPassCount;
             result.traceGraphPassCount = reflection.traceGraphPassCount;
             result.resolveGraphPassCount = reflection.resolveGraphPassCount;
+            result.traceExtent = reflection.traceExtent;
+            result.resolvedExtent = reflection.resolvedExtent;
             result.reflectionFrameSequence = reflection.frameSequence;
             result.reflectionPlanIdentity = reflection.reflectionPlanIdentity;
             result.lightingPlanIdentity = reflection.lightingPlanIdentity;

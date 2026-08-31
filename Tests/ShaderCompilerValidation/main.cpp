@@ -426,6 +426,23 @@ namespace
         const std::string source = ReadTextFile(shaderPath);
         ASSERT_FALSE(source.empty())
             << "Failed to read GFX19 SSR shader: " << shaderPath.string();
+        // Keep A3's bandwidth win and fail-closed edge handling explicit.
+        // The native qualification proves rendered behavior; these source
+        // checks prevent a future shader rewrite from silently replacing the
+        // guided resolve with nearest-neighbor sampling or a fifth pass.
+        EXPECT_NE(source.find("RVX_SSR_FLAG_HALF_RESOLUTION_TRACE"),
+                  std::string::npos);
+        EXPECT_NE(source.find("output.radiance.a = receiverViewDepth;"),
+                  std::string::npos);
+        EXPECT_NE(source.find("RVX_ResolveScreenSpaceSample"),
+                  std::string::npos);
+        EXPECT_NE(source.find("RVX_ReconstructNormal(candidateUV)"),
+                  std::string::npos);
+        EXPECT_NE(source.find("guideWeight * candidateConfidence"),
+                  std::string::npos);
+        EXPECT_NE(source.find("hitWeightSum / guideWeightSum"),
+                  std::string::npos);
+        EXPECT_EQ(source.find("PSUpscale"), std::string::npos);
         const std::string shaderPathString = shaderPath.string();
 
         for (const char* const entryPoint : GFX19_SSR_ENTRY_POINTS)
@@ -458,14 +475,6 @@ namespace
                 EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
             }
 
-            // PSResolve is the ABI owner of the fixed-capacity local-probe
-            // array and the materialized reflection-surface inputs. Check
-            // compiled reflection, rather than source text, so register drift
-            // cannot hide behind a stale descriptor layout.
-            if (std::string_view(entryPoint) != "PSResolve")
-            {
-                continue;
-            }
             const auto findResource = [&result](const char* name)
             {
                 return std::find_if(
@@ -476,6 +485,38 @@ namespace
                         return resource.name == name;
                     });
             };
+            const auto expectSampledTexture =
+                [&findResource, &result](const char* name,
+                                         RVX::uint32 binding)
+            {
+                const auto resource = findResource(name);
+                ASSERT_NE(resource, result.reflection.resources.end());
+                EXPECT_EQ(resource->set, 0u);
+                EXPECT_EQ(resource->binding, binding);
+                EXPECT_EQ(resource->type,
+                          RVX::RHIBindingType::SampledTexture);
+                EXPECT_EQ(resource->count, 1u);
+            };
+            const std::string_view entry(entryPoint);
+            if (entry == "PSTrace")
+            {
+                expectSampledTexture("SceneColor", 1u);
+                expectSampledTexture("StageSource", 2u);
+                expectSampledTexture("NormalRoughness", 3u);
+                expectSampledTexture("HiZPyramid", 4u);
+            }
+            // PSResolve is the ABI owner of the fixed-capacity local-probe
+            // array, guided-upscale inputs, and materialized reflection
+            // surfaces. Check compiled reflection, rather than source text,
+            // so register drift cannot hide behind a stale descriptor layout.
+            if (entry != "PSResolve")
+            {
+                continue;
+            }
+            expectSampledTexture("StageSource", 2u);
+            expectSampledTexture("NormalRoughness", 3u);
+            expectSampledTexture("RawReflection", 5u);
+            expectSampledTexture("ReflectionConfidence", 6u);
             const auto localProbes = findResource("LocalProbes");
             ASSERT_NE(localProbes, result.reflection.resources.end());
             EXPECT_EQ(localProbes->set, 0u);

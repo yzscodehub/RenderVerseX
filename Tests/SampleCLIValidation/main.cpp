@@ -562,6 +562,70 @@ namespace
         return diagnostics;
     }
 
+    RVX::SampleHiZReflectionExecutionDiagnostics
+        MakeQualifiedHiZReflectionActualExecution(
+            RVX::uint64 frameSequence = 91)
+    {
+        RVX::SampleHiZReflectionExecutionDiagnostics diagnostics;
+        diagnostics.available = true;
+        diagnostics.executionReceiptSchemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+        diagnostics.executionReceiptStructurallyValid = true;
+        diagnostics.executionReceiptAvailable = true;
+        diagnostics.executionReceiptGraphComposed = true;
+        diagnostics.executionReceiptExecutionSucceeded = true;
+        diagnostics.executionReceiptPresented = true;
+        diagnostics.executionReceiptSucceeded = true;
+        diagnostics.frameFeatureSequence = frameSequence;
+        diagnostics.receiptFrameSequence = frameSequence;
+        diagnostics.lastPresentedFrameSequence = frameSequence;
+        diagnostics.presentedFrameAligned = true;
+        diagnostics.mainView = true;
+        diagnostics.graphExecutionFinalized = true;
+        diagnostics.requested = true;
+        diagnostics.supported = true;
+        diagnostics.scheduled = true;
+        diagnostics.executed = true;
+        diagnostics.hiZBuilt = true;
+        diagnostics.globalIBLReady = true;
+        diagnostics.fallbackChainResolved = true;
+        diagnostics.screenSpaceRequested = true;
+        diagnostics.screenSpaceTraceInputsReady = true;
+        diagnostics.screenSpaceTraceScheduled = true;
+        diagnostics.halfResolutionTrace = true;
+        diagnostics.guidedUpscaleScheduled = true;
+        diagnostics.guidedUpscaleExecuted = true;
+        diagnostics.screenSpaceApplied = true;
+        diagnostics.probesApplied = true;
+        diagnostics.reflectionRouteEvidenceReady = true;
+        diagnostics.routeMaskRadianceSchemaVersion = 1;
+        diagnostics.localProbeRadianceQualified = true;
+        diagnostics.globalIBLRadianceQualified = true;
+        diagnostics.readyProbeCount = 1;
+        diagnostics.hiZMipCount = 6;
+        diagnostics.hiZGraphPassCount = 6;
+        diagnostics.traceGraphPassCount = 1;
+        diagnostics.resolveGraphPassCount = 1;
+        diagnostics.traceExtent = {641, 361};
+        diagnostics.resolvedExtent = {1281, 721};
+        diagnostics.reflectionFrameSequence = frameSequence;
+        diagnostics.reflectionPlanIdentity = 0x101ULL;
+        diagnostics.lightingPlanIdentity = 0x202ULL;
+        diagnostics.configurationIdentity = 0x303ULL;
+        diagnostics.pipelineIdentity = 0x404ULL;
+        diagnostics.depthPyramidIdentity = 0x505ULL;
+        diagnostics.reflectionSurfaceIdentity = 0x606ULL;
+        diagnostics.exposureStateContentHash = 0x707ULL;
+        diagnostics.screenSpaceHitPixelCount = 17;
+        diagnostics.localProbePixelCount = 23;
+        diagnostics.globalIBLPixelCount = 24;
+        diagnostics.reflectionReadbackSampleCount = 76;
+        diagnostics.reflectionRouteSampleCount = 64;
+        diagnostics.backgroundPixelCount = 5;
+        diagnostics.nonReflectivePixelCount = 7;
+        return diagnostics;
+    }
+
     TEST(SampleCLIValidation, ParsesCommonOptions)
     {
         const char* argv[] = {
@@ -1282,6 +1346,73 @@ namespace
     }
 
     TEST(SampleCLIValidation,
+         HiZReflectionExecutionRequiresExactTraceResolutionEvidence)
+    {
+        RVX::SampleHiZReflectionExecutionDiagnostics diagnostics =
+            MakeQualifiedHiZReflectionActualExecution();
+        EXPECT_TRUE(diagnostics.IsExecutionReady());
+
+        diagnostics.traceExtent.width = 640;
+        EXPECT_FALSE(diagnostics.IsExecutionReady());
+
+        diagnostics = MakeQualifiedHiZReflectionActualExecution();
+        diagnostics.guidedUpscaleExecuted = false;
+        EXPECT_FALSE(diagnostics.IsExecutionReady());
+
+        diagnostics = MakeQualifiedHiZReflectionActualExecution();
+        diagnostics.halfResolutionTrace = false;
+        diagnostics.guidedUpscaleScheduled = false;
+        diagnostics.guidedUpscaleExecuted = false;
+        diagnostics.traceExtent = diagnostics.resolvedExtent;
+        EXPECT_TRUE(diagnostics.IsExecutionReady());
+
+        diagnostics.guidedUpscaleScheduled = true;
+        EXPECT_FALSE(diagnostics.IsExecutionReady());
+    }
+
+    TEST(SampleCLIValidation,
+         SampleReportSerializesA3HiZTraceEvidenceWithoutChangingSchema34)
+    {
+        RVX::SampleReport current;
+        current.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        current.renderDiagnostics.hizReflectionActualExecution =
+            MakeQualifiedHiZReflectionActualExecution();
+        std::ostringstream currentStream;
+        RVX::WriteSampleReportJson(currentStream, current);
+        const std::string currentJson = currentStream.str();
+        EXPECT_NE(currentJson.find("\"schemaVersion\": 35"),
+                  std::string::npos);
+        EXPECT_NE(currentJson.find("\"halfResolutionTrace\": true"),
+                  std::string::npos);
+        EXPECT_NE(currentJson.find("\"guidedUpscaleScheduled\": true"),
+                  std::string::npos);
+        EXPECT_NE(currentJson.find("\"guidedUpscaleExecuted\": true"),
+                  std::string::npos);
+        EXPECT_NE(currentJson.find("\"traceExtent\": {\"width\": 641, \"height\": 361}"),
+                  std::string::npos);
+        EXPECT_NE(currentJson.find("\"resolvedExtent\": {\"width\": 1281, \"height\": 721}"),
+                  std::string::npos);
+
+        RVX::SampleReport legacy = current;
+        legacy.schemaVersion =
+            RVX::RVX_SAMPLE_REPORT_PRE_HALF_RESOLUTION_SSR_EXECUTION_SCHEMA_VERSION;
+        std::ostringstream legacyStream;
+        RVX::WriteSampleReportJson(legacyStream, legacy);
+        const std::string legacyJson = legacyStream.str();
+        EXPECT_NE(legacyJson.find("\"schemaVersion\": 34"),
+                  std::string::npos);
+        EXPECT_EQ(legacyJson.find("\"halfResolutionTrace\""),
+                  std::string::npos);
+        EXPECT_EQ(legacyJson.find("\"guidedUpscaleScheduled\""),
+                  std::string::npos);
+        EXPECT_EQ(legacyJson.find("\"guidedUpscaleExecuted\""),
+                  std::string::npos);
+        EXPECT_EQ(legacyJson.find("\"traceExtent\""), std::string::npos);
+        EXPECT_EQ(legacyJson.find("\"resolvedExtent\""),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
          CurrentReportWritesExactVisualAndRenderExecutionReceipts)
     {
         RVX::SampleReport report;
@@ -1326,7 +1457,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
         EXPECT_NE(json.find("\"waterSurfaceActualExecution\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualifiedWater\": false"),
@@ -2712,7 +2843,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -3008,7 +3139,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -3499,7 +3630,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 34"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),

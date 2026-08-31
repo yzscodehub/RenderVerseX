@@ -3356,6 +3356,28 @@ namespace
         }
 
         constexpr const char* Context = "GFX19 Hi-Z reflections";
+        uint64_t reportSchemaVersion = 0;
+        std::string quality;
+        uint64_t reportWidth = 0;
+        uint64_t reportHeight = 0;
+        bool requireA3TraceEvidence = false;
+        const auto reportSchema = report.find("schemaVersion");
+        if (reportSchema != report.end())
+        {
+            if (!ReadUnsignedField(report, "schemaVersion", reportSchemaVersion,
+                                   Context))
+            {
+                return false;
+            }
+            requireA3TraceEvidence = reportSchemaVersion >= 35u;
+            if (requireA3TraceEvidence &&
+                (!ReadStringField(report, "quality", quality, Context, true) ||
+                 !ReadUnsignedField(report, "width", reportWidth, Context) ||
+                 !ReadUnsignedField(report, "height", reportHeight, Context)))
+            {
+                return false;
+            }
+        }
         bool available = false;
         bool executionReceiptStructurallyValid = false;
         bool executionReceiptAvailable = false;
@@ -3376,6 +3398,9 @@ namespace
         bool screenSpaceRequested = false;
         bool screenSpaceTraceInputsReady = false;
         bool screenSpaceTraceScheduled = false;
+        bool halfResolutionTrace = false;
+        bool guidedUpscaleScheduled = false;
+        bool guidedUpscaleExecuted = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -3391,6 +3416,10 @@ namespace
         uint64_t hiZGraphPassCount = 0;
         uint64_t traceGraphPassCount = 0;
         uint64_t resolveGraphPassCount = 0;
+        uint64_t traceWidth = 0;
+        uint64_t traceHeight = 0;
+        uint64_t resolvedWidth = 0;
+        uint64_t resolvedHeight = 0;
         uint64_t reflectionFrameSequence = 0;
         uint64_t reflectionPlanIdentity = 0;
         uint64_t lightingPlanIdentity = 0;
@@ -3503,7 +3532,29 @@ namespace
                               nonReflectivePixelCount, Context) &&
             ReadStringField(*reflection, "fallbackReason", fallbackReason,
                             Context, false);
-        if (!parsed)
+        bool a3TraceEvidenceParsed = true;
+        if (requireA3TraceEvidence)
+        {
+            const auto traceExtent = reflection->find("traceExtent");
+            const auto resolvedExtent = reflection->find("resolvedExtent");
+            a3TraceEvidenceParsed =
+                ReadBooleanField(*reflection, "halfResolutionTrace",
+                                 halfResolutionTrace, Context) &&
+                ReadBooleanField(*reflection, "guidedUpscaleScheduled",
+                                 guidedUpscaleScheduled, Context) &&
+                ReadBooleanField(*reflection, "guidedUpscaleExecuted",
+                                 guidedUpscaleExecuted, Context) &&
+                traceExtent != reflection->end() && traceExtent->is_object() &&
+                resolvedExtent != reflection->end() &&
+                resolvedExtent->is_object() &&
+                ReadUnsignedField(*traceExtent, "width", traceWidth, Context) &&
+                ReadUnsignedField(*traceExtent, "height", traceHeight, Context) &&
+                ReadUnsignedField(*resolvedExtent, "width", resolvedWidth,
+                                  Context) &&
+                ReadUnsignedField(*resolvedExtent, "height", resolvedHeight,
+                                  Context);
+        }
+        if (!parsed || !a3TraceEvidenceParsed)
         {
             return false;
         }
@@ -3542,11 +3593,29 @@ namespace
                     reflectionRouteSampleCount ==
                 reflectionReadbackSampleCount &&
             fallbackReason.empty();
+        const uint64_t expectedTraceWidth =
+            reportWidth / 2u + reportWidth % 2u;
+        const uint64_t expectedTraceHeight =
+            reportHeight / 2u + reportHeight % 2u;
+        const bool expectsHalfResolutionTrace = quality == "high";
+        const bool expectsFullResolutionTrace = quality == "low" ||
+            quality == "medium" || quality == "ultra";
+        const bool a3TraceEvidenceExact = !requireA3TraceEvidence ||
+            (reportWidth != 0u && reportHeight != 0u &&
+             resolvedWidth == reportWidth && resolvedHeight == reportHeight &&
+             (expectsHalfResolutionTrace
+                ? (halfResolutionTrace && guidedUpscaleScheduled &&
+                   guidedUpscaleExecuted && traceWidth == expectedTraceWidth &&
+                   traceHeight == expectedTraceHeight)
+                : (expectsFullResolutionTrace && !halfResolutionTrace &&
+                   !guidedUpscaleScheduled &&
+                   !guidedUpscaleExecuted && traceWidth == reportWidth &&
+                   traceHeight == reportHeight)));
         if (!available || !receiptExact || !presentedFrameAligned || !mainView ||
-            !identitiesMatch || !exactHiZRoute)
+            !identitiesMatch || !exactHiZRoute || !a3TraceEvidenceExact)
         {
             std::cerr
-                << "GFX19 Hi-Z reflection qualification requires an exact presented SSR route-mask readback with nonzero finite Probe/IBL HDR contributions, nonzero screen-space hits, matching identities, the SSR -> probe -> IBL fallback chain, and no fallback\n";
+                << "GFX24A3 Hi-Z reflection qualification requires an exact presented SSR route-mask readback with nonzero finite Probe/IBL HDR contributions, nonzero screen-space hits, matching identities, the SSR -> probe -> IBL fallback chain, no fallback, and schema-v35 High ceil-half guided-upscale or full-resolution non-High evidence\n";
             return false;
         }
         return true;
@@ -8098,6 +8167,10 @@ namespace
             return false;
         }
         Json qualifiedHiZReflectionReport = {
+            {"schemaVersion", 35},
+            {"quality", "high"},
+            {"width", 1281},
+            {"height", 721},
             {"renderDiagnostics", {
                 {"hizReflectionActualExecution", {
                     {"available", true},
@@ -8135,6 +8208,11 @@ namespace
                     {"hiZGraphPassCount", 6},
                     {"traceGraphPassCount", 1},
                     {"resolveGraphPassCount", 1},
+                    {"halfResolutionTrace", true},
+                    {"guidedUpscaleScheduled", true},
+                    {"guidedUpscaleExecuted", true},
+                    {"traceExtent", {{"width", 641}, {"height", 361}}},
+                    {"resolvedExtent", {{"width", 1281}, {"height", 721}}},
                     {"reflectionFrameSequence", 71},
                     {"reflectionPlanIdentity", 101},
                     {"lightingPlanIdentity", 202},
@@ -8238,6 +8316,87 @@ namespace
                                   ["globalIBLPixelCount"] = 24;
         qualifiedHiZReflectionReport["renderDiagnostics"]
                                   ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleExecuted"] = false;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleExecuted"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["traceExtent"]["width"] = 640;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["traceExtent"]["width"] = 641;
+        qualifiedHiZReflectionReport["quality"] = "ultra";
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["halfResolutionTrace"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleScheduled"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleExecuted"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["traceExtent"] =
+            {{"width", 1281}, {"height", 721}};
+        if (!ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["quality"] = "high";
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["halfResolutionTrace"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleScheduled"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleExecuted"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["traceExtent"] =
+            {{"width", 641}, {"height", 361}};
+        qualifiedHiZReflectionReport["quality"] = "low";
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["halfResolutionTrace"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleScheduled"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["guidedUpscaleExecuted"] = false;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["traceExtent"] =
+            {{"width", 1281}, {"height", 721}};
+        if (!ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["quality"] = "unknown";
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["quality"] = "high";
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
                                   ["fallbackReason"] = "IBL-only route";
         if (ValidateHiZReflectionExecutionProjection(
                 qualifiedHiZReflectionReport, &parsedHiZOptions))
@@ -8335,7 +8494,7 @@ namespace
             return false;
         }
         Json qualifiedTranslucencyReport = {
-            {"schemaVersion", 34},
+            {"schemaVersion", 35},
             {"renderDiagnostics", {
                 {"transparentAlphaBlendDrawCount", 1},
                 {"transparentPremultipliedDrawCount", 1},
@@ -8735,7 +8894,7 @@ namespace
             return false;
         }
         Json qualifiedWaterReport = {
-            {"schemaVersion", 34},
+            {"schemaVersion", 35},
             {"renderDiagnostics", {
                 {"waterSurfaceActualExecution", {
                     {"available", true},
@@ -10284,13 +10443,13 @@ namespace
             schema25GTAOReport["renderDiagnostics"]
                               ["ambientOcclusionActualExecution"];
         if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 34u, &strictGTAOEvidence))
+                currentGTAOProjection, 35u, &strictGTAOEvidence))
         {
             return false;
         }
         currentGTAOProjection["executionReceiptSchemaVersion"] = 11;
         if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 34u, &strictGTAOEvidence))
+                currentGTAOProjection, 35u, &strictGTAOEvidence))
         {
             return false;
         }
@@ -10301,7 +10460,7 @@ namespace
         }
         currentGTAOProjection["executionReceiptSchemaVersion"] = 13;
         if (!ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                currentGTAOProjection, 34u, &strictGTAOEvidence))
+                currentGTAOProjection, 35u, &strictGTAOEvidence))
         {
             return false;
         }

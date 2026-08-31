@@ -83,7 +83,9 @@ namespace RVX
         uint32 binarySearchSteps = 6;
         float32 roughnessThreshold = 0.65f;
         float32 edgeFade = 0.08f;
-        bool halfResolution = false;
+        // The canonical High policy traces at half resolution. Other tiers
+        // remain full-resolution until they receive independent visual proof.
+        bool halfResolution = true;
         bool temporalFilter = false;
         bool stochastic = false;
 
@@ -201,6 +203,12 @@ namespace RVX
         bool screenSpaceRequested = false;
         bool screenSpaceTraceInputsReady = false;
         bool screenSpaceTraceScheduled = false;
+        /** True only when this frame recorded a ceil-half screen-space trace. */
+        bool halfResolutionTrace = false;
+        /** The existing full-resolution resolve includes the guided upscale. */
+        bool guidedUpscaleScheduled = false;
+        /** Guided upscale completed as part of the exact resolve callback. */
+        bool guidedUpscaleExecuted = false;
         bool screenSpaceApplied = false;
         bool probesApplied = false;
         bool reflectionRouteEvidenceReady = false;
@@ -209,6 +217,10 @@ namespace RVX
         uint32 hiZGraphPassCount = 0;
         uint32 traceGraphPassCount = 0;
         uint32 resolveGraphPassCount = 0;
+        /** Physical trace-MRT extent; invalid when no trace was scheduled. */
+        RenderOutputExtent traceExtent{};
+        /** Full-resolution reflection output extent. */
+        RenderOutputExtent resolvedExtent{};
         uint64 reflectionPlanIdentity = 0;
         uint64 lightingPlanIdentity = 0;
         uint64 configurationIdentity = 0;
@@ -245,14 +257,33 @@ namespace RVX
         uint64 depthPyramidIdentity = 0;
         bool screenSpaceScheduled = false;
         bool probeResolveScheduled = false;
+        /** Physical trace-MRT extent; invalid for a probe-only resolve. */
+        RenderOutputExtent traceExtent{};
+        /** Full-resolution resolved scene-color and route-mask extent. */
+        RenderOutputExtent resolvedExtent{};
+        bool halfResolutionTrace = false;
+        bool guidedUpscaleScheduled = false;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
+            const RenderOutputExtent expectedHalfExtent{
+                resolvedExtent.width / 2U + resolvedExtent.width % 2U,
+                resolvedExtent.height / 2U + resolvedExtent.height % 2U};
+            const bool traceResolutionValid = screenSpaceScheduled
+                ? (traceExtent.IsValid() &&
+                   (halfResolutionTrace
+                        ? traceExtent == expectedHalfExtent &&
+                              guidedUpscaleScheduled
+                        : traceExtent == resolvedExtent &&
+                              !guidedUpscaleScheduled))
+                : (!traceExtent.IsValid() && !halfResolutionTrace &&
+                   !guidedUpscaleScheduled);
             const bool screenSpaceResources = !screenSpaceScheduled ||
                 (hiZPyramid.IsValid() && hiZMipCount != 0 &&
                  configurationIdentity != 0 && pipelineIdentity != 0 &&
                  depthPyramidIdentity != 0);
-            return screenSpaceResources && rawReflection.IsValid() &&
+            return resolvedExtent.IsValid() && traceResolutionValid &&
+                   screenSpaceResources && rawReflection.IsValid() &&
                    confidence.IsValid() && resolvedSceneColor.IsValid() &&
                    routeMask.IsValid() &&
                    reflectionPlanIdentity != 0 && lightingPlanIdentity != 0 &&

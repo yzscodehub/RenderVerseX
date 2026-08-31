@@ -4500,13 +4500,13 @@ namespace
         uint32 width,
         uint32 height,
         const PipelineCache* pipelineCache,
-        bool traceInputsReady)
+        bool traceInputsReady,
+        RenderQualityTier quality = RenderQualityTier::High)
     {
         const std::optional<SSRConfig> policy =
-            ResolveSSRQualityPolicy(RenderQualityTier::High);
+            ResolveSSRQualityPolicy(quality);
         if (!policy.has_value() ||
-            !ssr.SetResolvedQualityPolicy(
-                RenderQualityTier::High, *policy))
+            !ssr.SetResolvedQualityPolicy(quality, *policy))
         {
             return false;
         }
@@ -30110,8 +30110,8 @@ TEST_F(RenderPassValidationFixture,
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
-    constexpr uint32 width = 64u;
-    constexpr uint32 height = 48u;
+    constexpr uint32 width = 65u;
+    constexpr uint32 height = 49u;
     RHITextureRef sceneColor = device.CreateTexture(
         RHITextureDesc::RenderTarget(width, height, RHIFormat::RGBA16_FLOAT));
     RHITextureRef depth = device.CreateTexture(
@@ -30194,8 +30194,37 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(output.IsValid());
     EXPECT_TRUE(output.screenSpaceScheduled);
     EXPECT_TRUE(output.probeResolveScheduled);
+    EXPECT_TRUE(output.halfResolutionTrace);
+    EXPECT_TRUE(output.guidedUpscaleScheduled);
+    EXPECT_EQ(output.traceExtent, (RenderOutputExtent{33u, 25u}));
+    EXPECT_EQ(output.resolvedExtent, (RenderOutputExtent{width, height}));
     EXPECT_EQ(output.hiZMipCount, 7u);
     EXPECT_EQ(output.depthPyramidIdentity, inputs.depthPyramidIdentity);
+
+    const RHITextureDesc* const rawReflectionDesc =
+        graph.GetTextureDesc(output.rawReflection);
+    const RHITextureDesc* const confidenceDesc =
+        graph.GetTextureDesc(output.confidence);
+    const RHITextureDesc* const resolvedDesc =
+        graph.GetTextureDesc(output.resolvedSceneColor);
+    const RHITextureDesc* const routeMaskDesc =
+        graph.GetTextureDesc(output.routeMask);
+    ASSERT_NE(rawReflectionDesc, nullptr);
+    ASSERT_NE(confidenceDesc, nullptr);
+    ASSERT_NE(resolvedDesc, nullptr);
+    ASSERT_NE(routeMaskDesc, nullptr);
+    EXPECT_EQ(rawReflectionDesc->width, 33u);
+    EXPECT_EQ(rawReflectionDesc->height, 25u);
+    EXPECT_EQ(rawReflectionDesc->format, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(confidenceDesc->width, 33u);
+    EXPECT_EQ(confidenceDesc->height, 25u);
+    EXPECT_EQ(confidenceDesc->format, RHIFormat::R8_UNORM);
+    EXPECT_EQ(resolvedDesc->width, width);
+    EXPECT_EQ(resolvedDesc->height, height);
+    EXPECT_EQ(resolvedDesc->format, RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(routeMaskDesc->width, width);
+    EXPECT_EQ(routeMaskDesc->height, height);
+    EXPECT_EQ(routeMaskDesc->format, RHIFormat::R8_UNORM);
 
     const SSRComputeStats& scheduled = ssr.GetLastComputeStats();
     EXPECT_TRUE(scheduled.requested);
@@ -30208,6 +30237,11 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(scheduled.hiZGraphPassCount, 7u);
     EXPECT_EQ(scheduled.traceGraphPassCount, 1u);
     EXPECT_EQ(scheduled.resolveGraphPassCount, 1u);
+    EXPECT_TRUE(scheduled.halfResolutionTrace);
+    EXPECT_TRUE(scheduled.guidedUpscaleScheduled);
+    EXPECT_FALSE(scheduled.guidedUpscaleExecuted);
+    EXPECT_EQ(scheduled.traceExtent, output.traceExtent);
+    EXPECT_EQ(scheduled.resolvedExtent, output.resolvedExtent);
     EXPECT_EQ(scheduled.minimumFallbackRoute, ReflectionResolveRoute::LocalProbe);
 
     RenderGraphValidationAccess::Compile(graph);
@@ -30226,6 +30260,18 @@ TEST_F(RenderPassValidationFixture,
               pipelineCache.GetSSRTracePipeline());
     EXPECT_EQ(commands.pipelineSequence.back(),
               pipelineCache.GetSSRResolvePipeline());
+    ASSERT_EQ(commands.viewports.size(), static_cast<size_t>(9));
+    ASSERT_EQ(commands.scissors.size(), static_cast<size_t>(9));
+    EXPECT_FLOAT_EQ(commands.viewports[7].width, 33.0f);
+    EXPECT_FLOAT_EQ(commands.viewports[7].height, 25.0f);
+    EXPECT_EQ(commands.scissors[7].width, 33u);
+    EXPECT_EQ(commands.scissors[7].height, 25u);
+    EXPECT_FLOAT_EQ(commands.viewports.back().width,
+                    static_cast<float>(width));
+    EXPECT_FLOAT_EQ(commands.viewports.back().height,
+                    static_cast<float>(height));
+    EXPECT_EQ(commands.scissors.back().width, width);
+    EXPECT_EQ(commands.scissors.back().height, height);
     EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorCountBefore + 9u);
 
     const auto resolveDescriptorIt = std::find_if(
@@ -30273,6 +30319,15 @@ TEST_F(RenderPassValidationFixture,
     // Bit 11 is qualification-only. A normal SSR frame retains the prior
     // route-mask behavior even when its local or global lighting is black.
     EXPECT_EQ(normalRouteMaskFlags & (1u << 11u), 0u);
+    EXPECT_NE(normalRouteMaskFlags & (1u << 12u), 0u);
+    constexpr size_t SSR_SOURCE_SIZE_OFFSET = sizeof(float) * 4u;
+    float resolveSourceSize[2]{};
+    std::memcpy(resolveSourceSize,
+                resolveConstants->GetStorage().data() +
+                    SSR_SOURCE_SIZE_OFFSET,
+                sizeof(resolveSourceSize));
+    EXPECT_FLOAT_EQ(resolveSourceSize[0], 33.0f);
+    EXPECT_FLOAT_EQ(resolveSourceSize[1], 25.0f);
     for (uint32 probeIndex = 0;
          probeIndex < RVX_SSR_LOCAL_PROBE_CAPACITY;
          ++probeIndex)
@@ -30300,10 +30355,107 @@ TEST_F(RenderPassValidationFixture,
     const SSRComputeStats& executed = ssr.GetLastComputeStats();
     EXPECT_TRUE(executed.executed);
     EXPECT_TRUE(executed.hiZBuilt);
+    EXPECT_TRUE(executed.halfResolutionTrace);
+    EXPECT_TRUE(executed.guidedUpscaleScheduled);
+    EXPECT_TRUE(executed.guidedUpscaleExecuted);
     EXPECT_FALSE(executed.screenSpaceApplied);
     EXPECT_FALSE(executed.probesApplied);
     EXPECT_FALSE(executed.reflectionRouteEvidenceReady);
     EXPECT_TRUE(executed.fallbackChainResolved);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SSRUltraKeepsTraceAndResolveAtFullResolution)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    constexpr uint32 width = 65u;
+    constexpr uint32 height = 49u;
+    RHITextureRef sceneColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            width, height, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            width, height, RHIFormat::D32_FLOAT));
+    RHITextureRef normalRoughness = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            width, height, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(sceneColor);
+    ASSERT_TRUE(depth);
+    ASSERT_TRUE(normalRoughness);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestSSRReflectionSurfaceGraphState reflectionSurface =
+        CreateTestSSRReflectionSurfaceGraphState(
+            device, graph, width, height, 0x6d94e7d871d9da21ULL);
+    ASSERT_TRUE(reflectionSurface.IsValid());
+
+    SSRFrameInputs inputs;
+    inputs.frameIdentity = {181u, 182u, 183u, 184u};
+    inputs.viewIdentity = {185u, 186u, 0u, ViewRole::Main};
+    inputs.reflectionPlanIdentity = 187u;
+    inputs.lightingPlanIdentity = 188u;
+    inputs.screenSpaceRequested = true;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColor.Get(), RHIResourceState::ShaderResource);
+    inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::ShaderResource);
+    inputs.normalRoughness = RenderGraphValidationAccess::ImportTexture(
+        graph, normalRoughness.Get(), RHIResourceState::ShaderResource);
+    reflectionSurface.Apply(inputs);
+
+    SSR ssr;
+    ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ApplyTestSSRQualityPolicy(
+        ssr, inputs, width, height, &pipelineCache, true,
+        RenderQualityTier::Ultra));
+    ViewData view;
+    view.viewportWidth = width;
+    view.viewportHeight = height;
+    const SSROutput output = ssr.AddToGraph(graph, view, inputs);
+    ASSERT_TRUE(output.IsValid());
+    EXPECT_TRUE(output.screenSpaceScheduled);
+    EXPECT_FALSE(output.halfResolutionTrace);
+    EXPECT_FALSE(output.guidedUpscaleScheduled);
+    EXPECT_EQ(output.traceExtent, (RenderOutputExtent{width, height}));
+    EXPECT_EQ(output.resolvedExtent, (RenderOutputExtent{width, height}));
+
+    for (const RGTextureHandle handle :
+         {output.rawReflection, output.confidence,
+          output.resolvedSceneColor, output.routeMask})
+    {
+        const RHITextureDesc* const desc = graph.GetTextureDesc(handle);
+        ASSERT_NE(desc, nullptr);
+        EXPECT_EQ(desc->width, width);
+        EXPECT_EQ(desc->height, height);
+    }
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses,
+              static_cast<uint32>(output.hiZMipCount + 2u));
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    ASSERT_EQ(commands.viewports.size(),
+              static_cast<size_t>(output.hiZMipCount + 2u));
+    EXPECT_FLOAT_EQ(commands.viewports[output.hiZMipCount].width,
+                    static_cast<float>(width));
+    EXPECT_FLOAT_EQ(commands.viewports[output.hiZMipCount].height,
+                    static_cast<float>(height));
+    EXPECT_FLOAT_EQ(commands.viewports.back().width,
+                    static_cast<float>(width));
+    EXPECT_FLOAT_EQ(commands.viewports.back().height,
+                    static_cast<float>(height));
+
+    ssr.FinalizeGraphExecution(true);
+    const SSRComputeStats& stats = ssr.GetLastComputeStats();
+    EXPECT_TRUE(stats.executed);
+    EXPECT_FALSE(stats.halfResolutionTrace);
+    EXPECT_FALSE(stats.guidedUpscaleScheduled);
+    EXPECT_FALSE(stats.guidedUpscaleExecuted);
+    EXPECT_EQ(stats.traceExtent, (RenderOutputExtent{width, height}));
+    EXPECT_EQ(stats.resolvedExtent, (RenderOutputExtent{width, height}));
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -30663,6 +30815,10 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(output.IsValid());
     EXPECT_FALSE(output.screenSpaceScheduled);
     EXPECT_TRUE(output.probeResolveScheduled);
+    EXPECT_FALSE(output.halfResolutionTrace);
+    EXPECT_FALSE(output.guidedUpscaleScheduled);
+    EXPECT_FALSE(output.traceExtent.IsValid());
+    EXPECT_EQ(output.resolvedExtent, (RenderOutputExtent{width, height}));
     EXPECT_FALSE(output.hiZPyramid.IsValid());
     EXPECT_EQ(output.hiZMipCount, 0u);
     EXPECT_EQ(output.depthPyramidIdentity, 0u);
@@ -30674,6 +30830,12 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(scheduled.hiZGraphPassCount, 0u);
     EXPECT_EQ(scheduled.traceGraphPassCount, 0u);
     EXPECT_EQ(scheduled.resolveGraphPassCount, 1u);
+    EXPECT_FALSE(scheduled.halfResolutionTrace);
+    EXPECT_FALSE(scheduled.guidedUpscaleScheduled);
+    EXPECT_FALSE(scheduled.guidedUpscaleExecuted);
+    EXPECT_FALSE(scheduled.traceExtent.IsValid());
+    EXPECT_EQ(scheduled.resolvedExtent,
+              (RenderOutputExtent{width, height}));
     EXPECT_EQ(scheduled.readyProbeCount, 1u);
     EXPECT_EQ(scheduled.minimumFallbackRoute, ReflectionResolveRoute::LocalProbe);
 
@@ -30705,6 +30867,7 @@ TEST_F(RenderPassValidationFixture,
     ssr.FinalizeGraphExecution(true);
     const SSRComputeStats& executed = ssr.GetLastComputeStats();
     EXPECT_TRUE(executed.executed);
+    EXPECT_FALSE(executed.guidedUpscaleExecuted);
     EXPECT_FALSE(executed.hiZBuilt);
     EXPECT_FALSE(executed.screenSpaceApplied);
     EXPECT_FALSE(executed.probesApplied);
