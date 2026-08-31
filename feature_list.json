@@ -2,7 +2,7 @@
     "$schema":  "./feature_list.schema.json",
     "schema":  "RVX.AgentFeatureList",
     "schemaVersion":  1,
-    "updatedAt":  "2026-08-30T10:53:00.7966651Z",
+    "updatedAt":  "2026-08-31T05:03:01.4452721Z",
     "activeFeature":  "gfx-24",
     "features":  [
                      {
@@ -604,6 +604,11 @@
                                                        "Samples/RenderVerseSamples/**",
                                                        "Scripts/check_render_quality_*.py",
                                                        "Scripts/run_render_quality_*.ps1",
+                                                       "Scripts/run_required_suite.ps1",
+                                                       "Scripts/run_build_truth.ps1",
+                                                       "Scripts/BuildTruth/**",
+                                                       "init.ps1",
+                                                       "Scripts/BuildTruth/Test-RequiredSuiteV1.ps1",
                                                        "Scripts/check_ci_workflows.py",
                                                        "Scripts/test_ci_workflows.py",
                                                        "Scripts/check_sample_cooked_product_closure.py",
@@ -723,7 +728,7 @@
                                               {
                                                   "id":  "pr-smoke-required-suite",
                                                   "layer":  "native",
-                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -BaseRef master -SkipConfigure",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json' -BaseRef master",
                                                   "required":  true,
                                                   "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
                                                   "expectedReceipt":  {
@@ -740,10 +745,12 @@
                                                                           "requiredLabel":  "suite.pr-smoke",
                                                                           "expectedTestCount":  3,
                                                                           "fresh":  false,
-                                                                          "skipConfigure":  true,
+                                                                          "skipConfigure":  false,
                                                                           "requiredSemanticArtifacts":  [
-
-                                                                                                        ]
+                                                                                                               "build/win_x64_pr_debug/Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm",
+                                                                                                               "build/win_x64_pr_debug/Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json",
+                                                                                                               "build/win_x64_pr_debug/Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json"
+                                                                                                           ]
                                                                       }
                                               },
                                               {
@@ -799,7 +806,7 @@
                                               {
                                                   "id":  "shipping-required-suite",
                                                   "layer":  "shipping",
-                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationShipping -RequiredLabel lane.shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
                                                   "required":  true,
                                                   "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
                                                   "expectedReceipt":  {
@@ -811,9 +818,9 @@
                                                                           "buildDir":  "build/win_x64_shipping_release",
                                                                           "configuration":  "Release",
                                                                           "buildTargets":  [
-                                                                                               "RVXValidationSuiteRequiredShipping"
+                                                                                               "RVXValidationShipping"
                                                                                            ],
-                                                                          "requiredLabel":  "suite.required-shipping",
+                                                                          "requiredLabel":  "lane.shipping",
                                                                           "expectedTestCount":  5,
                                                                           "fresh":  false,
                                                                           "skipConfigure":  true,
@@ -903,58 +910,6 @@
                                               "notes":  "The fail-closed GFX24 contract suite passed 62/62 with zero skipped, disabled, or not-run tests."
                                           },
                                           {
-                                              "verificationId":  "gfx24-native-candidate-suite",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_gfx24_candidate_release -BuildPreset win_x64_gfx24_candidate_release -TestPreset win_x64_gfx24_candidate_release_gfx24_candidate -BuildDir build\\gfx24_rel -Configuration Release -BuildTarget RVXValidationSuiteGfx24Candidate -RequiredLabel suite.gfx24-candidate -ExpectedTestCount 3 -RequiredEvidence 'Tests/Gfx24Candidate/Release/DX12DeferredHighTick120/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighTick360/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighPerformance/performance.json' -BaseRef master -SkipConfigure",
-                                              "result":  "passed",
-                                              "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:27:07.6765300Z",
-                                              "artifact":  ".agent-harness/receipts/RequiredSuite.b215f9e3965c4492932378a1d9aee6f3.json",
-                                              "artifactSha256":  "572e347cef5a750700118577bae82682ab8e1f9afd5abce57552aeb92c36f31e",
-                                              "runId":  "b215f9e3965c4492932378a1d9aee6f3",
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "DX12 Release produced two same-run seven-attachment 1280x720 bundles and one completion-owned 60-warmup plus 300-sample 2560x1440 report. The local Graphics qualification-span p95 is 18.874368 ms, so the 16.67 ms target and candidate-unapproved baseline remain intentionally unsatisfied."
-                                          },
-                                          {
-                                              "verificationId":  "pr-smoke-required-suite",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -BaseRef master -SkipConfigure",
-                                              "result":  "passed",
-                                              "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:53:00.7966651Z",
-                                              "artifact":  ".agent-harness/receipts/RequiredSuite.c229a24e32ca41a7899a2c52690ddc11.json",
-                                              "artifactSha256":  "55f12dc5c4c410c8126486580d64645f100ea45b2a2041b4726c36749605175c",
-                                              "runId":  "c229a24e32ca41a7899a2c52690ddc11",
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "The fixed DX12 SceneLifecycle Direct 320x180 Low eight-frame producer, image validator, and JSON report validator passed 3/3 under one run id."
-                                          },
-                                          {
-                                              "verificationId":  "architecture-required-suite",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
-                                              "result":  "passed",
-                                              "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:29:12.9105306Z",
-                                              "artifact":  ".agent-harness/receipts/Architecture.1eecf54dee2749b88207bd7f774b9d85.json",
-                                              "artifactSha256":  "dafcb78b45c010c0f47c5f79d487d396f74df7b77d9ee9dbf2ccb07f921dba26",
-                                              "runId":  "1eecf54dee2749b88207bd7f774b9d85",
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "Architecture required suite passed 65/65 with zero skipped, disabled, or not-run tests."
-                                          },
-                                          {
-                                              "verificationId":  "full-debug-build-truth",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
-                                              "result":  "passed",
-                                              "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:35:23.7185488Z",
-                                              "artifact":  ".agent-harness/receipts/BuildTruth.d7d3bbe434374da7a6ab9254b40bb291.json",
-                                              "artifactSha256":  "7c09c04257094c5dd71c998e37f386c723448db66c36d98180a6c82ce867a8bc",
-                                              "runId":  "d7d3bbe434374da7a6ab9254b40bb291",
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "Build Truth passed Architecture 65/65, Unit 2040/2040, Integration 751/751, and real DX12 Native 61/61 without fallback or a software adapter."
-                                          },
-                                          {
                                               "verificationId":  "shipping-host-cooker",
                                               "command":  "cmake --build --preset win_x64_shipping_host_release --target RVXCook --config Release",
                                               "result":  "passed",
@@ -966,33 +921,85 @@
                                               "notes":  "The independent Release host cooker was rebuilt before the current Shipping suite without adding a Shipping-to-Developer dependency."
                                           },
                                           {
-                                              "verificationId":  "shipping-required-suite",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                              "verificationId":  "full-debug-build-truth",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:39:57.1047890Z",
-                                              "artifact":  ".agent-harness/receipts/RequiredSuite.a8fc557a20b34fa3987368675fbff449.json",
-                                              "artifactSha256":  "f1e2f1acb7b06fc4299a8de9a7f0e8dbd88db879cf31ad23fde02a9ebc893595",
-                                              "runId":  "a8fc557a20b34fa3987368675fbff449",
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "Windows Release Shipping target closure, host cook fixture, cooked-only smoke, evidence validation, and dynamic dependency scan passed 5/5."
+                                              "recordedAt":  "2026-08-31T04:43:11.3336563Z",
+                                              "artifact":  ".agent-harness/receipts/BuildTruth.4673c3cec4f54d1b85ff09741462d0a6.json",
+                                              "artifactSha256":  "5badeb799f0d046be122e17a6a856ed3e23bae257327933d77ecbc8fd5186cd7",
+                                              "runId":  "4673c3cec4f54d1b85ff09741462d0a6",
+                                              "sourceCommit":  "49ae950dd1b2f3d3903bc76fcefc7503d01a2671",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "The final product digest passed Architecture 65/65, Unit 2072/2072, Integration 756/756, and real DX12 Native 61/61. The stage commits were created afterward without changing product content; post-commit Architecture separately binds the same digest to 0aaddeaf."
+                                          },
+                                          {
+                                              "verificationId":  "pr-smoke-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json' -BaseRef master",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T04:47:07.1033606Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.00b281f989a744909407f96612beab62.json",
+                                              "artifactSha256":  "d326f1bba0a43272995183a110eabc118fc709beb1e076e3afba6871ca2bb34c",
+                                              "runId":  "00b281f989a744909407f96612beab62",
+                                              "sourceCommit":  "49ae950dd1b2f3d3903bc76fcefc7503d01a2671",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "The fixed DX12 SceneLifecycle Direct 320x180 Low eight-frame producer, image validator, and schema-35 report validator passed 3/3."
+                                          },
+                                          {
+                                              "verificationId":  "shipping-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationShipping -RequiredLabel lane.shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T04:54:21.7723913Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.2e45167ec64b4110a40b6f456a23d4bf.json",
+                                              "artifactSha256":  "82a626936202612f5cc4175eafc1906af511cc286f0aeadbc5d58bda7c588e96",
+                                              "runId":  "2e45167ec64b4110a40b6f456a23d4bf",
+                                              "sourceCommit":  "49ae950dd1b2f3d3903bc76fcefc7503d01a2671",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Windows Release Shipping target closure, independent host cook fixture, cooked-only consumer smoke, evidence validation, and dynamic dependency scan passed 5/5."
+                                          },
+                                          {
+                                              "verificationId":  "architecture-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T04:59:32.7873665Z",
+                                              "artifact":  ".agent-harness/receipts/Architecture.3ebeaf15ead749018e7b1033acc8383f.json",
+                                              "artifactSha256":  "fc4602ce0987a6890b974fe1ee3416b5ba3ee850f2c0ef3c3fe409edd451c839",
+                                              "runId":  "3ebeaf15ead749018e7b1033acc8383f",
+                                              "sourceCommit":  "0aaddeaf3fe839d0fbae7efd4508aa44f5f07022",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Post-commit Architecture passed 65/65 with no skipped, disabled, or not-run tests and binds the final product digest to HEAD 0aaddeaf."
+                                          },
+                                          {
+                                              "verificationId":  "gfx24-native-candidate-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_gfx24_candidate_release -BuildPreset win_x64_gfx24_candidate_release -TestPreset win_x64_gfx24_candidate_release_gfx24_candidate -BuildDir build\\gfx24_rel -Configuration Release -BuildTarget RVXValidationSuiteGfx24Candidate -RequiredLabel suite.gfx24-candidate -ExpectedTestCount 3 -RequiredEvidence 'Tests/Gfx24Candidate/Release/DX12DeferredHighTick120/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighTick360/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighPerformance/performance.json' -BaseRef master -SkipConfigure",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T05:01:05.1237073Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.96116d630e9d485693940cb638f758ac.json",
+                                              "artifactSha256":  "d708d7d4a6c5e6b3449d326c868e6657ec332ebff8f2caa1bf8a970559579226",
+                                              "runId":  "96116d630e9d485693940cb638f758ac",
+                                              "sourceCommit":  "0aaddeaf3fe839d0fbae7efd4508aa44f5f07022",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Post-commit DX12 Candidate passed 3/3. The 60+300 report records 11.141120 ms Graphics qualification p95, 10.852352 ms RenderGraph envelope p95, 44 stable transient textures, 689563800 stable transient bytes, and no post-warmup resource or footprint growth. The baseline identity remains unapproved."
                                           },
                                           {
                                               "verificationId":  "diff-hygiene",
                                               "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-30T10:42:20.9393625Z",
+                                              "recordedAt":  "2026-08-31T05:03:01.4452721Z",
                                               "artifact":  null,
-                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
-                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
-                                              "notes":  "The complete working diff has no whitespace errors; all protected user-owned paths and generated evidence remain outside product commits."
+                                              "sourceCommit":  "0aaddeaf3fe839d0fbae7efd4508aa44f5f07022",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Product commits are clean and protected user-owned paths plus generated evidence remain unstaged."
                                           }
                                       ],
                          "blocker":  null,
-                         "nextStep":  "Keep GFX24 active. Establish an approved visual Golden and a fixed-CI-GPU baseline, then optimize the 2560x1440 High Deferred path from its measured 18.874368 ms p95 to the 16.67 ms target. Start with OpaqueSceneSnapshotCopy, TAAResolve, SSRHiZTrace, and WeightedBlendedOITComposite; rerun the exact candidate required suite after each material change. Linux Vulkan and macOS Metal visual evidence remain remote PR-CI obligations. A separate validation follow-up should harden required-suite PowerShell relaunch when a host inherits both PATH and Path.",
-                         "updatedAt":  "2026-08-30T10:53:00.7966651Z"
+            "nextStep":  "GFX24A3 and its measured remediation commits are complete through 0aaddeaf. Post-commit Architecture and Candidate evidence bind the final digest; complete Build Truth, PR smoke, GFX19 DX12/Vulkan reflection qualification, and Shipping also pass on that digest. The latest fixed RTX 4070 Ti report is 11.141120 ms Graphics qualification p95 and 10.852352 ms RenderGraph envelope p95 with zero post-warmup resource/footprint growth. Proceed to GFX24A4: collect five consecutive fixed-hardware reports under the exact approved runner identity, select the median-p95 candidate, generate a BaselineRecord V1, and request user approval. No baseline or Golden is approved yet; Linux hardware Vulkan RT and macOS Metal remain remote obligations.",
+            "updatedAt":  "2026-08-31T13:03:01.4452721+08:00"
                      }
                  ]
 }

@@ -2,29 +2,31 @@
 
 # Session Handoff
 
-GFX23 is complete. GFX24 implementation is committed in `18572c63`, with the
-performance-candidate correction in `ce0846ba`. The public-only cooked
-RenderQualityLab, completion-owned seven-attachment capture, ordered per-pass
-timing, 60+300 performance session, report checkers, Shipping closure, and
-fail-closed required suites are implemented and locally verified.
+GFX24A3 is complete through `0aaddeaf`. High now uses a ceil-half SSR trace
+with depth/normal/confidence-guided full-resolution resolve; Ultra and
+non-High tiers retain full-resolution SSR. Bloom no longer repeats a 13-tap
+kernel for each already-filtered pyramid level, current-frame TAA inputs use
+pixel-aligned loads while history remains bilinear, and the transient pool
+reserves physical resources/views for both renderer frame slots before
+measurement. Sample report schema 35 carries exact SSR resolution evidence;
+schema 34 remains legacy.
 
-Current `ce0846ba` evidence passes GFX24 contract 62/62, Architecture 65/65,
-Unit 2040/2040, Integration 751/751, real DX12 Native 61/61, Shipping 5/5,
-fixed SceneLifecycle PR Smoke 3/3, and the DX12 Release candidate producers
-3/3. The candidate emitted two 1280x720 seven-attachment bundles and one
-2560x1440 report with 60 warmup plus 300 measured frames. Its Graphics
-qualification-span p95 is 18.874368 ms on the local RTX 4070 Ti, so the 16.67
-ms target is not yet met. The baseline identity remains
-`gfx24-dx12-candidate-unapproved`; no Golden or performance baseline was
-approved.
+The final product digest
+`a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f`
+passes Architecture 65/65, Unit 2072/2072, Integration 756/756, real DX12
+Native 61/61, PR Smoke 3/3, GFX19 DX12/Vulkan reflection qualification 12/12,
+and Shipping 5/5. The post-commit Candidate receipt is
+`.agent-harness/receipts/RequiredSuite.96116d630e9d485693940cb638f758ac.json`;
+its 60+300 report records 11.141120 ms Graphics qualification p95,
+10.852352 ms RenderGraph envelope p95, 44 stable transient textures, and
+689563800 stable transient bytes. No resource or footprint grew after warmup.
 
-Keep `gfx-24` active. Next, establish the fixed-CI-GPU baseline and approved
-visual Golden, then optimize `OpaqueSceneSnapshotCopy`, `TAAResolve`,
-`SSRHiZTrace`, and `WeightedBlendedOITComposite` before rerunning the exact
-GFX24 candidate required suite. Linux Vulkan and macOS Metal visual evidence
-remain remote PR-CI obligations. The required-suite PowerShell relaunch also
-needs a separate follow-up for hosts that inherit both `PATH` and `Path`; the
-current runner succeeds after direct CMake prebuild but should be hardened.
+Keep `gfx-24` active. Next implement GFX24A4 calibration: retain five
+consecutive reports for the fixed RTX 4070 Ti / driver / OS identity, choose
+the median-p95 run, emit `RenderQualityPerformanceBaselineRecord V1`, and ask
+the user for explicit approval. No performance baseline or visual Golden is
+approved. GFX24B/C and Linux hardware Vulkan RT/macOS Metal evidence remain
+pending.
 
 Preserve the existing user-owned changes in `AGENTS.md`, `CLAUDE.md`,
 `Docs/README.md`, `Docs/engine-capabilities.json`, `ViewData.h`,

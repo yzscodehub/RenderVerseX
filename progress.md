@@ -310,3 +310,20 @@ Keep at most the ten most useful recent entries.
   and both visual Golden and fixed-hardware performance baseline remain
   unapproved. Optimize the measured top GPU passes, then obtain Linux Vulkan
   and macOS Metal PR-CI evidence.
+
+### 2026-08-31 - gfx-24a3 - fixed-GPU performance closure
+
+- Outcome: committed High ceil-half SSR trace plus guided full-resolution
+  resolve in `45fec638`, filtered Bloom pyramid reconstruction in `1d462f0e`,
+  pixel-aligned TAA loads in `1d0da122`, and two-frame transient capacity in
+  `0aaddeaf`. Sample report schema 35 now proves trace/resolved extents and
+  guided-upscale execution; schema 34 remains legacy.
+- Verification: final product digest
+  `a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f`
+  passed Architecture 65/65, Unit 2072/2072, Integration 756/756, DX12 Native
+  61/61, PR Smoke 3/3, GFX19 DX12/Vulkan reflection qualification 12/12, and
+  Shipping 5/5. Post-commit Candidate 3/3 recorded 11.141120 ms Graphics and
+  10.852352 ms RenderGraph p95 with stable 60+300 resource/footprint evidence.
+- Follow-up: keep GFX24 active. Collect five consecutive fixed RTX 4070 Ti
+  calibration reports for GFX24A4 and ask the user to approve the median-p95
+  BaselineRecord. Golden promotion and Linux/macOS/RT CI remain pending.
