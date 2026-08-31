@@ -451,6 +451,50 @@ namespace RVX
                            "Transient texture view cache insertion failed");
             ++stats.textureViewMisses;
             ++stats.textureViewCount;
+
+            // Materialize the same descriptor for every reserved physical
+            // frame slot while the graph contract is known. A later overlap
+            // must not turn first use of a preallocated texture into hidden
+            // descriptor growth during performance measurement.
+            const auto cohort = texturePool.equal_range(pooled->descHash);
+            for (auto it = cohort.first; it != cohort.second; ++it)
+            {
+                PooledTexture& reserve = it->second;
+                if (&reserve == pooled || !reserve.texture ||
+                    !AreRHITextureDescsEquivalent(
+                        reserve.desc, pooled->desc))
+                {
+                    continue;
+                }
+                TextureViewKey reserveKey;
+                reserveKey.resourceInstanceId =
+                    reserve.texture->GetResourceInstanceId();
+                reserveKey.format = desc.format;
+                reserveKey.dimension = desc.dimension;
+                reserveKey.subresourceRange = desc.subresourceRange;
+                reserveKey.type = desc.type;
+                if (reserve.views.contains(reserveKey))
+                    continue;
+
+                RHITextureViewRef reserveView =
+                    device->CreateTextureView(reserve.texture.Get(), desc);
+                if (!reserveView)
+                {
+                    ++stats.textureViewCreationFailureCount;
+                    RVX_CORE_WARN(
+                        "TransientResourcePool: frame-capacity texture-view reserve failed");
+                    continue;
+                }
+                const auto [reserveInserted, reserveSuccess] =
+                    reserve.views.emplace(
+                        std::move(reserveKey), std::move(reserveView));
+                RVX_ASSERT_MSG(
+                    reserveSuccess,
+                    "Transient texture reserve-view cache insertion failed");
+                static_cast<void>(reserveInserted);
+                ++stats.textureViewMisses;
+                ++stats.textureViewCount;
+            }
             return inserted->second;
         }
 
@@ -517,6 +561,7 @@ namespace RVX
         uint64 poolIdentity =
             s_nextTransientPoolIdentity.fetch_add(1, std::memory_order_relaxed);
         uint64 nextSlotId = 1;
+        uint32 frameCapacity = 1;
         bool active = false;
         uint32 currentFrame = 0;
         std::unordered_multimap<uint64, PooledTexture> texturePool;
@@ -792,7 +837,8 @@ namespace RVX
     void TransientResourcePool::Initialize(
         IRHIDevice* device,
         RenderSubmissionTracker* submissionTracker,
-        RenderRetirementQueue* retirementQueue)
+        RenderRetirementQueue* retirementQueue,
+        uint32 frameCapacity)
     {
         if (m_impl->device)
         {
@@ -805,9 +851,12 @@ namespace RVX
         m_impl->retirementQueue = retirementQueue;
         m_impl->lastSubmission = {};
         m_impl->currentFrame = 0;
+        m_impl->frameCapacity = std::max(1U, frameCapacity);
         m_impl->stats = {};
         m_impl->active = true;
-        RVX_CORE_DEBUG("TransientResourcePool: Initialized");
+        RVX_CORE_DEBUG(
+            "TransientResourcePool: Initialized with frame capacity {}",
+            m_impl->frameCapacity);
     }
 
     void TransientResourcePool::Shutdown()
@@ -844,6 +893,7 @@ namespace RVX
         m_impl->submissionTracker = nullptr;
         m_impl->retirementQueue = nullptr;
         m_impl->lastSubmission = {};
+        m_impl->frameCapacity = 1;
         m_impl->active = false;
         m_impl->stats = {};
         RVX_CORE_DEBUG("TransientResourcePool: Shutdown");
@@ -926,8 +976,17 @@ namespace RVX
         const auto range = m_impl->texturePool.equal_range(hash);
         for (auto it = range.first; it != range.second; ++it)
         {
+            if (AreRHITextureDescsEquivalent(it->second.desc, desc))
+                it->second.lastUsedFrame = m_impl->currentFrame;
+        }
+        for (auto it = range.first; it != range.second; ++it)
+        {
             if (!AreRHITextureDescsEquivalent(it->second.desc, desc))
                 continue;
+            // Keep the complete frame-capacity cohort alive while this
+            // descriptor remains active. Otherwise periodic eviction can
+            // discard an unused reserve slot and force a late allocation the
+            // first time two frame slots genuinely overlap.
             if (it->second.state == TransientResourceLeaseState::InFlight &&
                 m_impl->CanReuse(it->second.availableAfter))
             {
@@ -983,6 +1042,35 @@ namespace RVX
         const uint64 slotId = pooled.slotId;
         const uint32 generation = pooled.generation;
         m_impl->texturePool.emplace(hash, std::move(pooled));
+        for (uint32 reserveIndex = 1U;
+             reserveIndex < m_impl->frameCapacity;
+             ++reserveIndex)
+        {
+            RHITextureRef reserveTexture =
+                m_impl->device->CreateTexture(desc);
+            if (!reserveTexture)
+            {
+                RVX_CORE_WARN(
+                    "TransientResourcePool: texture frame-capacity reserve failed for '{}'",
+                    desc.debugName != nullptr ? desc.debugName : "");
+                break;
+            }
+            Impl::PooledTexture reserve;
+            reserve.texture = std::move(reserveTexture);
+            reserve.desc = desc;
+            reserve.descHash = hash;
+            reserve.lastUsedFrame = m_impl->currentFrame;
+            reserve.memorySize = EstimateTextureMemory(desc);
+            reserve.slotId = m_impl->nextSlotId++;
+            reserve.generation = 0;
+            reserve.state = TransientResourceLeaseState::Free;
+            reserve.accessSnapshot = MakeRHITextureAccessSnapshot(
+                RHIResourceState::Undefined,
+                RHIShaderStage::None,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Invalid);
+            m_impl->texturePool.emplace(hash, std::move(reserve));
+        }
         ++m_impl->stats.textureMisses;
         ++m_impl->stats.texturesInUse;
         ++m_impl->stats.recordingTextureLeases;
@@ -1027,6 +1115,8 @@ namespace RVX
         const auto control =
             std::static_pointer_cast<TransientResourceLeaseControl>(m_impl);
         const auto range = m_impl->bufferPool.equal_range(hash);
+        for (auto it = range.first; it != range.second; ++it)
+            it->second.lastUsedFrame = m_impl->currentFrame;
         for (auto it = range.first; it != range.second; ++it)
         {
             if (it->second.state == TransientResourceLeaseState::InFlight &&
@@ -1083,6 +1173,33 @@ namespace RVX
         const uint64 slotId = pooled.slotId;
         const uint32 generation = pooled.generation;
         m_impl->bufferPool.emplace(hash, std::move(pooled));
+        for (uint32 reserveIndex = 1U;
+             reserveIndex < m_impl->frameCapacity;
+             ++reserveIndex)
+        {
+            RHIBufferRef reserveBuffer = m_impl->device->CreateBuffer(desc);
+            if (!reserveBuffer)
+            {
+                RVX_CORE_WARN(
+                    "TransientResourcePool: buffer frame-capacity reserve failed for '{}'",
+                    desc.debugName != nullptr ? desc.debugName : "");
+                break;
+            }
+            Impl::PooledBuffer reserve;
+            reserve.buffer = std::move(reserveBuffer);
+            reserve.descHash = hash;
+            reserve.lastUsedFrame = m_impl->currentFrame;
+            reserve.memorySize = EstimateBufferMemory(desc);
+            reserve.slotId = m_impl->nextSlotId++;
+            reserve.generation = 0;
+            reserve.state = TransientResourceLeaseState::Free;
+            reserve.accessSnapshot = MakeRHIBufferAccessSnapshot(
+                RHIResourceState::Undefined,
+                RHIShaderStage::None,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Invalid);
+            m_impl->bufferPool.emplace(hash, std::move(reserve));
+        }
         ++m_impl->stats.bufferMisses;
         ++m_impl->stats.buffersInUse;
         ++m_impl->stats.recordingBufferLeases;

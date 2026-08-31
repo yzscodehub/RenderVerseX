@@ -173,10 +173,12 @@ namespace RVX
         /**
          * @brief Initialize the pool with a device
          * @param device The RHI device for resource creation
+         * @param frameCapacity Maximum renderer frame slots that may overlap
          */
         void Initialize(IRHIDevice* device,
                         RenderSubmissionTracker* submissionTracker = nullptr,
-                        RenderRetirementQueue* retirementQueue = nullptr);
+                        RenderRetirementQueue* retirementQueue = nullptr,
+                        uint32 frameCapacity = 1U);
 
         /**
          * @brief Shutdown and release all pooled resources

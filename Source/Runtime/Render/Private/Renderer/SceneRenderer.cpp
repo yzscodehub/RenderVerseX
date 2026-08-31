@@ -1608,7 +1608,8 @@ void SceneRenderer::Initialize(
         RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext);
     m_transientResourcePool->Initialize(m_renderContext->GetDevice(),
                                         submissionTracker,
-                                        m_retirementQueue);
+                                        m_retirementQueue,
+                                        gpuCullingFrameSlotCount);
 
     // Create resource view cache for automatic view management
     m_resourceViewCache = std::make_unique<ResourceViewCache>();

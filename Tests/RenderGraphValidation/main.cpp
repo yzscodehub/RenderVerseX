@@ -474,6 +474,62 @@ TEST(RenderGraphValidation, TextureResourceCreation)
     EXPECT_TRUE(texture.IsValid());
 }
 
+TEST(RenderGraphValidation,
+     TransientPoolReservesFrameCapacityAndEvictsInactiveCohorts)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device, nullptr, nullptr, 2U);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64U, 64U, RHIFormat::RGBA16_FLOAT);
+    TransientTextureLease first = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(first);
+    EXPECT_FALSE(first.reused);
+    EXPECT_EQ(device.createTextureCount, 2U);
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = RHIFormat::RGBA16_FLOAT;
+    viewDesc.dimension = RHITextureDimension::Texture2D;
+    viewDesc.subresourceRange = RHISubresourceRange::All();
+    viewDesc.type = RHITextureViewType::RenderTarget;
+    ASSERT_TRUE(first.GetOrCreateView(viewDesc));
+    EXPECT_EQ(device.createTextureViewCount, 2U);
+
+    TransientTextureLease second = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(second);
+    EXPECT_TRUE(second.reused);
+    EXPECT_NE(first.texture, second.texture);
+    EXPECT_EQ(device.createTextureCount, 2U);
+    ASSERT_TRUE(second.GetOrCreateView(viewDesc));
+    EXPECT_EQ(device.createTextureViewCount, 2U);
+
+    // A third same-frame use grows by another complete two-frame cohort,
+    // rather than leaving a single late-allocation slot.
+    TransientTextureLease third = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(third);
+    EXPECT_FALSE(third.reused);
+    EXPECT_EQ(device.createTextureCount, 4U);
+
+    EXPECT_TRUE(first.AbortUnsubmitted());
+    EXPECT_TRUE(second.AbortUnsubmitted());
+    EXPECT_TRUE(third.AbortUnsubmitted());
+    pool.EndFrame();
+    EXPECT_EQ(pool.GetStats().texturePoolSize, 4U);
+
+    // Once the whole descriptor cohort becomes inactive, ordinary eviction
+    // still releases the reserve; resize/recipe changes cannot retain it.
+    for (uint32 frame = 0; frame < 3U; ++frame)
+    {
+        pool.BeginFrame();
+        pool.EndFrame();
+    }
+    pool.EvictUnused(3U);
+    pool.EndFrame();
+    EXPECT_EQ(pool.GetStats().texturePoolSize, 0U);
+    pool.Shutdown();
+}
+
 TEST(RenderGraphValidation, ExplicitTextureViewIsDeclaredThenRealizedOnce)
 {
     FakeDevice device;
