@@ -2614,6 +2614,11 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainPyramidComposite)
     EXPECT_NE(shaderSource.find("BLOOM_MODE_DOWNSAMPLE"), std::string::npos);
     EXPECT_NE(shaderSource.find("BLOOM_MODE_COMPOSITE_PYRAMID"), std::string::npos);
     EXPECT_NE(shaderSource.find("SampleBloomWideKernel"), std::string::npos);
+    EXPECT_NE(shaderSource.find("ReconstructBloomPyramidLevel"),
+              std::string::npos);
+    EXPECT_EQ(shaderSource.find(
+                  "SampleBloomWideKernel(BloomPyramid"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("return scene;"), std::string::npos);
     EXPECT_NE(shaderSource.find("ring1"), std::string::npos);
     EXPECT_NE(shaderSource.find("ring2"), std::string::npos);

@@ -78,6 +78,15 @@ float3 SampleBloomSource(Texture2D<float4> source, float2 uv)
     return source.Sample(LinearSampler, uv).rgb;
 }
 
+float3 ReconstructBloomPyramidLevel(Texture2D<float4> source, float2 uv)
+{
+    // Every level was already recursively low-pass filtered while the
+    // pyramid was generated. Hardware bilinear reconstruction supplies the
+    // correct full-resolution footprint here; applying the 13-tap generation
+    // kernel again would spend 39 filtered fetches and blur the signal twice.
+    return source.SampleLevel(LinearSampler, uv, 0.0).rgb;
+}
+
 float3 SampleBloomWideKernel(Texture2D<float4> source,
                              float2 uv,
                              bool thresholdSource)
@@ -162,11 +171,11 @@ float4 PSMain(VSOutput input) : SV_TARGET
     }
 
     const float3 bloom =
-        SampleBloomWideKernel(BloomPyramid0, input.TexCoord, false) *
+        ReconstructBloomPyramidLevel(BloomPyramid0, input.TexCoord) *
             BLOOM_PYRAMID_WEIGHTS[0] +
-        SampleBloomWideKernel(BloomPyramid1, input.TexCoord, false) *
+        ReconstructBloomPyramidLevel(BloomPyramid1, input.TexCoord) *
             BLOOM_PYRAMID_WEIGHTS[1] +
-        SampleBloomWideKernel(BloomPyramid2, input.TexCoord, false) *
+        ReconstructBloomPyramidLevel(BloomPyramid2, input.TexCoord) *
             BLOOM_PYRAMID_WEIGHTS[2];
     return float4(scene.rgb + bloom * max(Intensity, 0.0), scene.a);
 }
