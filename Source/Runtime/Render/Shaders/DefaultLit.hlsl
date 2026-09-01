@@ -1130,16 +1130,20 @@ float4 ShadeForwardSurface(
     float3 ambientSpecular;
     if (IBLTextureParams.x > 0.5)
     {
-        float3 irradiance = IrradianceTexture.Sample(IBLLinearClampSampler, normal).rgb * IBLTextureParams.z;
+        float3 irradiance = IrradianceTexture.SampleLevel(
+            IBLLinearClampSampler,
+            normal,
+            0.0f).rgb * IBLTextureParams.z;
         float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);
         float3 reflectionDir = reflect(-viewDir, normal);
         float3 prefilteredColor = PrefilteredEnvironmentTexture.SampleLevel(
             IBLLinearClampSampler,
             reflectionDir,
             prefilteredMip).rgb * IBLTextureParams.z;
-        float2 brdf = BRDFLUTTexture.Sample(
+        float2 brdf = BRDFLUTTexture.SampleLevel(
             IBLLinearClampSampler,
-            float2(nDotV, clampedRoughness)).rg;
+            float2(nDotV, clampedRoughness),
+            0.0f).rg;
 
         float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
         ambientDiffuse = RVX_ApplyIndirectDiffuseAmbientOcclusion(
@@ -1362,8 +1366,8 @@ IndirectSpecularSurfaceData EvaluateForwardIndirectSpecular(
         sourceRadiance = PrefilteredEnvironmentTexture.SampleLevel(
             IBLLinearClampSampler, reflectionDir, prefilteredMip).rgb *
             IBLTextureParams.z;
-        const float2 brdf = BRDFLUTTexture.Sample(
-            IBLLinearClampSampler, float2(nDotV, roughness)).rg;
+        const float2 brdf = BRDFLUTTexture.SampleLevel(
+            IBLLinearClampSampler, float2(nDotV, roughness), 0.0f).rg;
         output.specularResponse =
             (F_SchlickRoughness(nDotV, f0, roughness) * brdf.x + brdf.y) *
             surface.occlusion * specularAO;

@@ -6095,8 +6095,22 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t11, space0);"), std::string::npos);
     EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t12, space0);"), std::string::npos);
     EXPECT_NE(shader.find("SamplerState IBLLinearClampSampler : register(s13, space0);"), std::string::npos);
-    EXPECT_NE(shader.find("IrradianceTexture.Sample(IBLLinearClampSampler"), std::string::npos);
-    EXPECT_NE(shader.find("BRDFLUTTexture.Sample(\n            IBLLinearClampSampler"), std::string::npos);
+    EXPECT_EQ(shader.find("IrradianceTexture.Sample("), std::string::npos);
+    EXPECT_NE(shader.find("IrradianceTexture.SampleLevel(\n"
+                          "            IBLLinearClampSampler,\n"
+                          "            normal,\n"
+                          "            0.0f)"),
+              std::string::npos);
+    EXPECT_EQ(shader.find("BRDFLUTTexture.Sample("), std::string::npos);
+    EXPECT_NE(shader.find("BRDFLUTTexture.SampleLevel(\n"
+                          "            IBLLinearClampSampler,\n"
+                          "            float2(nDotV, clampedRoughness),\n"
+                          "            0.0f)"),
+              std::string::npos);
+    EXPECT_NE(shader.find("BRDFLUTTexture.SampleLevel(\n"
+                          "            IBLLinearClampSampler, "
+                          "float2(nDotV, roughness), 0.0f)"),
+              std::string::npos);
     EXPECT_NE(shader.find("Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);"),
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
