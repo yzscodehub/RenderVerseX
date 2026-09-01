@@ -357,6 +357,19 @@ namespace
                    m_sceneRenderer->ArmQualificationCaptureBundle();
         }
 
+        [[nodiscard]] bool IsQualificationCaptureBundleTerminal()
+            const noexcept override
+        {
+            if (m_sceneRenderer == nullptr)
+            {
+                return false;
+            }
+            const QualificationCaptureState state =
+                m_sceneRenderer->GetQualificationCaptureDiagnostics().state;
+            return state == QualificationCaptureState::Completed ||
+                   state == QualificationCaptureState::Rejected;
+        }
+
         bool RequestRenderQualityPerformanceSession() override
         {
             return m_sceneRenderer != nullptr &&

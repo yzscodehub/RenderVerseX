@@ -90,6 +90,18 @@ namespace RenderRuntimeDetail
         {
             return false;
         }
+        /**
+         * @brief Return whether the current bundle request reached a terminal state.
+         *
+         * The default is deliberately fail-closed: a consumer that does not
+         * own the concrete qualification bridge must never release the
+         * runtime's in-flight admission latch.
+         */
+        [[nodiscard]] virtual bool
+        IsQualificationCaptureBundleTerminal() const noexcept
+        {
+            return false;
+        }
         /** @brief Arm one fixed Render-owned GFX24 performance session. */
         [[nodiscard]] virtual bool RequestRenderQualityPerformanceSession()
         {
@@ -428,6 +440,9 @@ namespace RenderRuntimeDetail
         void ResolveHiZReflectionQualificationProbeRequestOnRenderThread(
             uint64 targetFrameSequence);
         void RejectPendingHiZReflectionQualificationProbeForShutdown() noexcept;
+        [[nodiscard]] bool
+        ConsumeQualificationCaptureBundleRequestOnRenderThread() noexcept;
+        void RetireQualificationCaptureBundleRequestOnRenderThread() noexcept;
 
         RenderRuntimeConfig m_config;
         HAL::NativeSurfaceDesc m_initialSurface;
@@ -470,6 +485,9 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_directOpaqueRasterReadbackQualificationRequestPending =
             false;
+        // This latch covers queued, armed, and GPU in-flight bundle capture.
+        // It is released only after a consumer rejection or a concrete bridge
+        // terminal state, never merely because the Render owner dequeued it.
         std::atomic<bool> m_qualificationCaptureBundleRequestIssued = false;
         std::atomic<bool> m_qualificationCaptureBundleRequestPending = false;
         std::atomic<bool> m_qualityPerformanceRequestIssued = false;

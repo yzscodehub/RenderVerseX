@@ -64,6 +64,8 @@ namespace RVX
         std::filesystem::path assessmentBaselinePath;
         /** Completion-owned GFX24 semantic attachment bundle output. */
         std::filesystem::path qualificationBundlePath;
+        /** Same-process GFX24 semantic attachment series success manifest. */
+        std::filesystem::path qualificationSeriesPath;
         /** Completion-owned GFX24 fixed-duration performance report output. */
         std::filesystem::path qualificationPerformancePath;
         /** Explicit opaque baseline identity; the host never self-approves one. */
@@ -111,6 +113,7 @@ namespace RVX
         {
             return waitReady || !common.screenshotPath.empty() ||
                    !qualificationBundlePath.empty() ||
+                   !qualificationSeriesPath.empty() ||
                    !qualificationPerformancePath.empty() ||
                    common.pixelProbeEnabled ||
                    common.gpuSceneCullingQualificationEnabled ||

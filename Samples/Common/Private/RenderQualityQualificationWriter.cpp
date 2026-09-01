@@ -5,6 +5,7 @@
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Hash/SHA256.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -541,6 +542,272 @@ namespace
         const auto* begin = reinterpret_cast<const uint8*>(value.data());
         return std::vector<uint8>(begin, begin + value.size());
     }
+
+    [[nodiscard]] bool IsLowercaseHex(
+        const std::string& value,
+        const size_t expectedLength) noexcept
+    {
+        return value.size() == expectedLength &&
+               std::all_of(value.begin(), value.end(), [](const char value)
+               {
+                   return (value >= '0' && value <= '9') ||
+                          (value >= 'a' && value <= 'f');
+               });
+    }
+
+    [[nodiscard]] bool IsCommitDigest(const std::string& value) noexcept
+    {
+        return IsLowercaseHex(value, 40U) || IsLowercaseHex(value, 64U);
+    }
+
+    [[nodiscard]] bool IsPosixRelativeBundlePath(
+        const std::string& value) noexcept
+    {
+        if (value.empty() || value.find('\\') != std::string::npos)
+        {
+            return false;
+        }
+        const std::filesystem::path path(value);
+        if (path.is_absolute() || path.filename() != "bundle.json" ||
+            path.generic_string() != value)
+        {
+            return false;
+        }
+        for (const std::filesystem::path& component : path)
+        {
+            if (component.empty() || component == "." || component == "..")
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void AppendSeriesBinding(
+        std::string& outBinding,
+        const char* name,
+        const std::string& value)
+    {
+        outBinding += name;
+        outBinding += ':';
+        outBinding += std::to_string(value.size());
+        outBinding += ':';
+        outBinding += value;
+        outBinding += '\n';
+    }
+
+    void AppendSeriesBinding(
+        std::string& outBinding,
+        const char* name,
+        const uint64 value)
+    {
+        AppendSeriesBinding(outBinding, name, std::to_string(value));
+    }
+
+    [[nodiscard]] std::string ComputeSeriesSha256(
+        const RenderQualityAttachmentSeriesWriteRequest& request)
+    {
+        std::string binding;
+        binding.reserve(1024U + request.ticks.size() * 512U);
+        AppendSeriesBinding(binding, "schema",
+                            "RVX.RenderQualityAttachmentSeries");
+        AppendSeriesBinding(binding, "schemaVersion",
+                            static_cast<uint64>(
+                                RVX_RENDER_QUALITY_ATTACHMENT_SERIES_SCHEMA_VERSION));
+        AppendSeriesBinding(binding, "sourceCommit", request.sourceCommit);
+        AppendSeriesBinding(binding, "runId", request.runId);
+        AppendSeriesBinding(binding, "preset", request.preset);
+        AppendSeriesBinding(binding, "identity.sampleId",
+                            request.qualificationIdentity.sampleId);
+        AppendSeriesBinding(binding, "identity.pipeline",
+                            request.qualificationIdentity.pipeline);
+        AppendSeriesBinding(binding, "identity.quality",
+                            request.qualificationIdentity.quality);
+        AppendSeriesBinding(binding, "identity.backend",
+                            request.qualificationIdentity.backend);
+        AppendSeriesBinding(binding, "identity.view",
+                            request.qualificationIdentity.view);
+        AppendSeriesBinding(binding, "identity.visualContractVersion",
+                            static_cast<uint64>(
+                                request.qualificationIdentity.visualContractVersion));
+        AppendSeriesBinding(binding, "hardware.backend",
+                            request.hardwareIdentity.backend);
+        AppendSeriesBinding(binding, "hardware.adapterName",
+                            request.hardwareIdentity.adapterName);
+        AppendSeriesBinding(binding, "hardware.driverVersion",
+                            request.hardwareIdentity.driverVersion);
+        AppendSeriesBinding(binding, "hardware.osBuild",
+                            request.hardwareIdentity.osBuild);
+        AppendSeriesBinding(binding, "hardware.capabilityHash",
+                            request.hardwareIdentity.capabilityHash);
+        AppendSeriesBinding(binding, "manifestSha256", request.manifestSha256);
+        for (const RenderQualityAttachmentSeriesTick& tick : request.ticks)
+        {
+            AppendSeriesBinding(binding, "tick.captureTick", tick.captureTick);
+            AppendSeriesBinding(binding, "tick.bundleId", tick.bundleId);
+            AppendSeriesBinding(binding, "tick.bundlePath", tick.bundlePath);
+            AppendSeriesBinding(binding, "tick.bundleSha256", tick.bundleSha256);
+            AppendSeriesBinding(binding, "tick.receiptSha256",
+                                tick.receiptSha256);
+            AppendSeriesBinding(binding, "tick.frameSequence", tick.frameSequence);
+            AppendSeriesBinding(binding, "tick.submittedFrame", tick.submittedFrame);
+            AppendSeriesBinding(binding, "tick.completedFrame", tick.completedFrame);
+        }
+        return Hash::FormatSHA256Digest(Hash::ComputeSHA256(binding));
+    }
+
+    [[nodiscard]] bool ReadAndValidateBundleSha256(
+        const std::filesystem::path& root,
+        const RenderQualityAttachmentSeriesWriteRequest& request,
+        const RenderQualityAttachmentSeriesTick& tick,
+        std::string* outError)
+    {
+        if (!IsPosixRelativeBundlePath(tick.bundlePath))
+        {
+            SetError(outError,
+                     "RenderQuality attachment series bundle path is not POSIX-relative");
+            return false;
+        }
+        std::error_code error;
+        const std::filesystem::path candidate =
+            std::filesystem::weakly_canonical(
+                root / std::filesystem::path(tick.bundlePath), error);
+        if (error || !IsContained(root, candidate) ||
+            !std::filesystem::is_regular_file(candidate, error) || error)
+        {
+            SetError(outError,
+                     "RenderQuality attachment series bundle is missing or escapes its root");
+            return false;
+        }
+        const uintmax_t size = std::filesystem::file_size(candidate, error);
+        if (error || size == 0U || size > 16ULL * 1024ULL * 1024ULL)
+        {
+            SetError(outError,
+                     "RenderQuality attachment series bundle has an invalid size");
+            return false;
+        }
+        std::ifstream stream(candidate, std::ios::binary);
+        if (!stream)
+        {
+            SetError(outError,
+                     "Cannot read RenderQuality attachment series bundle");
+            return false;
+        }
+        std::vector<uint8> bytes(static_cast<size_t>(size));
+        stream.read(reinterpret_cast<char*>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+        if (!stream || stream.gcount() != static_cast<std::streamsize>(bytes.size()) ||
+            Hash::FormatSHA256Digest(
+                Hash::ComputeSHA256(bytes.data(), bytes.size())) != tick.bundleSha256)
+        {
+            SetError(outError,
+                     "RenderQuality attachment series bundle hash does not match");
+            return false;
+        }
+        const std::string bundleJson(
+            reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        const auto contains = [&bundleJson](const std::string& text)
+        {
+            return bundleJson.find(text) != std::string::npos;
+        };
+        if (!contains("\"schema\": \"RVX.RenderQualityAttachmentBundle\"") ||
+            !contains("\"schemaVersion\": 1") ||
+            !contains("\"bundleId\": \"" +
+                      std::to_string(tick.bundleId) + "\"") ||
+            !contains("\"sourceCommit\": \"" + request.sourceCommit +
+                      "\"") ||
+            !contains("\"sampleId\": \"" +
+                      request.qualificationIdentity.sampleId + "\"") ||
+            !contains("\"pipeline\": \"" +
+                      request.qualificationIdentity.pipeline + "\"") ||
+            !contains("\"quality\": \"" +
+                      request.qualificationIdentity.quality + "\"") ||
+            !contains("\"backend\": \"" +
+                      request.qualificationIdentity.backend + "\"") ||
+            !contains("\"view\": \"" +
+                      request.qualificationIdentity.view + "\"") ||
+            !contains("\"captureTick\": " +
+                      std::to_string(tick.captureTick)) ||
+            !contains("\"visualContractVersion\": " + std::to_string(
+                      request.qualificationIdentity.visualContractVersion)) ||
+            !contains("\"runId\": \"" + request.runId + "\"") ||
+            !contains("\"preset\": \"" + request.preset + "\"") ||
+            !contains("\"renderExecutionReceiptSha256\": \"" +
+                      tick.receiptSha256 + "\"") ||
+            !contains("\"frameSequence\": " +
+                      std::to_string(tick.frameSequence)) ||
+            !contains("\"submittedFrame\": " +
+                      std::to_string(tick.submittedFrame)) ||
+            !contains("\"completedFrame\": " +
+                      std::to_string(tick.completedFrame)))
+        {
+            SetError(outError,
+                     "RenderQuality attachment series bundle does not match the required Bundle V1 schema and identity");
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool ValidateSeriesRequest(
+        const RenderQualityAttachmentSeriesWriteRequest& request,
+        std::string* outError)
+    {
+        const RenderQualityAttachmentSeriesIdentity& identity =
+            request.qualificationIdentity;
+        const RenderQualityAttachmentSeriesHardwareIdentity& hardware =
+            request.hardwareIdentity;
+        if (request.outputPath.filename() != "series.json" ||
+            !IsCommitDigest(request.sourceCommit) || !IsNonEmptyText(request.runId) ||
+            !IsNonEmptyText(request.preset) || !IsNonEmptyText(identity.sampleId) ||
+            !IsNonEmptyText(identity.pipeline) || !IsNonEmptyText(identity.quality) ||
+            !IsNonEmptyText(identity.backend) || !IsNonEmptyText(identity.view) ||
+            identity.visualContractVersion == 0U ||
+            !IsNonEmptyText(hardware.backend) ||
+            !IsNonEmptyText(hardware.adapterName) ||
+            !IsNonEmptyText(hardware.driverVersion) ||
+            !IsNonEmptyText(hardware.osBuild) ||
+            !IsLowercaseHex(hardware.capabilityHash, 64U) ||
+            hardware.backend != identity.backend ||
+            !IsLowercaseHex(request.manifestSha256, 64U) || request.ticks.empty())
+        {
+            SetError(outError,
+                     "RenderQuality attachment series request lacks strict identity or hardware provenance");
+            return false;
+        }
+
+        uint64 previousTick = 0;
+        uint64 previousBundleId = 0;
+        uint64 previousFrame = 0;
+        uint64 previousSubmitted = 0;
+        uint64 previousCompleted = 0;
+        for (const RenderQualityAttachmentSeriesTick& tick : request.ticks)
+        {
+            if (tick.captureTick == 0U || tick.bundleId == 0U ||
+                tick.frameSequence == 0U || tick.submittedFrame == 0U ||
+                tick.completedFrame < tick.submittedFrame ||
+                !IsPosixRelativeBundlePath(tick.bundlePath) ||
+                !IsLowercaseHex(tick.bundleSha256, 64U) ||
+                !IsLowercaseHex(tick.receiptSha256, 64U) ||
+                (previousTick != 0U && tick.captureTick <= previousTick) ||
+                (previousBundleId != 0U && tick.bundleId <= previousBundleId) ||
+                (previousFrame != 0U && tick.frameSequence <= previousFrame) ||
+                (previousSubmitted != 0U &&
+                 tick.submittedFrame <= previousSubmitted) ||
+                (previousCompleted != 0U &&
+                 tick.completedFrame <= previousCompleted))
+            {
+                SetError(outError,
+                         "RenderQuality attachment series ticks are unordered or invalid");
+                return false;
+            }
+            previousTick = tick.captureTick;
+            previousBundleId = tick.bundleId;
+            previousFrame = tick.frameSequence;
+            previousSubmitted = tick.submittedFrame;
+            previousCompleted = tick.completedFrame;
+        }
+        return true;
+    }
 } // namespace
 
 bool WriteRenderQualityQualificationBundle(
@@ -682,15 +949,155 @@ bool WriteRenderQualityQualificationBundle(
     manifest << "  ]\n";
     manifest << "}\n";
 
+    const std::vector<uint8> manifestBytes = ToBytes(manifest.str());
+    const std::string bundleSha256 = Hash::FormatSHA256Digest(
+        Hash::ComputeSHA256(manifestBytes.data(), manifestBytes.size()));
     if (!WriteBytesAtomically(
-            root, manifestPath, ToBytes(manifest.str()), published, outError))
+            root, manifestPath, manifestBytes, published, outError))
     {
         RemovePublishedArtifacts(published);
         return false;
     }
 
     outResult.bundlePath = manifestPath;
+    outResult.bundleSha256 = bundleSha256;
     outResult.renderExecutionReceiptSha256 = receiptSha256;
+    return true;
+}
+
+bool WriteRenderQualityAttachmentSeries(
+    const RenderQualityAttachmentSeriesWriteRequest& request,
+    RenderQualityAttachmentSeriesWriteResult& outResult,
+    std::string* outError)
+{
+    outResult = {};
+    if (!ValidateSeriesRequest(request, outError))
+    {
+        return false;
+    }
+
+    std::filesystem::path root;
+    const std::filesystem::path requestedRoot =
+        request.outputPath.has_parent_path()
+            ? request.outputPath.parent_path()
+            : std::filesystem::path(".");
+    if (!PrepareOutputRoot(requestedRoot, root, outError))
+    {
+        return false;
+    }
+    const std::filesystem::path seriesPath = root / "series.json";
+    std::error_code existsError;
+    if (!IsContained(root, seriesPath) ||
+        std::filesystem::exists(seriesPath, existsError) || existsError)
+    {
+        SetError(outError,
+                 "RenderQuality attachment series manifest already exists or escapes root");
+        return false;
+    }
+    for (const RenderQualityAttachmentSeriesTick& tick : request.ticks)
+    {
+        if (!ReadAndValidateBundleSha256(root, request, tick, outError))
+        {
+            return false;
+        }
+    }
+
+    const std::string seriesSha256 = ComputeSeriesSha256(request);
+    if (!IsLowercaseHex(seriesSha256, 64U))
+    {
+        SetError(outError,
+                 "RenderQuality attachment series digest could not be computed");
+        return false;
+    }
+
+    std::ostringstream manifest;
+    manifest.imbue(std::locale::classic());
+    manifest << "{\n";
+    manifest << "  \"schema\": \"RVX.RenderQualityAttachmentSeries\",\n";
+    manifest << "  \"schemaVersion\": "
+             << RVX_RENDER_QUALITY_ATTACHMENT_SERIES_SCHEMA_VERSION << ",\n";
+    manifest << "  \"sourceCommit\": "
+             << Diagnostics::JsonString(request.sourceCommit) << ",\n";
+    manifest << "  \"runId\": " << Diagnostics::JsonString(request.runId)
+             << ",\n";
+    manifest << "  \"preset\": " << Diagnostics::JsonString(request.preset)
+             << ",\n";
+    manifest << "  \"qualificationIdentity\": {\n";
+    manifest << "    \"sampleId\": "
+             << Diagnostics::JsonString(request.qualificationIdentity.sampleId)
+             << ",\n";
+    manifest << "    \"pipeline\": "
+             << Diagnostics::JsonString(request.qualificationIdentity.pipeline)
+             << ",\n";
+    manifest << "    \"quality\": "
+             << Diagnostics::JsonString(request.qualificationIdentity.quality)
+             << ",\n";
+    manifest << "    \"backend\": "
+             << Diagnostics::JsonString(request.qualificationIdentity.backend)
+             << ",\n";
+    manifest << "    \"view\": "
+             << Diagnostics::JsonString(request.qualificationIdentity.view)
+             << ",\n";
+    manifest << "    \"visualContractVersion\": "
+             << request.qualificationIdentity.visualContractVersion << "\n";
+    manifest << "  },\n";
+    manifest << "  \"hardwareIdentity\": {\n";
+    manifest << "    \"backend\": "
+             << Diagnostics::JsonString(request.hardwareIdentity.backend)
+             << ",\n";
+    manifest << "    \"adapterName\": "
+             << Diagnostics::JsonString(request.hardwareIdentity.adapterName)
+             << ",\n";
+    manifest << "    \"driverVersion\": "
+             << Diagnostics::JsonString(request.hardwareIdentity.driverVersion)
+             << ",\n";
+    manifest << "    \"osBuild\": "
+             << Diagnostics::JsonString(request.hardwareIdentity.osBuild)
+             << ",\n";
+    manifest << "    \"capabilityHash\": "
+             << Diagnostics::JsonString(request.hardwareIdentity.capabilityHash)
+             << "\n";
+    manifest << "  },\n";
+    manifest << "  \"manifestSha256\": "
+             << Diagnostics::JsonString(request.manifestSha256) << ",\n";
+    manifest << "  \"ticks\": [\n";
+    for (size_t index = 0; index < request.ticks.size(); ++index)
+    {
+        const RenderQualityAttachmentSeriesTick& tick = request.ticks[index];
+        manifest << "    {\n";
+        manifest << "      \"captureTick\": " << tick.captureTick << ",\n";
+        manifest << "      \"bundleId\": "
+                 << Diagnostics::JsonString(std::to_string(tick.bundleId))
+                 << ",\n";
+        manifest << "      \"bundlePath\": "
+                 << Diagnostics::JsonString(tick.bundlePath) << ",\n";
+        manifest << "      \"bundleSha256\": "
+                 << Diagnostics::JsonString(tick.bundleSha256) << ",\n";
+        manifest << "      \"receiptSha256\": "
+                 << Diagnostics::JsonString(tick.receiptSha256)
+                 << ",\n";
+        manifest << "      \"frameSequence\": " << tick.frameSequence
+                 << ",\n";
+        manifest << "      \"submittedFrame\": " << tick.submittedFrame
+                 << ",\n";
+        manifest << "      \"completedFrame\": " << tick.completedFrame
+                 << "\n";
+        manifest << "    }"
+                 << (index + 1U < request.ticks.size() ? ",\n" : "\n");
+    }
+    manifest << "  ],\n";
+    manifest << "  \"seriesSha256\": "
+             << Diagnostics::JsonString(seriesSha256) << "\n";
+    manifest << "}\n";
+
+    std::vector<std::filesystem::path> published;
+    if (!WriteBytesAtomically(
+            root, seriesPath, ToBytes(manifest.str()), published, outError))
+    {
+        return false;
+    }
+    outResult.seriesPath = seriesPath;
+    outResult.seriesSha256 = seriesSha256;
     return true;
 }
 } // namespace RVX

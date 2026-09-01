@@ -107,7 +107,7 @@ namespace RVX
                 RenderQualityLabSmokeAssetId};
             info.domain = SampleDomain::Qualification;
             info.intent = SampleIntent::Regression;
-            info.visualContractId = "render-quality-lab-v2";
+            info.visualContractId = "render-quality-lab-v3";
             info.deterministicQualification = true;
             return info;
         }();

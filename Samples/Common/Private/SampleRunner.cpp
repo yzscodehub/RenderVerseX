@@ -1949,6 +1949,7 @@ namespace
                    argument == "--assessment-profile" ||
                    argument == "--assessment-baseline" ||
                    argument == "--qualification-bundle" ||
+                   argument == "--qualification-series" ||
                    argument == "--qualification-performance" ||
                    argument == "--qualification-performance-baseline" ||
                    argument == "--lifetime-warmup-frames" ||
@@ -4592,6 +4593,16 @@ namespace
                         return false;
                     }
                 }
+                else if (argument == "--qualification-series")
+                {
+                    options.qualificationSeriesPath = value;
+                    if (options.qualificationSeriesPath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-series must not be empty");
+                        return false;
+                    }
+                }
                 else if (argument == "--qualification-performance")
                 {
                     options.qualificationPerformancePath = value;
@@ -4876,6 +4887,23 @@ namespace
                 return false;
             }
         }
+        if (!options.qualificationSeriesPath.empty())
+        {
+            if (options.qualificationSeriesPath.filename() != "series.json")
+            {
+                SetError(outError,
+                         "--qualification-series must name series.json inside its artifact directory");
+                return false;
+            }
+            options.waitReady = true;
+        }
+        if (!options.qualificationBundlePath.empty() &&
+            !options.qualificationSeriesPath.empty())
+        {
+            SetError(outError,
+                     "--qualification-bundle and --qualification-series are mutually exclusive");
+            return false;
+        }
         if (!options.qualificationPerformanceBaselineIdentity.empty() &&
             options.qualificationPerformancePath.empty())
         {
@@ -4943,10 +4971,11 @@ namespace
         if (!options.qualificationPerformancePath.empty() &&
             (!options.common.screenshotPath.empty() ||
              options.common.pixelProbeEnabled ||
-             !options.qualificationBundlePath.empty()))
+             !options.qualificationBundlePath.empty() ||
+             !options.qualificationSeriesPath.empty()))
         {
             SetError(outError,
-                     "--qualification-performance is mutually exclusive with screenshot, pixel-probe, and qualification-bundle producers");
+                     "--qualification-performance is mutually exclusive with screenshot, pixel-probe, qualification-bundle, and qualification-series producers");
             return false;
         }
         if (!options.runtimeOnlyComposition && !options.cookedShaderRoot.empty())
@@ -4997,7 +5026,8 @@ namespace
         }
         if (options.captureTickExplicit &&
             options.common.screenshotPath.empty() &&
-            options.qualificationPerformancePath.empty())
+            options.qualificationPerformancePath.empty() &&
+            options.qualificationSeriesPath.empty())
         {
             SetError(outError,
                      "--capture-tick requires --screenshot or --qualification-performance");
@@ -5069,6 +5099,7 @@ namespace
             << "  --assessment-profile <smoke|qualification|benchmark>\n"
             << "  --assessment-baseline <path.json>\n"
             << "  --qualification-bundle <path.json>\n"
+            << "  --qualification-series <path/series.json>\n"
             << "  --qualification-performance <path/performance.json>\n"
             << "  --qualification-performance-baseline <opaque-id>\n"
             << "  --lifetime-warmup-frames <count>\n"
@@ -5190,6 +5221,27 @@ namespace
                      "--qualification-bundle must name bundle.json inside its own artifact directory");
             return false;
         }
+        if (!options.qualificationSeriesPath.empty())
+        {
+            if (!manifest.deterministicQualification)
+            {
+                SetError(&outError,
+                         "--qualification-series requires deterministicQualification=true in the selected Sample manifest");
+                return false;
+            }
+            if (options.qualificationSeriesPath.filename() != "series.json")
+            {
+                SetError(&outError,
+                         "--qualification-series must name series.json inside its own artifact directory");
+                return false;
+            }
+            if (options.captureTickExplicit)
+            {
+                SetError(&outError,
+                         "--qualification-series captures every declared manifest tick and forbids --capture-tick");
+                return false;
+            }
+        }
         if (!options.qualificationPerformancePath.empty() &&
             options.sampleId != "render-quality-lab")
         {
@@ -5257,6 +5309,7 @@ namespace
             !options.common.screenshotPath.empty() ||
             options.common.pixelProbeEnabled ||
             !options.qualificationBundlePath.empty() ||
+            !options.qualificationSeriesPath.empty() ||
             !options.qualificationPerformancePath.empty();
         options.deterministicContractActive =
             manifest.deterministicQualification || captureEvidenceRequested ||
@@ -5317,7 +5370,9 @@ namespace
                     "The Sample manifest has no capture tick for the requested evidence";
                 return false;
             }
-            options.captureTick = manifest.captureTicks.front();
+            options.captureTick = !options.qualificationSeriesPath.empty()
+                ? manifest.captureTicks.back()
+                : manifest.captureTicks.front();
             options.captureTickResolved = true;
         }
 
@@ -5909,6 +5964,17 @@ namespace
         std::optional<RenderExecutionReceipt> renderQualityBundleReceipt{};
         std::shared_ptr<const QualificationCaptureBundle>
             renderQualityCaptureBundle{};
+        const bool renderQualityAttachmentSeriesRequested =
+            !options.qualificationSeriesPath.empty();
+        bool renderQualityAttachmentSeriesWritten = false;
+        size_t renderQualityAttachmentSeriesNextTick = 0;
+        std::vector<RenderQualityAttachmentSeriesTick>
+            renderQualityAttachmentSeriesTicks{};
+        RenderQualityAttachmentSeriesHardwareIdentity
+            renderQualityAttachmentSeriesHardware{};
+        std::string renderQualityAttachmentSeriesRunId{};
+        std::string renderQualityAttachmentSeriesSourceCommit{};
+        std::string renderQualityAttachmentSeriesPreset{};
         bool renderQualityPerformanceRequestAccepted = false;
         uint32 renderQualityPerformanceHostFrames = 0;
         std::optional<std::chrono::steady_clock::time_point>
@@ -7257,9 +7323,18 @@ namespace
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool renderQualityAttachmentSeriesTargetFrame =
+                        renderQualityAttachmentSeriesRequested && sampleReady &&
+                        deterministicEpochActive &&
+                        renderQualityAttachmentSeriesNextTick <
+                            manifest->captureTicks.size() &&
+                        nextLogicalTick == manifest->captureTicks[
+                            renderQualityAttachmentSeriesNextTick];
                     const bool renderQualityBundleTargetFrame =
-                        !options.qualificationBundlePath.empty() &&
-                        (fixedCaptureFrame || readyCaptureFrame);
+                        renderQualityAttachmentSeriesRequested
+                            ? renderQualityAttachmentSeriesTargetFrame
+                            : (!options.qualificationBundlePath.empty() &&
+                               (fixedCaptureFrame || readyCaptureFrame));
                     constexpr uint64 CaptureRequestId = 1;
                     bool captureQueued = false;
                     if (captureFrame)
@@ -7302,6 +7377,31 @@ namespace
 
                     if (renderQualityBundleTargetFrame)
                     {
+                        if (renderQualityAttachmentSeriesRequested &&
+                            renderQualityAttachmentSeriesRunId.empty())
+                        {
+                            renderQualityAttachmentSeriesRunId =
+                                ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
+                            renderQualityAttachmentSeriesHardware = {
+                                .backend = GetSampleBackendName(diagnostics.backend),
+                                .adapterName = diagnostics.adapterName,
+                                .driverVersion = diagnostics.driverVersion,
+                                .osBuild = ResolveHostOperatingSystemBuild(),
+                                .capabilityHash =
+                                    diagnostics.capabilityReportSha256};
+                            if (renderQualityAttachmentSeriesRunId.empty() ||
+                                renderQualityAttachmentSeriesHardware.backend.empty() ||
+                                renderQualityAttachmentSeriesHardware.adapterName.empty() ||
+                                renderQualityAttachmentSeriesHardware.driverVersion.empty() ||
+                                renderQualityAttachmentSeriesHardware.osBuild.empty() ||
+                                renderQualityAttachmentSeriesHardware.capabilityHash.empty())
+                            {
+                                error =
+                                    "GFX24 attachment series lacks frozen host hardware provenance";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                        }
                         renderQualityBundleRequestAccepted =
                             render->RequestQualificationCaptureBundle();
                         if (!renderQualityBundleRequestAccepted)
@@ -7767,19 +7867,52 @@ namespace
                                 {
                                     RenderQualityQualificationWriteRequest
                                         writeRequest;
-                                    writeRequest.outputRoot =
-                                        options.qualificationBundlePath
-                                                .has_parent_path()
-                                            ? options.qualificationBundlePath
-                                                  .parent_path()
-                                            : std::filesystem::path(".");
+                                    const uint64 renderQualityBundleCaptureTick =
+                                        renderQualityAttachmentSeriesRequested
+                                            ? manifest->captureTicks[
+                                                  renderQualityAttachmentSeriesNextTick]
+                                            : options.captureTick;
+                                    std::string renderQualityBundleDirectory;
+                                    if (renderQualityAttachmentSeriesRequested)
+                                    {
+                                        const std::string tickText =
+                                            std::to_string(
+                                                renderQualityBundleCaptureTick);
+                                        renderQualityBundleDirectory = "tick-" +
+                                            std::string(
+                                                tickText.size() < 6U
+                                                    ? 6U - tickText.size()
+                                                    : 0U,
+                                                '0') +
+                                            tickText;
+                                        const std::filesystem::path seriesRoot =
+                                            options.qualificationSeriesPath
+                                                    .has_parent_path()
+                                                ? options.qualificationSeriesPath
+                                                      .parent_path()
+                                                : std::filesystem::path(".");
+                                        writeRequest.outputRoot = seriesRoot /
+                                            renderQualityBundleDirectory;
+                                    }
+                                    else
+                                    {
+                                        writeRequest.outputRoot =
+                                            options.qualificationBundlePath
+                                                    .has_parent_path()
+                                                ? options.qualificationBundlePath
+                                                      .parent_path()
+                                                : std::filesystem::path(".");
+                                    }
                                     writeRequest.sampleId = registeredInfo->id;
                                     writeRequest.cameraBookmarkId =
                                         options.viewBookmarkId;
-                                    writeRequest.runId = ReadEnvironmentString(
-                                        "RVX_VALIDATION_RUN_ID");
+                                    writeRequest.runId =
+                                        renderQualityAttachmentSeriesRequested
+                                            ? renderQualityAttachmentSeriesRunId
+                                            : ReadEnvironmentString(
+                                                  "RVX_VALIDATION_RUN_ID");
                                     writeRequest.captureTick =
-                                        options.captureTick;
+                                        renderQualityBundleCaptureTick;
                                     writeRequest.visualContractVersion =
                                         manifest->visualContractVersion;
                                     writeRequest.submittedFrame =
@@ -7807,10 +7940,20 @@ namespace
                                     {
                                         std::error_code expectedError;
                                         std::error_code actualError;
+                                        const std::filesystem::path expectedOutput =
+                                            renderQualityAttachmentSeriesRequested
+                                                ? ((options.qualificationSeriesPath
+                                                            .has_parent_path()
+                                                        ? options
+                                                              .qualificationSeriesPath
+                                                              .parent_path()
+                                                        : std::filesystem::path(".")) /
+                                                   renderQualityBundleDirectory /
+                                                   "bundle.json")
+                                                : options.qualificationBundlePath;
                                         const std::filesystem::path expected =
                                             std::filesystem::weakly_canonical(
-                                                options.qualificationBundlePath,
-                                                expectedError);
+                                                expectedOutput, expectedError);
                                         const std::filesystem::path actual =
                                             std::filesystem::weakly_canonical(
                                                 writeResult.bundlePath,
@@ -7824,7 +7967,172 @@ namespace
                                         }
                                         else
                                         {
-                                            renderQualityBundleWritten = true;
+                                            if (!renderQualityAttachmentSeriesRequested)
+                                            {
+                                                renderQualityBundleWritten = true;
+                                            }
+                                            else
+                                            {
+                                                const RenderExecutionReceipt
+                                                    completedReceipt =
+                                                        *renderQualityBundleReceipt;
+                                                if (writeResult.bundleSha256.size() !=
+                                                        64U ||
+                                                    completedReceipt.build.sourceCommit.empty() ||
+                                                    completedReceipt.build.preset.empty() ||
+                                                    GetSampleBackendName(
+                                                        completedReceipt.backend) !=
+                                                        renderQualityAttachmentSeriesHardware
+                                                            .backend ||
+                                                    (!renderQualityAttachmentSeriesSourceCommit
+                                                          .empty() &&
+                                                     (renderQualityAttachmentSeriesSourceCommit !=
+                                                          completedReceipt.build.sourceCommit ||
+                                                      renderQualityAttachmentSeriesPreset !=
+                                                          completedReceipt.build.preset)))
+                                                {
+                                                    error =
+                                                        "GFX24 attachment series bundle does not share frozen build or hardware identity";
+                                                    engine.RequestShutdown();
+                                                }
+                                                else
+                                                {
+                                                    renderQualityAttachmentSeriesSourceCommit =
+                                                        completedReceipt.build.sourceCommit;
+                                                    renderQualityAttachmentSeriesPreset =
+                                                        completedReceipt.build.preset;
+                                                    RenderQualityAttachmentSeriesTick seriesTick;
+                                                    seriesTick.captureTick =
+                                                        renderQualityBundleCaptureTick;
+                                                    seriesTick.bundleId =
+                                                        renderQualityCaptureBundle
+                                                            ->identity.bundleId;
+                                                    seriesTick.bundlePath =
+                                                        renderQualityBundleDirectory +
+                                                        "/bundle.json";
+                                                    seriesTick.bundleSha256 =
+                                                        writeResult.bundleSha256;
+                                                    seriesTick
+                                                        .receiptSha256 =
+                                                        writeResult
+                                                            .renderExecutionReceiptSha256;
+                                                    seriesTick.frameSequence =
+                                                        completedReceipt.frameIdentity
+                                                            .frameSequence;
+                                                    seriesTick.submittedFrame =
+                                                        renderQualityBundleSubmittedFrame;
+                                                    seriesTick.completedFrame =
+                                                        renderQualityBundleCompletedFrame;
+                                                    renderQualityAttachmentSeriesTicks
+                                                        .push_back(std::move(seriesTick));
+                                                    ++renderQualityAttachmentSeriesNextTick;
+                                                    renderQualityBundleRequestAccepted = false;
+                                                    renderQualityBundleCompleted = false;
+                                                    renderQualityCaptureBundle.reset();
+                                                    renderQualityBundleReceipt.reset();
+                                                    renderQualityBundleSubmittedFrame = 0;
+                                                    renderQualityBundleCompletedFrame = 0;
+                                                    if (renderQualityAttachmentSeriesNextTick ==
+                                                        manifest->captureTicks.size())
+                                                    {
+                                                        RenderQualityAttachmentSeriesWriteRequest
+                                                            seriesRequest;
+                                                        seriesRequest.outputPath =
+                                                            options.qualificationSeriesPath;
+                                                        seriesRequest.sourceCommit =
+                                                            renderQualityAttachmentSeriesSourceCommit;
+                                                        seriesRequest.runId =
+                                                            renderQualityAttachmentSeriesRunId;
+                                                        seriesRequest.preset =
+                                                            renderQualityAttachmentSeriesPreset;
+                                                        seriesRequest.qualificationIdentity = {
+                                                            .sampleId = registeredInfo->id,
+                                                            .pipeline = GetRenderPipelineRecipeName(
+                                                                completedReceipt.resolvedRecipe),
+                                                            .quality = GetRenderQualityTierName(
+                                                                completedReceipt.quality),
+                                                            .backend = GetSampleBackendName(
+                                                                completedReceipt.backend),
+                                                            .view = options.viewBookmarkId,
+                                                            .visualContractVersion =
+                                                                manifest->visualContractVersion};
+                                                        seriesRequest.hardwareIdentity =
+                                                            renderQualityAttachmentSeriesHardware;
+                                                        seriesRequest.manifestSha256 = std::string(
+                                                            m_registry.GetManifestContentSha256());
+                                                        seriesRequest.ticks =
+                                                            renderQualityAttachmentSeriesTicks;
+                                                        RenderQualityAttachmentSeriesWriteResult
+                                                            seriesResult;
+                                                        if (!WriteRenderQualityAttachmentSeries(
+                                                                seriesRequest,
+                                                                seriesResult,
+                                                                &error))
+                                                        {
+                                                            if (error.empty())
+                                                            {
+                                                                error =
+                                                                    "Failed to publish the completed GFX24 attachment series";
+                                                            }
+                                                            engine.RequestShutdown();
+                                                        }
+                                                        else
+                                                        {
+                                                            std::error_code expectedSeriesError;
+                                                            std::error_code actualSeriesError;
+                                                            const std::filesystem::path expectedSeries =
+                                                                std::filesystem::weakly_canonical(
+                                                                    options
+                                                                        .qualificationSeriesPath,
+                                                                    expectedSeriesError);
+                                                            const std::filesystem::path actualSeries =
+                                                                std::filesystem::weakly_canonical(
+                                                                    seriesResult.seriesPath,
+                                                                    actualSeriesError);
+                                                            if (expectedSeriesError ||
+                                                                actualSeriesError ||
+                                                                expectedSeries != actualSeries ||
+                                                                seriesResult.seriesSha256.size() !=
+                                                                    64U)
+                                                            {
+                                                                error =
+                                                                    "GFX24 attachment series writer published an unexpected manifest path";
+                                                                engine.RequestShutdown();
+                                                            }
+                                                            else
+                                                            {
+                                                                captureExecutionReceipt =
+                                                                    completedReceipt;
+                                                                captureCarryingFrameSequence =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .frameSequence;
+                                                                captureSceneRuntimeId =
+                                                                    completedReceipt
+                                                                        .viewIdentity
+                                                                        .sceneRuntimeId;
+                                                                captureCameraEntityPacked =
+                                                                    completedReceipt
+                                                                        .viewIdentity
+                                                                        .cameraEntityPacked;
+                                                                captureSceneRevision =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .sceneRevision;
+                                                                captureSurfaceGeneration =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .surfaceGeneration;
+                                                                captureConfigurationRevision =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .configurationRevision;
+                                                                renderQualityAttachmentSeriesWritten = true;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -8164,6 +8472,8 @@ namespace
                              pixelProbeCaptured) &&
                             (options.qualificationBundlePath.empty() ||
                              renderQualityBundleWritten) &&
+                            (options.qualificationSeriesPath.empty() ||
+                             renderQualityAttachmentSeriesWritten) &&
                             (!qualificationEnabled ||
                              (gpuSceneCullingQualificationTargetFrameSequence != 0 &&
                               hasQualificationComparison(
@@ -8795,7 +9105,8 @@ namespace
                     ((!options.common.screenshotPath.empty() &&
                       screenshotWritten) ||
                      (options.common.pixelProbeEnabled &&
-                      pixelProbeCaptured));
+                      pixelProbeCaptured) ||
+                     renderQualityAttachmentSeriesWritten);
                 if (!receipt.satisfied)
                 {
                     succeeded = false;

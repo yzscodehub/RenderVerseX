@@ -12,6 +12,33 @@ must not add RenderGraph passes or create RHI resources itself. The renderer's
 completion-owned capture feature exports the following contract; the scripts in
 this document never render, cook, import, or update a golden baseline.
 
+## Same-process attachment series
+
+Visual qualification uses one `--qualification-series <root>/series.json`
+producer. RenderQualityLab contract v3 declares ticks `120, 360, 361`; the
+host captures and completes all three without restarting the runtime:
+
+    tick-000120/bundle.json  # static Golden candidate
+    tick-000360/bundle.json  # temporal older frame
+    tick-000361/bundle.json  # temporal adjacent frame
+    series.json              # published last
+
+`RVX.RenderQualityAttachmentSeries` v1 binds:
+
+    sourceCommit, runId, preset
+    qualificationIdentity (without captureTick)
+    hardwareIdentity, manifestSha256
+    ticks[captureTick, bundleId, bundlePath, bundleSha256, receiptSha256,
+          frameSequence, submittedFrame, completedFrame]
+    seriesSha256
+
+Bundle paths are Series-relative POSIX paths. Bundle ids, receipts, paths, and
+frame/submission/completion ordinals are unique and strictly increasing.
+`seriesSha256` covers a versioned, length-prefixed UTF-8 identity stream,
+so it does not depend on JSON whitespace. Missing ticks, cross-process run ids,
+manifest drift, path escape, stale frames, duplicate receipts, or bundle hash
+drift reject the whole Series.
+
 ## Semantic attachment bundle
 
 `check_render_quality_bundle.py` consumes three JSON documents and payloads:
@@ -20,9 +47,11 @@ this document never render, cook, import, or update a golden baseline.
 py Scripts/check_render_quality_bundle.py `
   --bundle <current>/bundle.json `
   --baseline <approved>/bundle.json `
+  --golden-record <approved>/golden-record.json `
   --policy <policy>/visual-policy.json `
   --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json `
-  --temporal-bundle <current>/frame-061.bundle.json `
+  --temporal-bundle <current>/tick-000360/bundle.json `
+  --temporal-bundle <current>/tick-000361/bundle.json `
   --expected-source-commit <git-commit> `
   --expected-run-id <capture-run-id> `
   --expected-preset <preset> `
@@ -31,11 +60,11 @@ py Scripts/check_render_quality_bundle.py `
   --report <build>/RenderQualityLab/visual-result.json
 ```
 
-The first `--bundle` and every repeated `--temporal-bundle` form an ordered,
-completion-owned temporal sequence. At least two bundles are mandatory. The
-policy requires a warm-up of 60 or more completed frames before its first
-bundle. Every temporal bundle must have the exact requested source commit, run
-id, preset, and qualification identity except for its declared `captureTick`.
+The first `--bundle` is only the tick-120 static Golden comparison.
+Exactly two `--temporal-bundle` values are required and must be ticks
+360 and 361. The policy requires a warm-up of 60 or more completed frames.
+Every temporal bundle must have the exact requested source commit, run id,
+preset, and qualification identity except for its declared `captureTick`.
 The tick must be present in that sample's public, strictly increasing
 `captureTicks` list and must itself advance strictly in the temporal sequence.
 Its receipt and bundle id must be unique, and its logical frame,
@@ -122,14 +151,17 @@ pixel comparison. A missing attachment, partial bundle, bad hash, truncation,
 NaN/Inf, malformed graph provenance, or stale source/run/preset/receipt
 identity is a failed result, never a partial pass.
 
-`RVX.RenderQualityVisualPolicy` v1 has a matching
-`qualificationIdentity`, one per-semantic ROI list, and temporal settings:
+`RVX.RenderQualityVisualPolicy` v2 has a matching non-temporal
+`qualificationIdentity`, one per-semantic ROI list, and fixed Golden/
+adjacent temporal settings:
 
 ```text
 temporal.warmupCompletedFrames >= 60
-temporal.minimumSamples >= 2
+temporal.goldenCaptureTick = 120
+temporal.adjacentCaptureTicks = [360, 361]
 ROI: id, normalizedRegionId, x, y, width, height, temporalMode (static|dynamic),
-     dataRange, maxMae, maxAbs, minPsnr, minSsim, maxTemporalMae
+     dataRange, maxMae, maxAbs, minPsnr, minSsim,
+     minTemporalMae, maxTemporalMae
 ```
 
 `normalizedRegionId` refers to the public scenario's
@@ -151,10 +183,11 @@ The integer ROI embedded in the visual policy must match this outward mapping
 exactly. This keeps an ROI consistent across LDR, HDR, depth, normal, motion,
 and mask surfaces without relying on a private renderer implementation.
 
-The same selected sample must declare a non-empty, strictly increasing
-`captureTicks` array. Temporal validation may advance from the current policy
-tick (for example `120`) to a later declared tick (for example `360`), while
-all identity fields other than `captureTick` remain exact.
+The same selected sample must declare the exact, strictly increasing capture
+ticks. Tick 120 is compared only with the approved Golden. Temporal validation
+compares only 360 to 361; it never averages the large 120-to-360 scene change.
+Dynamic ROIs must satisfy both minimum motion and maximum flicker, preventing a
+frozen animation from passing. Static ROIs require `minTemporalMae=0`.
 
 The checker compares every ROI and emits MAE, max absolute error, PSNR, and
 global ROI SSIM. `dataRange` is explicit per ROI so HDR, depth, velocity, and
@@ -163,6 +196,23 @@ temporal flicker as mean absolute difference over
 each declared static or dynamic ROI between consecutive completion-owned
 bundles. It writes one diagnostic PPM heatmap per semantic attachment. These
 heatmaps are non-golden, generated build artifacts and must not be committed.
+
+## Golden promotion
+
+`render_quality_golden.py` separates candidate generation from human
+approval. `prepare` requires five valid Series and an explicit selected
+ordinal; it copies only the selected tick-120 bundle, VisualPolicy V2, and a
+deterministic 4x2 contact sheet into a candidate package.
+`RVX.RenderQualityGoldenRecord` v1 binds the five run/Series hashes,
+hardware policy (`exact-hardware` or `runner-class`), selected
+bundle/receipt, policy, manifest, contact sheet, source commit, and approval.
+
+`approve` requires an exact clean calibrated commit plus explicit
+approver and reason. It never runs from a validator and never stages or commits
+files. `verify --require-approved` rejects candidate records, missing
+approval, path/hash drift, and unexpanded Git LFS pointers. Approved
+`.raw` payloads live under `Tests/RenderQuality/Goldens/` and
+are tracked by Git LFS; ordinary captures remain build artifacts.
 
 ## Performance report
 
@@ -173,6 +223,7 @@ capture readback latency with renderer performance timing.
 py Scripts/check_render_quality_performance.py `
   --report <current>/performance.json `
   --baseline <approved>/performance.json `
+  --baseline-record <approved>/baseline-record.json `
   --policy <policy>/performance-policy.json `
   --expected-source-commit <commit> `
   --expected-run-id <run-id> `
@@ -181,7 +232,10 @@ py Scripts/check_render_quality_performance.py `
 ```
 
 Both report files use `RVX.RenderQualityPerformanceReport` v3. Its matching
-`RVX.RenderQualityPerformancePolicy` is also v3. V2 reports, V2 baselines,
+`RVX.RenderQualityPerformancePolicy` is also v3, and the comparison
+requires an approved `RVX.RenderQualityPerformanceBaselineRecord` v1
+binding five fixed-hardware calibration receipts. Candidate or hash-drifted
+records fail closed. V2 reports, V2 baselines,
 V2 policies, and legacy whole-frame fields are rejected rather than
 interpreted loosely:
 

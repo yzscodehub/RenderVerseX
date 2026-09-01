@@ -455,6 +455,62 @@ try
                 $semanticManifest = Get-Content -LiteralPath $absoluteEvidencePath `
                     -Raw | ConvertFrom-Json -ErrorAction Stop
                 if ($semanticManifest.schema -eq
+                        "RVX.RenderQualityAttachmentSeries" -and
+                    $null -ne $semanticManifest.ticks)
+                {
+                    foreach ($tick in @($semanticManifest.ticks))
+                    {
+                        $bundleDataPath = [string]$tick.bundlePath
+                        if ([string]::IsNullOrWhiteSpace($bundleDataPath) -or
+                            [IO.Path]::IsPathRooted($bundleDataPath))
+                        {
+                            Throw-BuildTruthFailure -Category "EvidencePath" -Message (
+                                "RenderQuality Series has an invalid bundlePath")
+                        }
+                        $bundleManifestPath = Resolve-BuildTruthContainedPath -Root $buildPath -Path (
+                            Join-Path (Split-Path -Parent $absoluteEvidencePath) $bundleDataPath) -AllowMissing
+                        if (Test-Path -LiteralPath $bundleManifestPath)
+                        {
+                            if (-not (Test-Path -LiteralPath $bundleManifestPath -PathType Leaf))
+                            {
+                                Throw-BuildTruthFailure -Category "EvidencePath" -Message (
+                                    "RenderQuality Series bundle is not a file: $bundleManifestPath")
+                            }
+                            $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw |
+                                ConvertFrom-Json -ErrorAction Stop
+                            if ($bundleManifest.schema -ne
+                                    "RVX.RenderQualityAttachmentBundle" -or
+                                $null -eq $bundleManifest.attachments)
+                            {
+                                Throw-BuildTruthFailure -Category "EvidencePath" -Message (
+                                    "RenderQuality Series references an invalid bundle")
+                            }
+                            foreach ($attachment in @($bundleManifest.attachments))
+                            {
+                                $dataPath = [string]$attachment.dataPath
+                                if ([string]::IsNullOrWhiteSpace($dataPath) -or
+                                    [IO.Path]::IsPathRooted($dataPath))
+                                {
+                                    Throw-BuildTruthFailure -Category "EvidencePath" -Message (
+                                        "RenderQuality Series bundle has an invalid attachment dataPath")
+                                }
+                                $attachmentPath = Resolve-BuildTruthContainedPath -Root $buildPath -Path (
+                                    Join-Path (Split-Path -Parent $bundleManifestPath) $dataPath) -AllowMissing
+                                if (Test-Path -LiteralPath $attachmentPath)
+                                {
+                                    if (-not (Test-Path -LiteralPath $attachmentPath -PathType Leaf))
+                                    {
+                                        Throw-BuildTruthFailure -Category "EvidencePath" -Message (
+                                            "RenderQuality Series attachment is not a file: $attachmentPath")
+                                    }
+                                    Remove-Item -LiteralPath $attachmentPath -Force
+                                }
+                            }
+                            Remove-Item -LiteralPath $bundleManifestPath -Force
+                        }
+                    }
+                }
+                if ($semanticManifest.schema -eq
                         "RVX.RenderQualityAttachmentBundle" -and
                     $null -ne $semanticManifest.attachments)
                 {

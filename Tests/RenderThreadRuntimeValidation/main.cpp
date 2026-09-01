@@ -787,6 +787,111 @@ namespace
         uint64 m_surfaceGeneration = 0;
     };
 
+    class QualificationBundleLatchFrameConsumer final
+        : public IRenderFrameConsumer,
+          public NonMovable
+    {
+    public:
+        explicit QualificationBundleLatchFrameConsumer(bool acceptArm) noexcept
+            : m_acceptArm(acceptArm)
+        {
+        }
+
+        RenderRuntimeResult Initialize(const RenderRuntimeConfig& config,
+                                       const NativeSurfaceDesc& surface,
+                                       RenderResourceStatusTable&) override
+        {
+            m_backend = config.backendType;
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) override
+        {
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        void ProcessRelease(RenderResourceHandle) override {}
+        void ProcessUpload(ResourceUploadRequestRef) override {}
+
+        RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5& packet,
+            const RenderSceneDatabase&) override
+        {
+            RenderRuntimeResult result = MakeRunningResult();
+            result.frameSequence = packet.GetHeader().sequence;
+            return result;
+        }
+
+        bool RequestQualificationCaptureBundle() override
+        {
+            m_armCount.fetch_add(1, std::memory_order_release);
+            if (m_acceptArm)
+            {
+                // The concrete bridge resets its prior terminal state during
+                // a successful arm; model that contract for the runtime test.
+                m_terminal.store(false, std::memory_order_release);
+            }
+            return m_acceptArm;
+        }
+
+        [[nodiscard]] bool IsQualificationCaptureBundleTerminal()
+            const noexcept override
+        {
+            return m_terminal.load(std::memory_order_acquire);
+        }
+
+        void PollCompletion() override
+        {
+            m_completionPollCount.fetch_add(1, std::memory_order_release);
+        }
+
+        void RetireCompleted() override {}
+
+        RenderShutdownResult Shutdown(RenderTeardownMode) noexcept override
+        {
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        void SetTerminal() noexcept
+        {
+            m_terminal.store(true, std::memory_order_release);
+        }
+
+        [[nodiscard]] uint32 GetArmCount() const noexcept
+        {
+            return m_armCount.load(std::memory_order_acquire);
+        }
+
+        [[nodiscard]] uint32 GetCompletionPollCount() const noexcept
+        {
+            return m_completionPollCount.load(std::memory_order_acquire);
+        }
+
+    private:
+        [[nodiscard]] RenderRuntimeResult MakeRunningResult() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        bool m_acceptArm = false;
+        std::atomic<bool> m_terminal = false;
+        std::atomic<uint32> m_armCount = 0;
+        std::atomic<uint32> m_completionPollCount = 0;
+        RHIBackendType m_backend = RHIBackendType::None;
+        uint64 m_surfaceGeneration = 0;
+    };
+
     class TimingDiagnosticsFrameConsumer final : public IRenderFrameConsumer,
                                                   public NonMovable
     {
@@ -1792,6 +1897,95 @@ namespace
 
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
         EXPECT_FALSE(runtime.RequestGPUSceneCullingQualificationCapture());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         QualificationBundleLatchRemainsClosedUntilTerminalCompletion)
+    {
+        auto consumer = std::make_unique<QualificationBundleLatchFrameConsumer>(
+            true);
+        QualificationBundleLatchFrameConsumer* const probe = consumer.get();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            std::move(consumer));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_TRUE(runtime.RequestQualificationCaptureBundle());
+        EXPECT_FALSE(runtime.RequestQualificationCaptureBundle());
+        const auto deadline = std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline &&
+               probe->GetArmCount() != 1U)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+        ASSERT_EQ(probe->GetArmCount(), 1U);
+        EXPECT_FALSE(runtime.RequestQualificationCaptureBundle());
+
+        const uint32 pollsBefore = probe->GetCompletionPollCount();
+        probe->SetTerminal();
+        runtime.Wake();
+        while (std::chrono::steady_clock::now() < deadline &&
+               probe->GetCompletionPollCount() == pollsBefore)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+
+        bool secondRequestAccepted = false;
+        while (std::chrono::steady_clock::now() < deadline &&
+               !secondRequestAccepted)
+        {
+            secondRequestAccepted = runtime.RequestQualificationCaptureBundle();
+            if (!secondRequestAccepted)
+            {
+                std::this_thread::sleep_for(1ms);
+            }
+        }
+        EXPECT_TRUE(secondRequestAccepted);
+        EXPECT_FALSE(runtime.RequestQualificationCaptureBundle());
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         QualificationBundleConsumerRejectionAllowsImmediateRetry)
+    {
+        auto consumer = std::make_unique<QualificationBundleLatchFrameConsumer>(
+            false);
+        QualificationBundleLatchFrameConsumer* const probe = consumer.get();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            std::move(consumer));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_TRUE(runtime.RequestQualificationCaptureBundle());
+        const auto deadline = std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline &&
+               probe->GetArmCount() != 1U)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+        ASSERT_EQ(probe->GetArmCount(), 1U);
+
+        bool retryAccepted = false;
+        while (std::chrono::steady_clock::now() < deadline && !retryAccepted)
+        {
+            retryAccepted = runtime.RequestQualificationCaptureBundle();
+            if (!retryAccepted)
+            {
+                std::this_thread::sleep_for(1ms);
+            }
+        }
+        EXPECT_TRUE(retryAccepted);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
     TEST(RenderThreadRuntimeValidation,

@@ -68,7 +68,7 @@ TEST(RenderQualityLabSampleValidation,
     EXPECT_TRUE(info.supportsRenderPathSelection);
     EXPECT_EQ(info.defaultRenderPath, RVX::SampleRenderPath::Auto);
     EXPECT_TRUE(info.deterministicQualification);
-    EXPECT_EQ(info.visualContractId, "render-quality-lab-v2");
+    EXPECT_EQ(info.visualContractId, "render-quality-lab-v3");
 
     ASSERT_EQ(info.requiredEffectAssetIds.size(), ExpectedEffects.size());
     for (std::size_t index = 0; index < ExpectedEffects.size(); ++index)

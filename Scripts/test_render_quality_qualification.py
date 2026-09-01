@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import render_quality_performance_baseline as performance_baseline
+import check_render_quality_series as series_contract
+import render_quality_golden as golden_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,8 @@ PERFORMANCE_CHECKER = ROOT / "Scripts/check_render_quality_performance.py"
 PERFORMANCE_BASELINE_TOOL = (
     ROOT / "Scripts/render_quality_performance_baseline.py"
 )
+SERIES_CHECKER = ROOT / "Scripts/check_render_quality_series.py"
+GOLDEN_TOOL = ROOT / "Scripts/render_quality_golden.py"
 SEMANTICS = {
     "BeautyLDR": ("RGBA32_FLOAT", "LDR", 4),
     "PreToneHDR": ("RGBA32_FLOAT", "HDR", 4),
@@ -53,6 +57,10 @@ HARDWARE = {
     "osBuild": "windows-26100",
     "capabilityHash": "rvx-rhi-capabilities-dx12-v1-5ef7bade",
 }
+SERIES_HARDWARE = {
+    **HARDWARE,
+    "capabilityHash": "f" * 64,
+}
 TELEMETRY_COVERAGE = {
     "schemaVersion": 2,
     "trackedUploadCoverageMask": 7,
@@ -74,11 +82,15 @@ def write_bundle(
     preset: str = "win_x64_debug_gfx24_qualification",
     capture_tick: int = 120,
     receipt: str = "a" * 64,
+    payload_offset: float = 0.0,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     attachments = []
     for ordinal, (semantic, (format_name, domain, channels)) in enumerate(SEMANTICS.items()):
-        payload = struct.pack("<" + "f" * (2 * 2 * channels), *([0.1 + ordinal * 0.01] * (2 * 2 * channels)))
+        payload = struct.pack(
+            "<" + "f" * (2 * 2 * channels),
+            *([0.1 + ordinal * 0.01 + payload_offset] * (2 * 2 * channels)),
+        )
         payload_path = root / f"{semantic}.raw"
         payload_path.write_bytes(payload)
         attachments.append({
@@ -158,7 +170,7 @@ def write_sample_manifest(path: Path) -> Path:
         "schemaVersion": 1,
         "samples": [{
             "id": "render-quality-lab",
-            "captureTicks": [120, 360],
+            "captureTicks": [120, 360, 361],
             "roiMetricPolicy": {
                 "regionsOfInterest": [{
                     "id": "frame", "x": 0.0, "y": 0.0,
@@ -187,20 +199,215 @@ def write_visual_policy(path: Path) -> Path:
             "maxAbs": 0.0,
             "minPsnr": 90.0,
             "minSsim": 1.0,
-            "maxTemporalMae": 0.0,
+            "minTemporalMae": 0.0005 if semantic == "Velocity" else 0.0,
+            "maxTemporalMae": 0.01,
         }]}
     write_json(path, {
         "schema": "RVX.RenderQualityVisualPolicy",
-        "schemaVersion": 1,
-        "qualificationIdentity": IDENTITY,
+        "schemaVersion": 2,
+        "qualificationIdentity": {
+            key: value
+            for key, value in IDENTITY.items()
+            if key != "captureTick"
+        },
         "attachments": attachments,
-        "temporal": {"warmupCompletedFrames": 60, "minimumSamples": 2},
+        "temporal": {
+            "warmupCompletedFrames": 60,
+            "goldenCaptureTick": 120,
+            "adjacentCaptureTicks": [360, 361],
+        },
     })
     return path
 
 
+def write_visual_golden_record(
+    path: Path,
+    baseline: Path,
+    policy: Path,
+    sample_manifest: Path,
+    *,
+    approved: bool = True,
+) -> Path:
+    baseline_document = json.loads(baseline.read_text())
+    packaged_manifest = path.parent / "golden-sample-manifest.json"
+    packaged_manifest.write_bytes(sample_manifest.read_bytes())
+    series_hashes = [
+        hashlib.sha256(f"visual-series-{ordinal}".encode()).hexdigest()
+        for ordinal in range(1, 6)
+    ]
+    ppm = path.parent / "contact-sheet.ppm"
+    index = path.parent / "contact-sheet.json"
+    golden_contract._contact_sheet(
+        baseline,
+        series_hashes[2],
+        ppm,
+        index,
+    )
+    runs = []
+    for ordinal, digest in enumerate(series_hashes, start=1):
+        runs.append({
+            "ordinal": ordinal,
+            "runId": "run-a" if ordinal == 3 else f"visual-run-{ordinal}",
+            "seriesSha256": digest,
+            "hardwareIdentity": SERIES_HARDWARE,
+        })
+    write_json(path, {
+        "schema": "RVX.RenderQualityGoldenRecord",
+        "schemaVersion": 1,
+        "goldenId": "dx12-deferred-high-v3",
+        "status": "approved" if approved else "candidate",
+        "sourceCommit": baseline_document["sourceCommit"],
+        "qualificationIdentity": {
+            key: value
+            for key, value in baseline_document["qualificationIdentity"].items()
+            if key != "captureTick"
+        },
+        "sampleManifest": {
+            "path": packaged_manifest.name,
+            "sha256": hashlib.sha256(packaged_manifest.read_bytes()).hexdigest(),
+        },
+        "hardwareMode": "exact-hardware",
+        "runnerClass": None,
+        "selectedBundle": {
+            "seriesOrdinal": 3,
+            "seriesSha256": series_hashes[2],
+            "runId": baseline_document["execution"]["runId"],
+            "preset": baseline_document["execution"]["preset"],
+            "captureTick": 120,
+            "bundleId": baseline_document["bundleId"],
+            "bundlePath": baseline.relative_to(path.parent).as_posix(),
+            "bundleSha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
+            "receiptSha256": baseline_document["execution"][
+                "renderExecutionReceiptSha256"
+            ],
+        },
+        "visualPolicy": {
+            "path": policy.name,
+            "sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
+        },
+        "contactSheet": {
+            "ppmPath": ppm.name,
+            "ppmSha256": hashlib.sha256(ppm.read_bytes()).hexdigest(),
+            "indexPath": index.name,
+            "indexSha256": hashlib.sha256(index.read_bytes()).hexdigest(),
+        },
+        "seriesAudit": {
+            "requiredSeriesCount": 5,
+            "selectedSeriesOrdinal": 3,
+            "runs": runs,
+        },
+        "approval": {
+            "approvedBy": "Render Team" if approved else None,
+            "approvedAtUtc": "2026-09-01T00:00:00Z" if approved else None,
+            "reason": "Reviewed five same-process series" if approved else None,
+        },
+    })
+    return path
+
+
+def write_attachment_series(
+    root: Path,
+    sample_manifest: Path,
+    *,
+    run_id: str = "run-a",
+    payload_base: float = 0.0,
+    hardware: dict[str, str] | None = None,
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    identity = {
+        key: value for key, value in IDENTITY.items()
+        if key != "captureTick"
+    }
+    tick_specs = (
+        (120, "1", "a" * 64, payload_base),
+        (360, "2", "c" * 64, payload_base + 0.5),
+        (361, "3", "d" * 64, payload_base + 0.501),
+    )
+    tick_objects: list[series_contract.SeriesTick] = []
+    tick_documents: list[dict[str, object]] = []
+    for capture_tick, bundle_id, receipt, offset in tick_specs:
+        directory_name = f"tick-{capture_tick:06d}"
+        bundle_path = write_bundle(
+            root / directory_name,
+            name=bundle_id,
+            completed_frame=capture_tick,
+            capture_tick=capture_tick,
+            receipt=receipt,
+            run_id=run_id,
+            payload_offset=offset,
+        )
+        relative = Path(directory_name) / "bundle.json"
+        bundle_sha = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+        tick = series_contract.SeriesTick(
+            capture_tick,
+            bundle_id,
+            relative,
+            bundle_sha,
+            receipt,
+            capture_tick,
+            capture_tick,
+            capture_tick,
+        )
+        tick_objects.append(tick)
+        tick_documents.append({
+            "captureTick": capture_tick,
+            "bundleId": bundle_id,
+            "bundlePath": relative.as_posix(),
+            "bundleSha256": bundle_sha,
+            "receiptSha256": receipt,
+            "frameSequence": capture_tick,
+            "submittedFrame": capture_tick,
+            "completedFrame": capture_tick,
+        })
+    manifest_sha = hashlib.sha256(sample_manifest.read_bytes()).hexdigest()
+    ticks = tuple(tick_objects)
+    series_sha = series_contract.compute_series_sha256(
+        "commit-a",
+        run_id,
+        "win_x64_debug_gfx24_qualification",
+        identity,
+        SERIES_HARDWARE if hardware is None else hardware,
+        manifest_sha,
+        ticks,
+    )
+    series_path = root / "series.json"
+    write_json(series_path, {
+        "schema": "RVX.RenderQualityAttachmentSeries",
+        "schemaVersion": 1,
+        "sourceCommit": "commit-a",
+        "runId": run_id,
+        "preset": "win_x64_debug_gfx24_qualification",
+        "qualificationIdentity": identity,
+        "hardwareIdentity": SERIES_HARDWARE if hardware is None else hardware,
+        "manifestSha256": manifest_sha,
+        "ticks": tick_documents,
+        "seriesSha256": series_sha,
+    })
+    return series_path
+
+
 def run_bundle(*arguments: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(BUNDLE_CHECKER), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True, check=False)
+
+
+def run_series(*arguments: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SERIES_CHECKER), *map(str, arguments)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_golden(*arguments: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(GOLDEN_TOOL), *map(str, arguments)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def sample(
@@ -539,14 +746,30 @@ class RenderQualityBundleTests(unittest.TestCase):
             capture_tick=360,
             receipt="c" * 64,
         )
+        adjacent = write_bundle(
+            root / "adjacent",
+            name="adjacent",
+            completed_frame=361,
+            capture_tick=361,
+            receipt="d" * 64,
+            payload_offset=0.001,
+        )
         policy = write_visual_policy(root / "policy.json")
         sample_manifest = write_sample_manifest(root / "sample-manifest.json")
+        golden_record = write_visual_golden_record(
+            root / "golden-record.json",
+            baseline,
+            policy,
+            sample_manifest,
+        )
         return [
             "--bundle", current,
             "--baseline", baseline,
+            "--golden-record", golden_record,
             "--policy", policy,
             "--sample-manifest", sample_manifest,
             "--temporal-bundle", later,
+            "--temporal-bundle", adjacent,
             "--expected-source-commit", "commit-a",
             "--expected-run-id", "run-a",
             "--expected-preset", "win_x64_debug_gfx24_qualification",
@@ -561,6 +784,96 @@ class RenderQualityBundleTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue((root / "heatmaps/BeautyLDR.diff.ppm").is_file())
             self.assertEqual(json.loads((root / "result.json").read_text())["status"], "passed")
+
+    def test_visual_policy_v2_uses_only_adjacent_pair_and_rejects_frozen_motion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            temporal_indices = [
+                index + 1
+                for index, value in enumerate(arguments)
+                if value == "--temporal-bundle"
+            ]
+            later_path = Path(arguments[temporal_indices[0]])
+            adjacent_path = Path(arguments[temporal_indices[1]])
+            write_bundle(
+                later_path.parent,
+                name="later",
+                completed_frame=360,
+                capture_tick=360,
+                receipt="c" * 64,
+                payload_offset=0.5,
+            )
+            write_bundle(
+                adjacent_path.parent,
+                name="adjacent",
+                completed_frame=361,
+                capture_tick=361,
+                receipt="d" * 64,
+                payload_offset=0.501,
+            )
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            write_bundle(
+                adjacent_path.parent,
+                name="adjacent",
+                completed_frame=361,
+                capture_tick=361,
+                receipt="d" * 64,
+                payload_offset=0.5,
+            )
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("motion/flicker", result.stdout + result.stderr)
+
+            policy = Path(arguments[arguments.index("--policy") + 1])
+            policy_document = json.loads(policy.read_text())
+            policy_document["schemaVersion"] = 1
+            write_json(policy, policy_document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("schema/version", result.stderr)
+
+    def test_visual_gate_requires_approved_golden_and_bound_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            record = Path(arguments[arguments.index("--golden-record") + 1])
+            document = json.loads(record.read_text())
+            document["status"] = "candidate"
+            document["approval"] = {
+                "approvedBy": None,
+                "approvedAtUtc": None,
+                "reason": None,
+            }
+            write_json(record, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not approved", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            manifest = Path(
+                arguments[arguments.index("--sample-manifest") + 1]
+            )
+            manifest.write_text(manifest.read_text() + " ", encoding="utf-8")
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Sample manifest", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            record = Path(arguments[arguments.index("--golden-record") + 1])
+            document = json.loads(record.read_text())
+            packaged_manifest = record.parent / document["sampleManifest"]["path"]
+            packaged_manifest.write_text(
+                packaged_manifest.read_text() + " ",
+                encoding="utf-8",
+            )
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Packaged sample manifest", result.stderr)
 
     def test_missing_semantic_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -710,10 +1023,10 @@ class RenderQualityBundleTests(unittest.TestCase):
 
             document = json.loads(later.read_text())
             document["execution"]["preset"] = "win_x64_debug_gfx24_qualification"
-            document["execution"]["renderExecutionReceiptSha256"] = "a" * 64
+            document["execution"]["renderExecutionReceiptSha256"] = "d" * 64
             for attachment in document["attachments"]:
                 attachment["provenance"]["preset"] = "win_x64_debug_gfx24_qualification"
-                attachment["provenance"]["renderExecutionReceiptSha256"] = "a" * 64
+                attachment["provenance"]["renderExecutionReceiptSha256"] = "d" * 64
             write_json(later, document)
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
@@ -762,7 +1075,7 @@ class RenderQualityBundleTests(unittest.TestCase):
             write_json(later, document)
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("capture ticks are stale", result.stderr)
+            self.assertIn("adjacentCaptureTicks", result.stderr)
 
             document["qualificationIdentity"]["captureTick"] = 360
             document["execution"]["frameSequence"] = 359
@@ -772,6 +1085,193 @@ class RenderQualityBundleTests(unittest.TestCase):
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
             self.assertIn("predates its declared captureTick", result.stderr)
+
+
+class RenderQualitySeriesTests(unittest.TestCase):
+    def _valid_arguments(self, root: Path) -> list[Path | str]:
+        manifest = write_sample_manifest(root / "sample-manifest.json")
+        series = write_attachment_series(root / "series", manifest)
+        return [
+            "--series", series,
+            "--sample-manifest", manifest,
+            "--expected-source-commit", "commit-a",
+            "--expected-run-id", "run-a",
+            "--expected-preset", "win_x64_debug_gfx24_qualification",
+            "--expected-adapter-name", SERIES_HARDWARE["adapterName"],
+            "--expected-driver-version", SERIES_HARDWARE["driverVersion"],
+            "--expected-os-build", SERIES_HARDWARE["osBuild"],
+        ]
+
+    def test_valid_same_process_series_binds_all_three_bundles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            result = run_series(*arguments, "--report", root / "result.json")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((root / "result.json").read_text())
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["captureTicks"], [120, 360, 361])
+
+    def test_series_path_hash_identity_and_tick_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+
+            document = json.loads(series_path.read_text())
+            document["seriesSha256"] = "0" * 64
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("binding mismatch", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+            document = json.loads(series_path.read_text())
+            document["ticks"][1]["bundlePath"] = "../escape/bundle.json"
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("escapes", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+            document = json.loads(series_path.read_text())
+            document["ticks"][1]["bundleId"] = document["ticks"][0]["bundleId"]
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("reuses a bundleId", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+            document = json.loads(series_path.read_text())
+            document["ticks"].pop()
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("sample manifest", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            manifest = Path(arguments[3])
+            manifest.write_text(manifest.read_text() + " ", encoding="utf-8")
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("manifest hash", result.stderr)
+
+
+class RenderQualityGoldenTests(unittest.TestCase):
+    def _candidate(self, root: Path) -> tuple[Path, Path, Path, Path]:
+        manifest = write_sample_manifest(root / "sample-manifest.json")
+        policy = write_visual_policy(root / "visual-policy-source.json")
+        series_paths = [
+            write_attachment_series(
+                root / f"series-{ordinal}",
+                manifest,
+                run_id=f"golden-run-{ordinal}",
+                payload_base=ordinal * 0.01,
+            )
+            for ordinal in range(1, 6)
+        ]
+        output = root / "candidate"
+        arguments: list[Path | str] = [
+            "prepare",
+            "--sample-manifest", manifest,
+            "--visual-policy", policy,
+            "--output-dir", output,
+            "--golden-id", "dx12-deferred-high-v3",
+            "--selected-series-ordinal", "3",
+            "--hardware-mode", "exact-hardware",
+        ]
+        for series_path in series_paths:
+            arguments.extend(["--series", series_path])
+        result = run_golden(*arguments)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return (
+            output / "golden-record.json",
+            output / "bundle" / "bundle.json",
+            output / "visual-policy.json",
+            output / "sample-manifest.json",
+        )
+
+    def test_candidate_contact_sheet_and_explicit_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record, bundle, policy, manifest = self._candidate(root)
+            document = json.loads(record.read_text())
+            self.assertEqual(document["status"], "candidate")
+            self.assertEqual(
+                document["seriesAudit"]["selectedSeriesOrdinal"], 3
+            )
+            ppm = record.parent / "contact-sheet.ppm"
+            self.assertTrue(ppm.read_bytes().startswith(b"P6\n1280 360\n255\n"))
+
+            valid = run_golden(
+                "verify",
+                "--record", record,
+                "--bundle", bundle,
+                "--policy", policy,
+                "--sample-manifest", manifest,
+            )
+            self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
+            rejected = run_golden(
+                "verify",
+                "--record", record,
+                "--bundle", bundle,
+                "--policy", policy,
+                "--sample-manifest", manifest,
+                "--require-approved",
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("not approved", rejected.stderr)
+
+            approved_root = root / "approved"
+            with mock.patch.object(
+                golden_contract,
+                "_assert_approval_source_is_clean",
+            ):
+                approved = golden_contract._approve(SimpleNamespace(
+                    candidate_record=record,
+                    output_dir=approved_root,
+                    approved_by="Render Team",
+                    reason="Reviewed seven semantic panels",
+                ))
+            self.assertEqual(approved, 0)
+            verified = run_golden(
+                "verify",
+                "--record", approved_root / "golden-record.json",
+                "--bundle", approved_root / "bundle" / "bundle.json",
+                "--policy", approved_root / "visual-policy.json",
+                "--sample-manifest", approved_root / "sample-manifest.json",
+                "--require-approved",
+            )
+            self.assertEqual(
+                verified.returncode, 0, verified.stdout + verified.stderr
+            )
+
+    def test_golden_hash_and_unexpanded_payload_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record, bundle, policy, manifest = self._candidate(root)
+            raw = bundle.parent / "BeautyLDR.raw"
+            raw.write_text(
+                "version https://git-lfs.github.com/spec/v1\n"
+                "oid sha256:" + "0" * 64 + "\nsize 16\n",
+                encoding="utf-8",
+            )
+            result = run_golden(
+                "verify",
+                "--record", record,
+                "--bundle", bundle,
+                "--policy", policy,
+                "--sample-manifest", manifest,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(
+                "truncated" in result.stderr
+                or "SHA-256" in result.stderr
+                or "payload" in result.stderr
+            )
 
 
 class RenderQualityPerformanceTests(unittest.TestCase):

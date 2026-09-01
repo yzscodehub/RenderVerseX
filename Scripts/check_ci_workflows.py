@@ -595,6 +595,8 @@ def validate(root: Path) -> list[str]:
         "if(RVX_ENABLE_GFX24_QUALIFICATION)",
         "RenderQualityMetricsValidation",
         "RenderQualityMetricsValidationSelfTest",
+        "Scripts/check_render_quality_series.py",
+        "Scripts/render_quality_golden.py",
         "Scripts/test_render_quality_qualification.py",
         "SUITE gfx24-qualification",
     ):
@@ -631,12 +633,11 @@ def validate(root: Path) -> list[str]:
             "--pipeline deferred",
             "--quality high",
             "--fixed-delta 0.0166666666666667",
-            "foreach(capture_tick IN ITEMS 120 360)",
             "--width 1280",
             "--height 720",
-            "beauty-preview.ppm",
-            "--qualification-bundle",
-            "bundle.json",
+            "RenderVerseSamplesCookedDX12Gfx24DeferredHighSeriesCandidate",
+            "--qualification-series",
+            "series.json",
             "--width 2560",
             "--height 1440",
             "--qualification-performance",
@@ -650,17 +651,17 @@ def validate(root: Path) -> list[str]:
                 findings.append(
                     f"GFX24 native candidate producer is missing required token {token}"
                 )
-        # One CMake registration is expanded by the fixed 120/360 capture-tick
-        # loop, so two registrations yield exactly three CTest producers.
+        # The same-process Series producer captures 120/360/361, while the
+        # second registration remains the fixed performance producer.
         if gfx24_candidate_function.count("SUITE gfx24-candidate") != 2:
             findings.append(
                 "GFX24 native candidate suite must register one fixed visual "
-                "producer loop and one performance producer"
+                "Series producer and one performance producer"
             )
         if len(re.findall(r"\bRESOURCE_LOCK rvx_gpu\b", gfx24_candidate_function)) != 2:
             findings.append(
                 "GFX24 native candidate GPU lock must be held only by its "
-                "visual producer loop and performance producer"
+                "visual Series producer and performance producer"
             )
         if (
             gfx24_candidate_function.count("--validation") != 1

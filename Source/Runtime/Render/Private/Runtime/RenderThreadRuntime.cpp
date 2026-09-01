@@ -1521,6 +1521,7 @@ namespace
                     m_consumer->PopulateCompletionDiagnostics(
                         m_diagnosticsState);
                 }
+                RetireQualificationCaptureBundleRequestOnRenderThread();
                 health = QueryConsumerRuntimeStatusOnRenderThread();
                 if (health.code != RenderRuntimeCode::Running)
                 {
@@ -1550,11 +1551,8 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
-            if (m_qualificationCaptureBundleRequestPending.exchange(
-                    false, std::memory_order_acq_rel))
+            if (ConsumeQualificationCaptureBundleRequestOnRenderThread())
             {
-                static_cast<void>(
-                    m_consumer->RequestQualificationCaptureBundle());
                 progressed = true;
             }
             if (m_qualityPerformanceRequestPending.exchange(
@@ -1710,17 +1708,8 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
-            bool qualificationBundleRequestBeforeFrameAcquire = false;
+            if (ConsumeQualificationCaptureBundleRequestOnRenderThread())
             {
-                std::lock_guard lock(m_publicationMutex);
-                qualificationBundleRequestBeforeFrameAcquire =
-                    m_qualificationCaptureBundleRequestPending.exchange(
-                        false, std::memory_order_acq_rel);
-            }
-            if (qualificationBundleRequestBeforeFrameAcquire)
-            {
-                static_cast<void>(
-                    m_consumer->RequestQualificationCaptureBundle());
                 progressed = true;
             }
             bool qualityPerformanceRequestBeforeFrameAcquire = false;
@@ -1870,17 +1859,8 @@ namespace
                         ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                     progressed = true;
                 }
-                bool qualificationBundleRequestBeforeFrameConsume = false;
+                if (ConsumeQualificationCaptureBundleRequestOnRenderThread())
                 {
-                    std::lock_guard lock(m_publicationMutex);
-                    qualificationBundleRequestBeforeFrameConsume =
-                        m_qualificationCaptureBundleRequestPending.exchange(
-                            false, std::memory_order_acq_rel);
-                }
-                if (qualificationBundleRequestBeforeFrameConsume)
-                {
-                    static_cast<void>(
-                        m_consumer->RequestQualificationCaptureBundle());
                     progressed = true;
                 }
                 bool qualityPerformanceRequestBeforeFrameConsume = false;
@@ -2082,6 +2062,7 @@ namespace
                 // frame values onto a previous GPU completion sample.
                 m_consumer->PopulateCompletionDiagnostics(m_diagnosticsState);
             }
+            RetireQualificationCaptureBundleRequestOnRenderThread();
             health = QueryConsumerRuntimeStatusOnRenderThread();
             if (health.code != RenderRuntimeCode::Running)
             {
@@ -2402,6 +2383,48 @@ namespace
         if (m_resourceGateway != nullptr)
         {
             m_resourceGateway->BeginShutdown();
+        }
+    }
+
+    bool RenderThreadRuntime::
+        ConsumeQualificationCaptureBundleRequestOnRenderThread() noexcept
+    {
+        std::lock_guard lock(m_publicationMutex);
+        if (!m_qualificationCaptureBundleRequestPending.exchange(
+                false, std::memory_order_acq_rel))
+        {
+            return false;
+        }
+
+        const bool accepted =
+            !m_publicationSealed.load(std::memory_order_acquire) &&
+            m_consumer != nullptr &&
+            m_consumer->RequestQualificationCaptureBundle();
+        if (!accepted)
+        {
+            // A rejected arm owns no bridge state. Release immediately so a
+            // caller can retry without waiting for a terminal GPU state.
+            m_qualificationCaptureBundleRequestIssued.store(
+                false, std::memory_order_release);
+        }
+        return true;
+    }
+
+    void RenderThreadRuntime::
+        RetireQualificationCaptureBundleRequestOnRenderThread() noexcept
+    {
+        std::lock_guard lock(m_publicationMutex);
+        if (!m_qualificationCaptureBundleRequestIssued.load(
+                std::memory_order_acquire) ||
+            m_qualificationCaptureBundleRequestPending.load(
+                std::memory_order_acquire) || m_consumer == nullptr)
+        {
+            return;
+        }
+        if (m_consumer->IsQualificationCaptureBundleTerminal())
+        {
+            m_qualificationCaptureBundleRequestIssued.store(
+                false, std::memory_order_release);
         }
     }
 

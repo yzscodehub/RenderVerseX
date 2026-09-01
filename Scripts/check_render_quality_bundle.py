@@ -29,7 +29,7 @@ from typing import Any, Iterable
 SCHEMA = "RVX.RenderQualityAttachmentBundle"
 SCHEMA_VERSION = 1
 POLICY_SCHEMA = "RVX.RenderQualityVisualPolicy"
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_SEMANTICS = (
     "BeautyLDR",
@@ -439,13 +439,19 @@ def load_policy(path: Path) -> dict[str, Any]:
     identity = document["qualificationIdentity"]
     if not isinstance(identity, dict):
         raise ContractError("visual policy qualificationIdentity must be an object")
-    expected_identity_keys = {"sampleId", "pipeline", "quality", "backend", "view", "captureTick", "visualContractVersion"}
+    expected_identity_keys = {
+        "sampleId", "pipeline", "quality", "backend", "view",
+        "visualContractVersion",
+    }
     _require_keys(identity, expected_identity_keys, "visual policy qualificationIdentity")
     normalized_identity: dict[str, str | int] = {}
     for key in ("sampleId", "pipeline", "quality", "backend", "view"):
         normalized_identity[key] = _string(identity[key], f"visual policy qualificationIdentity.{key}")
-    for key in ("captureTick", "visualContractVersion"):
-        normalized_identity[key] = _integer(identity[key], f"visual policy qualificationIdentity.{key}", 0)
+    normalized_identity["visualContractVersion"] = _integer(
+        identity["visualContractVersion"],
+        "visual policy qualificationIdentity.visualContractVersion",
+        1,
+    )
     attachment_policies = document["attachments"]
     if not isinstance(attachment_policies, dict) or set(attachment_policies) != set(REQUIRED_SEMANTICS):
         raise ContractError("visual policy must provide one ROI policy for every semantic attachment")
@@ -465,7 +471,7 @@ def load_policy(path: Path) -> dict[str, Any]:
                 {
                     "id", "normalizedRegionId", "x", "y", "width", "height",
                     "temporalMode", "dataRange", "maxMae", "maxAbs", "minPsnr",
-                    "minSsim", "maxTemporalMae",
+                    "minSsim", "minTemporalMae", "maxTemporalMae",
                 },
                 f"visual policy {semantic}.rois[{index}]",
             )
@@ -489,17 +495,44 @@ def load_policy(path: Path) -> dict[str, Any]:
                 0.0,
             ) <= 0.0:
                 raise ContractError("ROI dataRange must be greater than zero")
-            for key in ("maxMae", "maxAbs", "minPsnr", "minSsim", "maxTemporalMae"):
+            for key in (
+                "maxMae", "maxAbs", "minPsnr", "minSsim",
+                "minTemporalMae", "maxTemporalMae",
+            ):
                 _number(roi[key], f"visual policy {semantic}.rois[{index}].{key}", 0.0)
             if _number(roi["minSsim"], "ROI minSsim") > 1.0:
                 raise ContractError("ROI minSsim cannot exceed 1")
+            if float(roi["minTemporalMae"]) > float(roi["maxTemporalMae"]):
+                raise ContractError("ROI minTemporalMae cannot exceed maxTemporalMae")
+            if (
+                roi["temporalMode"] == "static"
+                and float(roi["minTemporalMae"]) != 0.0
+            ):
+                raise ContractError("static ROI minTemporalMae must be zero")
     temporal = document["temporal"]
     if not isinstance(temporal, dict):
         raise ContractError("visual policy temporal must be an object")
-    _require_keys(temporal, {"warmupCompletedFrames", "minimumSamples"}, "visual policy temporal")
+    _require_keys(
+        temporal,
+        {"warmupCompletedFrames", "goldenCaptureTick", "adjacentCaptureTicks"},
+        "visual policy temporal",
+    )
     if _integer(temporal["warmupCompletedFrames"], "temporal.warmupCompletedFrames", 60) < 60:
         raise ContractError("temporal.warmupCompletedFrames must be at least 60")
-    _integer(temporal["minimumSamples"], "temporal.minimumSamples", 2)
+    golden_tick = _integer(
+        temporal["goldenCaptureTick"], "temporal.goldenCaptureTick", 1
+    )
+    adjacent_ticks = temporal["adjacentCaptureTicks"]
+    if (
+        not isinstance(adjacent_ticks, list)
+        or len(adjacent_ticks) != 2
+        or any(type(value) is not int or value <= 0 for value in adjacent_ticks)
+        or adjacent_ticks[1] != adjacent_ticks[0] + 1
+        or golden_tick >= adjacent_ticks[0]
+    ):
+        raise ContractError(
+            "temporal adjacentCaptureTicks must be one ordered adjacent pair after the Golden tick"
+        )
     document["qualificationIdentity"] = normalized_identity
     return document
 
@@ -671,7 +704,11 @@ def _comparison(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if actual.qualification_identity != baseline.qualification_identity:
         raise ContractError("bundle qualificationIdentity does not match baseline")
-    if actual.qualification_identity != policy["qualificationIdentity"]:
+    if {
+        key: value
+        for key, value in actual.qualification_identity.items()
+        if key != "captureTick"
+    } != policy["qualificationIdentity"]:
         raise ContractError("bundle qualificationIdentity does not match visual policy")
     output: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -724,9 +761,9 @@ def _temporal(
     if not current:
         return [], []
     warmup = int(policy["temporal"]["warmupCompletedFrames"])
-    minimum = int(policy["temporal"]["minimumSamples"])
-    if len(current) < minimum:
-        raise ContractError(f"temporal validation requires at least {minimum} bundles")
+    expected_ticks = tuple(int(value) for value in policy["temporal"]["adjacentCaptureTicks"])
+    if len(current) != 2:
+        raise ContractError("temporal validation requires exactly two adjacent bundles")
     identity = current[0].qualification_identity
     non_temporal_identity = {
         key: value for key, value in identity.items() if key != "captureTick"
@@ -745,11 +782,7 @@ def _temporal(
         }
         if bundle_non_temporal_identity != non_temporal_identity:
             raise ContractError("temporal bundles differ outside captureTick identity")
-        if bundle_non_temporal_identity != {
-            key: value
-            for key, value in policy["qualificationIdentity"].items()
-            if key != "captureTick"
-        }:
+        if bundle_non_temporal_identity != policy["qualificationIdentity"]:
             raise ContractError("temporal bundle qualificationIdentity does not match visual policy")
         if bundle.source_commit != expected_source_commit:
             raise ContractError("temporal bundle sourceCommit is stale for the requested qualification")
@@ -786,35 +819,53 @@ def _temporal(
         previous_submitted = submitted
         previous_completed = completed
         previous_capture_tick = capture_tick
+    actual_ticks = tuple(
+        int(bundle.qualification_identity["captureTick"]) for bundle in current
+    )
+    if actual_ticks != expected_ticks:
+        raise ContractError(
+            "temporal bundles do not match the policy adjacentCaptureTicks"
+        )
     output: list[dict[str, Any]] = []
     failures: list[str] = []
     for semantic in REQUIRED_SEMANTICS:
         for roi in policy["attachments"][semantic]["rois"]:
-            deltas: list[float] = []
-            for older, newer in zip(current, current[1:]):
-                before_attachment = older.attachments[semantic]
-                after_attachment = newer.attachments[semantic]
-                before = _roi_values(
-                    before_attachment,
-                    _resolve_roi(before_attachment, roi, normalized_regions),
-                    str(roi["id"]),
-                )
-                after = _roi_values(
-                    after_attachment,
-                    _resolve_roi(after_attachment, roi, normalized_regions),
-                    str(roi["id"]),
-                )
-                deltas.append(sum(abs(left - right) for left, right in zip(before, after, strict=True)) / len(before))
-            mean_delta = sum(deltas) / len(deltas)
-            passed = mean_delta <= float(roi["maxTemporalMae"])
+            older, newer = current
+            before_attachment = older.attachments[semantic]
+            after_attachment = newer.attachments[semantic]
+            before = _roi_values(
+                before_attachment,
+                _resolve_roi(before_attachment, roi, normalized_regions),
+                str(roi["id"]),
+            )
+            after = _roi_values(
+                after_attachment,
+                _resolve_roi(after_attachment, roi, normalized_regions),
+                str(roi["id"]),
+            )
+            mean_delta = sum(
+                abs(left - right)
+                for left, right in zip(before, after, strict=True)
+            ) / len(before)
+            minimum_delta = float(roi["minTemporalMae"])
+            maximum_delta = float(roi["maxTemporalMae"])
+            passed = mean_delta <= maximum_delta and (
+                roi["temporalMode"] != "dynamic"
+                or mean_delta >= minimum_delta
+            )
             record = {
                 "semantic": semantic, "roi": roi["id"], "temporalMode": roi["temporalMode"],
                 "normalizedRegionId": roi["normalizedRegionId"],
-                "meanTemporalMae": mean_delta, "passed": passed,
+                "meanTemporalMae": mean_delta,
+                "minTemporalMae": minimum_delta,
+                "maxTemporalMae": maximum_delta,
+                "passed": passed,
             }
             output.append(record)
             if not passed:
-                failures.append(f"temporal flicker threshold failed for {semantic}/{roi['id']}")
+                failures.append(
+                    f"temporal motion/flicker threshold failed for {semantic}/{roi['id']}"
+                )
     return output, failures
 
 
@@ -829,6 +880,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, type=Path, help="current attachment bundle manifest")
     parser.add_argument("--baseline", required=True, type=Path, help="approved baseline attachment bundle manifest")
+    parser.add_argument(
+        "--golden-record",
+        required=True,
+        type=Path,
+        help="approved GoldenRecord V1 binding the baseline, policy, and manifest",
+    )
     parser.add_argument("--policy", required=True, type=Path, help="versioned ROI/metric policy JSON")
     parser.add_argument(
         "--sample-manifest",
@@ -864,6 +921,31 @@ def main() -> int:
             args.sample_manifest,
             str(policy["qualificationIdentity"]["sampleId"]),
         )
+        golden_tick = int(policy["temporal"]["goldenCaptureTick"])
+        if golden_tick not in declared_capture_ticks:
+            raise ContractError(
+                "visual policy goldenCaptureTick is not declared by the sample manifest"
+            )
+        current_identity = {
+            key: value
+            for key, value in current.qualification_identity.items()
+            if key != "captureTick"
+        }
+        baseline_identity = {
+            key: value
+            for key, value in baseline.qualification_identity.items()
+            if key != "captureTick"
+        }
+        golden_tick = int(policy["temporal"]["goldenCaptureTick"])
+        if (
+            current_identity != policy["qualificationIdentity"]
+            or baseline_identity != policy["qualificationIdentity"]
+            or int(current.qualification_identity["captureTick"]) != golden_tick
+            or int(baseline.qualification_identity["captureTick"]) != golden_tick
+        ):
+            raise ContractError(
+                "Golden bundle identity or capture tick does not match visual policy"
+            )
         if args.expected_source_commit and current.source_commit != args.expected_source_commit:
             raise ContractError("bundle sourceCommit is stale for the requested qualification")
         if args.expected_run_id and current.execution["runId"] != args.expected_run_id:
@@ -879,9 +961,26 @@ def main() -> int:
             normalized_regions,
             args.heatmap_dir,
         )
-        if not args.temporal_bundle:
-            raise ContractError("at least one --temporal-bundle is required for flicker qualification")
-        temporal_paths = [args.bundle, *args.temporal_bundle]
+        try:
+            from render_quality_golden import (
+                GoldenError,
+                verify_golden_record,
+            )
+
+            verify_golden_record(
+                args.golden_record,
+                args.baseline,
+                args.policy,
+                args.sample_manifest,
+                require_approved=True,
+            )
+        except GoldenError as error:
+            raise ContractError(str(error)) from error
+        if len(args.temporal_bundle) != 2:
+            raise ContractError(
+                "exactly two --temporal-bundle values are required for the adjacent pair"
+            )
+        temporal_paths = list(args.temporal_bundle)
         temporal_bundles = [load_bundle(path) for path in temporal_paths]
         temporal, temporal_failures = _temporal(
             temporal_bundles,

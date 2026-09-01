@@ -17,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace RVX
 {
@@ -62,10 +63,11 @@ namespace
     }
 
     [[nodiscard]] QualificationCaptureBundle MakeBundle(
-        const RenderExecutionReceipt& receipt)
+        const RenderExecutionReceipt& receipt,
+        const uint64 bundleId = 31)
     {
         QualificationCaptureBundle bundle;
-        bundle.identity.bundleId = 31;
+        bundle.identity.bundleId = bundleId;
         bundle.identity.frameIdentity = receipt.frameIdentity;
         bundle.identity.viewIdentity = receipt.viewIdentity;
         bundle.identity.graphProvenance = {
@@ -113,17 +115,46 @@ namespace
     }
 
     [[nodiscard]] RenderQualityQualificationWriteRequest MakeRequest(
-        const std::filesystem::path& root)
+        const std::filesystem::path& root,
+        const uint64 captureTick = 120,
+        const uint64 frameSequence = 91)
     {
         RenderQualityQualificationWriteRequest request;
         request.outputRoot = root;
         request.sampleId = "render-quality-lab";
         request.cameraBookmarkId = "hero";
         request.runId = "writer-validation-run";
-        request.captureTick = 120;
+        request.captureTick = captureTick;
         request.visualContractVersion = 1;
-        request.submittedFrame = 91;
-        request.completedFrame = 91;
+        request.submittedFrame = frameSequence;
+        request.completedFrame = frameSequence;
+        return request;
+    }
+
+    [[nodiscard]] RenderQualityAttachmentSeriesWriteRequest MakeSeriesRequest(
+        const std::filesystem::path& root,
+        std::vector<RenderQualityAttachmentSeriesTick> ticks)
+    {
+        RenderQualityAttachmentSeriesWriteRequest request;
+        request.outputPath = root / "series.json";
+        request.sourceCommit = std::string(40, 'a');
+        request.runId = "writer-validation-run";
+        request.preset = "win_x64_gfx24_debug";
+        request.qualificationIdentity = {
+            .sampleId = "render-quality-lab",
+            .pipeline = "deferred",
+            .quality = "high",
+            .backend = "dx12",
+            .view = "hero",
+            .visualContractVersion = 1};
+        request.hardwareIdentity = {
+            .backend = "dx12",
+            .adapterName = "RVX Test Adapter",
+            .driverVersion = "1.2.3",
+            .osBuild = "Windows-10.0.19045",
+            .capabilityHash = std::string(64, 'b')};
+        request.manifestSha256 = std::string(64, 'c');
+        request.ticks = std::move(ticks);
         return request;
     }
 
@@ -269,5 +300,116 @@ TEST(RenderQualityQualificationWriterValidation,
     std::ifstream foreign(temporary.Get() / "BeautyLDR.raw", std::ios::binary);
     const std::string text((std::istreambuf_iterator<char>(foreign)), {});
     EXPECT_EQ("foreign artifact", text);
+}
+
+TEST(RenderQualityQualificationWriterValidation,
+     PublishesManifestLastForStrictlyIncreasingAttachmentSeries)
+{
+    TemporaryRoot temporary;
+    std::vector<RenderQualityAttachmentSeriesTick> ticks;
+    constexpr std::array<uint64, 3> CaptureTicks{120U, 360U, 361U};
+    for (size_t index = 0; index < CaptureTicks.size(); ++index)
+    {
+        RenderExecutionReceipt receipt = MakeReceipt();
+        receipt.frameIdentity.frameSequence = 91U + index;
+        const std::string directory = "tick-" +
+            std::string(index == 0U ? "000120" : index == 1U ? "000360"
+                                                              : "000361");
+        const QualificationCaptureBundle bundle =
+            MakeBundle(receipt, 31U + index);
+        RenderQualityQualificationWriteResult bundleResult;
+        std::string error;
+        ASSERT_TRUE(WriteRenderQualityQualificationBundle(
+            MakeRequest(temporary.Get() / directory,
+                        CaptureTicks[index],
+                        receipt.frameIdentity.frameSequence),
+            bundle, receipt, bundleResult, &error)) << error;
+        ASSERT_TRUE(std::filesystem::exists(bundleResult.bundlePath));
+        ticks.push_back({.captureTick = CaptureTicks[index],
+                         .bundleId = 31U + index,
+                         .bundlePath = directory + "/bundle.json",
+                         .bundleSha256 = bundleResult.bundleSha256,
+                         .receiptSha256 =
+                             bundleResult.renderExecutionReceiptSha256,
+                         .frameSequence = receipt.frameIdentity.frameSequence,
+                         .submittedFrame = receipt.frameIdentity.frameSequence,
+                         .completedFrame = receipt.frameIdentity.frameSequence});
+    }
+
+    EXPECT_FALSE(std::filesystem::exists(temporary.Get() / "series.json"));
+    RenderQualityAttachmentSeriesWriteResult seriesResult;
+    std::string error;
+    ASSERT_TRUE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), ticks), seriesResult, &error)) << error;
+    ASSERT_TRUE(std::filesystem::exists(seriesResult.seriesPath));
+    EXPECT_EQ(64U, seriesResult.seriesSha256.size());
+
+    std::ifstream manifest(seriesResult.seriesPath, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(manifest)), {});
+    EXPECT_NE(std::string::npos,
+              text.find("\"schema\": \"RVX.RenderQualityAttachmentSeries\""));
+    EXPECT_NE(std::string::npos, text.find("tick-000120/bundle.json"));
+    EXPECT_NE(std::string::npos, text.find("tick-000360/bundle.json"));
+    EXPECT_NE(std::string::npos, text.find("tick-000361/bundle.json"));
+}
+
+TEST(RenderQualityQualificationWriterValidation,
+     RejectsUnorderedEscapingAndHashMismatchedAttachmentSeries)
+{
+    TemporaryRoot temporary;
+    RenderExecutionReceipt receipt = MakeReceipt();
+    const QualificationCaptureBundle bundle = MakeBundle(receipt, 31U);
+    RenderQualityQualificationWriteResult bundleResult;
+    std::string error;
+    ASSERT_TRUE(WriteRenderQualityQualificationBundle(
+        MakeRequest(temporary.Get() / "tick-000120"), bundle, receipt,
+        bundleResult, &error)) << error;
+
+    RenderQualityAttachmentSeriesTick first{
+        .captureTick = 120U,
+        .bundleId = 31U,
+        .bundlePath = "tick-000120/bundle.json",
+        .bundleSha256 = bundleResult.bundleSha256,
+        .receiptSha256 =
+            bundleResult.renderExecutionReceiptSha256,
+        .frameSequence = 91U,
+        .submittedFrame = 91U,
+        .completedFrame = 91U};
+    RenderQualityAttachmentSeriesTick duplicate = first;
+    duplicate.bundleId = 32U;
+    duplicate.frameSequence = 92U;
+    duplicate.submittedFrame = 92U;
+    duplicate.completedFrame = 92U;
+    RenderQualityAttachmentSeriesWriteResult seriesResult;
+    EXPECT_FALSE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), {first, duplicate}), seriesResult,
+        &error));
+    EXPECT_FALSE(std::filesystem::exists(temporary.Get() / "series.json"));
+
+    RenderQualityAttachmentSeriesTick escaping = first;
+    escaping.bundlePath = "../bundle.json";
+    EXPECT_FALSE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), {escaping}), seriesResult, &error));
+    EXPECT_FALSE(std::filesystem::exists(temporary.Get() / "series.json"));
+
+    RenderQualityAttachmentSeriesTick badHash = first;
+    badHash.bundleSha256 = std::string(64, 'd');
+    EXPECT_FALSE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), {badHash}), seriesResult, &error));
+    EXPECT_FALSE(std::filesystem::exists(temporary.Get() / "series.json"));
+
+    const std::string invalidSchema = "{\"schema\":\"invalid\"}";
+    {
+        std::ofstream corrupt(temporary.Get() / "tick-000120" / "bundle.json",
+                              std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(corrupt);
+        corrupt << invalidSchema;
+    }
+    RenderQualityAttachmentSeriesTick badSchema = first;
+    badSchema.bundleSha256 = Hash::FormatSHA256Digest(
+        Hash::ComputeSHA256(invalidSchema));
+    EXPECT_FALSE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), {badSchema}), seriesResult, &error));
+    EXPECT_FALSE(std::filesystem::exists(temporary.Get() / "series.json"));
 }
 } // namespace RVX

@@ -177,6 +177,15 @@ try
     $requiredSuiteRunnerSource = Get-Content `
         -LiteralPath (Join-Path $PSScriptRoot "..\run_required_suite.ps1") `
         -Raw
+    if ($requiredSuiteRunnerSource -notmatch
+            'RVX\.RenderQualityAttachmentSeries' -or
+        $requiredSuiteRunnerSource -notmatch
+            '\$tick\.bundlePath' -or
+        $requiredSuiteRunnerSource -notmatch
+            'Resolve-BuildTruthContainedPath')
+    {
+        throw "Required Suite runner must clean Series-owned bundles through build-contained paths"
+    }
     if ($requiredSuiteRunnerSource -notmatch 'skipConfigure\s*=\s*\$SkipConfigure')
     {
         throw "Required Suite receipt publisher does not bind skipConfigure."

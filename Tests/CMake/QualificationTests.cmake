@@ -2288,47 +2288,42 @@ function(rvx_add_renderverse_gfx24_native_candidates)
     foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
         file(MAKE_DIRECTORY
             "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/${config_name}/DX12DeferredHighPerformance")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/${config_name}/DX12DeferredHighSeries")
     endforeach()
 
-    foreach(capture_tick IN ITEMS 120 360)
-        set(artifact_root
-            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/$<CONFIG>/DX12DeferredHighTick${capture_tick}")
-        set(test_name
-            "RenderVerseSamplesCookedDX12Gfx24DeferredHighTick${capture_tick}Candidate")
-
-        rvx_add_validation_test(
-            LANE native
-            NAME ${test_name}
-            COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
-                --backend dx12
-                --cooked-shader-root "${cooked_shader_root}"
-                --pipeline deferred
-                --render-path direct
-                --quality high
-                --smoke
-                --wait-ready
-                --ready-timeout-ms 120000
-                --ready-max-frames 2400
-                --view hero
-                --fixed-delta 0.0166666666666667
-                --capture-tick ${capture_tick}
-                --width 1280
-                --height 720
-                --screenshot "${artifact_root}/beauty-preview.ppm"
-                --qualification-bundle "${artifact_root}/bundle.json"
-                --diagnostics
-                --validation
-            BUILD_TARGETS
-                RenderVerseSamplesCooked
-                ${cooked_shader_target}
-            TAGS product.samples trait.visual trait.gpu trait.native
-                trait.candidate backend.dx12 suite.gfx24-candidate
-            SUITE gfx24-candidate
-            TIMEOUT 900
-            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
-            RESOURCE_LOCK rvx_gpu
-        )
-    endforeach()
+    set(series_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/$<CONFIG>/DX12DeferredHighSeries")
+    rvx_add_validation_test(
+        LANE native
+        NAME RenderVerseSamplesCookedDX12Gfx24DeferredHighSeriesCandidate
+        COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+            --backend dx12
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline deferred
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --width 1280
+            --height 720
+            --qualification-series "${series_root}/series.json"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            trait.candidate backend.dx12 suite.gfx24-candidate
+        SUITE gfx24-candidate
+        TIMEOUT 900
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+    )
 
     set(performance_root
         "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/$<CONFIG>/DX12DeferredHighPerformance")
