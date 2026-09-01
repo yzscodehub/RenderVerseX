@@ -21,6 +21,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from render_quality_performance_baseline import (
+    BaselineContractError,
+    verify_approved_baseline_record,
+)
+
 
 SCHEMA = "RVX.RenderQualityPerformanceReport"
 SCHEMA_VERSION = 3
@@ -443,6 +448,7 @@ def load_policy(path: Path) -> dict[str, Any]:
         thresholds,
         {
             "graphicsQualificationSpanP95Ms",
+            "renderGraphPassEnvelopeP95Ms",
             "cpuP95Ms",
             "passGpuP95Ms",
             "maxTrackedUploadBytes",
@@ -512,6 +518,10 @@ def load_policy(path: Path) -> dict[str, Any]:
             "graphicsQualificationSpanP95Ms": _number(
                 thresholds["graphicsQualificationSpanP95Ms"],
                 "graphicsQualificationSpanP95Ms",
+            ),
+            "renderGraphPassEnvelopeP95Ms": _number(
+                thresholds["renderGraphPassEnvelopeP95Ms"],
+                "renderGraphPassEnvelopeP95Ms",
             ),
             "cpuP95Ms": {name: _number(cpu[name], f"cpuP95Ms.{name}") for name in CPU_PHASES},
             "passGpuP95Ms": parsed_pass_thresholds,
@@ -685,6 +695,11 @@ def _threshold_failures(summary: dict[str, Any], policy: dict[str, Any]) -> list
         > thresholds["graphicsQualificationSpanP95Ms"]
     ):
         failures.append("conservative Graphics qualification span p95 exceeds policy")
+    if (
+        summary["renderGraphPassEnvelopeP95Ms"]
+        > thresholds["renderGraphPassEnvelopeP95Ms"]
+    ):
+        failures.append("RenderGraph pass envelope p95 exceeds policy")
     for phase, value in summary["cpuP95Ms"].items():
         if value > thresholds["cpuP95Ms"][phase]:
             failures.append(f"CPU {phase} p95 exceeds policy")
@@ -736,7 +751,11 @@ def _threshold_failures(summary: dict[str, Any], policy: dict[str, Any]) -> list
 def _baseline_failures(current: dict[str, Any], baseline: dict[str, Any], regression_percent: float) -> list[str]:
     failures: list[str] = []
     allowance = 1.0 + regression_percent / 100.0
-    for field in ("graphicsQualificationSpanP95Ms", "maxTrackedUploadBytes"):
+    for field in (
+        "graphicsQualificationSpanP95Ms",
+        "renderGraphPassEnvelopeP95Ms",
+        "maxTrackedUploadBytes",
+    ):
         if current[field] > baseline[field] * allowance:
             failures.append(f"{field} regressed beyond baseline allowance")
     for group in ("cpuP95Ms", "maxTrackedEstimatedFootprintBytes"):
@@ -782,6 +801,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", required=True, type=Path, help="current completion-owned performance report")
     parser.add_argument("--baseline", required=True, type=Path, help="approved report from the identical hardware identity")
     parser.add_argument("--policy", required=True, type=Path, help="performance threshold and baseline policy")
+    parser.add_argument(
+        "--baseline-record",
+        required=True,
+        type=Path,
+        help="approved V1 record binding the baseline report and policy",
+    )
     parser.add_argument("--expected-source-commit", required=True, help="fail if current evidence belongs to another commit")
     parser.add_argument("--expected-run-id", required=True, help="fail if current evidence belongs to another run")
     parser.add_argument("--expected-preset", required=True, help="fail if current evidence belongs to another preset")
@@ -796,6 +821,15 @@ def main() -> int:
         current = load_report(args.report)
         baseline = load_report(args.baseline)
         policy = load_policy(args.policy)
+        baseline_record = verify_approved_baseline_record(
+            args.baseline_record,
+            args.baseline,
+            args.policy,
+        )
+        result["baselineRecord"] = {
+            "baselineId": baseline_record["baselineId"],
+            "status": baseline_record["status"],
+        }
         if current["sourceCommit"] != args.expected_source_commit:
             raise ContractError("current performance evidence is stale for the expected source commit")
         if current["runId"] != args.expected_run_id:
@@ -832,7 +866,7 @@ def main() -> int:
             return 1
         print("Render quality performance qualification passed")
         return 0
-    except ContractError as error:
+    except (ContractError, BaselineContractError) as error:
         result["failures"] = [str(error)]
         _write_report(args.out, result)
         print(f"Render quality performance qualification rejected: {error}", file=sys.stderr)

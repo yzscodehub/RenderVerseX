@@ -10,6 +10,8 @@ option(RVX_ENABLE_GFX24_QUALIFICATION
     "Register the hermetic GFX24 RenderQualityLab contract qualification suite" OFF)
 option(RVX_ENABLE_GFX24_NATIVE_CANDIDATES
     "Register opt-in DX12 cooked RenderQualityLab visual/performance evidence producers" OFF)
+option(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION
+    "Register the single fixed-GPU GFX24 performance calibration producer" OFF)
 set(RVX_EXTERNAL_TEST_ASSET_ROOT "" CACHE PATH
     "Asset library root used by enabled external asset test suites")
 

@@ -142,6 +142,13 @@ if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)
             "RVX_ENABLE_GFX24_NATIVE_CANDIDATES requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
     endif()
 endif()
+if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -2353,6 +2360,86 @@ function(rvx_add_renderverse_gfx24_native_candidates)
         TAGS product.samples trait.performance trait.gpu trait.native
             trait.candidate backend.dx12 suite.gfx24-candidate
         SUITE gfx24-candidate
+        TIMEOUT 3600
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+    )
+endfunction()
+
+# One fixed-hardware producer used by the A4 calibration orchestrator. Keeping
+# it separate from the two visual candidates avoids recapturing 1280x720 raw
+# bundles during each of the five 60+300 performance runs.
+function(rvx_add_renderverse_gfx24_performance_calibration)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX24 performance calibration requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24PerformanceCalibrationShaders/DX12")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx24-performance-calibration-dx12-shaders")
+    set(cooked_shader_target
+        RVXGfx24PerformanceCalibrationCookedShadersDX12)
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend DX12
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24PerformanceCalibration/${config_name}/DX12DeferredHigh")
+    endforeach()
+    set(performance_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24PerformanceCalibration/$<CONFIG>/DX12DeferredHigh")
+    rvx_add_validation_test(
+        LANE native
+        NAME RenderVerseSamplesCookedDX12Gfx24DeferredHighPerformanceCalibration
+        COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+            --backend dx12
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline deferred
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 3600000
+            --ready-max-frames 1024
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 2560
+            --height 1440
+            --qualification-performance "${performance_root}/performance.json"
+            --qualification-performance-baseline gfx24-dx12-rtx4070ti-v1
+            --diagnostics
+            --no-validation
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${cooked_shader_target}
+        TAGS product.samples trait.performance trait.gpu trait.native
+            trait.calibration backend.dx12
+            suite.gfx24-performance-calibration
+        SUITE gfx24-performance-calibration
         TIMEOUT 3600
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
         RESOURCE_LOCK rvx_gpu
@@ -4758,6 +4845,9 @@ endif()
 
 if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)
     rvx_add_renderverse_gfx24_native_candidates()
+endif()
+if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
+    rvx_add_renderverse_gfx24_performance_calibration()
 endif()
 
 if(WIN32

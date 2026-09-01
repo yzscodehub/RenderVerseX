@@ -146,6 +146,26 @@
       }
     },
     {
+      "name": "win_x64_gfx24_performance_calibration_release",
+      "displayName": "Windows x64 Release GFX24 Performance Calibration",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/gfx24_perf_calibration",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
       "name": "win_x64_qualification_debug",
       "displayName": "Windows x64 Debug Qualification",
       "inherits": "win_x64_base",
@@ -496,6 +516,12 @@
       "targets": ["RVXValidationSuiteGfx24Candidate"]
     },
     {
+      "name": "win_x64_gfx24_performance_calibration_release",
+      "configurePreset": "win_x64_gfx24_performance_calibration_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24PerformanceCalibration"]
+    },
+    {
       "name": "win_x64_qualification_debug",
       "configurePreset": "win_x64_qualification_debug",
       "configuration": "Debug"
@@ -810,6 +836,30 @@
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx24-candidate$" } }
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_gfx24_performance_calibration_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release_run",
+      "inherits": "win_x64_gfx24_performance_calibration_release_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": {
+        "include": {
+          "label": "^suite\\.gfx24-performance-calibration$"
+        }
+      }
     },
     {
       "name": "win_x64_qualification_lane_base",

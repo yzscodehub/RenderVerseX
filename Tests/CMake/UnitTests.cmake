@@ -1334,6 +1334,8 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
         DEPENDS
             "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py"
             "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_performance.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/render_quality_performance_baseline.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/run_render_quality_performance_calibration.ps1"
             "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py"
     )
     rvx_register_module_target(
@@ -1385,6 +1387,8 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
         REQUIRED_FILES
             ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py
             ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_performance.py
+            ${CMAKE_SOURCE_DIR}/Scripts/render_quality_performance_baseline.py
+            ${CMAKE_SOURCE_DIR}/Scripts/run_render_quality_performance_calibration.ps1
             ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
         TAGS subsystem.render trait.contract suite.gfx24-qualification
         SUITE gfx24-qualification

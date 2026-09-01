@@ -11,11 +11,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import render_quality_performance_baseline as performance_baseline
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_CHECKER = ROOT / "Scripts/check_render_quality_bundle.py"
 PERFORMANCE_CHECKER = ROOT / "Scripts/check_render_quality_performance.py"
+PERFORMANCE_BASELINE_TOOL = (
+    ROOT / "Scripts/render_quality_performance_baseline.py"
+)
 SEMANTICS = {
     "BeautyLDR": ("RGBA32_FLOAT", "LDR", 4),
     "PreToneHDR": ("RGBA32_FLOAT", "HDR", 4),
@@ -276,6 +283,7 @@ def write_performance_policy(path: Path) -> Path:
         "baseline": {"id": "dx12-rtx4080-ci-v1", "maxRegressionPercent": 10.0},
         "thresholds": {
             "graphicsQualificationSpanP95Ms": 16.67,
+            "renderGraphPassEnvelopeP95Ms": 15.0,
             "cpuP95Ms": {"extraction": 5.0, "visibility": 5.0, "graphCompile": 5.0, "submission": 5.0},
             "passGpuP95Ms": [
                 {"executionIndex": 0, "name": "Geometry", "p95Ms": 5.0},
@@ -293,8 +301,219 @@ def write_performance_policy(path: Path) -> Path:
     return path
 
 
+def write_performance_baseline_record(
+    path: Path,
+    baseline: Path,
+    policy: Path,
+    *,
+    approved: bool = True,
+) -> Path:
+    report = json.loads(baseline.read_text())
+    policy_document = json.loads(policy.read_text())
+    graphics_values = sorted(
+        sample_value["gpu"]["graphicsQualificationSpanMs"]
+        for sample_value in report["samples"]
+    )
+    graph_values = sorted(
+        sample_value["gpu"]["renderGraphPassEnvelopeMs"]
+        for sample_value in report["samples"]
+    )
+    index = (len(graphics_values) * 95 + 99) // 100 - 1
+    selected_graphics = graphics_values[index]
+    selected_graph = graph_values[index]
+    report_sha = hashlib.sha256(baseline.read_bytes()).hexdigest()
+    policy_sha = hashlib.sha256(policy.read_bytes()).hexdigest()
+    run_metrics = [
+        selected_graphics * 0.8,
+        selected_graphics * 0.9,
+        selected_graphics,
+        selected_graphics * 1.1,
+        selected_graphics * 1.2,
+    ]
+    runs = []
+    receipts = path.parent / "receipts"
+    receipts.mkdir(exist_ok=True)
+    for ordinal, metric in enumerate(run_metrics, start=1):
+        run = {
+            "ordinal": ordinal,
+            "runId": report["runId"] if ordinal == 3 else f"run-{ordinal}",
+            "reportSha256": report_sha if ordinal == 3 else hashlib.sha256(
+                f"report-{ordinal}".encode()
+            ).hexdigest(),
+            "graphicsQualificationSpanP95Ms": metric,
+            "renderGraphPassEnvelopeP95Ms": (
+                selected_graph if ordinal == 3 else selected_graph * metric / selected_graphics
+            ),
+        }
+        receipt_path = receipts / f"{ordinal:02d}.json"
+        write_json(receipt_path, {
+            "schema": "RVX.AgentHarness.RequiredSuiteReceipt",
+            "schemaVersion": 3,
+            "runId": run["runId"],
+            "immutableReceiptPath": (
+                ".agent-harness/receipts/"
+                f"RequiredSuite.receipt-{ordinal}.json"
+            ),
+            "source": {
+                "commit": report["sourceCommit"],
+                "fingerprintBefore": {
+                    "algorithm": "sha256:path-state-content-v1",
+                    "fileCount": 1,
+                    "digest": "f" * 64,
+                },
+                "fingerprintAfter": {
+                    "algorithm": "sha256:path-state-content-v1",
+                    "fileCount": 1,
+                    "digest": "f" * 64,
+                },
+            },
+            "junit": {
+                "outcome": {
+                    "testCaseCount": 1,
+                    "failureCount": 0,
+                    "errorCount": 0,
+                    "skippedCount": 0,
+                    "notRunCount": 0,
+                    "disabledSuiteCount": 0,
+                },
+            },
+            "requiredLabel": "suite.gfx24-performance-calibration",
+            "selectedTests": [
+                "RenderVerseSamplesCookedDX12Gfx24DeferredHighPerformanceCalibration"
+            ],
+            "semanticArtifacts": [{
+                "path": "performance.json",
+                "sha256": run["reportSha256"],
+                "size": 1,
+            }],
+        })
+        run["requiredSuiteReceiptPath"] = f"receipts/{ordinal:02d}.json"
+        run["requiredSuiteReceiptSha256"] = hashlib.sha256(
+            receipt_path.read_bytes()
+        ).hexdigest()
+        runs.append(run)
+    write_json(path, {
+        "schema": "RVX.RenderQualityPerformanceBaselineRecord",
+        "schemaVersion": 1,
+        "baselineId": report["baselineIdentity"],
+        "status": "approved" if approved else "candidate",
+        "source": {
+            "commit": report["sourceCommit"],
+            "fingerprint": {
+                "algorithm": "sha256:path-state-content-v1",
+                "fileCount": 1,
+                "digest": "f" * 64,
+            },
+        },
+        "qualificationIdentity": report["qualificationIdentity"],
+        "hardwareIdentity": report["hardwareIdentity"],
+        "baseline": {
+            "reportPath": baseline.name,
+            "reportSha256": report_sha,
+            "runId": report["runId"],
+            "preset": report["preset"],
+            "requiredSuiteReceiptPath": runs[2]["requiredSuiteReceiptPath"],
+            "requiredSuiteReceiptSha256": runs[2]["requiredSuiteReceiptSha256"],
+        },
+        "policy": {"path": policy.name, "sha256": policy_sha},
+        "calibration": {
+            "requiredRunCount": 5,
+            "selectionMetric": "graphicsQualificationSpanP95Ms",
+            "selectionRule": "median-p95",
+            "selectedRunOrdinal": 3,
+            "runs": runs,
+        },
+        "approval": {
+            "approvedBy": "Render Team" if approved else None,
+            "approvedAtUtc": "2026-08-31T00:00:00Z" if approved else None,
+            "reason": "Reviewed fixed-GPU calibration" if approved else None,
+        },
+    })
+    return path
+
+
 def run_performance(*arguments: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(PERFORMANCE_CHECKER), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True, check=False)
+
+
+def write_calibration_run(
+    root: Path,
+    *,
+    ordinal: int,
+    graphics_ms: float,
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    report_path = write_performance(root / "performance.json")
+    report = json.loads(report_path.read_text())
+    report["runId"] = f"calibration-{ordinal}"
+    report["preset"] = (
+        "win_x64_gfx24_performance_calibration_release_run"
+    )
+    for report_sample in report["samples"]:
+        report_sample["gpu"]["graphicsTerminalCommandSpanMs"] = graphics_ms
+        report_sample["gpu"]["renderGraphPassEnvelopeMs"] = graphics_ms - 0.5
+        report_sample["gpu"]["graphicsQualificationSpanMs"] = graphics_ms
+        report_sample["renderExecutionReceiptSha256"] = hashlib.sha256(
+            (
+                f"calibration-{ordinal}-"
+                f"{report_sample['frameSequence']}"
+            ).encode()
+        ).hexdigest()
+    write_json(report_path, report)
+    report_sha = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    receipt_path = root / "required-suite-receipt.json"
+    write_json(receipt_path, {
+        "schema": "RVX.AgentHarness.RequiredSuiteReceipt",
+        "schemaVersion": 3,
+        "runId": report["runId"],
+        "immutableReceiptPath": (
+            ".agent-harness/receipts/"
+            f"RequiredSuite.calibration-{ordinal}.json"
+        ),
+        "source": {
+            "commit": report["sourceCommit"],
+            "fingerprintBefore": {
+                "algorithm": "sha256:path-state-content-v1",
+                "fileCount": 1,
+                "digest": "e" * 64,
+            },
+            "fingerprintAfter": {
+                "algorithm": "sha256:path-state-content-v1",
+                "fileCount": 1,
+                "digest": "e" * 64,
+            },
+        },
+        "junit": {
+            "outcome": {
+                "testCaseCount": 1,
+                "failureCount": 0,
+                "errorCount": 0,
+                "skippedCount": 0,
+                "notRunCount": 0,
+                "disabledSuiteCount": 0,
+            },
+        },
+        "requiredLabel": "suite.gfx24-performance-calibration",
+        "selectedTests": [
+            "RenderVerseSamplesCookedDX12Gfx24DeferredHighPerformanceCalibration"
+        ],
+        "semanticArtifacts": [{
+            "path": str(report_path),
+            "sha256": report_sha,
+            "size": report_path.stat().st_size,
+        }],
+    })
+    return root
+
+
+def run_baseline_tool(*arguments: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(PERFORMANCE_BASELINE_TOOL), *map(str, arguments)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 class RenderQualityBundleTests(unittest.TestCase):
@@ -560,6 +779,11 @@ class RenderQualityPerformanceTests(unittest.TestCase):
         current = write_performance(root / "current.json")
         baseline = write_performance(root / "baseline.json")
         policy = write_performance_policy(root / "policy.json")
+        baseline_record = write_performance_baseline_record(
+            root / "baseline-record.json",
+            baseline,
+            policy,
+        )
         return [
             "--report", current,
             "--baseline", baseline,
@@ -567,6 +791,7 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             "--expected-source-commit", "commit-a",
             "--expected-run-id", "run-a",
             "--expected-preset", "win_x64_debug_gfx24_qualification",
+            "--baseline-record", baseline_record,
         ]
 
     def test_valid_completion_owned_series_passes(self) -> None:
@@ -575,6 +800,39 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             result = run_performance(*self._valid_arguments(root), "--out", root / "result.json")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(json.loads((root / "result.json").read_text())["status"], "passed")
+
+    def test_candidate_and_tampered_baseline_record_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            record = Path(arguments[-1])
+            document = json.loads(record.read_text())
+            document["status"] = "candidate"
+            document["approval"] = {
+                "approvedBy": None,
+                "approvedAtUtc": None,
+                "reason": None,
+            }
+            write_json(record, document)
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not approved", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            Path(arguments[3]).write_text(
+                Path(arguments[3]).read_text() + " ",
+                encoding="utf-8",
+            )
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("hash", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            receipt = root / "receipts" / "01.json"
+            receipt.write_text(receipt.read_text() + " ", encoding="utf-8")
+            result = run_performance(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("receipt hash", result.stderr)
 
     def test_warmup_below_sixty_and_insufficient_samples_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -848,6 +1106,11 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             document = json.loads(policy.read_text())
             document["thresholds"]["minImportedHistoryEstimatedBytes"] = 1
             write_json(policy, document)
+            write_performance_baseline_record(
+                Path(arguments[-1]),
+                Path(arguments[3]),
+                policy,
+            )
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 1)
             self.assertIn("below 88473600", result.stderr)
@@ -876,8 +1139,8 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             write_performance(current)
             document = json.loads(current.read_text())
             for report_sample in document["samples"]:
-                report_sample["gpu"]["renderGraphPassEnvelopeMs"] = 7.5
-                report_sample["gpu"]["graphicsQualificationSpanMs"] = 7.5
+                report_sample["gpu"]["renderGraphPassEnvelopeMs"] = 7.0
+                report_sample["gpu"]["graphicsQualificationSpanMs"] = 7.0
             write_json(current, document)
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -936,6 +1199,110 @@ class RenderQualityPerformanceTests(unittest.TestCase):
             write_json(current, document)
             result = run_performance(*arguments)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class RenderQualityPerformanceBaselineTests(unittest.TestCase):
+    def _prepare_arguments(
+        self,
+        root: Path,
+        *,
+        metrics: list[float],
+    ) -> tuple[list[Path | str], Path]:
+        run_dirs = [
+            write_calibration_run(
+                root / f"run-{ordinal}",
+                ordinal=ordinal,
+                graphics_ms=metric,
+            )
+            for ordinal, metric in enumerate(metrics, start=1)
+        ]
+        output = root / "candidate"
+        arguments: list[Path | str] = [
+            "prepare",
+            "--output-dir", output,
+            "--baseline-id", "dx12-rtx4080-ci-v1",
+            "--expected-source-commit", "commit-a",
+            "--expected-source-fingerprint", "e" * 64,
+            "--expected-adapter-name", HARDWARE["adapterName"],
+            "--expected-driver-version", HARDWARE["driverVersion"],
+            "--expected-os-build", HARDWARE["osBuild"],
+        ]
+        for run_dir in run_dirs:
+            arguments.extend(["--run-dir", run_dir])
+        return arguments, output
+
+    def test_five_run_median_candidate_requires_explicit_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments, output = self._prepare_arguments(
+                root,
+                metrics=[5.0, 7.0, 6.0, 9.0, 8.0],
+            )
+            result = run_baseline_tool(*arguments)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            record_path = output / "baseline-record.json"
+            record = json.loads(record_path.read_text())
+            self.assertEqual(record["status"], "candidate")
+            self.assertEqual(record["calibration"]["selectedRunOrdinal"], 2)
+            self.assertEqual(
+                record["calibration"]["runs"][1][
+                    "graphicsQualificationSpanP95Ms"
+                ],
+                7.0,
+            )
+            rejected = run_baseline_tool(
+                "verify",
+                "--record", record_path,
+                "--baseline", output / "performance.json",
+                "--policy", output / "performance-policy.json",
+                "--require-approved",
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("not approved", rejected.stderr)
+
+            approved_output = root / "approved"
+            with mock.patch.object(
+                performance_baseline,
+                "_assert_approval_source_is_clean",
+            ):
+                approved = performance_baseline._approve(SimpleNamespace(
+                    candidate_record=record_path,
+                    output_dir=approved_output,
+                    approved_by="Render Team",
+                    reason="Reviewed five fixed-GPU reports",
+                ))
+            self.assertEqual(approved, 0)
+            verified = run_baseline_tool(
+                "verify",
+                "--record", approved_output / "baseline-record.json",
+                "--baseline", approved_output / "performance.json",
+                "--policy", approved_output / "performance-policy.json",
+                "--require-approved",
+            )
+            self.assertEqual(
+                verified.returncode, 0, verified.stdout + verified.stderr
+            )
+
+    def test_wrong_run_count_and_budget_violation_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments, _ = self._prepare_arguments(
+                root,
+                metrics=[5.0, 6.0, 7.0, 8.0],
+            )
+            result = run_baseline_tool(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("exactly five", result.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments, _ = self._prepare_arguments(
+                root,
+                metrics=[5.0, 6.0, 7.0, 8.0, 17.0],
+            )
+            result = run_baseline_tool(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Graphics budget", result.stderr)
 
 
 if __name__ == "__main__":
