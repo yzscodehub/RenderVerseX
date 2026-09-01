@@ -134,6 +134,7 @@ TEST(EcsSchedulerValidation, VariableAndFixedProcessorsReceiveTheirOwnClock)
             EXPECT_EQ(context.stepMode, RVX::ECS::ProcessorStepMode::Variable);
             EXPECT_DOUBLE_EQ(context.deltaSeconds, 1.0 / 30.0);
             EXPECT_EQ(context.frameSequence, 7u);
+            EXPECT_EQ(context.variableStepSequence, 71u);
             EXPECT_EQ(context.fixedStepSequence, 0u);
             executions.emplace_back("gameplay");
         },
@@ -147,12 +148,13 @@ TEST(EcsSchedulerValidation, VariableAndFixedProcessorsReceiveTheirOwnClock)
             EXPECT_EQ(context.stepMode, RVX::ECS::ProcessorStepMode::Fixed);
             EXPECT_DOUBLE_EQ(context.deltaSeconds, 1.0 / 60.0);
             EXPECT_EQ(context.frameSequence, 0u);
+            EXPECT_EQ(context.variableStepSequence, 0u);
             EXPECT_EQ(context.fixedStepSequence, 42u);
             executions.emplace_back("physics");
         },
     }));
 
-    EXPECT_TRUE(scheduler.RunVariable(registry, 1.0 / 30.0, 7));
+    EXPECT_TRUE(scheduler.RunVariable(registry, 1.0 / 30.0, 7, 71));
     EXPECT_EQ(executions, (std::vector<std::string>{"gameplay"}));
     EXPECT_TRUE(scheduler.RunFixed(registry, 1.0 / 60.0, 42));
     EXPECT_EQ(executions, (std::vector<std::string>{"gameplay", "physics"}));
@@ -200,6 +202,7 @@ TEST(EcsSchedulerValidation, VariableProcessorFailureStopsTheStepAndPreservesThe
     EXPECT_EQ(failure->stepMode, RVX::ECS::ProcessorStepMode::Variable);
     EXPECT_DOUBLE_EQ(failure->deltaSeconds, 1.0 / 30.0);
     EXPECT_EQ(failure->frameSequence, 17u);
+    EXPECT_EQ(failure->variableStepSequence, 17u);
     EXPECT_EQ(failure->fixedStepSequence, 0u);
     EXPECT_EQ(failure->reason, "first reason");
 }
@@ -227,6 +230,7 @@ TEST(EcsSchedulerValidation, FixedProcessorFailureReportsItsFixedStepContext)
     EXPECT_EQ(failure->stepMode, RVX::ECS::ProcessorStepMode::Fixed);
     EXPECT_DOUBLE_EQ(failure->deltaSeconds, 1.0 / 120.0);
     EXPECT_EQ(failure->frameSequence, 0u);
+    EXPECT_EQ(failure->variableStepSequence, 0u);
     EXPECT_EQ(failure->fixedStepSequence, 91u);
     EXPECT_EQ(failure->reason, "physics advance failed");
 }

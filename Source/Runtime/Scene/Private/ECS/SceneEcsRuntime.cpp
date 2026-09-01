@@ -558,7 +558,11 @@ SceneEcsTickResult SceneEcsRuntime::Tick(const SceneEcsTickRequest& request)
         return result;
     }
 
-    const auto runPhase = [this, &result](ECS::ProcessorPhase phase,
+    result.frameSequence = ++m_frameSequence;
+    const uint64 variableStepSequence =
+        request.variableStepSequence != 0 ? request.variableStepSequence : m_frameSequence;
+
+    const auto runPhase = [this, &result, variableStepSequence](ECS::ProcessorPhase phase,
                                           ECS::ProcessorStepMode stepMode,
                                           float64 deltaSeconds,
                                           uint64 frameSequence,
@@ -568,11 +572,11 @@ SceneEcsTickResult SceneEcsRuntime::Tick(const SceneEcsTickRequest& request)
                                  stepMode,
                                  deltaSeconds,
                                  frameSequence,
+                                 stepMode == ECS::ProcessorStepMode::Variable ?
+                                     variableStepSequence : 0,
                                  fixedStepSequence,
                                  result.processorFailure);
     };
-
-    result.frameSequence = ++m_frameSequence;
 
     // BeginSimulation playback deliberately runs before any frame processor.
     result.commandBarriers[ToBarrierIndex(SceneCommandBarrier::BeginSimulation)] =
@@ -983,6 +987,7 @@ bool SceneEcsRuntime::RunProcessorPhase(ECS::ProcessorPhase phase,
                                         ECS::ProcessorStepMode stepMode,
                                         float64 deltaSeconds,
                                         uint64 frameSequence,
+                                        uint64 variableStepSequence,
                                         uint64 fixedStepSequence,
                                         std::optional<ECS::ProcessorExecutionFailure>& outFailure)
 {
@@ -1008,7 +1013,10 @@ bool SceneEcsRuntime::RunProcessorPhase(ECS::ProcessorPhase phase,
         ECS::Registry::StructuralMutationGuard guard =
             m_registry.AcquireStructuralMutationGuard();
         ECS::ProcessorScheduler& scheduler = m_variableSchedulers[phaseIndex];
-        const bool succeeded = scheduler.RunVariable(m_registry, deltaSeconds, frameSequence);
+        const bool succeeded = scheduler.RunVariable(m_registry,
+                                                      deltaSeconds,
+                                                      frameSequence,
+                                                      variableStepSequence);
         if (!succeeded && scheduler.GetLastExecutionFailure().has_value())
         {
             outFailure = scheduler.GetLastExecutionFailure();

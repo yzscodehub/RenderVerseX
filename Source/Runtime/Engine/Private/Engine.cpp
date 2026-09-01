@@ -664,6 +664,10 @@ void Engine::TickWorlds(float deltaTime)
 
         WorldEcsRuntimeCompositionTickRequest request;
         request.sceneTick.variableDeltaSeconds = deltaTime;
+        request.sceneTick.variableStepSequence =
+            m_effectSimulationTick == std::numeric_limits<uint64>::max() ?
+                std::numeric_limits<uint64>::max() :
+                m_effectSimulationTick + 1;
         const Physics::PhysicsWorldConfig& physics = entry.world->GetConfig().physics;
         request.sceneTick.fixedDeltaSeconds = physics.fixedTimeStep;
 

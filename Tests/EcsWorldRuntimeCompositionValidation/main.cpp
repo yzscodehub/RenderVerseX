@@ -331,12 +331,14 @@ namespace
         {
             m_alive = true;
             m_maxParticleCount = request.config.maxParticleCount;
+            m_simulationTicks.push_back(request.simulationTick);
             return Particle::ParticleEcsRuntimeHandle::Create(0, 1);
         }
 
         [[nodiscard]] bool Update(Particle::ParticleEcsRuntimeHandle handle,
-                                  const Particle::ParticleEcsRuntimeRequest&) override
+                                  const Particle::ParticleEcsRuntimeRequest& request) override
         {
+            m_simulationTicks.push_back(request.simulationTick);
             return IsAlive(handle);
         }
 
@@ -373,9 +375,15 @@ namespace
             return m_alive && handle == Particle::ParticleEcsRuntimeHandle::Create(0, 1);
         }
 
+        [[nodiscard]] const std::vector<uint64>& GetSimulationTicks() const
+        {
+            return m_simulationTicks;
+        }
+
     private:
         bool m_alive = false;
         uint32 m_maxParticleCount = 0;
+        std::vector<uint64> m_simulationTicks;
     };
 
     class WaterFeatureGateway final : public Water::IWaterEcsGateway
@@ -715,6 +723,60 @@ TEST(EcsWorldRuntimeCompositionValidation,
     const WorldEcsRuntimeServicesDiagnostics drained = composition.GetRuntimeDiagnostics();
     EXPECT_FALSE(drained.initialized);
     EXPECT_TRUE(drained.shutdownComplete);
+}
+
+TEST(EcsWorldRuntimeCompositionValidation,
+     ParticleGatewayUsesVariableStepSequenceAcrossRestartEpoch)
+{
+    SceneECS::SceneEcsRuntime runtime;
+    AdvancingTransport transport;
+    EcsRenderFramePipeline pipeline(transport);
+    ParticleFeatureGateway particleGateway;
+    WorldEcsRuntimeCompositionOptions options;
+    options.particleGateway = &particleGateway;
+    WorldEcsRuntimeComposition composition(runtime, pipeline, nullptr, options);
+    ASSERT_TRUE(composition.Initialize());
+
+    const ECS::EntityHandle entity = runtime.CreateEntity();
+    ASSERT_TRUE(entity.IsValid());
+    ASSERT_TRUE(runtime.AddFragment<SceneECS::ParticleRuntimeTag>(entity));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsConfig>(
+        entity,
+        {.systemAssetId = AssetId{17}, .configurationRevision = 1, .maxParticleCount = 16}));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsIntent>(entity));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsState>(entity));
+
+    WorldEcsRuntimeCompositionTickRequest request = TickRequest();
+    request.sceneTick.fixedStepCount = 0;
+    request.sceneTick.variableStepSequence = 73;
+    const WorldEcsRuntimeCompositionTickResult first = composition.Tick(request);
+    ASSERT_TRUE(first.succeeded) << composition.GetDiagnostics().lastDiagnostic;
+    ASSERT_TRUE(runtime.SetFragment<Particle::ParticleEcsIntent>(
+        entity,
+        {.command = Particle::ParticleEcsCommand::Restart, .sequence = 1}));
+    const WorldEcsRuntimeCompositionTickResult second = composition.Tick(request);
+    ASSERT_TRUE(second.succeeded) << composition.GetDiagnostics().lastDiagnostic;
+
+    EXPECT_NE(first.scene.frameSequence, second.scene.frameSequence);
+    ASSERT_FALSE(particleGateway.GetSimulationTicks().empty());
+    for (const uint64 tick : particleGateway.GetSimulationTicks())
+    {
+        EXPECT_EQ(tick, 73u);
+    }
+
+    ASSERT_EQ(runtime.RequestDestroy(
+                  entity,
+                  SceneECS::ToCleanupDomainMask(SceneECS::CleanupDomain::None)),
+              SceneECS::DestroyRequestResult::Accepted);
+    ASSERT_TRUE(composition.Tick(TickRequest()).succeeded)
+        << composition.GetDiagnostics().lastDiagnostic;
+    ASSERT_TRUE(runtime.AcknowledgeCleanup(
+        entity,
+        SceneECS::ToCleanupDomainMask(SceneECS::CleanupDomain::Render)));
+    ASSERT_TRUE(composition.Tick(TickRequest()).succeeded)
+        << composition.GetDiagnostics().lastDiagnostic;
+    EXPECT_TRUE(composition.PrepareForShutdown(TickRequest()))
+        << composition.GetDiagnostics().lastDiagnostic;
 }
 
 TEST(EcsWorldRuntimeCompositionValidation,

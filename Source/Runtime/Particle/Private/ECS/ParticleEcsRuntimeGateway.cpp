@@ -387,17 +387,19 @@ bool ParticleEcsRuntimeGateway::Update(ParticleEcsRuntimeHandle handle,
     }
 
     // A positive variable-step delta must carry a strictly advancing caller
-    // tick.  Replaying a tick would re-emit from the same deterministic seed,
-    // producing a plausible but incorrect packet.
+    // tick. Replaying a tick would re-emit from the same deterministic seed,
+    // producing a plausible but incorrect packet. An explicit Restart starts
+    // a new simulation epoch, so it alone may return the sequence to one.
     const bool replacingSystem =
         entry->config.systemAssetId != request.config.systemAssetId;
     const bool replacingDeterministicIdentity =
         entry->config.deterministicSeed != request.config.deterministicSeed ||
         entry->deterministicInstanceKey != request.deterministicInstanceKey;
     const bool rebuildingRuntime = replacingSystem || replacingDeterministicIdentity;
-    if (!rebuildingRuntime && request.deltaSeconds > 0.0 &&
+    const bool startsNewTickEpoch = request.command == ParticleEcsCommand::Restart;
+    if (request.deltaSeconds > 0.0 &&
         (request.simulationTick == 0 ||
-         (entry->lastSimulationTick != 0 &&
+         (!startsNewTickEpoch && entry->lastSimulationTick != 0 &&
           request.simulationTick <= entry->lastSimulationTick)))
     {
         m_state->lastFailureReason =
@@ -436,7 +438,13 @@ bool ParticleEcsRuntimeGateway::Update(ParticleEcsRuntimeHandle handle,
         entry->instance->Simulate(static_cast<float>(request.deltaSeconds));
         entry->config = request.config;
         entry->payloadRevision = request.config.configurationRevision;
-        if (request.deltaSeconds > 0.0)
+        if (startsNewTickEpoch && request.deltaSeconds == 0.0)
+        {
+            // Restart may establish an epoch before its first simulation
+            // advance. Do not retain the prior epoch's monotonic watermark.
+            entry->lastSimulationTick = 0;
+        }
+        else if (request.deltaSeconds > 0.0)
         {
             entry->lastSimulationTick = request.simulationTick;
         }

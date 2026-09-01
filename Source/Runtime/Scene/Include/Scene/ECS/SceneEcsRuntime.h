@@ -557,6 +557,13 @@ namespace RVX::SceneECS
     struct SceneEcsTickRequest
     {
         float64 variableDeltaSeconds = 0.0;
+        /**
+         * @brief One-based simulation sequence for variable-step effect consumers.
+         *
+         * Zero retains direct Scene callers' compatibility by selecting this
+         * runtime's internally assigned frameSequence for the tick.
+         */
+        uint64 variableStepSequence = 0;
         float64 fixedDeltaSeconds = 1.0 / 60.0;
         uint32 fixedStepCount = 0;
     };
@@ -1052,6 +1059,7 @@ namespace RVX::SceneECS
                                              ECS::ProcessorStepMode stepMode,
                                              float64 deltaSeconds,
                                              uint64 frameSequence,
+                                             uint64 variableStepSequence,
                                              uint64 fixedStepSequence,
                                              std::optional<ECS::ProcessorExecutionFailure>& outFailure);
         [[nodiscard]] bool ValidateAndBuildProcessorSchedulers();

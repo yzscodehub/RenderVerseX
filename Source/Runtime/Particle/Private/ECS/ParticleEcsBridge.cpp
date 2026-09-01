@@ -373,7 +373,7 @@ struct ParticleEcsBridge::State
                 .worldTransform = transform.matrix,
                 .command = command,
                 .deltaSeconds = context.deltaSeconds,
-                .simulationTick = context.frameSequence,
+                .simulationTick = context.variableStepSequence,
                 .deterministicInstanceKey = MakeDeterministicInstanceKey(
                     config, entity),
             });
@@ -428,7 +428,7 @@ struct ParticleEcsBridge::State
                 .worldTransform = transform.matrix,
                 .command = command,
                 .deltaSeconds = context.deltaSeconds,
-                .simulationTick = context.frameSequence,
+                .simulationTick = context.variableStepSequence,
                 .deterministicInstanceKey = MakeDeterministicInstanceKey(
                     config, entity),
             }))

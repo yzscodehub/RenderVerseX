@@ -91,6 +91,7 @@ namespace RVX::ECS
             ProcessorStepMode stepMode,
             float64 deltaSeconds,
             uint64 frameSequence,
+            uint64 variableStepSequence,
             uint64 fixedStepSequence)
             : registry(registry)
             , phase(phase)
@@ -98,6 +99,7 @@ namespace RVX::ECS
             , stepMode(stepMode)
             , deltaSeconds(deltaSeconds)
             , frameSequence(frameSequence)
+            , variableStepSequence(variableStepSequence)
             , fixedStepSequence(fixedStepSequence)
         {
         }
@@ -107,7 +109,10 @@ namespace RVX::ECS
         std::string_view group;
         ProcessorStepMode stepMode;
         float64 deltaSeconds = 0.0;
+        /** Provenance sequence for the Scene frame that scheduled this invocation. */
         uint64 frameSequence = 0;
+        /** Effect/simulation sequence for variable-step consumers; zero for fixed steps. */
+        uint64 variableStepSequence = 0;
         uint64 fixedStepSequence = 0;
 
         /** @brief Fail the current scheduler step without using an exception. */
@@ -142,6 +147,7 @@ namespace RVX::ECS
         ProcessorStepMode stepMode = ProcessorStepMode::Variable;
         float64 deltaSeconds = 0.0;
         uint64 frameSequence = 0;
+        uint64 variableStepSequence = 0;
         uint64 fixedStepSequence = 0;
         std::string reason;
     };
@@ -184,7 +190,16 @@ namespace RVX::ECS
 
         /** Compatibility variable-step entry point. */
         void Run(Registry& registry);
-        [[nodiscard]] bool RunVariable(Registry& registry, float64 deltaSeconds = 0.0, uint64 frameSequence = 0);
+        /**
+         * @brief Run variable-step processors.
+         *
+         * variableStepSequence remains optional for direct legacy callers.  When
+         * omitted, frameSequence remains the compatibility source.
+         */
+        [[nodiscard]] bool RunVariable(Registry& registry,
+                                       float64 deltaSeconds = 0.0,
+                                       uint64 frameSequence = 0,
+                                       uint64 variableStepSequence = 0);
         [[nodiscard]] bool RunFixed(Registry& registry, float64 deltaSeconds, uint64 fixedStepSequence);
 
         [[nodiscard]] uint32 GetProcessorCount() const
@@ -214,6 +229,7 @@ namespace RVX::ECS
             ProcessorStepMode stepMode,
             float64 deltaSeconds,
             uint64 frameSequence,
+            uint64 variableStepSequence,
             uint64 fixedStepSequence);
         void BuildConflictDiagnostics();
 

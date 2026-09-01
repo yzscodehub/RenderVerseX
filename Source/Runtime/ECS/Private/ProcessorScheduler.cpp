@@ -231,14 +231,24 @@ namespace RVX::ECS
         static_cast<void>(RunVariable(registry));
     }
 
-    bool ProcessorScheduler::RunVariable(Registry& registry, float64 deltaSeconds, uint64 frameSequence)
+    bool ProcessorScheduler::RunVariable(Registry& registry,
+                                         float64 deltaSeconds,
+                                         uint64 frameSequence,
+                                         uint64 variableStepSequence)
     {
         m_lastExecutionFailure.reset();
         if (!std::isfinite(deltaSeconds) || deltaSeconds < 0.0)
         {
             return false;
         }
-        return RunStep(registry, ProcessorStepMode::Variable, deltaSeconds, frameSequence, 0);
+        const uint64 effectiveVariableStepSequence =
+            variableStepSequence != 0 ? variableStepSequence : frameSequence;
+        return RunStep(registry,
+                       ProcessorStepMode::Variable,
+                       deltaSeconds,
+                       frameSequence,
+                       effectiveVariableStepSequence,
+                       0);
     }
 
     bool ProcessorScheduler::RunFixed(Registry& registry, float64 deltaSeconds, uint64 fixedStepSequence)
@@ -248,7 +258,12 @@ namespace RVX::ECS
         {
             return false;
         }
-        return RunStep(registry, ProcessorStepMode::Fixed, deltaSeconds, 0, fixedStepSequence);
+        return RunStep(registry,
+                       ProcessorStepMode::Fixed,
+                       deltaSeconds,
+                       0,
+                       0,
+                       fixedStepSequence);
     }
 
     bool ProcessorScheduler::IsScheduledBefore(uint32 lhsIndex, uint32 rhsIndex) const
@@ -288,6 +303,7 @@ namespace RVX::ECS
         ProcessorStepMode stepMode,
         float64 deltaSeconds,
         uint64 frameSequence,
+        uint64 variableStepSequence,
         uint64 fixedStepSequence)
     {
         m_lastExecutionFailure.reset();
@@ -313,6 +329,7 @@ namespace RVX::ECS
                     stepMode,
                     deltaSeconds,
                     frameSequence,
+                    variableStepSequence,
                     fixedStepSequence,
                 };
                 processor.descriptor.runWithContext(context);
@@ -325,6 +342,7 @@ namespace RVX::ECS
                         .stepMode = stepMode,
                         .deltaSeconds = deltaSeconds,
                         .frameSequence = frameSequence,
+                        .variableStepSequence = variableStepSequence,
                         .fixedStepSequence = fixedStepSequence,
                         .reason = context.GetFailureReason(),
                     };

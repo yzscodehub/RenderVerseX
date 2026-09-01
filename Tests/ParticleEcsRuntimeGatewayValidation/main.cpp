@@ -333,8 +333,61 @@ int main()
     {
         return 1;
     }
+    RVX::Particle::ParticleEcsRuntimeRequest rollbackPlayRequest = tickOneRequest;
+    rollbackPlayRequest.command = RVX::Particle::ParticleEcsCommand::Play;
+    RVX::Particle::ParticleEcsRuntimeRequest rollbackPauseRequest = tickOneRequest;
+    rollbackPauseRequest.command = RVX::Particle::ParticleEcsCommand::Pause;
+    if (!Check(!gateway.Update(first, tickOneRequest) &&
+                   !gateway.Update(first, rollbackPlayRequest) &&
+                   !gateway.Update(first, rollbackPauseRequest),
+               "reject ordinary positive simulation tick rollbacks"))
+    {
+        return 1;
+    }
+
+    RVX::Particle::ParticleEcsRuntimeRequest restartTickOneRequest = tickOneRequest;
+    restartTickOneRequest.command = RVX::Particle::ParticleEcsCommand::Restart;
+    if (!Check(gateway.Update(first, restartTickOneRequest),
+               "restart establishes a new positive simulation tick epoch"))
+    {
+        return 1;
+    }
+    RVX::Particle::ParticleEcsRuntimeSnapshot restartGatewaySnapshot;
+    if (!Check(gateway.CaptureSnapshot(first, restartGatewaySnapshot) &&
+                   restartGatewaySnapshot.item.HasValidCpuPacket() &&
+                   PacketsHaveSameFields(firstSnapshot.item.cpuPacket,
+                                         restartGatewaySnapshot.item.cpuPacket),
+               "restart epoch matches a fresh runtime at the same tick and seed"))
+    {
+        return 1;
+    }
     if (!Check(!gateway.Update(first, tickOneRequest),
-               "reject a positive simulation tick rollback"))
+               "restart epoch remains strictly monotonic after its first tick"))
+    {
+        return 1;
+    }
+
+    if (!Check(gateway.Update(first, tickTwoRequest),
+               "advance the restarted epoch before zero-delta reset"))
+    {
+        return 1;
+    }
+    RVX::Particle::ParticleEcsRuntimeRequest zeroDeltaRestartRequest = tickOneRequest;
+    zeroDeltaRestartRequest.command = RVX::Particle::ParticleEcsCommand::Restart;
+    zeroDeltaRestartRequest.deltaSeconds = 0.0;
+    zeroDeltaRestartRequest.simulationTick = 0;
+    if (!Check(gateway.Update(first, zeroDeltaRestartRequest) &&
+                   gateway.Update(first, tickOneRequest),
+               "zero-delta restart resets the epoch for the next ordinary tick"))
+    {
+        return 1;
+    }
+    RVX::Particle::ParticleEcsRuntimeSnapshot zeroDeltaRestartSnapshot;
+    if (!Check(gateway.CaptureSnapshot(first, zeroDeltaRestartSnapshot) &&
+                   zeroDeltaRestartSnapshot.item.HasValidCpuPacket() &&
+                   PacketsHaveSameFields(firstSnapshot.item.cpuPacket,
+                                         zeroDeltaRestartSnapshot.item.cpuPacket),
+               "zero-delta restart then tick one matches a fresh runtime packet"))
     {
         return 1;
     }
@@ -345,6 +398,7 @@ int main()
     const RVX::Particle::ParticleEcsRuntimeRequest resetTickOneRequest{
         .config = changedSeedConfig,
         .worldTransform = RVX::Mat4(1.0f),
+        .command = RVX::Particle::ParticleEcsCommand::Restart,
         .deltaSeconds = 1.0 / 60.0,
         .simulationTick = 1,
         .deterministicInstanceKey = 0xC0FFEEu,
