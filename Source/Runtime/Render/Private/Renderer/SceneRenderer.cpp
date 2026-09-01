@@ -3116,11 +3116,6 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         requestedAntiAliasingMode == RenderAntiAliasingMode::TAA;
     const RenderOutputExtent temporalExtent{
         m_viewData.viewportWidth, m_viewData.viewportHeight};
-    const RenderTemporalJitter currentTemporalJitter =
-        temporalAntiAliasingRequested
-            ? MakeRenderTemporalJitter(
-                  m_renderScene.GetAcceptedHeader().sequence, temporalExtent)
-            : RenderTemporalJitter{};
     const bool previousTemporalStateReusable =
         temporalAntiAliasingRequested && !result.temporalHistoryReset &&
         m_activeViewHistoryAvailability.has_value() &&
@@ -3128,6 +3123,19 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         m_presentedTemporalPresentationState.has_value() &&
         IsValidRenderTemporalJitter(
             m_presentedTemporalPresentationState->jitter);
+    // The temporal sampling sequence belongs to presentation-qualified view
+    // history, not to accepted scene-packet ordinals.  A packet that never
+    // presents cannot advance the presentation-owned phase, while a reset
+    // starts at phase zero regardless of how many startup packets preceded it.
+    const uint32 currentTemporalPhase = previousTemporalStateReusable
+        ? (m_presentedTemporalPresentationState->jitter.phaseIndex + 1U) %
+              RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT
+        : 0U;
+    const RenderTemporalJitter currentTemporalJitter =
+        temporalAntiAliasingRequested
+            ? MakeRenderTemporalJitterForPhase(currentTemporalPhase,
+                                               temporalExtent)
+            : RenderTemporalJitter{};
     const RenderTemporalJitter previousTemporalJitter =
         previousTemporalStateReusable
             ? m_presentedTemporalPresentationState->jitter

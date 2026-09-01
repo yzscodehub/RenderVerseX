@@ -93,6 +93,7 @@
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
+#include "Runtime/RenderViewHistoryCoordinator.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -336,6 +337,29 @@ namespace RVX
                 *frame, sceneDatabase, *registry).IsApplied();
             renderer.SetGPUDrivenCullingMode(requestedGPUDrivenMode);
             return accepted;
+        }
+
+        static bool CommitPendingTemporalPresentationForTesting(
+            SceneRenderer& renderer)
+        {
+            if (!renderer.m_viewHistoryCoordinator ||
+                !renderer.m_activeViewHistoryCandidate.has_value() ||
+                !renderer.m_pendingTemporalPresentationState.has_value() ||
+                renderer.m_pendingTemporalPresentationState->historyIdentity !=
+                    *renderer.m_activeViewHistoryCandidate ||
+                !renderer.m_viewHistoryCoordinator->CommitPresented(
+                    *renderer.m_activeViewHistoryCandidate))
+            {
+                return false;
+            }
+
+            renderer.m_renderScene.MarkAcceptedFrameRendered();
+            renderer.m_presentedTemporalPresentationState =
+                renderer.m_pendingTemporalPresentationState;
+            renderer.m_activeViewHistoryCandidate.reset();
+            renderer.m_activeViewHistoryAvailability.reset();
+            renderer.m_pendingTemporalPresentationState.reset();
+            return true;
         }
 
         static ScreenSpaceOutlinePass*
@@ -12682,10 +12706,53 @@ TEST(RenderPassValidation,
         const ViewData& view = renderer.GetViewData();
         EXPECT_EQ(testCase.expectsTemporalJitter,
                   view.currentTemporalJitter.IsValid());
+        if (testCase.expectsTemporalJitter)
+        {
+            // A fresh/reset presentation history always starts at phase zero;
+            // the accepted packet sequence is provenance, not jitter state.
+            EXPECT_EQ(view.currentTemporalJitter.phaseIndex, 0u);
+        }
         EXPECT_EQ(testCase.expectsTemporalJitter,
                   !AreMatricesNear(view.jitteredViewProjectionMatrix,
                                    view.viewProjectionMatrix));
     }
+}
+
+TEST(RenderPassValidation,
+     SceneRendererAdvancesTemporalJitterOnlyFromPresentedHistory)
+{
+    SceneRenderer renderer;
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer,
+        101u,
+        RenderPipelineRecipe::ForwardStandard,
+        RenderAntiAliasingMode::TAA,
+        true));
+    EXPECT_EQ(renderer.GetViewData().currentTemporalJitter.phaseIndex, 0u);
+    ASSERT_TRUE(
+        SceneRendererTestAccess::CommitPendingTemporalPresentationForTesting(
+            renderer));
+
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer,
+        102u,
+        RenderPipelineRecipe::ForwardStandard,
+        RenderAntiAliasingMode::TAA,
+        true));
+    EXPECT_EQ(renderer.GetViewData().previousTemporalJitter.phaseIndex, 0u);
+    EXPECT_EQ(renderer.GetViewData().currentTemporalJitter.phaseIndex, 1u);
+
+    renderer.ReleaseUnsubmittedFrame();
+    renderer.RequestTemporalHistoryReset();
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer,
+        103u,
+        RenderPipelineRecipe::ForwardStandard,
+        RenderAntiAliasingMode::TAA,
+        true));
+    EXPECT_FALSE(renderer.GetViewData().previousTemporalJitter.IsValid());
+    EXPECT_EQ(renderer.GetViewData().currentTemporalJitter.phaseIndex, 0u);
+    renderer.ReleaseUnsubmittedFrame();
 }
 
 TEST(RenderPassValidation, ToneMappingPixelProbeDisabledRequestDoesNotArmReadback)
