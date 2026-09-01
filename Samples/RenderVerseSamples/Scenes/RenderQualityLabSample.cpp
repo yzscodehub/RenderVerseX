@@ -40,8 +40,12 @@ namespace RVX
         constexpr const char* RenderQualityLabSmokeAssetId = "particle-smoke-v1";
         constexpr uint64 RenderQualityLabParticleConfigurationRevision = 2u;
         constexpr uint64 RenderQualityLabParticleRestartSequence = 1u;
+        constexpr uint64 RenderQualityLabFireDeterministicInstanceKey =
+            0x5256585f46495245ull;
         constexpr uint64 RenderQualityLabSmokeConfigurationRevision = 3u;
         constexpr uint64 RenderQualityLabSmokeRestartSequence = 2u;
+        constexpr uint64 RenderQualityLabSmokeDeterministicInstanceKey =
+            0x5256585f534d4f4bull;
         constexpr uint32 RenderQualityLabWaterSurfaceAssetId = 24001u;
         constexpr uint32 RenderQualityLabWaterMaterialAssetId = 24002u;
 
@@ -240,6 +244,7 @@ namespace RVX
         [[nodiscard]] Particle::ParticleEcsConfig MakeParticleConfig(
             const LoadedSampleParticleEffect& effect,
             const uint32 seed,
+            const uint64 deterministicInstanceKey,
             const uint32 maxParticleCount,
             const bool autoPlay,
             const uint64 revision)
@@ -248,6 +253,7 @@ namespace RVX
                 .systemAssetId = {effect.GetResourceId()},
                 .configurationRevision = revision,
                 .deterministicSeed = seed,
+                .deterministicInstanceKey = deterministicInstanceKey,
                 .emissionRateScale = 1.0f,
                 .simulationSpeed = 1.0f,
                 .maxParticleCount = maxParticleCount,
@@ -589,6 +595,7 @@ namespace RVX
         const LoadedSampleParticleEffect& effect,
         const Vec3& position,
         const uint32 maxParticleCount,
+        const uint64 deterministicInstanceKey,
         SceneECS::SceneEntityRef& outEmitter,
         std::string& outError)
     {
@@ -602,6 +609,7 @@ namespace RVX
         const Particle::ParticleEcsConfig config = MakeParticleConfig(
             effect,
             context.options.deterministicSeed,
+            deterministicInstanceKey,
             maxParticleCount,
             false,
             1u);
@@ -630,6 +638,7 @@ namespace RVX
         const uint32 maxParticleCount,
         const uint64 configurationRevision,
         const uint64 restartSequence,
+        const uint64 deterministicInstanceKey,
         std::string& outError)
     {
         if (!emitter.IsValid() || !effect.IsReady())
@@ -642,6 +651,7 @@ namespace RVX
         const Particle::ParticleEcsConfig config = MakeParticleConfig(
             effect,
             context.options.deterministicSeed,
+            deterministicInstanceKey,
             maxParticleCount,
             true,
             configurationRevision);
@@ -672,7 +682,8 @@ namespace RVX
         const SceneECS::SceneEntityRef emitter,
         const uint32 maxParticleCount,
         const uint64 configurationRevision,
-        const uint64 restartSequence) const noexcept
+        const uint64 restartSequence,
+        const uint64 deterministicInstanceKey) const noexcept
     {
         if (!emitter.IsValid() || !effect.IsReady() || !effect.GetResourceId())
         {
@@ -692,6 +703,7 @@ namespace RVX
                config->maxParticleCount == maxParticleCount &&
                config->configurationRevision == configurationRevision &&
                config->deterministicSeed == context.options.deterministicSeed &&
+               config->deterministicInstanceKey == deterministicInstanceKey &&
                intent->command == Particle::ParticleEcsCommand::Restart &&
                intent->sequence == restartSequence &&
                state->lastAppliedConfigurationRevision ==
@@ -718,6 +730,7 @@ namespace RVX
                 256u,
                 RenderQualityLabParticleConfigurationRevision,
                 RenderQualityLabParticleRestartSequence,
+                RenderQualityLabFireDeterministicInstanceKey,
                 outError))
         {
             return false;
@@ -730,6 +743,7 @@ namespace RVX
                 192u,
                 RenderQualityLabSmokeConfigurationRevision,
                 RenderQualityLabSmokeRestartSequence,
+                RenderQualityLabSmokeDeterministicInstanceKey,
                 outError))
         {
             return false;
@@ -806,6 +820,7 @@ namespace RVX
                     m_particleEffect,
                     Vec3(-2.7f, 1.2f, -2.3f),
                     256u,
+                    RenderQualityLabFireDeterministicInstanceKey,
                     m_particleEmitter,
                     error))
             {
@@ -822,6 +837,7 @@ namespace RVX
                     m_smokeEffect,
                     Vec3(2.7f, 1.1f, -2.3f),
                     192u,
+                    RenderQualityLabSmokeDeterministicInstanceKey,
                     m_smokeEmitter,
                     error))
             {
@@ -839,7 +855,8 @@ namespace RVX
                 m_particleEmitter,
                 256u,
                 RenderQualityLabParticleConfigurationRevision,
-                RenderQualityLabParticleRestartSequence);
+                RenderQualityLabParticleRestartSequence,
+                RenderQualityLabFireDeterministicInstanceKey);
         }
         if (m_particleEpochStarted && m_smokeEpochResetQueued &&
             !m_smokeEpochApplied)
@@ -850,7 +867,8 @@ namespace RVX
                 m_smokeEmitter,
                 192u,
                 RenderQualityLabSmokeConfigurationRevision,
-                RenderQualityLabSmokeRestartSequence);
+                RenderQualityLabSmokeRestartSequence,
+                RenderQualityLabSmokeDeterministicInstanceKey);
         }
     }
 
@@ -1128,6 +1146,15 @@ namespace RVX
             Vec3(-2.7f, 0.0f, -2.3f)};
         outSlots.assign(roleSlots.begin(), roleSlots.begin() + modelCount);
         return true;
+    }
+
+    bool RenderQualityLabSample::GetDeterministicParticleInstanceKeys(
+        uint64& outFireKey,
+        uint64& outSmokeKey) noexcept
+    {
+        outFireKey = RenderQualityLabFireDeterministicInstanceKey;
+        outSmokeKey = RenderQualityLabSmokeDeterministicInstanceKey;
+        return outFireKey != 0 && outSmokeKey != 0 && outFireKey != outSmokeKey;
     }
 
     void RenderQualityLabSample::Shutdown(SampleContext& context)

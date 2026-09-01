@@ -23,6 +23,14 @@ namespace RVX
             return RenderQualityLabSample::BuildDeterministicModelSlots(
                 modelCount, outSlots);
         }
+
+        static bool GetDeterministicParticleInstanceKeys(
+            uint64& outFireKey,
+            uint64& outSmokeKey) noexcept
+        {
+            return RenderQualityLabSample::GetDeterministicParticleInstanceKeys(
+                outFireKey, outSmokeKey);
+        }
     };
 } // namespace RVX
 
@@ -146,6 +154,19 @@ TEST(RenderQualityLabSampleValidation,
         RVX::RenderQualityLabSampleValidationAccess::BuildDeterministicModelSlots(
             5u, first));
     EXPECT_TRUE(first.empty());
+}
+
+TEST(RenderQualityLabSampleValidation,
+     FireAndSmokeUseDistinctNonzeroDeterministicInstanceKeys)
+{
+    RVX::uint64 fireKey = 0;
+    RVX::uint64 smokeKey = 0;
+    EXPECT_TRUE(
+        RVX::RenderQualityLabSampleValidationAccess::GetDeterministicParticleInstanceKeys(
+            fireKey, smokeKey));
+    EXPECT_NE(fireKey, 0u);
+    EXPECT_NE(smokeKey, 0u);
+    EXPECT_NE(fireKey, smokeKey);
 }
 
 TEST(RenderQualityLabSampleValidation,

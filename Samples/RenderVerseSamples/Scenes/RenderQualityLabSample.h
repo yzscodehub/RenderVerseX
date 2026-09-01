@@ -53,6 +53,7 @@ namespace RVX
                                                  const LoadedSampleParticleEffect& effect,
                                                  const Vec3& position,
                                                  uint32 maxParticleCount,
+                                                 uint64 deterministicInstanceKey,
                                                  SceneECS::SceneEntityRef& outEmitter,
                                                  std::string& outError);
         [[nodiscard]] bool QueueParticleEpochReset(SampleContext& context,
@@ -61,6 +62,7 @@ namespace RVX
                                                    uint32 maxParticleCount,
                                                    uint64 configurationRevision,
                                                    uint64 restartSequence,
+                                                   uint64 deterministicInstanceKey,
                                                    std::string& outError);
         [[nodiscard]] bool HasAppliedParticleEpoch(
             const SampleContext& context,
@@ -68,7 +70,8 @@ namespace RVX
             SceneECS::SceneEntityRef emitter,
             uint32 maxParticleCount,
             uint64 configurationRevision,
-            uint64 restartSequence) const noexcept;
+            uint64 restartSequence,
+            uint64 deterministicInstanceKey) const noexcept;
         [[nodiscard]] bool HasRequiredPresentation(
             const SampleRenderDiagnostics& diagnostics) const noexcept;
 
@@ -81,6 +84,9 @@ namespace RVX
         [[nodiscard]] static bool BuildDeterministicModelSlots(
             std::size_t modelCount,
             std::vector<Vec3>& outSlots) noexcept;
+        [[nodiscard]] static bool GetDeterministicParticleInstanceKeys(
+            uint64& outFireKey,
+            uint64& outSmokeKey) noexcept;
 
         std::vector<LoadedSampleModel> m_models;
         LoadedSampleEnvironment m_environment;

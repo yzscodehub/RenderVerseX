@@ -45,9 +45,13 @@ namespace
         const ParticleEcsConfig& config,
         ECS::EntityHandle entity) noexcept
     {
+        if (config.deterministicInstanceKey != 0)
+        {
+            return config.deterministicInstanceKey;
+        }
+
         // Explicitly encode the generation-qualified ECS owner.  This key is
-        // stable across identical worlds and does not depend on process-wide
-        // ParticleSystemInstance allocation order.
+        // retained only as a compatibility fallback for existing authored data.
         uint64 value = 14695981039346656037ull;
         const auto mix = [&value](uint64 source)
         {

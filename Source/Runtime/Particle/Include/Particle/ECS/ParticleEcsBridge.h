@@ -46,6 +46,12 @@ namespace RVX::Particle
         uint64 configurationRevision = 1;
         /** @brief Explicit CPU simulation seed; zero is a valid deterministic seed. */
         uint32 deterministicSeed = 0;
+        /**
+         * @brief Optional authored identity for deterministic simulation.
+         *
+         * Zero preserves the compatibility fallback derived from the ECS owner.
+         */
+        uint64 deterministicInstanceKey = 0;
         float emissionRateScale = 1.0f;
         float simulationSpeed = 1.0f;
         uint32 maxParticleCount = 1;
