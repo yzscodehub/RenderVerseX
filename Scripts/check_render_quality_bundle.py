@@ -517,11 +517,21 @@ def load_policy(path: Path) -> dict[str, Any]:
         {"warmupCompletedFrames", "goldenCaptureTick", "adjacentCaptureTicks"},
         "visual policy temporal",
     )
-    if _integer(temporal["warmupCompletedFrames"], "temporal.warmupCompletedFrames", 60) < 60:
+    warmup_completed_frames = _integer(
+        temporal["warmupCompletedFrames"],
+        "temporal.warmupCompletedFrames",
+        60,
+    )
+    if warmup_completed_frames < 60:
         raise ContractError("temporal.warmupCompletedFrames must be at least 60")
     golden_tick = _integer(
         temporal["goldenCaptureTick"], "temporal.goldenCaptureTick", 1
     )
+    if golden_tick < warmup_completed_frames:
+        raise ContractError(
+            "temporal.goldenCaptureTick must not precede "
+            "temporal.warmupCompletedFrames"
+        )
     adjacent_ticks = temporal["adjacentCaptureTicks"]
     if (
         not isinstance(adjacent_ticks, list)

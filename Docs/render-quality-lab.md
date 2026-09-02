@@ -15,10 +15,10 @@ this document never render, cook, import, or update a golden baseline.
 ## Same-process attachment series
 
 Visual qualification uses one `--qualification-series <root>/series.json`
-producer. RenderQualityLab contract v3 declares ticks `120, 360, 361`; the
+producer. RenderQualityLab contract v3 declares ticks `300, 360, 361`; the
 host captures and completes all three without restarting the runtime:
 
-    tick-000120/bundle.json  # static Golden candidate
+    tick-000300/bundle.json  # static Golden candidate after temporal convergence
     tick-000360/bundle.json  # temporal older frame
     tick-000361/bundle.json  # temporal adjacent frame
     series.json              # published last
@@ -60,9 +60,10 @@ py Scripts/check_render_quality_bundle.py `
   --report <build>/RenderQualityLab/visual-result.json
 ```
 
-The first `--bundle` is only the tick-120 static Golden comparison.
+The first `--bundle` is only the tick-300 static Golden comparison.
 Exactly two `--temporal-bundle` values are required and must be ticks
-360 and 361. The policy requires a warm-up of 60 or more completed frames.
+360 and 361. The policy requires exactly 300 completed warm-up frames before
+the static Golden capture.
 Every temporal bundle must have the exact requested source commit, run id,
 preset, and qualification identity except for its declared `captureTick`.
 The tick must be present in that sample's public, strictly increasing
@@ -156,8 +157,8 @@ identity is a failed result, never a partial pass.
 adjacent temporal settings:
 
 ```text
-temporal.warmupCompletedFrames >= 60
-temporal.goldenCaptureTick = 120
+temporal.warmupCompletedFrames = 300
+temporal.goldenCaptureTick = 300
 temporal.adjacentCaptureTicks = [360, 361]
 ROI: id, normalizedRegionId, x, y, width, height, temporalMode (static|dynamic),
      dataRange, maxMae, maxAbs, minPsnr, minSsim,
@@ -184,8 +185,9 @@ exactly. This keeps an ROI consistent across LDR, HDR, depth, normal, motion,
 and mask surfaces without relying on a private renderer implementation.
 
 The same selected sample must declare the exact, strictly increasing capture
-ticks. Tick 120 is compared only with the approved Golden. Temporal validation
-compares only 360 to 361; it never averages the large 120-to-360 scene change.
+ticks. Tick 300 is compared only with the approved Golden after TAA history has
+converged. Temporal validation compares only 360 to 361; it never averages the
+larger 300-to-360 scene change.
 Dynamic ROIs must satisfy both minimum motion and maximum flicker, preventing a
 frozen animation from passing. Static ROIs require `minTemporalMae=0`.
 
@@ -201,8 +203,16 @@ heatmaps are non-golden, generated build artifacts and must not be committed.
 
 `render_quality_golden.py` separates candidate generation from human
 approval. `prepare` requires five valid Series and an explicit selected
-ordinal; it copies only the selected tick-120 bundle, VisualPolicy V2, and a
+ordinal; it copies only the selected tick-300 bundle, VisualPolicy V2, and a
 deterministic 4x2 contact sheet into a candidate package.
+Before packaging, the selected Series supplies the baseline for each of ticks
+300, 360, and 361. Every one of the five Series must match the selected Series
+at each same-tick position under VisualPolicy, and each Series must separately
+pass the 360-to-361 temporal policy. Preparing the Forward+ and Deferred
+candidates therefore gates 30 bundle comparisons and 10 temporal pairs in
+total. The standalone `contact-sheet` command also requires the VisualPolicy
+and previews its declared `goldenCaptureTick`; it never assumes the first
+Series entry is the Golden frame.
 `RVX.RenderQualityGoldenRecord` v1 binds the five run/Series hashes,
 hardware policy (`exact-hardware` or `runner-class`), selected
 bundle/receipt, policy, manifest, contact sheet, source commit, and approval.

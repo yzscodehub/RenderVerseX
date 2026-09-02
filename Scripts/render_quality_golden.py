@@ -17,6 +17,8 @@ from typing import Any
 from check_render_quality_bundle import (
     ContractError,
     REQUIRED_SEMANTICS,
+    _comparison,
+    _temporal,
     load_bundle,
     load_policy,
     load_sample_contract,
@@ -568,7 +570,19 @@ def _contact(args: argparse.Namespace) -> int:
         series = load_series(args.series.resolve(), args.sample_manifest.resolve())
     except ContractError as error:
         raise GoldenError(str(error)) from error
-    bundle, _ = _tick(series, 120)
+    policy, identity = _policy(args.visual_policy.resolve())
+    expected_ticks = (
+        int(policy["temporal"]["goldenCaptureTick"]),
+        *(int(value) for value in policy["temporal"]["adjacentCaptureTicks"]),
+    )
+    if (
+        series.qualification_identity != identity
+        or tuple(item.capture_tick for item in series.ticks) != expected_ticks
+    ):
+        raise GoldenError(
+            "contact-sheet Series identity or capture ticks do not match VisualPolicy"
+        )
+    bundle, _ = _tick(series, expected_ticks[0])
     _contact_sheet(bundle, series.series_sha256, args.out_ppm.resolve(), args.out_index.resolve())
     print(f"Render quality contact sheet: {args.out_ppm}")
     return 0
@@ -588,6 +602,55 @@ def _prepare(args: argparse.Namespace) -> int:
     selected = series[selected_ordinal - 1]
     golden_tick = int(policy["temporal"]["goldenCaptureTick"])
     source_bundle, source_tick = _tick(selected, golden_tick)
+    try:
+        normalized_regions, declared_capture_ticks = load_sample_contract(
+            manifest,
+            str(identity["sampleId"]),
+        )
+        adjacent_ticks = tuple(
+            int(value) for value in policy["temporal"]["adjacentCaptureTicks"]
+        )
+        calibration_ticks = (golden_tick, *adjacent_ticks)
+        baseline_bundles = {
+            tick: load_bundle(_tick(selected, tick)[0])
+            for tick in calibration_ticks
+        }
+        for ordinal, item in enumerate(series, 1):
+            visual_failures: list[str] = []
+            for tick in calibration_ticks:
+                current_bundle = load_bundle(_tick(item, tick)[0])
+                _, tick_failures = _comparison(
+                    current_bundle,
+                    baseline_bundles[tick],
+                    policy,
+                    normalized_regions,
+                    None,
+                )
+                visual_failures.extend(
+                    f"tick {tick}: {failure}" for failure in tick_failures
+                )
+            temporal_bundles = [
+                load_bundle(_tick(item, tick)[0]) for tick in adjacent_ticks
+            ]
+            _, temporal_failures = _temporal(
+                temporal_bundles,
+                policy,
+                normalized_regions,
+                declared_capture_ticks,
+                item.source_commit,
+                item.run_id,
+                item.preset,
+            )
+            failures = visual_failures + [
+                f"temporal: {failure}" for failure in temporal_failures
+            ]
+            if failures:
+                raise GoldenError(
+                    f"series {ordinal} failed VisualPolicy calibration: "
+                    + "; ".join(failures)
+                )
+    except ContractError as error:
+        raise GoldenError(f"five-series VisualPolicy calibration failed: {error}") from error
     output.mkdir(parents=True, exist_ok=True)
     bundle_dir = output / "bundle"
     shutil.copytree(source_bundle.parent, bundle_dir, symlinks=True)
@@ -725,6 +788,7 @@ def parse_args() -> argparse.Namespace:
     contact = commands.add_parser("contact-sheet", help="write a deterministic 4x2 PPM preview")
     contact.add_argument("--series", required=True, type=Path)
     contact.add_argument("--sample-manifest", required=True, type=Path)
+    contact.add_argument("--visual-policy", required=True, type=Path)
     contact.add_argument("--out-ppm", required=True, type=Path)
     contact.add_argument("--out-index", required=True, type=Path)
     contact.set_defaults(action=_contact)

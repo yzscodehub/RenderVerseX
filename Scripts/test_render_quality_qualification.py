@@ -42,7 +42,7 @@ IDENTITY = {
     "quality": "high",
     "backend": "DX12",
     "view": "hero",
-    "captureTick": 120,
+    "captureTick": 300,
     "visualContractVersion": 1,
 }
 PERFORMANCE_IDENTITY = {
@@ -80,7 +80,7 @@ def write_bundle(
     source_commit: str = "commit-a",
     run_id: str = "run-a",
     preset: str = "win_x64_debug_gfx24_qualification",
-    capture_tick: int = 120,
+    capture_tick: int = 300,
     receipt: str = "a" * 64,
     payload_offset: float = 0.0,
 ) -> Path:
@@ -170,7 +170,7 @@ def write_sample_manifest(path: Path) -> Path:
         "schemaVersion": 1,
         "samples": [{
             "id": "render-quality-lab",
-            "captureTicks": [120, 360, 361],
+            "captureTicks": [300, 360, 361],
             "roiMetricPolicy": {
                 "regionsOfInterest": [{
                     "id": "frame", "x": 0.0, "y": 0.0,
@@ -212,8 +212,8 @@ def write_visual_policy(path: Path) -> Path:
         },
         "attachments": attachments,
         "temporal": {
-            "warmupCompletedFrames": 60,
-            "goldenCaptureTick": 120,
+            "warmupCompletedFrames": 300,
+            "goldenCaptureTick": 300,
             "adjacentCaptureTicks": [360, 361],
         },
     })
@@ -273,7 +273,7 @@ def write_visual_golden_record(
             "seriesSha256": series_hashes[2],
             "runId": baseline_document["execution"]["runId"],
             "preset": baseline_document["execution"]["preset"],
-            "captureTick": 120,
+            "captureTick": 300,
             "bundleId": baseline_document["bundleId"],
             "bundlePath": baseline.relative_to(path.parent).as_posix(),
             "bundleSha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
@@ -311,6 +311,7 @@ def write_attachment_series(
     *,
     run_id: str = "run-a",
     payload_base: float = 0.0,
+    tick_payload_offsets: dict[int, float] | None = None,
     hardware: dict[str, str] | None = None,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
@@ -318,10 +319,20 @@ def write_attachment_series(
         key: value for key, value in IDENTITY.items()
         if key != "captureTick"
     }
+    payload_offsets = {
+        300: payload_base,
+        360: payload_base + 0.5,
+        361: payload_base + 0.501,
+    }
+    if tick_payload_offsets is not None:
+        unknown_ticks = set(tick_payload_offsets) - set(payload_offsets)
+        if unknown_ticks:
+            raise ValueError(f"unsupported test capture ticks: {sorted(unknown_ticks)}")
+        payload_offsets.update(tick_payload_offsets)
     tick_specs = (
-        (120, "1", "a" * 64, payload_base),
-        (360, "2", "c" * 64, payload_base + 0.5),
-        (361, "3", "d" * 64, payload_base + 0.501),
+        (300, "1", "a" * 64, payload_offsets[300]),
+        (360, "2", "c" * 64, payload_offsets[360]),
+        (361, "3", "d" * 64, payload_offsets[361]),
     )
     tick_objects: list[series_contract.SeriesTick] = []
     tick_documents: list[dict[str, object]] = []
@@ -728,15 +739,15 @@ class RenderQualityBundleTests(unittest.TestCase):
         current = write_bundle(
             root / "current",
             name="current",
-            completed_frame=120,
-            capture_tick=120,
+            completed_frame=300,
+            capture_tick=300,
             receipt="a" * 64,
         )
         baseline = write_bundle(
             root / "baseline",
             name="baseline",
-            completed_frame=120,
-            capture_tick=120,
+            completed_frame=300,
+            capture_tick=300,
             receipt="b" * 64,
         )
         later = write_bundle(
@@ -836,6 +847,21 @@ class RenderQualityBundleTests(unittest.TestCase):
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
             self.assertIn("schema/version", result.stderr)
+
+    def test_visual_policy_rejects_golden_before_declared_warmup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            policy = Path(arguments[arguments.index("--policy") + 1])
+            document = json.loads(policy.read_text())
+            document["temporal"]["warmupCompletedFrames"] = 301
+            write_json(policy, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "goldenCaptureTick must not precede",
+                result.stderr,
+            )
 
     def test_visual_gate_requires_approved_golden_and_bound_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1056,7 +1082,7 @@ class RenderQualityBundleTests(unittest.TestCase):
 
             sample_manifest = Path(arguments[arguments.index("--sample-manifest") + 1])
             manifest_document = json.loads(sample_manifest.read_text())
-            manifest_document["samples"][0]["captureTicks"] = [360, 120]
+            manifest_document["samples"][0]["captureTicks"] = [360, 300]
             write_json(sample_manifest, manifest_document)
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
@@ -1071,7 +1097,7 @@ class RenderQualityBundleTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("not declared", result.stderr)
 
-            document["qualificationIdentity"]["captureTick"] = 120
+            document["qualificationIdentity"]["captureTick"] = 300
             write_json(later, document)
             result = run_bundle(*arguments)
             self.assertEqual(result.returncode, 1)
@@ -1110,7 +1136,7 @@ class RenderQualitySeriesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads((root / "result.json").read_text())
             self.assertEqual(report["status"], "passed")
-            self.assertEqual(report["captureTicks"], [120, 360, 361])
+            self.assertEqual(report["captureTicks"], [300, 360, 361])
 
     def test_series_path_hash_identity_and_tick_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1169,7 +1195,7 @@ class RenderQualityGoldenTests(unittest.TestCase):
                 root / f"series-{ordinal}",
                 manifest,
                 run_id=f"golden-run-{ordinal}",
-                payload_base=ordinal * 0.01,
+                payload_base=0.01,
             )
             for ordinal in range(1, 6)
         ]
@@ -1248,6 +1274,141 @@ class RenderQualityGoldenTests(unittest.TestCase):
             self.assertEqual(
                 verified.returncode, 0, verified.stdout + verified.stderr
             )
+
+    def test_prepare_rejects_visual_drift_in_a_nonselected_series(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = write_sample_manifest(root / "sample-manifest.json")
+            policy = write_visual_policy(root / "visual-policy.json")
+            series_paths = [
+                write_attachment_series(
+                    root / f"series-{ordinal}",
+                    manifest,
+                    run_id=f"golden-run-{ordinal}",
+                    payload_base=0.02 if ordinal == 5 else 0.01,
+                )
+                for ordinal in range(1, 6)
+            ]
+            output = root / "candidate"
+            arguments: list[Path | str] = [
+                "prepare",
+                "--sample-manifest", manifest,
+                "--visual-policy", policy,
+                "--output-dir", output,
+                "--golden-id", "dx12-deferred-high-v3",
+                "--selected-series-ordinal", "3",
+                "--hardware-mode", "exact-hardware",
+            ]
+            for series_path in series_paths:
+                arguments.extend(["--series", series_path])
+            result = run_golden(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "series 5 failed VisualPolicy calibration",
+                result.stderr,
+            )
+            self.assertFalse(output.exists())
+
+    def test_prepare_rejects_equal_temporal_drift_in_a_nonselected_series(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = write_sample_manifest(root / "sample-manifest.json")
+            policy = write_visual_policy(root / "visual-policy.json")
+            series_paths = [
+                write_attachment_series(
+                    root / f"series-{ordinal}",
+                    manifest,
+                    run_id=f"golden-run-{ordinal}",
+                    payload_base=0.01,
+                    tick_payload_offsets=(
+                        {360: 0.61, 361: 0.611}
+                        if ordinal == 5
+                        else None
+                    ),
+                )
+                for ordinal in range(1, 6)
+            ]
+            output = root / "candidate"
+            arguments: list[Path | str] = [
+                "prepare",
+                "--sample-manifest", manifest,
+                "--visual-policy", policy,
+                "--output-dir", output,
+                "--golden-id", "dx12-deferred-high-v3",
+                "--selected-series-ordinal", "3",
+                "--hardware-mode", "exact-hardware",
+            ]
+            for series_path in series_paths:
+                arguments.extend(["--series", series_path])
+            result = run_golden(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("series 5 failed VisualPolicy calibration", result.stderr)
+            self.assertIn("tick 360", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_prepare_rejects_frozen_temporal_pairs_in_all_series(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = write_sample_manifest(root / "sample-manifest.json")
+            policy = write_visual_policy(root / "visual-policy.json")
+            series_paths = [
+                write_attachment_series(
+                    root / f"series-{ordinal}",
+                    manifest,
+                    run_id=f"golden-run-{ordinal}",
+                    payload_base=0.01,
+                    tick_payload_offsets={360: 0.51, 361: 0.51},
+                )
+                for ordinal in range(1, 6)
+            ]
+            output = root / "candidate"
+            arguments: list[Path | str] = [
+                "prepare",
+                "--sample-manifest", manifest,
+                "--visual-policy", policy,
+                "--output-dir", output,
+                "--golden-id", "dx12-deferred-high-v3",
+                "--selected-series-ordinal", "3",
+                "--hardware-mode", "exact-hardware",
+            ]
+            for series_path in series_paths:
+                arguments.extend(["--series", series_path])
+            result = run_golden(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("series 1 failed VisualPolicy calibration", result.stderr)
+            self.assertIn("temporal: temporal motion/flicker", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_contact_sheet_requires_policy_and_uses_golden_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = write_sample_manifest(root / "sample-manifest.json")
+            policy = write_visual_policy(root / "visual-policy.json")
+            series = write_attachment_series(root / "series", manifest)
+            ppm = root / "contact.ppm"
+            index = root / "contact.json"
+            result = run_golden(
+                "contact-sheet",
+                "--series", series,
+                "--sample-manifest", manifest,
+                "--visual-policy", policy,
+                "--out-ppm", ppm,
+                "--out-index", index,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(index.read_text())["captureTick"], 300)
+
+            missing_policy = run_golden(
+                "contact-sheet",
+                "--series", series,
+                "--sample-manifest", manifest,
+                "--out-ppm", root / "missing-policy.ppm",
+                "--out-index", root / "missing-policy.json",
+            )
+            self.assertNotEqual(missing_policy.returncode, 0)
+            self.assertIn("--visual-policy", missing_policy.stderr)
 
     def test_golden_hash_and_unexpanded_payload_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

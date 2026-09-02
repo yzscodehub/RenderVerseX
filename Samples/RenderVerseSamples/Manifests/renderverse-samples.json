@@ -975,7 +975,7 @@
           "exposure": 1.0
         }
       ],
-      "captureTicks": [120, 360, 361],
+      "captureTicks": [300, 360, 361],
       "visualContractVersion": 3,
       "roiMetricPolicy": {
         "regionsOfInterest": [
