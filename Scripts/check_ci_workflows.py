@@ -225,6 +225,16 @@ def _preset_names(data: dict[str, object], category: str) -> set[str]:
 
 def validate(root: Path) -> list[str]:
     findings: list[str] = []
+    attributes = _read(root / ".gitattributes")
+    for required in (
+        "Tests/RenderQuality/Goldens/**/*.raw filter=lfs diff=lfs merge=lfs -text",
+        "Tests/RenderQuality/**/*.json -text",
+    ):
+        if required not in attributes:
+            findings.append(
+                ".gitattributes is missing immutable RenderQuality rule "
+                f"{required}"
+            )
     workflow_root = root / ".github" / "workflows"
     workflow_text: dict[str, str] = {}
     workflow_jobs: dict[str, dict[str, str]] = {}

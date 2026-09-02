@@ -24,6 +24,7 @@ class CIWorkflowPolicyTests(unittest.TestCase):
             self.repository / ".github" / "workflows",
             self.root / ".github" / "workflows",
         )
+        shutil.copy2(self.repository / ".gitattributes", self.root)
         shutil.copy2(self.repository / "CMakePresets.json", self.root)
         sample_manifest = self.root / "Samples" / "RenderVerseSamples" / "Manifests"
         sample_manifest.mkdir(parents=True)
@@ -88,6 +89,17 @@ class CIWorkflowPolicyTests(unittest.TestCase):
 
     def test_repository_contract_passes(self) -> None:
         self.assertEqual(validate(self.root), [])
+
+    def test_render_quality_json_must_disable_eol_conversion(self) -> None:
+        self.replace(
+            ".gitattributes",
+            "Tests/RenderQuality/**/*.json -text",
+            "Tests/RenderQuality/**/*.json text=auto",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any(
+            "immutable RenderQuality rule" in item for item in findings
+        ))
 
     def test_missing_required_job_fails_closed(self) -> None:
         self.replace(".github/workflows/ci.yml", "  linux-tsan:\n", "  linux-tsan-removed:\n")

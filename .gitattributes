@@ -52,3 +52,7 @@ Samples/RenderVerseSamples/Assets/**/*.rvxanim filter=lfs diff=lfs merge=lfs -te
 # Human-approved RenderQuality raw attachment payloads are immutable test
 # assets. Candidate captures stay in build/; only promoted Goldens use LFS.
 Tests/RenderQuality/Goldens/**/*.raw filter=lfs diff=lfs merge=lfs -text
+
+# Golden and performance records hash their referenced JSON bytes. Disable
+# checkout EOL conversion so the approved SHA-256 values remain cross-platform.
+Tests/RenderQuality/**/*.json -text
