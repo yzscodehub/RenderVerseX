@@ -1247,8 +1247,17 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     }
 
     RenderPassRecordContext postLightingContext = m_recordContext;
-    postLightingContext.view.colorTarget =
-        volumetricLighting->resolvedSceneColor;
+    // The frozen frame snapshot still names the pre-volumetric HDR target.
+    // Publish the exact resolved attachment explicitly so Skybox and every
+    // later surface record against the same post-volumetric scene color.
+    if (!TryBindFinalHdrSceneColor(
+            postLightingContext,
+            volumetricLighting->resolvedSceneColor))
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain could not bind its final HDR attachment");
+        return;
+    }
     postLightingContext.volumetricLighting = VolumetricLightingRecordInput{
         postLightingContext.identity,
         volumetricLighting->volumetricPlanIdentity,

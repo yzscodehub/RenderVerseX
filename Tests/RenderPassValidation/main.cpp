@@ -32,6 +32,7 @@
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Features/DefaultRenderComposition.h"
 #include "Features/DefaultRenderPassBundle.h"
+#include "Features/OpaqueSceneColorPyramidBuilder.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
@@ -11716,6 +11717,151 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(volumetricResolvedHdr.Get(),
               commands.renderPasses[0].colorAttachments[0].view->GetTexture());
     EXPECT_NE(preVolumetricSceneColor.Get(),
+              commands.renderPasses[0].colorAttachments[0].view->GetTexture());
+}
+
+TEST_F(RenderPassValidationFixture,
+       ForwardSkyboxAndOpaqueSceneColorPyramidUseThePostLightingLateBoundHdrAttachment)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureDesc hdrDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    hdrDesc.usage = hdrDesc.usage | RHITextureUsage::ShaderResource;
+    const RHITextureRef frozenForwardHdr = device.CreateTexture(hdrDesc);
+    const RHITextureRef postLightingForwardHdr = device.CreateTexture(hdrDesc);
+    ASSERT_TRUE(frozenForwardHdr);
+    ASSERT_TRUE(postLightingForwardHdr);
+
+    ViewData recordView = view;
+    recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, frozenForwardHdr.Get(), RHIResourceState::RenderTarget);
+    recordView.viewportWidth = 64;
+    recordView.viewportHeight = 64;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, recordView, 954u));
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, recordView, scene, sky, 954u, 954u);
+    const RGTextureHandle frozenHdr = context.frameSnapshot->view.colorTarget;
+    const RGTextureHandle postLightingHdr =
+        RenderGraphValidationAccess::ImportTexture(
+            graph, postLightingForwardHdr.Get(), RHIResourceState::RenderTarget);
+    ASSERT_TRUE(postLightingHdr.IsValid());
+    ASSERT_FALSE(AreSameGraphTextureHandle(frozenHdr, postLightingHdr));
+
+    // The Forward special-surface chain keeps the frame snapshot immutable,
+    // but publishes the post-lighting HDR attachment for Skybox and the
+    // refraction pyramid. Neither graph pass may declare the frozen target.
+    RenderPassRecordContext invalidContext = context;
+    RenderFrameExecutionReport mismatchedReport;
+    invalidContext.view.renderFrameExecutionReport = &mismatchedReport;
+    const RGTextureHandle previousInvalidColorTarget =
+        invalidContext.view.colorTarget;
+    EXPECT_FALSE(TryBindFinalHdrSceneColor(invalidContext, postLightingHdr));
+    EXPECT_TRUE(AreSameGraphTextureHandle(
+        previousInvalidColorTarget, invalidContext.view.colorTarget));
+    EXPECT_TRUE(invalidContext.lateBoundHdrAttachment.IsEmpty());
+
+    ASSERT_TRUE(TryBindFinalHdrSceneColor(context, postLightingHdr));
+
+    pass.AddToGraph(graph, context);
+
+    RenderFeatureGraphBuilder featureBuilder(graph);
+    const RenderFrameIdentity featureFrameIdentity = {
+        context.identity.frameSequence,
+        1954u,
+        1u,
+        1u};
+    const RenderViewIdentity featureViewIdentity = {
+        1u,
+        2954u,
+        context.identity.viewOrdinal,
+        ViewRole::Main};
+    OpaqueSceneColorPyramid pyramid;
+    OpaqueSceneColorPyramidRecordInput pyramidInput;
+    std::string pyramidFailure;
+    ASSERT_TRUE(BuildOpaqueSceneColorPyramid(
+        featureBuilder,
+        pipelineCache,
+        context,
+        featureFrameIdentity,
+        featureViewIdentity,
+        {64u, 64u},
+        RenderQualityTier::High,
+        pyramid,
+        pyramidInput,
+        pyramidFailure)) << pyramidFailure;
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_GE(diagnostics.passes.size(), 2u);
+    const auto skyboxIt = std::find_if(
+        diagnostics.passes.begin(),
+        diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "SkyboxPass";
+        });
+    const auto pyramidBaseIt = std::find_if(
+        diagnostics.passes.begin(),
+        diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "OpaqueSceneColorPyramidBase";
+        });
+    ASSERT_NE(diagnostics.passes.end(), skyboxIt);
+    ASSERT_NE(diagnostics.passes.end(), pyramidBaseIt);
+    EXPECT_LT(std::distance(diagnostics.passes.begin(), skyboxIt),
+              std::distance(diagnostics.passes.begin(), pyramidBaseIt));
+
+    const auto findTextureUsage = [](const RenderGraph::PassDiagnostic& pass,
+                                     RGTextureHandle texture)
+    {
+        return std::find_if(
+            pass.usages.begin(),
+            pass.usages.end(),
+            [texture](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == texture.index;
+            });
+    };
+    const auto skyboxPostLightingUsage = findTextureUsage(*skyboxIt, postLightingHdr);
+    ASSERT_NE(skyboxIt->usages.end(), skyboxPostLightingUsage);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::ReadWrite,
+              skyboxPostLightingUsage->access);
+    EXPECT_EQ(RHIResourceState::RenderTarget,
+              skyboxPostLightingUsage->desiredState);
+    EXPECT_EQ(skyboxIt->usages.end(), findTextureUsage(*skyboxIt, frozenHdr));
+
+    const auto pyramidPostLightingUsage = findTextureUsage(
+        *pyramidBaseIt, postLightingHdr);
+    ASSERT_NE(pyramidBaseIt->usages.end(), pyramidPostLightingUsage);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::Read,
+              pyramidPostLightingUsage->access);
+    EXPECT_EQ(RHIResourceState::ShaderResource,
+              pyramidPostLightingUsage->desiredState);
+    EXPECT_EQ(pyramidBaseIt->usages.end(),
+              findTextureUsage(*pyramidBaseIt, frozenHdr));
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    ASSERT_FALSE(commands.renderPasses.empty());
+    ASSERT_EQ(1u, commands.renderPasses[0].colorAttachmentCount);
+    ASSERT_NE(nullptr, commands.renderPasses[0].colorAttachments[0].view);
+    EXPECT_EQ(postLightingForwardHdr.Get(),
+              commands.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_NE(frozenForwardHdr.Get(),
               commands.renderPasses[0].colorAttachments[0].view->GetTexture());
 }
 

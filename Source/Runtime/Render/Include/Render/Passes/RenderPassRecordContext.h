@@ -2001,6 +2001,39 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Bind one post-snapshot HDR attachment without mutating the frozen frame.
+     *
+     * Later surface features must update both the convenient ViewData target and
+     * the explicit value-owned attachment consumed by MakeRenderPassExecutionData.
+     * Keeping this operation atomic prevents a frozen snapshot from silently
+     * redirecting a pass back to an earlier HDR surface.
+     */
+    [[nodiscard]] inline bool TryBindFinalHdrSceneColor(
+        RenderPassRecordContext& context,
+        RGTextureHandle finalHdrSceneColor) noexcept
+    {
+        if (!context.identity.IsValid() ||
+            !HasCurrentGraphProvenance(finalHdrSceneColor, context.identity))
+        {
+            return false;
+        }
+        const RGTextureHandle previousColorTarget = context.view.colorTarget;
+        const RenderPassLateBoundHdrAttachment previousLateBound =
+            context.lateBoundHdrAttachment;
+        context.view.colorTarget = finalHdrSceneColor;
+        context.lateBoundHdrAttachment = {
+            context.identity,
+            finalHdrSceneColor};
+        if (context.IsFrameIdentityValid())
+        {
+            return true;
+        }
+        context.view.colorTarget = previousColorTarget;
+        context.lateBoundHdrAttachment = previousLateBound;
+        return false;
+    }
+
     /** @brief Common graph-owned execution payload copied from a record context. */
     struct RenderPassExecutionData
     {

@@ -1551,14 +1551,17 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     }
 
     RenderPassRecordContext reflectionResolvedContext = m_recordContext;
-    reflectionResolvedContext.view.colorTarget =
-        volumetricLighting->resolvedSceneColor;
     // The frozen frame snapshot still names the pre-volumetric HDR target.
     // Surface passes receive this explicit value-owned attachment instead of
     // mutating that snapshot or inferring the target from pass ordering.
-    reflectionResolvedContext.lateBoundHdrAttachment = {
-        reflectionResolvedContext.identity,
-        volumetricLighting->resolvedSceneColor};
+    if (!TryBindFinalHdrSceneColor(
+            reflectionResolvedContext,
+            volumetricLighting->resolvedSceneColor))
+    {
+        SetCompositionFailure(
+            "Deferred forward-special chain could not bind its final HDR attachment");
+        return;
+    }
     reflectionResolvedContext.volumetricLighting =
         VolumetricLightingRecordInput{
             reflectionResolvedContext.identity,

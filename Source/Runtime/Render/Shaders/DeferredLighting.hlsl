@@ -503,7 +503,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float deviceDepth = DeviceDepth.Load(int3(pixel, 0));
     if (IsBackgroundDepth(deviceDepth))
     {
-        HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0);
+        // HDRSceneColor is declared ReadWrite so background pixels preserve
+        // the exact graph-initialized view clear/load policy used by Forward+.
         BaseIndirectSpecular[pixel] = 0.0f;
         SpecularResponse[pixel] = 0.0f;
         return;

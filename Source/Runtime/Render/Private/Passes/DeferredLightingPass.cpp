@@ -289,7 +289,8 @@ namespace RVX
 
         RGTextureViewHandle DeclareComputeUAV(RenderGraphBuilder& builder,
                                               RGTextureHandle texture,
-                                              const char* debugName)
+                                              const char* debugName,
+                                              bool preserveContents = false)
         {
             const RHITextureDesc* desc = builder.GetTextureDesc(texture);
             if (desc == nullptr)
@@ -303,12 +304,19 @@ namespace RVX
             viewDesc.subresourceRange = RHISubresourceRange::All();
             viewDesc.type = RHITextureViewType::UnorderedAccess;
             viewDesc.debugName = debugName;
-            return builder.Write(
-                builder.CreateTextureView(texture, viewDesc),
-                MakeRGAccessDesc(
-                    RHIResourceState::UnorderedAccess,
-                    RHIShaderStage::Compute,
-                    RHIDiscardIntent::Discard));
+            const RGTextureViewHandle view =
+                builder.CreateTextureView(texture, viewDesc);
+            const RGAccessDesc access = MakeRGAccessDesc(
+                RHIResourceState::UnorderedAccess,
+                RHIShaderStage::Compute);
+            return preserveContents
+                ? builder.ReadWrite(view, access)
+                : builder.Write(
+                      view,
+                      MakeRGAccessDesc(
+                          RHIResourceState::UnorderedAccess,
+                          RHIShaderStage::Compute,
+                          RHIDiscardIntent::Discard));
         }
     } // namespace
 
@@ -580,7 +588,7 @@ namespace RVX
                     "DeferredLightingDepthSRV");
                 data.hdrSceneColorView = DeclareComputeUAV(
                     builder, data.hdrSceneColor,
-                    "DeferredLightingHDRSceneColorUAV");
+                    "DeferredLightingHDRSceneColorUAV", true);
                 data.baseIndirectSpecularView = DeclareComputeUAV(
                     builder, data.baseIndirectSpecular,
                     "DeferredLightingBaseIndirectSpecularUAV");

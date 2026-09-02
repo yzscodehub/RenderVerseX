@@ -14882,6 +14882,46 @@ TEST_F(PipelineCacheValidationFixture,
     RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
     ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
 
+    const RVX::RenderGraph::Diagnostics graphDiagnostics =
+        graphInputs.graph.GetDiagnostics();
+    const auto lightingPass = std::find_if(
+        graphDiagnostics.passes.begin(),
+        graphDiagnostics.passes.end(),
+        [](const RVX::RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "DeferredLightingPass";
+        });
+    ASSERT_NE(graphDiagnostics.passes.end(), lightingPass);
+    const auto findTextureUsage = [lightingPass](RVX::RGTextureHandle texture)
+    {
+        return std::find_if(
+            lightingPass->usages.begin(),
+            lightingPass->usages.end(),
+            [texture](const RVX::RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type ==
+                           RVX::RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == texture.index;
+            });
+    };
+    const auto hdrUsage = findTextureUsage(
+        graphInputs.inputs.hdrSceneColor);
+    const auto baseSpecularUsage = findTextureUsage(
+        graphInputs.inputs.baseIndirectSpecular);
+    const auto specularResponseUsage = findTextureUsage(
+        graphInputs.inputs.specularResponse);
+    ASSERT_NE(lightingPass->usages.end(), hdrUsage);
+    ASSERT_NE(lightingPass->usages.end(), baseSpecularUsage);
+    ASSERT_NE(lightingPass->usages.end(), specularResponseUsage);
+    EXPECT_EQ(RVX::RenderGraph::DiagnosticAccessType::ReadWrite,
+              hdrUsage->access);
+    EXPECT_EQ(RVX::RenderGraph::DiagnosticAccessType::Write,
+              baseSpecularUsage->access);
+    EXPECT_EQ(RVX::RenderGraph::DiagnosticAccessType::Write,
+              specularResponseUsage->access);
+    EXPECT_EQ(RVX::RHIResourceState::UnorderedAccess,
+              hdrUsage->desiredState);
+
     DeferredLightingRecordingCommandContext commands;
     RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
     ASSERT_EQ(1u, commands.dispatches.size());
@@ -15102,7 +15142,7 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
-       DeferredLightingShaderContractUsesEightByEightDispatchAndExplicitBackgroundDepthRule)
+       DeferredLightingShaderContractPreservesTheInitializedViewBackground)
 {
     if (!HasShaderFixtures())
     {
@@ -15136,8 +15176,18 @@ TEST_F(PipelineCacheValidationFixture,
               source.find("deviceDepth <= DepthBackgroundValue + DepthBackgroundEpsilon"));
     EXPECT_NE(std::string::npos,
               source.find("deviceDepth >= DepthBackgroundValue - DepthBackgroundEpsilon"));
+    const size_t backgroundBranch =
+        source.find("if (IsBackgroundDepth(deviceDepth))");
+    const size_t materialLookup = source.find(
+        "const uint materialTableIndex", backgroundBranch);
+    ASSERT_NE(std::string::npos, backgroundBranch);
+    ASSERT_NE(std::string::npos, materialLookup);
+    const std::string backgroundBlock = source.substr(
+        backgroundBranch, materialLookup - backgroundBranch);
+    EXPECT_EQ(std::string::npos,
+              backgroundBlock.find("HDRSceneColor[pixel]"));
     EXPECT_NE(std::string::npos,
-              source.find("HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0)"));
+              backgroundBlock.find("BaseIndirectSpecular[pixel] = 0.0f"));
     EXPECT_NE(std::string::npos,
               source.find("StructuredBuffer<MaterialParameterData> MaterialClassificationTable"));
     EXPECT_NE(std::string::npos,
@@ -15206,6 +15256,41 @@ TEST_F(PipelineCacheValidationFixture,
                   "input.Position, finalColor * preExposure"));
     EXPECT_EQ(std::string::npos,
               defaultLit.find("? 0u\n        : input.MaterialParameterSlot"));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       ForwardAndDeferredSpecialAdaptersBindTheResolvedHdrAtomically)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path featureDirectory =
+        FindShaderDirectory().parent_path() / "Private" / "Features";
+    const std::string forward = ReadTextFile(
+        featureDirectory / "LegacyForwardFeatureAdapter.cpp");
+    const std::string deferred = ReadTextFile(
+        featureDirectory / "DeferredRecipeFeatureAdapter.cpp");
+    const auto countOccurrences = [](const std::string& text,
+                                     std::string_view token)
+    {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = text.find(token, offset)) != std::string::npos)
+        {
+            ++count;
+            offset += token.size();
+        }
+        return count;
+    };
+
+    EXPECT_EQ(1u, countOccurrences(forward, "TryBindFinalHdrSceneColor("));
+    EXPECT_EQ(1u, countOccurrences(deferred, "TryBindFinalHdrSceneColor("));
+    EXPECT_NE(std::string::npos,
+              forward.find("volumetricLighting->resolvedSceneColor"));
+    EXPECT_NE(std::string::npos,
+              deferred.find("volumetricLighting->resolvedSceneColor"));
 }
 
 TEST_F(PipelineCacheValidationFixture,
