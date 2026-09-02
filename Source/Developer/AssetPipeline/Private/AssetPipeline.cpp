@@ -2765,6 +2765,62 @@ namespace
 
     std::atomic<uint64> s_cookTransactionSequence{0};
 
+    // Nested model cooking can place a transaction component below the outer
+    // CookDirectory staging component. Keep every component at a fixed
+    // legacy-Windows-safe size: the cooked asset stem may be arbitrarily long,
+    // but its identity remains available as a stable hash in diagnostics.
+    constexpr size_t CookTransactionRoleCodeLength = 2u;
+    constexpr size_t CookTransactionStemHashLength = 8u;
+    constexpr size_t CookTransactionSteadyTokenLength = 16u;
+    constexpr size_t CookTransactionSequenceLength = 8u;
+    constexpr size_t CookTransactionComponentMaxLength =
+        (sizeof(".rvx-") - 1u) + CookTransactionRoleCodeLength + 1u +
+        CookTransactionStemHashLength + 1u + CookTransactionSteadyTokenLength + 1u +
+        CookTransactionSequenceLength;
+    static_assert(CookTransactionComponentMaxLength == 42u);
+
+    std::string FormatFixedWidthHex(uint64 value, size_t digitCount)
+    {
+        constexpr char Digits[] = "0123456789abcdef";
+        std::string result(digitCount, '0');
+        for (size_t index = digitCount; index > 0u; --index)
+        {
+            result[index - 1u] = Digits[value & 0x0Fu];
+            value >>= 4u;
+        }
+        return result;
+    }
+
+    uint32 MakeTransactionStemHash(std::string_view stem)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashString(hash, stem);
+        return static_cast<uint32>(hash) ^ static_cast<uint32>(hash >> 32u);
+    }
+
+    std::string GetCookTransactionRoleCode(const char* role)
+    {
+        const std::string_view roleName = role ? std::string_view(role) : std::string_view{};
+        if (roleName == "staging")
+            return "st";
+        if (roleName == "manifest")
+            return "mf";
+        if (roleName == "backup")
+            return "bk";
+        if (roleName == "model-staging")
+            return "ms";
+        if (roleName == "model-backup")
+            return "mb";
+
+        // Unknown roles must not silently share one component namespace. Keep
+        // the fixed-width budget while deriving a distinct hexadecimal code.
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashString(hash, roleName);
+        return FormatFixedWidthHex(
+            static_cast<uint32>(hash) ^ static_cast<uint32>(hash >> 32u),
+            CookTransactionRoleCodeLength);
+    }
+
     fs::path MakeUniqueTransactionSibling(const fs::path& parent,
                                           const std::string& stem,
                                           const char* role)
@@ -2772,8 +2828,26 @@ namespace
         const uint64 sequence = ++s_cookTransactionSequence;
         const uint64 ticks = static_cast<uint64>(
             std::chrono::steady_clock::now().time_since_epoch().count());
-        return parent / ("." + stem + ".rvx-cook-" + role + "-" +
-                         std::to_string(ticks) + "-" + std::to_string(sequence));
+        const std::string roleCode = GetCookTransactionRoleCode(role);
+        // Component layout: .rvx-<role>-<stemHash>-<steadyToken>-<sequence>.
+        // The short role code remains diagnosable (st/mf/bk/ms/mb), while
+        // stemHash plus the monotonic sequence and steady token prevent a
+        // collision from becoming an overwrite: all callers still reject an
+        // existing transaction path before publication proceeds.
+        std::string component;
+        component.reserve(CookTransactionComponentMaxLength);
+        component += ".rvx-";
+        component += roleCode;
+        component += '-';
+        component += FormatFixedWidthHex(MakeTransactionStemHash(stem),
+                                         CookTransactionStemHashLength);
+        component += '-';
+        component += FormatFixedWidthHex(ticks, CookTransactionSteadyTokenLength);
+        component += '-';
+        component += FormatFixedWidthHex(
+            static_cast<uint32>(sequence) ^ static_cast<uint32>(sequence >> 32u),
+            CookTransactionSequenceLength);
+        return parent / component;
     }
 
     bool PathExists(const fs::path& path, bool& outExists, std::string& outError)
@@ -4855,17 +4929,14 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     const fs::path finalDependencyDirectory =
         outputPath.parent_path() /
         (outputPath.stem().string() + ".rvdeps");
-    // This transaction is nested under CookDirectory's own staging root. Keep
-    // the inner role compact so a valid worktree-relative model path does not
-    // exhaust the legacy Windows path budget before its animation/texture
-    // dependency filenames are appended. Uniqueness still comes from the
-    // monotonic sequence and steady-clock token in MakeUniqueTransactionSibling.
+    // This transaction is nested under CookDirectory's own staging root. The
+    // helper bounds its component independently of this asset's public stem.
     const fs::path stagingDependencyDirectory = MakeUniqueTransactionSibling(
         finalDependencyDirectory.parent_path(),
         finalDependencyDirectory.filename().string(),
-        "m");
+        "model-staging");
     const fs::path temporaryRoot = MakeUniqueTransactionSibling(
-        outputPath.parent_path(), outputPath.filename().string(), "m");
+        outputPath.parent_path(), outputPath.filename().string(), "model-staging");
     std::error_code fileError;
     const bool dependencyStageExists = fs::exists(stagingDependencyDirectory, fileError);
     if (fileError)
@@ -5128,16 +5199,12 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     // treat another import's final product as an orphaned backup.
     static std::mutex s_modelPublicationMutex;
     const std::lock_guard<std::mutex> publicationLock(s_modelPublicationMutex);
-    static std::atomic<uint64> s_modelPublicationSequence{0};
-    const uint64 publicationToken =
-        static_cast<uint64>(std::chrono::steady_clock::now().time_since_epoch().count()) +
-        ++s_modelPublicationSequence;
-    const fs::path rootBackup = outputPath.parent_path() /
-        ("." + outputPath.filename().string() + ".rvx-model-backup-" +
-         std::to_string(publicationToken));
-    const fs::path dependencyBackup = finalDependencyDirectory.parent_path() /
-        ("." + finalDependencyDirectory.filename().string() + ".rvx-model-backup-" +
-         std::to_string(publicationToken));
+    const fs::path rootBackup = MakeUniqueTransactionSibling(
+        outputPath.parent_path(), outputPath.filename().string(), "model-backup");
+    const fs::path dependencyBackup = MakeUniqueTransactionSibling(
+        finalDependencyDirectory.parent_path(),
+        finalDependencyDirectory.filename().string(),
+        "model-backup");
     const bool hadRoot = fs::exists(outputPath, fileError);
     if (fileError)
     {

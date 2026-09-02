@@ -1293,7 +1293,10 @@ TEST_F(SkeletalAssetPipelineValidation,
     fs::copy_file(fixture.Path(), sourcePath);
 
     fs::path outputParent = temporary.Path();
-    constexpr size_t QualificationOutputParentLength = 112u;
+    // RenderQualityLab's staged cooked parent is currently 125 characters.
+    // Leave a little room above that real worktree budget while keeping every
+    // nested staging/backup product under the legacy Windows path limit.
+    constexpr size_t QualificationOutputParentLength = 128u;
     const size_t absoluteLength =
         fs::absolute(outputParent).generic_string().size();
     if (absoluteLength + 1u < QualificationOutputParentLength)
@@ -1303,17 +1306,50 @@ TEST_F(SkeletalAssetPipelineValidation,
             'q');
     }
     fs::create_directories(outputParent);
+    ASSERT_GE(fs::absolute(outputParent).generic_string().size(),
+              QualificationOutputParentLength);
     const fs::path outputRoot = outputParent / "casual-female";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
 
     RVX::Tools::AssetPipeline pipeline;
     pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
-    const RVX::Tools::CookManifest manifest = pipeline.CookDirectory(
+    const RVX::Tools::CookManifest firstManifest = pipeline.CookDirectory(
         sourceRoot, outputRoot, true, manifestPath);
-    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
-    ASSERT_EQ(manifest.entries.size(), 1u);
-    ASSERT_TRUE(manifest.entries.front().success)
-        << manifest.entries.front().error;
+    ASSERT_TRUE(firstManifest.manifestWritten) << firstManifest.manifestError;
+    ASSERT_EQ(firstManifest.entries.size(), 1u);
+    ASSERT_TRUE(firstManifest.entries.front().success)
+        << firstManifest.entries.front().error;
+    const fs::path rootArtifactPath =
+        outputRoot / "models" / "casual-female" / "Character.rva";
+    const std::vector<RVX::uint8> firstRootArtifact = ReadBytes(rootArtifactPath);
+    const std::vector<RVX::uint8> firstManifestArtifact = ReadBytes(manifestPath);
+    ASSERT_FALSE(firstRootArtifact.empty());
+    ASSERT_FALSE(firstManifestArtifact.empty());
+
+    // A replacement cook exercises the model root/dependency backup paths as
+    // well as the nested staging paths. Both transactions must fit and clean
+    // up after their atomic rename/rollback windows close.
+    const RVX::Tools::CookManifest replacementManifest = pipeline.CookDirectory(
+        sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(replacementManifest.manifestWritten)
+        << replacementManifest.manifestError;
+    ASSERT_EQ(replacementManifest.entries.size(), 1u);
+    ASSERT_TRUE(replacementManifest.entries.front().success)
+        << replacementManifest.entries.front().error;
+    EXPECT_EQ(replacementManifest.entries.front().outputPath,
+              firstManifest.entries.front().outputPath);
+    EXPECT_EQ(ReadBytes(rootArtifactPath), firstRootArtifact);
+    EXPECT_EQ(ReadBytes(manifestPath), firstManifestArtifact);
+
+    ASSERT_TRUE(fs::is_regular_file(manifestPath));
+    const std::array cookedArtifacts = {
+        rootArtifactPath,
+        outputRoot / "models" / "casual-female" / "Character.rvdeps" / "meshes.rva",
+        outputRoot / "models" / "casual-female" / "Character.rvdeps" / "animation.rvxanim",
+        outputRoot / "models" / "casual-female" / "Character.rvdeps" / "material_0.rvmat",
+    };
+    for (const fs::path& cookedArtifact : cookedArtifacts)
+        ASSERT_TRUE(fs::is_regular_file(cookedArtifact)) << cookedArtifact.string();
 
     const fs::path animationPath =
         outputRoot / "models" / "casual-female" /
@@ -1326,4 +1362,15 @@ TEST_F(SkeletalAssetPipelineValidation,
     ASSERT_TRUE(animation.skeleton);
     EXPECT_EQ(animation.skeleton->GetBoneCount(), 3u);
     EXPECT_TRUE(animation.clips.contains("Walk"));
+
+    std::error_code iteratorError;
+    for (fs::recursive_directory_iterator iterator(outputParent, iteratorError), end;
+         iterator != end;
+         iterator.increment(iteratorError))
+    {
+        ASSERT_FALSE(iteratorError) << iteratorError.message();
+        EXPECT_EQ(iterator->path().filename().string().find(".rvx-"), std::string::npos)
+            << "Cook transaction residue was not cleaned: " << iterator->path().string();
+    }
+    EXPECT_FALSE(iteratorError) << iteratorError.message();
 }
