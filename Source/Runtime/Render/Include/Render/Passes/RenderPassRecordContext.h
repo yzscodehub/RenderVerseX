@@ -142,6 +142,7 @@ namespace RVX
         uint32 drawCount = 0;
         uint32 maskedDrawCount = 0;
         uint32 skippedNoHistoryCount = 0;
+        uint32 skippedStaticRigidCount = 0;
         uint32 skippedMissingResourceCount = 0;
         uint32 skippedMissingUVCount = 0;
         uint32 skippedMaterialBindingCount = 0;

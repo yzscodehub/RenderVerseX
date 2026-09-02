@@ -547,11 +547,12 @@ bool AmbientOcclusionFeatureAdapter::HasExactVelocityProducerExecution()
         return false;
     }
 
-    // CameraVelocity establishes the full-screen field. ObjectVelocity then
-    // overlays every drawable that has valid transform/deformation history.
-    // A newly visible object may legitimately have no history, but missing
-    // resources, UVs, material bindings, or a stale target must invalidate the
-    // producer chain instead of silently degrading temporal GTAO.
+    // CameraVelocity establishes the full-screen field and owns camera-only
+    // motion for static rigid surfaces. ObjectVelocity overlays only actual
+    // rigid transform or deformation motion. A newly visible object may
+    // legitimately have no history, but missing resources, UVs, material
+    // bindings, or a stale target must invalidate the producer chain instead
+    // of silently degrading temporal GTAO.
     const ObjectVelocityPassStats& object =
         pass.results->objectVelocityStats;
     const bool objectEvaluationValid =
@@ -578,7 +579,8 @@ bool AmbientOcclusionFeatureAdapter::HasExactVelocityProducerExecution()
     }
 
     const bool everyDrawItemAccountedFor =
-        object.drawCount + object.skippedNoHistoryCount ==
+        object.drawCount + object.skippedNoHistoryCount +
+            object.skippedStaticRigidCount ==
         object.drawItemCount;
     if (object.drawCount == 0)
     {

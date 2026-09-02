@@ -17479,6 +17479,93 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(0u, commands.beginRenderPassCount);
 }
 
+TEST_F(RenderPassValidationFixture,
+       StaticRigidSurfaceLeavesCameraVelocityAsTheOnlyProducer)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderObject& object = scene.GetMutableObject(0);
+    object.previousWorldMatrix = object.worldMatrix;
+    object.previousWorldMatrixValid = 1;
+    const std::vector<RenderDrawItem> opaqueItems = {
+        MakeDrawItem(MaterialRenderMode::Opaque)};
+    const std::vector<RenderDrawItem> maskedItems;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+
+    ViewData velocityView = view;
+    velocityView.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    velocityView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    velocityView.viewportWidth = 64;
+    velocityView.viewportHeight = 64;
+    velocityView.previousViewProjectionMatrix = Mat4Identity();
+    velocityView.previousViewProjectionMatrix[3][0] = -0.25f;
+    velocityView.previousJitteredViewProjectionMatrix =
+        velocityView.previousViewProjectionMatrix;
+    velocityView.previousViewProjectionValid = 1;
+    velocityView.resetTemporalHistory = false;
+
+    RenderPassRecordContext context;
+    context.view = velocityView;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 410;
+    context.identity.viewOrdinal = 0;
+    context.identity.recordEpoch = 410;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &opaqueItems;
+    context.maskedDrawItems = &maskedItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+
+    CameraVelocityPass cameraPass;
+    cameraPass.SetResources(&pipelineCache, &viewCache);
+    cameraPass.SetEnabled(true);
+    ASSERT_TRUE(cameraPass.IsSupported()) << cameraPass.GetUnsupportedReason();
+    cameraPass.AddToGraph(graph, context);
+
+    ObjectVelocityPass objectPass;
+    ConfigureResources(
+        objectPass, gpuResources, pipelineCache, viewCache, materialSystem);
+    objectPass.SetEnabled(true);
+    ASSERT_TRUE(objectPass.IsSupported()) << objectPass.GetUnsupportedReason();
+    objectPass.AddToGraph(graph, context);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(2u, graph.GetCompileStats().totalPasses);
+    EXPECT_EQ(1u, graph.GetCompileStats().culledPasses);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    cameraPass.PublishRecordResults(context.results, context.identity);
+    objectPass.PublishRecordResults(context.results, context.identity);
+
+    EXPECT_EQ(1u, commands.beginRenderPassCount);
+    EXPECT_EQ(1u, commands.drawCount);
+    EXPECT_EQ(0u, commands.drawIndexedCount);
+    EXPECT_TRUE(cameraPass.GetStats().velocityRecorded);
+    const ObjectVelocityPassStats& objectStats = objectPass.GetStats();
+    EXPECT_EQ(1u, objectStats.drawItemCount);
+    EXPECT_EQ(1u, objectStats.skippedStaticRigidCount);
+    EXPECT_EQ(0u, objectStats.skippedNoHistoryCount);
+    EXPECT_EQ(0u, objectStats.drawCount);
+    EXPECT_FALSE(objectStats.outputDeclared);
+    EXPECT_FALSE(objectStats.velocityRecorded);
+}
+
 TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -17562,6 +17649,7 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     EXPECT_EQ(stats.opaqueDrawItemCount, 0u);
     EXPECT_EQ(stats.maskedDrawItemCount, 1u);
     EXPECT_EQ(stats.maskedDrawCount, 1u);
+    EXPECT_EQ(stats.skippedStaticRigidCount, 0u);
     EXPECT_EQ(stats.skippedMissingUVCount, 0u);
     EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
 }
@@ -17594,8 +17682,7 @@ TEST_F(RenderPassValidationFixture,
     object.previousSkinningPalette.paletteHash = previousPaletteHash.value;
     object.previousSkinningPalette.paletteCount = previousPaletteHash.matrixCount;
     object.previousSkinningPaletteValid = 1;
-    object.previousWorldMatrix = Mat4Identity();
-    object.previousWorldMatrix[3][0] = -1.0f;
+    object.previousWorldMatrix = object.worldMatrix;
     object.previousWorldMatrixValid = 1;
     scene.Clear();
     scene.AddObject(object);
@@ -17715,6 +17802,7 @@ TEST_F(RenderPassValidationFixture,
 
     const ObjectVelocityPassStats& stats = pass.GetStats();
     EXPECT_TRUE(stats.velocityRecorded);
+    EXPECT_EQ(0u, stats.skippedStaticRigidCount);
     EXPECT_EQ(1u, stats.skinnedDrawCount);
     EXPECT_EQ(1u, stats.currentPaletteBoundDrawCount);
     EXPECT_EQ(1u, stats.previousPaletteBoundDrawCount);

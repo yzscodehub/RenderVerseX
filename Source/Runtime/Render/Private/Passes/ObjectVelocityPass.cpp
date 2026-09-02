@@ -32,6 +32,21 @@ namespace RVX
                    left.paletteCount == right.paletteCount;
         }
 
+        [[nodiscard]] bool MatricesEqual(
+            const Mat4& left,
+            const Mat4& right) noexcept
+        {
+            for (uint32 column = 0; column < 4; ++column)
+            {
+                for (uint32 row = 0; row < 4; ++row)
+                {
+                    if (left[column][row] != right[column][row])
+                        return false;
+                }
+            }
+            return true;
+        }
+
         [[nodiscard]] bool ResolveSkinningPaletteBinding(
             const RenderObject& object,
             const MeshGPUBuffers& buffers,
@@ -290,6 +305,16 @@ namespace RVX
                 ++stats.skippedNoHistoryCount;
                 return false;
             }
+            const bool skinned = object.HasSkinningData();
+            if (!skinned &&
+                MatricesEqual(object.worldMatrix, object.previousWorldMatrix))
+            {
+                // CameraVelocity owns camera-only motion for static rigid
+                // surfaces. Re-drawing them here would evaluate the same RG16F
+                // field through a second numerical path at depth-equal edges.
+                ++stats.skippedStaticRigidCount;
+                return false;
+            }
 
             MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                 data.resourceRegistry, object.mesh);
@@ -310,7 +335,6 @@ namespace RVX
                 ++stats.skippedMissingUVCount;
                 return false;
             }
-            const bool skinned = object.HasSkinningData();
             if (skinned && !buffers.HasSkinningVertexData())
             {
                 ++stats.skippedMissingResourceCount;
