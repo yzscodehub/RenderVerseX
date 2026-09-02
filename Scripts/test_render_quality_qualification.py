@@ -2279,6 +2279,89 @@ class RenderQualityPerformanceBaselineTests(unittest.TestCase):
                 verified.returncode, 0, verified.stdout + verified.stderr
             )
 
+    def test_baseline_packages_canonicalize_crlf_json_before_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments, output = self._prepare_arguments(
+                root,
+                metrics=[5.0, 7.0, 6.0, 9.0, 8.0],
+            )
+            for ordinal in range(1, 6):
+                run_root = root / f"run-{ordinal}"
+                report_path = run_root / "performance.json"
+                report_path.write_bytes(
+                    report_path.read_bytes().replace(b"\n", b"\r\n")
+                )
+                receipt_path = run_root / "required-suite-receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                artifact = receipt["semanticArtifacts"][0]
+                artifact["sha256"] = hashlib.sha256(
+                    report_path.read_bytes()
+                ).hexdigest()
+                artifact["size"] = report_path.stat().st_size
+                write_json(receipt_path, receipt)
+                receipt_path.write_bytes(
+                    receipt_path.read_bytes().replace(b"\n", b"\r\n")
+                )
+
+            prepared = run_baseline_tool(*arguments)
+            self.assertEqual(
+                prepared.returncode, 0, prepared.stdout + prepared.stderr
+            )
+            candidate_verified = run_baseline_tool(
+                "verify",
+                "--record", output / "baseline-record.json",
+                "--baseline", output / "performance.json",
+                "--policy", output / "performance-policy.json",
+            )
+            self.assertEqual(
+                candidate_verified.returncode,
+                0,
+                candidate_verified.stdout + candidate_verified.stderr,
+            )
+
+            approved_output = root / "approved"
+            with mock.patch.object(
+                performance_baseline,
+                "_assert_approval_source_is_clean",
+            ):
+                self.assertEqual(
+                    performance_baseline._approve(SimpleNamespace(
+                        candidate_record=output / "baseline-record.json",
+                        output_dir=approved_output,
+                        approved_by="Render Team",
+                        reason="Reviewed canonical JSON package",
+                    )),
+                    0,
+                )
+            for package in (output, approved_output):
+                json_paths = [
+                    package / "baseline-record.json",
+                    package / "performance.json",
+                    package / "performance-policy.json",
+                ] + [
+                    package / "receipts" / f"{ordinal:02d}.json"
+                    for ordinal in range(1, 6)
+                ]
+                for path in json_paths:
+                    payload = path.read_bytes()
+                    self.assertFalse(payload.startswith(b"\xef\xbb\xbf"), path)
+                    self.assertNotIn(b"\r", payload, path)
+                    payload.decode("utf-8")
+
+            approved_verified = run_baseline_tool(
+                "verify",
+                "--record", approved_output / "baseline-record.json",
+                "--baseline", approved_output / "performance.json",
+                "--policy", approved_output / "performance-policy.json",
+                "--require-approved",
+            )
+            self.assertEqual(
+                approved_verified.returncode,
+                0,
+                approved_verified.stdout + approved_verified.stderr,
+            )
+
     def test_wrong_run_count_and_budget_violation_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

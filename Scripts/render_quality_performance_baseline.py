@@ -12,7 +12,6 @@ import hashlib
 import json
 import math
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -52,10 +51,45 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
 
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8",
+    path.write_bytes(
+        (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
+        .encode("utf-8")
     )
+
+
+def _copy_json_as_lf(source: Path, destination: Path, label: str) -> dict[str, Any]:
+    """Copy a versioned JSON artifact as canonical UTF-8 LF bytes."""
+    document = _load_json(source, label)
+    _write_json(destination, document)
+    return document
+
+
+def _copy_receipt_as_lf(
+    source: Path,
+    destination: Path,
+    *,
+    original_report_sha256: str,
+    canonical_report_sha256: str,
+    canonical_report_size: int,
+) -> None:
+    """Copy a receipt while keeping its performance artifact binding canonical."""
+    document = _load_json(source, "RequiredSuite receipt")
+    artifacts = document.get("semanticArtifacts")
+    if not isinstance(artifacts, list):
+        raise BaselineContractError("RequiredSuite receipt has no semantic artifacts")
+    updated = False
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("sha256") == original_report_sha256:
+            artifact["sha256"] = canonical_report_sha256
+            artifact["size"] = canonical_report_size
+            updated = True
+    if not updated:
+        raise BaselineContractError(
+            "RequiredSuite receipt does not bind the copied performance report"
+        )
+    _write_json(destination, document)
 
 
 def _require_keys(value: dict[str, Any], keys: set[str], context: str) -> None:
@@ -610,7 +644,7 @@ def _prepare(args: argparse.Namespace) -> int:
             raise BaselineContractError(
                 f"run {ordinal} exceeds the RenderGraph budget"
             )
-        fingerprint, receipt_sha, _ = _validate_receipt(
+        fingerprint, _, _ = _validate_receipt(
             receipt_path, report_path, report
         )
         if fingerprint["digest"] != args.expected_source_fingerprint:
@@ -635,17 +669,10 @@ def _prepare(args: argparse.Namespace) -> int:
                 "reportPath": report_path,
                 "reportSha256": sha256_file(report_path),
                 "inputReceiptPath": receipt_path,
-                "requiredSuiteReceiptSha256": receipt_sha,
                 "summary": summary,
                 "report": report,
             }
         )
-    receipts_dir = output_dir / "receipts"
-    receipts_dir.mkdir()
-    for run in runs:
-        receipt_name = f"{run['ordinal']:02d}.json"
-        shutil.copy2(run["inputReceiptPath"], receipts_dir / receipt_name)
-        run["requiredSuiteReceiptPath"] = f"receipts/{receipt_name}"
     assert reference is not None
     selected = sorted(
         runs,
@@ -655,7 +682,31 @@ def _prepare(args: argparse.Namespace) -> int:
         ),
     )[RUN_COUNT // 2]
     baseline_path = output_dir / "performance.json"
-    shutil.copy2(selected["reportPath"], baseline_path)
+    _copy_json_as_lf(
+        selected["reportPath"], baseline_path, "selected calibration report"
+    )
+    selected_report_sha256 = sha256_file(baseline_path)
+    selected_report_size = baseline_path.stat().st_size
+    receipts_dir = output_dir / "receipts"
+    receipts_dir.mkdir()
+    for run in runs:
+        receipt_name = f"{run['ordinal']:02d}.json"
+        receipt_destination = receipts_dir / receipt_name
+        if run is selected:
+            _copy_receipt_as_lf(
+                run["inputReceiptPath"],
+                receipt_destination,
+                original_report_sha256=run["reportSha256"],
+                canonical_report_sha256=selected_report_sha256,
+                canonical_report_size=selected_report_size,
+            )
+            run["reportSha256"] = selected_report_sha256
+        else:
+            _copy_json_as_lf(
+                run["inputReceiptPath"], receipt_destination, "RequiredSuite receipt"
+            )
+        run["requiredSuiteReceiptPath"] = f"receipts/{receipt_name}"
+        run["requiredSuiteReceiptSha256"] = sha256_file(receipt_destination)
 
     summary = selected["summary"]
     regression = args.max_regression_percent
@@ -795,13 +846,56 @@ def _approve(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_path = output_dir / "performance.json"
     policy_path = output_dir / "performance-policy.json"
-    shutil.copy2(candidate_root / "performance.json", baseline_path)
-    shutil.copy2(candidate_root / "performance-policy.json", policy_path)
-    shutil.copytree(candidate_root / "receipts", output_dir / "receipts")
+    _copy_json_as_lf(
+        candidate_root / "performance.json", baseline_path, "candidate performance"
+    )
+    _copy_json_as_lf(
+        candidate_root / "performance-policy.json", policy_path, "candidate policy"
+    )
+    canonical_report_sha256 = sha256_file(baseline_path)
+    canonical_report_size = baseline_path.stat().st_size
+    selected_ordinal = candidate["calibration"]["selectedRunOrdinal"]
+    receipts_dir = output_dir / "receipts"
+    receipts_dir.mkdir()
+    for run in candidate["calibration"]["runs"]:
+        source_receipt = _contained_path(
+            candidate_root,
+            run["requiredSuiteReceiptPath"],
+            "candidate calibration requiredSuiteReceiptPath",
+        )
+        destination = _contained_path(
+            output_dir,
+            run["requiredSuiteReceiptPath"],
+            "approved calibration requiredSuiteReceiptPath",
+        )
+        if run["ordinal"] == selected_ordinal:
+            _copy_receipt_as_lf(
+                source_receipt,
+                destination,
+                original_report_sha256=run["reportSha256"],
+                canonical_report_sha256=canonical_report_sha256,
+                canonical_report_size=canonical_report_size,
+            )
+            run["reportSha256"] = canonical_report_sha256
+        else:
+            _copy_json_as_lf(source_receipt, destination, "RequiredSuite receipt")
+        run["requiredSuiteReceiptSha256"] = sha256_file(destination)
     document = _load_json(candidate_record_path, "candidate baseline record")
     document["status"] = "approved"
     document["baseline"]["reportPath"] = baseline_path.name
+    document["baseline"]["reportSha256"] = canonical_report_sha256
     document["policy"]["path"] = policy_path.name
+    document["policy"]["sha256"] = sha256_file(policy_path)
+    for run in document["calibration"]["runs"]:
+        canonical_run = candidate["calibration"]["runs"][run["ordinal"] - 1]
+        run["reportSha256"] = canonical_run["reportSha256"]
+        run["requiredSuiteReceiptSha256"] = canonical_run[
+            "requiredSuiteReceiptSha256"
+        ]
+        if run["ordinal"] == selected_ordinal:
+            document["baseline"]["requiredSuiteReceiptSha256"] = canonical_run[
+                "requiredSuiteReceiptSha256"
+            ]
     document["approval"] = {
         "approvedBy": args.approved_by,
         "approvedAtUtc": datetime.now(timezone.utc).isoformat().replace(
