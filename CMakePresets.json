@@ -166,6 +166,48 @@
       }
     },
     {
+      "name": "win_x64_gfx24_raster_release",
+      "displayName": "Windows x64 Release GFX24 Raster Correctness",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release",
+      "displayName": "Windows x64 Release GFX24 DX12 Hardware RT",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "OFF",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
       "name": "win_x64_qualification_debug",
       "displayName": "Windows x64 Debug Qualification",
       "inherits": "win_x64_base",
@@ -303,6 +345,48 @@
       }
     },
     {
+      "name": "linux_x64_gfx24_raster_release",
+      "displayName": "Linux x64 Release GFX24 Raster Correctness",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release",
+      "displayName": "Linux x64 Release GFX24 Vulkan Hardware RT",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "OFF",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
       "name": "mac_arm64_debug",
       "displayName": "macOS arm64 Debug",
       "inherits": "mac_arm64_base",
@@ -345,6 +429,28 @@
       "binaryDir": "${sourceDir}/build/mac_arm64_release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release",
+      "displayName": "macOS arm64 Release GFX24 Raster Correctness",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/macos_arm64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
     {
@@ -520,6 +626,33 @@
       "configurePreset": "win_x64_gfx24_performance_calibration_release",
       "configuration": "Release",
       "targets": ["RVXValidationSuiteGfx24PerformanceCalibration"]
+    },
+    {
+      "name": "win_x64_gfx24_raster_release",
+      "configurePreset": "win_x64_gfx24_raster_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release",
+      "configurePreset": "win_x64_gfx24_hardware_rt_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24HardwareRtDx12"]
+    },
+    {
+      "name": "linux_x64_gfx24_raster_release",
+      "configurePreset": "linux_x64_gfx24_raster_release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release",
+      "configurePreset": "linux_x64_gfx24_hardware_rt_release",
+      "targets": ["RVXValidationSuiteGfx24HardwareRtVulkan"]
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release",
+      "configurePreset": "macos_arm64_gfx24_raster_release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
     },
     {
       "name": "win_x64_qualification_debug",
@@ -1098,6 +1231,43 @@
       "inherits": "mac_arm64_debug_lane_base",
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.primary-native$" } }
+    },
+    {
+      "name": "win_x64_gfx24_raster_release_run",
+      "configurePreset": "win_x64_gfx24_raster_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "linux_x64_gfx24_raster_release_run",
+      "configurePreset": "linux_x64_gfx24_raster_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release_run",
+      "configurePreset": "macos_arm64_gfx24_raster_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release_run",
+      "configurePreset": "win_x64_gfx24_hardware_rt_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-hardware-rt-dx12$" } }
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release_run",
+      "configurePreset": "linux_x64_gfx24_hardware_rt_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-hardware-rt-vulkan$" } }
     }
   ]
 }

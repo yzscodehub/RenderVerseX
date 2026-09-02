@@ -149,6 +149,33 @@ if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
             "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
     endif()
 endif()
+option(RVX_ENABLE_GFX24_RASTER_CORRECTNESS
+    "Register the platform-primary GFX24 Forward+/Deferred raster correctness suite" OFF)
+if(RVX_ENABLE_GFX24_RASTER_CORRECTNESS)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "RVX_ENABLE_GFX24_RASTER_CORRECTNESS requires RenderVerseSamplesCooked and RVXCook")
+    endif()
+    if(WIN32)
+        if(NOT RVX_ENABLE_DX12)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the Windows DX12 backend")
+        endif()
+    elseif(APPLE)
+        if(NOT RVX_ENABLE_METAL)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the macOS Metal backend")
+        endif()
+    elseif(UNIX)
+        if(NOT RVX_ENABLE_VULKAN)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the Linux Vulkan backend")
+        endif()
+    else()
+        message(FATAL_ERROR
+            "GFX24 raster correctness supports only Windows, Linux, and macOS")
+    endif()
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -2342,7 +2369,7 @@ function(rvx_add_renderverse_gfx24_native_candidates)
             --ready-max-frames 1024
             --view hero
             --fixed-delta 0.0166666666666667
-            --capture-tick 120
+            --capture-tick 300
             --width 2560
             --height 1440
             --qualification-performance "${performance_root}/performance.json"
@@ -2421,7 +2448,7 @@ function(rvx_add_renderverse_gfx24_performance_calibration)
             --ready-max-frames 1024
             --view hero
             --fixed-delta 0.0166666666666667
-            --capture-tick 120
+            --capture-tick 300
             --width 2560
             --height 1440
             --qualification-performance "${performance_root}/performance.json"
@@ -2439,6 +2466,233 @@ function(rvx_add_renderverse_gfx24_performance_calibration)
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
         RESOURCE_LOCK rvx_gpu
     )
+endfunction()
+
+# GFX24C validates the primary raster backend on each supported desktop
+# platform. The public Sample Host captures all qualification ticks in one
+# process; the generated wrapper invokes the shared series validator with the
+# run identity inherited from the required-suite runner. Hosted software
+# adapters remain valid correctness evidence. Self-hosted jobs can tighten
+# adapter, driver, and OS checks through the three cache variables below.
+function(rvx_add_renderverse_gfx24_raster_series_validator
+         TEST_NAME SERIES_PATH REPORT_PATH EXPECTED_BACKEND FIXTURE_NAME)
+    set(_rvx_gfx24_series_validator
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/ValidateSeries.cmake")
+    get_property(_rvx_gfx24_series_validator_generated GLOBAL
+        PROPERTY RVX_GFX24_RASTER_SERIES_VALIDATOR_GENERATED)
+    if(NOT _rvx_gfx24_series_validator_generated)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness")
+        file(GENERATE
+            OUTPUT "${_rvx_gfx24_series_validator}"
+            CONTENT [==[
+if(NOT DEFINED RVX_GFX24_SERIES OR NOT DEFINED RVX_GFX24_REPORT OR
+   NOT DEFINED RVX_GFX24_EXPECTED_BACKEND OR NOT DEFINED RVX_GFX24_PYTHON OR
+   NOT DEFINED RVX_GFX24_SERIES_CHECKER OR NOT DEFINED RVX_GFX24_MANIFEST)
+    message(FATAL_ERROR "GFX24 raster series validator received incomplete CTest arguments")
+endif()
+
+foreach(_rvx_required_identity IN ITEMS
+        RVX_VALIDATION_SOURCE_COMMIT
+        RVX_VALIDATION_RUN_ID
+        RVX_VALIDATION_PRESET)
+    set(_rvx_identity_value "$ENV{${_rvx_required_identity}}")
+    if("${_rvx_identity_value}" STREQUAL "")
+        message(FATAL_ERROR
+            "GFX24 raster correctness requires ${_rvx_required_identity} from the required-suite environment")
+    endif()
+endforeach()
+
+file(READ "${RVX_GFX24_SERIES}" _rvx_series_document)
+string(JSON _rvx_identity_backend GET
+       "${_rvx_series_document}" qualificationIdentity backend)
+string(JSON _rvx_hardware_backend GET
+       "${_rvx_series_document}" hardwareIdentity backend)
+if(NOT "${_rvx_identity_backend}" STREQUAL "${RVX_GFX24_EXPECTED_BACKEND}" OR
+   NOT "${_rvx_hardware_backend}" STREQUAL "${RVX_GFX24_EXPECTED_BACKEND}")
+    message(FATAL_ERROR
+        "GFX24 raster correctness series backend does not match ${RVX_GFX24_EXPECTED_BACKEND}")
+endif()
+
+set(_rvx_command
+    "${RVX_GFX24_PYTHON}" "${RVX_GFX24_SERIES_CHECKER}"
+    --series "${RVX_GFX24_SERIES}"
+    --sample-manifest "${RVX_GFX24_MANIFEST}"
+    --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+    --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+    --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+    --report "${RVX_GFX24_REPORT}")
+if(NOT "${RVX_GFX24_EXPECTED_ADAPTER_NAME}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-adapter-name "${RVX_GFX24_EXPECTED_ADAPTER_NAME}")
+endif()
+if(NOT "${RVX_GFX24_EXPECTED_DRIVER_VERSION}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-driver-version "${RVX_GFX24_EXPECTED_DRIVER_VERSION}")
+endif()
+if(NOT "${RVX_GFX24_EXPECTED_OS_BUILD}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-os-build "${RVX_GFX24_EXPECTED_OS_BUILD}")
+endif()
+execute_process(COMMAND ${_rvx_command}
+                RESULT_VARIABLE _rvx_result)
+if(NOT _rvx_result EQUAL 0)
+    message(FATAL_ERROR "GFX24 raster correctness series validation failed")
+endif()
+]==])
+        set_property(GLOBAL PROPERTY
+            RVX_GFX24_RASTER_SERIES_VALIDATOR_GENERATED TRUE)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${TEST_NAME}
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_GFX24_SERIES=${SERIES_PATH}"
+            "-DRVX_GFX24_REPORT=${REPORT_PATH}"
+            "-DRVX_GFX24_EXPECTED_BACKEND=${EXPECTED_BACKEND}"
+            "-DRVX_GFX24_PYTHON=${Python3_EXECUTABLE}"
+            "-DRVX_GFX24_SERIES_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "-DRVX_GFX24_MANIFEST=${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+            "-DRVX_GFX24_EXPECTED_ADAPTER_NAME=${RVX_GFX24_RASTER_EXPECTED_ADAPTER_NAME}"
+            "-DRVX_GFX24_EXPECTED_DRIVER_VERSION=${RVX_GFX24_RASTER_EXPECTED_DRIVER_VERSION}"
+            "-DRVX_GFX24_EXPECTED_OS_BUILD=${RVX_GFX24_RASTER_EXPECTED_OS_BUILD}"
+            -P "${_rvx_gfx24_series_validator}"
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+        TAGS product.samples subsystem.render trait.visual trait.native trait.temporal
+            suite.gfx24-raster-correctness
+        SUITE gfx24-raster-correctness
+        TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED ${FIXTURE_NAME}
+    )
+endfunction()
+
+# The platform-specific configure preset enables this function exactly once,
+# which gives the suite two same-process producers and two non-GPU validators.
+function(rvx_add_renderverse_gfx24_raster_correctness)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX24 raster correctness requires RenderVerseSamplesCooked and RVXCook")
+    endif()
+
+    if(WIN32)
+        set(backend_name DX12)
+        set(backend_lower dx12)
+        set(platform_tag platform.windows)
+    elseif(APPLE)
+        set(backend_name Metal)
+        set(backend_lower metal)
+        set(platform_tag platform.macos)
+    elseif(UNIX)
+        set(backend_name Vulkan)
+        set(backend_lower vulkan)
+        set(platform_tag platform.linux)
+    else()
+        message(FATAL_ERROR
+            "GFX24 raster correctness supports only Windows, Linux, and macOS")
+    endif()
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(RVX_GFX24_RASTER_EXPECTED_ADAPTER_NAME "" CACHE STRING
+        "Optional exact adapter name for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_EXPECTED_DRIVER_VERSION "" CACHE STRING
+        "Optional exact driver version for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_EXPECTED_OS_BUILD "" CACHE STRING
+        "Optional exact OS build for GFX24 raster correctness")
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24RasterCorrectnessShaders/${backend_name}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx24-raster-correctness-${backend_lower}-shaders")
+    set(cooked_shader_target
+        "RVXGfx24RasterCorrectnessCookedShaders${backend_name}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${backend_name}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        foreach(pipeline_label ForwardPlus Deferred)
+            file(MAKE_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/${config_name}/${backend_name}/${pipeline_label}")
+        endforeach()
+    endforeach()
+
+    foreach(pipeline_name IN ITEMS forward-plus deferred)
+        if(pipeline_name STREQUAL "forward-plus")
+            set(pipeline_label ForwardPlus)
+        else()
+            set(pipeline_label Deferred)
+        endif()
+        set(test_prefix
+            "RenderVerseSamplesCooked${backend_name}Gfx24Raster${pipeline_label}")
+        set(series_root
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/$<CONFIG>/${backend_name}/${pipeline_label}")
+        set(producer "${test_prefix}Producer")
+
+        # The Sample manifest supplies ordered ticks 300/360/361, so one
+        # producer owns all temporal state without a second-process history.
+        rvx_add_validation_test(
+            LANE native
+            NAME ${producer}
+            COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+                --backend ${backend_lower}
+                --cooked-shader-root "${cooked_shader_root}"
+                --pipeline ${pipeline_name}
+                --render-path direct
+                --quality high
+                --smoke
+                --wait-ready
+                --ready-timeout-ms 120000
+                --ready-max-frames 2400
+                --view hero
+                --fixed-delta 0.0166666666666667
+                --width 1280
+                --height 720
+                --qualification-series "${series_root}/series.json"
+                --diagnostics
+                --validation
+            BUILD_TARGETS
+                RenderVerseSamplesCooked
+                ${cooked_shader_target}
+            TAGS product.samples subsystem.render trait.visual trait.gpu trait.native
+                trait.temporal ${platform_tag} backend.${backend_lower}
+                suite.gfx24-raster-correctness
+            SUITE gfx24-raster-correctness
+            TIMEOUT 900
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_SETUP ${producer}FreshSeries
+        )
+
+        rvx_add_renderverse_gfx24_raster_series_validator(
+            "${test_prefix}SeriesValidation"
+            "${series_root}/series.json"
+            "${series_root}/series-validation.json"
+            "${backend_lower}"
+            "${producer}FreshSeries")
+    endforeach()
 endfunction()
 
 # GFX07 intentionally has its own opt-in suite: it uses the same producer,
@@ -4843,6 +5097,12 @@ if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)
 endif()
 if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
     rvx_add_renderverse_gfx24_performance_calibration()
+endif()
+if(RVX_ENABLE_GFX24_RASTER_CORRECTNESS)
+    # Exactly four CTest entries on each platform: Forward+/Deferred producer
+    # plus its non-GPU series validator. The generated suite target is
+    # RVXValidationSuiteGfx24RasterCorrectness.
+    rvx_add_renderverse_gfx24_raster_correctness()
 endif()
 
 if(WIN32

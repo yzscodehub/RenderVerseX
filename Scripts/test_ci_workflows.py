@@ -25,6 +25,13 @@ class CIWorkflowPolicyTests(unittest.TestCase):
             self.root / ".github" / "workflows",
         )
         shutil.copy2(self.repository / "CMakePresets.json", self.root)
+        sample_manifest = self.root / "Samples" / "RenderVerseSamples" / "Manifests"
+        sample_manifest.mkdir(parents=True)
+        shutil.copy2(
+            self.repository / "Samples" / "RenderVerseSamples" / "Manifests"
+            / "renderverse-samples.json",
+            sample_manifest,
+        )
         qualification = self.root / "Tests" / "CMake"
         qualification.mkdir(parents=True)
         shutil.copy2(
@@ -67,6 +74,18 @@ class CIWorkflowPolicyTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def replace_gfx24_calibration_function(self, old: str, new: str) -> None:
+        path = self.root / "Tests" / "CMake" / "QualificationTests.cmake"
+        text = path.read_text(encoding="utf-8")
+        marker = "function(rvx_add_renderverse_gfx24_performance_calibration)"
+        prefix, remainder = text.split(marker, 1)
+        body, suffix = remainder.split("\nendfunction()", 1)
+        self.assertIn(old, body)
+        path.write_text(
+            prefix + marker + body.replace(old, new) + "\nendfunction()" + suffix,
+            encoding="utf-8",
+        )
+
     def test_repository_contract_passes(self) -> None:
         self.assertEqual(validate(self.root), [])
 
@@ -78,8 +97,8 @@ class CIWorkflowPolicyTests(unittest.TestCase):
     def test_verdict_must_require_shipping(self) -> None:
         self.replace(
             ".github/workflows/ci.yml",
-            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping]",
-            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64]",
+            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]",
+            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]",
         )
         findings = validate(self.root)
         self.assertTrue(any("does not require shipping" in item for item in findings))
@@ -332,6 +351,100 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         )
         findings = validate(self.root)
         self.assertTrue(any("RenderGraphPassTimingValidation" in item
+                            for item in findings))
+
+    def test_gfx24_raster_job_cannot_be_removed(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "  raster-correctness:\n",
+            "  raster-correctness-removed:\n",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("jobs must be exactly" in item for item in findings))
+
+    def test_gfx24_raster_label_must_remain_exact(self) -> None:
+        self.replace(
+            "CMakePresets.json",
+            "^suite\\\\.gfx24-raster-correctness$",
+            "^suite\\\\.gfx24-raster-correctness-removed$",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("GFX24 raster correctness" in item for item in findings))
+
+    def test_gfx24_raster_preset_removal_fails_closed(self) -> None:
+        path = self.root / "CMakePresets.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["testPresets"] = [
+            entry for entry in document["testPresets"]
+            if entry["name"] != "macos_arm64_gfx24_raster_release_run"
+        ]
+        path.write_text(json.dumps(document), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any("GFX24 raster correctness preset triplet" in item
+                            for item in findings))
+
+    def test_gfx24_raster_required_evidence_cannot_be_substituted(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series-validation.json",
+            "Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/missing.json",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("required macOS token" in item for item in findings))
+
+    def test_gfx24_verdict_must_require_raster_correctness(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            ", raster-correctness, windows-gfx24-hardware",
+            ", raster-correctness-removed, windows-gfx24-hardware",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("does not require raster-correctness" in item
+                            for item in findings))
+
+    def test_gfx24_hardware_runner_labels_must_remain_exact(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "runs-on: [self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]",
+            "runs-on: [self-hosted, Windows, X64]",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("windows-gfx24-hardware" in item for item in findings))
+
+    def test_gfx24_hardware_jobs_cannot_allow_software_adapter(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "  windows-gfx24-hardware:\n    name: Windows DX12 GFX24 Performance and DXR\n    runs-on: [self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]\n    env:\n      VCPKG_ROOT: C:/vcpkg",
+            "  windows-gfx24-hardware:\n    name: Windows DX12 GFX24 Performance and DXR\n    runs-on: [self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]\n    env:\n      VCPKG_ROOT: C:/vcpkg\n      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: '1'",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("must not permit software" in item for item in findings))
+
+    def test_gfx24_candidate_capture_tick_must_follow_warmup(self) -> None:
+        self.replace_gfx24_candidate_function(
+            "--capture-tick 300",
+            "--capture-tick 120",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("--capture-tick 300" in item for item in findings))
+
+    def test_gfx24_performance_capture_tick_must_follow_warmup(self) -> None:
+        self.replace_gfx24_calibration_function(
+            "--capture-tick 300",
+            "--capture-tick 120",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("300-frame warmup" in item for item in findings))
+
+    def test_gfx24_raster_manifest_capture_ticks_must_follow_warmup(self) -> None:
+        path = self.root / "Samples" / "RenderVerseSamples" / "Manifests" / "renderverse-samples.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        entry = next(item for item in document["samples"]
+                     if item["id"] == "render-quality-lab")
+        entry["captureTicks"] = [120, 360, 361]
+        path.write_text(json.dumps(document), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any("capture ticks 300/360/361" in item
                             for item in findings))
 
 

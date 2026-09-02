@@ -387,10 +387,218 @@ jobs:
             build/*shipping_release/Tests/Shipping/ShippingFixtures
           if-no-files-found: error
 
+  raster-correctness:
+    name: GFX24 Raster Correctness (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-2022
+            vcpkg_root: C:/vcpkg
+            configure_preset: win_x64_gfx24_raster_release
+            build_preset: win_x64_gfx24_raster_release
+            test_preset: win_x64_gfx24_raster_release_run
+            build_dir: build/win_x64_gfx24_raster_release
+            backend: DX12
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json'
+          - platform: Linux
+            runner: ubuntu-24.04
+            vcpkg_root: /usr/local/share/vcpkg
+            configure_preset: linux_x64_gfx24_raster_release
+            build_preset: linux_x64_gfx24_raster_release
+            test_preset: linux_x64_gfx24_raster_release_run
+            build_dir: build/linux_x64_gfx24_raster_release
+            backend: Vulkan
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json'
+          - platform: macOS
+            runner: macos-15
+            vcpkg_root: /usr/local/share/vcpkg
+            configure_preset: macos_arm64_gfx24_raster_release
+            build_preset: macos_arm64_gfx24_raster_release
+            test_preset: macos_arm64_gfx24_raster_release_run
+            build_dir: build/macos_arm64_gfx24_raster_release
+            backend: Metal
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series-validation.json'
+    runs-on: ${{ matrix.runner }}
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg_root }}
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve macOS vcpkg root
+        if: runner.os == 'macOS'
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - name: Install Linux raster dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool \
+            fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-raster-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-raster-${{ matrix.platform }}-
+      - name: Run fail-closed GFX24 raster correctness
+        if: runner.os != 'Linux'
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.configure_preset }}
+          -BuildPreset ${{ matrix.build_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence '${{ matrix.required_evidence }}'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Linux GFX24 raster correctness
+        if: runner.os == 'Linux'
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.configure_preset }}
+          -BuildPreset ${{ matrix.build_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence '${{ matrix.required_evidence }}'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload GFX24 raster evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-raster-${{ matrix.platform }}
+          path: |
+            ${{ matrix.build_dir }}/BuildTruth
+            ${{ matrix.build_dir }}/Tests/Gfx24RasterCorrectness
+          if-no-files-found: error
+
+  windows-gfx24-hardware:
+    name: Windows DX12 GFX24 Performance and DXR
+    runs-on: [self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]
+    env:
+      VCPKG_ROOT: C:/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-hardware-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-hardware-windows-
+      - name: Run fixed DX12 performance calibration
+        shell: pwsh
+        run: >-
+          ./Scripts/run_render_quality_performance_calibration.ps1
+          -ConfigurePreset win_x64_gfx24_performance_calibration_release
+          -BuildPreset win_x64_gfx24_performance_calibration_release
+          -TestPreset win_x64_gfx24_performance_calibration_release_run
+          -BuildDir build/gfx24_perf_calibration
+          -OutputRoot build/gfx24_perf_calibration/PerformanceCalibration
+      - name: Run fail-closed DX12 hardware ray tracing
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_gfx24_hardware_rt_release
+          -BuildPreset win_x64_gfx24_hardware_rt_release
+          -TestPreset win_x64_gfx24_hardware_rt_release_run
+          -BuildDir build/win_x64_gfx24_hardware_rt_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24HardwareRtDx12
+          -RequiredLabel suite.gfx24-hardware-rt-dx12
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload DX12 performance and ray-tracing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-hardware-dx12
+          path: |
+            build/gfx24_perf_calibration/PerformanceCalibration
+            build/gfx24_perf_calibration/BuildTruth
+            build/win_x64_gfx24_hardware_rt_release/BuildTruth
+            build/win_x64_gfx24_hardware_rt_release/Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json
+            .agent-harness/receipts/RequiredSuite.*.json
+          if-no-files-found: error
+
+  linux-gfx24-vulkan-rt:
+    name: Linux Vulkan GFX24 Ray Tracing
+    runs-on: [self-hosted, Linux, X64, rvx-gpu-vulkan-rt, rtx4070ti]
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Verify Vulkan hardware adapter
+        shell: bash
+        run: |
+          command -v vulkaninfo >/dev/null
+          vulkaninfo --summary | tee vulkaninfo-summary.txt
+          if grep -Eqi 'lavapipe|llvmpipe|swiftshader' vulkaninfo-summary.txt; then
+            echo '::error::A hardware Vulkan adapter is required for this job'
+            exit 1
+          fi
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-hardware-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-hardware-linux-
+      - name: Run fail-closed Vulkan hardware ray tracing
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_gfx24_hardware_rt_release
+          -BuildPreset linux_x64_gfx24_hardware_rt_release
+          -TestPreset linux_x64_gfx24_hardware_rt_release_run
+          -BuildDir build/linux_x64_gfx24_hardware_rt_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24HardwareRtVulkan
+          -RequiredLabel suite.gfx24-hardware-rt-vulkan
+          -ExpectedTestCount 6
+          -RequiredEvidence 'Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json;Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload Vulkan ray-tracing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-hardware-vulkan
+          path: |
+            build/linux_x64_gfx24_hardware_rt_release/BuildTruth
+            build/linux_x64_gfx24_hardware_rt_release/Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json
+            build/linux_x64_gfx24_hardware_rt_release/Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json
+            .agent-harness/receipts/RequiredSuite.*.json
+          if-no-files-found: error
+
   pr-verdict:
     name: PR Verdict
     if: always()
-    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping]
+    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every PR gate
@@ -401,7 +609,10 @@ jobs:
           LINUX_TSAN: ${{ needs.linux-tsan.result }}
           MACOS_ARM64: ${{ needs.macos-arm64.result }}
           SHIPPING: ${{ needs.shipping.result }}
+          RASTER_CORRECTNESS: ${{ needs.raster-correctness.result }}
+          WINDOWS_GFX24_HARDWARE: ${{ needs.windows-gfx24-hardware.result }}
+          LINUX_GFX24_VULKAN_RT: ${{ needs.linux-gfx24-vulkan-rt.result }}
         run: |
-          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING"; do
+          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING" "$RASTER_CORRECTNESS" "$WINDOWS_GFX24_HARDWARE" "$LINUX_GFX24_VULKAN_RT"; do
             test "$result" = success || exit 1
           done

@@ -18,6 +18,9 @@ WORKFLOWS = {
         "linux-tsan",
         "macos-arm64",
         "shipping",
+        "raster-correctness",
+        "windows-gfx24-hardware",
+        "linux-gfx24-vulkan-rt",
         "pr-verdict",
     },
     "nightly.yml": {
@@ -103,6 +106,75 @@ GFX24_CANDIDATE_TEST_BASE = "win_x64_gfx24_candidate_release_lane_base"
 GFX24_CANDIDATE_TEST_PRESET = "win_x64_gfx24_candidate_release_gfx24_candidate"
 GFX24_CANDIDATE_BUILD_TARGET = "RVXValidationSuiteGfx24Candidate"
 GFX24_CANDIDATE_LABEL = "suite.gfx24-candidate"
+
+GFX24_RASTER_BUILD_TARGET = "RVXValidationSuiteGfx24RasterCorrectness"
+GFX24_RASTER_LABEL = "suite.gfx24-raster-correctness"
+GFX24_RASTER_CONTRACTS = {
+    "Windows": {
+        "backend": "DX12",
+        "configure": "win_x64_gfx24_raster_release",
+        "build_dir": "build/win_x64_gfx24_raster_release",
+        "test": "win_x64_gfx24_raster_release_run",
+        "evidence": (
+            "Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json",
+            "Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json",
+        ),
+    },
+    "Linux": {
+        "backend": "Vulkan",
+        "configure": "linux_x64_gfx24_raster_release",
+        "build_dir": "build/linux_x64_gfx24_raster_release",
+        "test": "linux_x64_gfx24_raster_release_run",
+        "evidence": (
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series-validation.json",
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json",
+        ),
+    },
+    "macOS": {
+        "backend": "Metal",
+        "configure": "macos_arm64_gfx24_raster_release",
+        "build_dir": "build/macos_arm64_gfx24_raster_release",
+        "test": "macos_arm64_gfx24_raster_release_run",
+        "evidence": (
+            "Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series-validation.json",
+            "Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json",
+            "Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series-validation.json",
+        ),
+    },
+}
+
+GFX24_HARDWARE_RT_CONTRACTS = {
+    "windows-gfx24-hardware": {
+        "runner": "[self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]",
+        "configure": "win_x64_gfx24_hardware_rt_release",
+        "build_dir": "build/win_x64_gfx24_hardware_rt_release",
+        "test": "win_x64_gfx24_hardware_rt_release_run",
+        "target": "RVXValidationSuiteGfx24HardwareRtDx12",
+        "label": "suite.gfx24-hardware-rt-dx12",
+        "count": "3",
+        "evidence": (
+            "Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json",
+        ),
+    },
+    "linux-gfx24-vulkan-rt": {
+        "runner": "[self-hosted, Linux, X64, rvx-gpu-vulkan-rt, rtx4070ti]",
+        "configure": "linux_x64_gfx24_hardware_rt_release",
+        "build_dir": "build/linux_x64_gfx24_hardware_rt_release",
+        "test": "linux_x64_gfx24_hardware_rt_release_run",
+        "target": "RVXValidationSuiteGfx24HardwareRtVulkan",
+        "label": "suite.gfx24-hardware-rt-vulkan",
+        "count": "6",
+        "evidence": (
+            "Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json",
+            "Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json",
+        ),
+    },
+}
 
 
 def _read(path: Path) -> str:
@@ -193,6 +265,15 @@ def validate(root: Path) -> list[str]:
         configure_names = set()
         build_names = set()
         test_names = set()
+
+    try:
+        sample_manifest = json.loads(_read(
+            root / "Samples" / "RenderVerseSamples" / "Manifests"
+            / "renderverse-samples.json"
+        ))
+    except (ValueError, json.JSONDecodeError) as error:
+        findings.append(f"RenderVerseSamples manifest: {error}")
+        sample_manifest = {}
 
     if (
         GFX15_CONFIGURE_PRESET not in configure_names
@@ -367,6 +448,82 @@ def validate(root: Path) -> list[str]:
                 "Windows Release preset"
             )
 
+    expected_raster_filter = {
+        "include": {"label": "^suite\\.gfx24-raster-correctness$"}
+    }
+    for platform, contract in GFX24_RASTER_CONTRACTS.items():
+        configure = contract["configure"]
+        test = contract["test"]
+        if (
+            configure not in configure_names
+            or configure not in build_names
+            or test not in test_names
+        ):
+            findings.append(
+                "GFX24 raster correctness preset triplet is incomplete: "
+                f"{platform}/{configure}/{test}"
+            )
+            continue
+        build_preset = next(
+            entry for entry in presets["buildPresets"] if entry["name"] == configure
+        )
+        if (
+            build_preset.get("configurePreset") != configure
+            or build_preset.get("configuration") not in (None, "Release")
+            or build_preset.get("targets") != [GFX24_RASTER_BUILD_TARGET]
+        ):
+            findings.append(
+                "GFX24 raster correctness build preset must build only "
+                f"{GFX24_RASTER_BUILD_TARGET}: {platform}"
+            )
+        test_preset = next(
+            entry for entry in presets["testPresets"] if entry["name"] == test
+        )
+        if test_preset.get("filter") != expected_raster_filter:
+            findings.append(
+                "GFX24 raster correctness test preset must select exactly "
+                f"{GFX24_RASTER_LABEL}: {platform}"
+            )
+
+    for job_name, contract in GFX24_HARDWARE_RT_CONTRACTS.items():
+        configure = contract["configure"]
+        test = contract["test"]
+        target = contract["target"]
+        label = contract["label"]
+        if (
+            configure not in configure_names
+            or configure not in build_names
+            or test not in test_names
+        ):
+            findings.append(
+                "GFX24 hardware ray-tracing preset triplet is incomplete: "
+                f"{job_name}/{configure}/{test}"
+            )
+            continue
+        build_preset = next(
+            entry for entry in presets["buildPresets"] if entry["name"] == configure
+        )
+        if (
+            build_preset.get("configurePreset") != configure
+            or build_preset.get("configuration") not in (None, "Release")
+            or build_preset.get("targets") != [target]
+        ):
+            findings.append(
+                "GFX24 hardware ray-tracing build preset must build only "
+                f"{target}: {job_name}"
+            )
+        test_preset = next(
+            entry for entry in presets["testPresets"] if entry["name"] == test
+        )
+        expected_filter = {
+            "include": {"label": "^" + str(label).replace(".", "\\.") + "$"}
+        }
+        if test_preset.get("filter") != expected_filter:
+            findings.append(
+                "GFX24 hardware ray-tracing test preset must select exactly "
+                f"{label}: {job_name}"
+            )
+
     for configure, test in PR_SMOKE_PRESETS.items():
         if configure not in configure_names or configure not in build_names or test not in test_names:
             findings.append(f"PR smoke preset triplet is incomplete: {configure}/{test}")
@@ -451,6 +608,95 @@ def validate(root: Path) -> list[str]:
     ):
         if token not in shipping:
             findings.append(f"ci.yml Shipping is missing fail-closed token {token}")
+
+    raster = ci_jobs.get("raster-correctness", "")
+    for token in (
+        "strategy:",
+        "matrix:",
+        "runs-on: ${{ matrix.runner }}",
+        'RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"',
+        "Scripts/run_required_suite.ps1",
+        GFX24_RASTER_BUILD_TARGET,
+        f"-RequiredLabel {GFX24_RASTER_LABEL}",
+        "-ExpectedTestCount 4",
+        "Tests/Gfx24RasterCorrectness",
+        "if-no-files-found: error",
+    ):
+        if token not in raster:
+            findings.append(f"ci.yml GFX24 raster correctness is missing {token}")
+    for platform, contract in GFX24_RASTER_CONTRACTS.items():
+        for token in (
+            f"platform: {platform}",
+            f"configure_preset: {contract['configure']}",
+            f"build_preset: {contract['configure']}",
+            f"test_preset: {contract['test']}",
+            f"build_dir: {contract['build_dir']}",
+            f"backend: {contract['backend']}",
+            *contract["evidence"],
+        ):
+            if token not in raster:
+                findings.append(
+                    "ci.yml GFX24 raster correctness is missing required "
+                    f"{platform} token {token}"
+                )
+
+    for job_name, contract in GFX24_HARDWARE_RT_CONTRACTS.items():
+        hardware = ci_jobs.get(job_name, "")
+        for token in (
+            f"runs-on: {contract['runner']}",
+            "Scripts/run_required_suite.ps1",
+            str(contract["configure"]),
+            str(contract["test"]),
+            str(contract["build_dir"]),
+            str(contract["target"]),
+            f"-RequiredLabel {contract['label']}",
+            f"-ExpectedTestCount {contract['count']}",
+            "BuildTruth",
+            ".agent-harness/receipts/RequiredSuite.*.json",
+            "if-no-files-found: error",
+            *contract["evidence"],
+        ):
+            if token not in hardware:
+                findings.append(
+                    f"ci.yml {job_name} is missing required hardware token {token}"
+                )
+        for forbidden in (
+            "RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER",
+            "-AllowSoftwareAdapter",
+            "LIBGL_ALWAYS_SOFTWARE",
+            "VK_DRIVER_FILES",
+            "VK_ICD_FILENAMES",
+            "--allow-fallback",
+            "-SkipConfigure",
+        ):
+            if forbidden in hardware:
+                findings.append(
+                    f"ci.yml {job_name} must not permit software, fallback, or skipped hardware validation: {forbidden}"
+                )
+
+    windows_hardware = ci_jobs.get("windows-gfx24-hardware", "")
+    for token in (
+        "Scripts/run_render_quality_performance_calibration.ps1",
+        "win_x64_gfx24_performance_calibration_release",
+        "win_x64_gfx24_performance_calibration_release_run",
+        "build/gfx24_perf_calibration",
+        "PerformanceCalibration",
+    ):
+        if token not in windows_hardware:
+            findings.append(
+                f"ci.yml Windows GFX24 hardware job is missing performance token {token}"
+            )
+
+    linux_hardware = ci_jobs.get("linux-gfx24-vulkan-rt", "")
+    for token in (
+        "Verify Vulkan hardware adapter",
+        "vulkaninfo --summary",
+        "lavapipe|llvmpipe|swiftshader",
+    ):
+        if token not in linux_hardware:
+            findings.append(
+                f"ci.yml Linux GFX24 hardware job is missing adapter gate {token}"
+            )
 
     verdict = ci_jobs.get("pr-verdict", "")
     if "if: always()" not in verdict:
@@ -644,7 +890,7 @@ def validate(root: Path) -> list[str]:
             "performance.json",
             "--qualification-performance-baseline gfx24-dx12-candidate-unapproved",
             "--no-validation",
-            "--capture-tick 120",
+            "--capture-tick 300",
             "SUITE gfx24-candidate",
         ):
             if token not in gfx24_candidate_function:
@@ -687,6 +933,39 @@ def validate(root: Path) -> list[str]:
                     "GFX24 native candidate producer violates the cooked-only "
                     f"candidate boundary with forbidden token {forbidden}"
                 )
+
+    gfx24_calibration_function_match = re.search(
+        r"function\(rvx_add_renderverse_gfx24_performance_calibration\b(?P<body>.*?)\nendfunction\(\)",
+        qualification,
+        re.DOTALL,
+    )
+    gfx24_calibration_function = (
+        gfx24_calibration_function_match.group("body")
+        if gfx24_calibration_function_match
+        else ""
+    )
+    if not gfx24_calibration_function:
+        findings.append("GFX24 performance calibration implementation function is missing")
+    elif "--capture-tick 300" not in gfx24_calibration_function:
+        findings.append(
+            "GFX24 performance calibration must capture after the 300-frame warmup"
+        )
+
+    samples = sample_manifest.get("samples")
+    if not isinstance(samples, list):
+        findings.append("RenderVerseSamples manifest has no samples array")
+    else:
+        render_quality_lab = next(
+            (entry for entry in samples
+             if isinstance(entry, dict) and entry.get("id") == "render-quality-lab"),
+            None,
+        )
+        if not isinstance(render_quality_lab, dict) or (
+            render_quality_lab.get("captureTicks") != [300, 360, 361]
+        ):
+            findings.append(
+                "RenderQualityLab must keep the GFX24 raster capture ticks 300/360/361"
+            )
     for token in (
         "if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)",
         "RVX_ENABLE_GFX24_NATIVE_CANDIDATES requires Windows DX12, "

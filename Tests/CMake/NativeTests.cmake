@@ -1,4 +1,33 @@
 # Backend-native validation is conditional on the enabled production backend.
+# GFX24C's RT presets deliberately select only the already-implemented,
+# backend-native GFX20/GFX21 dispatch cases. They are opt-in because hosted
+# raster correctness may run on a software adapter, whereas these suites must
+# be dispatched on the configured hardware backend without a fallback path.
+option(RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION
+    "Register backend-exclusive GFX24 hardware ray-tracing selectors" OFF)
+set(RVX_GFX24_HARDWARE_RT_DX12_TAG "")
+set(RVX_GFX24_HARDWARE_RT_VULKAN_TAG "")
+if(RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION)
+    if(WIN32)
+        if(NOT RVX_ENABLE_DX12)
+            message(FATAL_ERROR
+                "GFX24 hardware RT qualification requires Windows DX12")
+        endif()
+        set(RVX_GFX24_HARDWARE_RT_DX12_TAG
+            suite.gfx24-hardware-rt-dx12)
+    elseif(UNIX AND NOT APPLE)
+        if(NOT RVX_ENABLE_VULKAN)
+            message(FATAL_ERROR
+                "GFX24 hardware RT qualification requires Linux Vulkan")
+        endif()
+        set(RVX_GFX24_HARDWARE_RT_VULKAN_TAG
+            suite.gfx24-hardware-rt-vulkan)
+    else()
+        message(FATAL_ERROR
+            "GFX24 hardware RT qualification supports only Windows DX12 or Linux Vulkan")
+    endif()
+endif()
+
 set(RVX_NATIVE_LIFECYCLE_BACKEND "")
 set(RVX_NATIVE_LIFECYCLE_DEFINE "")
 if(WIN32 AND RVX_ENABLE_DX12)
@@ -121,6 +150,7 @@ if(RVX_ENABLE_VULKAN)
             "${RVX_GFX20_VULKAN_RT_FIXTURE_DIR}/VulkanRayTracingFixture.hlsl"
         TAGS subsystem.rhi backend.vulkan trait.gpu trait.native
             trait.ray-tracing suite.gfx20-vulkan-rt
+            ${RVX_GFX24_HARDWARE_RT_VULKAN_TAG}
         SUITE gfx20-vulkan-ray-tracing
         TIMEOUT 300
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -145,6 +175,7 @@ if(RVX_ENABLE_VULKAN)
             ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_Vulkan/Private
         TAGS subsystem.rhi backend.vulkan trait.gpu trait.native
             trait.ray-tracing suite.gfx20-vulkan-rt
+            ${RVX_GFX24_HARDWARE_RT_VULKAN_TAG}
         SUITE gfx20-vulkan-ray-tracing
         TIMEOUT 180
         RESOURCE_LOCK rvx_gpu
@@ -204,6 +235,7 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
                 "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedReflection.hlsl"
             TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.cooked
                 backend.dx12 suite.gfx21-hybrid-rt
+                ${RVX_GFX24_HARDWARE_RT_DX12_TAG}
             SUITE gfx21-hybrid-ray-tracing
             TIMEOUT 300
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -239,6 +271,7 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
             DEFINES RVX_GFX21_NATIVE_BACKEND_DX12=1
             TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.native
                 backend.dx12 suite.gfx21-hybrid-rt
+                ${RVX_GFX24_HARDWARE_RT_DX12_TAG}
             SUITE gfx21-hybrid-ray-tracing
             TIMEOUT 300
             RESOURCE_LOCK rvx_gpu
@@ -279,6 +312,7 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
                 "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedReflection.hlsl"
             TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.cooked
                 backend.vulkan suite.gfx21-hybrid-rt
+                ${RVX_GFX24_HARDWARE_RT_VULKAN_TAG}
             SUITE gfx21-hybrid-ray-tracing
             TIMEOUT 300
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -314,6 +348,7 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
             DEFINES RVX_GFX21_NATIVE_BACKEND_VULKAN=1
             TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.native
                 backend.vulkan suite.gfx21-hybrid-rt
+                ${RVX_GFX24_HARDWARE_RT_VULKAN_TAG}
             SUITE gfx21-hybrid-ray-tracing
             TIMEOUT 300
             RESOURCE_LOCK rvx_gpu
@@ -349,6 +384,40 @@ rvx_add_gtest(
     SUITE gfx21-hybrid-ray-tracing
     TIMEOUT 30
 )
+
+if(RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION)
+    if(WIN32)
+        if(NOT TARGET RVXCook OR
+           NOT TARGET HybridRayTracingDX12NativeValidation)
+            message(FATAL_ERROR
+                "GFX24 DX12 hardware RT aggregate is missing required GFX21 targets")
+        endif()
+        add_custom_target(RVXValidationSuiteGfx24HardwareRtDx12
+            DEPENDS
+                RVXCook
+                HybridRayTracingDX12NativeValidation)
+        rvx_register_module_target(
+            TARGET RVXValidationSuiteGfx24HardwareRtDx12
+            MODULE Tests
+            INFRASTRUCTURE)
+    elseif(UNIX AND NOT APPLE)
+        if(NOT TARGET RVXCook OR
+           NOT TARGET VulkanRayTracingValidation OR
+           NOT TARGET HybridRayTracingVulkanNativeValidation)
+            message(FATAL_ERROR
+                "GFX24 Vulkan hardware RT aggregate is missing required GFX20/GFX21 targets")
+        endif()
+        add_custom_target(RVXValidationSuiteGfx24HardwareRtVulkan
+            DEPENDS
+                RVXCook
+                VulkanRayTracingValidation
+                HybridRayTracingVulkanNativeValidation)
+        rvx_register_module_target(
+            TARGET RVXValidationSuiteGfx24HardwareRtVulkan
+            MODULE Tests
+            INFRASTRUCTURE)
+    endif()
+endif()
 
 # GFX22 validates the one shared weighted-blended translucency composition
 # against two production backends. The suite is intentionally all-or-nothing:
