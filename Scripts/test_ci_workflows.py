@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_ci_workflows import validate
+from check_ci_workflows import GFX24_APPROVED_GOLDEN_CONTRACT, validate
 
 
 class CIWorkflowPolicyTests(unittest.TestCase):
@@ -84,6 +84,19 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(old, body)
         path.write_text(
             prefix + marker + body.replace(old, new) + "\nendfunction()" + suffix,
+            encoding="utf-8",
+        )
+
+    def replace_windows_gfx24_hardware(self, old: str, new: str) -> None:
+        path = self.root / ".github" / "workflows" / "ci.yml"
+        text = path.read_text(encoding="utf-8")
+        marker = "  windows-gfx24-hardware:\n"
+        prefix, remainder = text.split(marker, 1)
+        body, suffix = remainder.split("  linux-gfx24-vulkan-rt:\n", 1)
+        self.assertIn(old, body)
+        path.write_text(
+            prefix + marker + body.replace(old, new, 1)
+            + "  linux-gfx24-vulkan-rt:\n" + suffix,
             encoding="utf-8",
         )
 
@@ -427,6 +440,130 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         )
         findings = validate(self.root)
         self.assertTrue(any("does not require raster-correctness" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_step_cannot_be_removed(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "Run fail-closed DX12 approved Golden validation",
+            "Run removed DX12 approved Golden validation",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("missing the strict approved Golden step" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_step_must_use_its_exact_preset(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "-ConfigurePreset win_x64_gfx24_approved_golden_release",
+            "-ConfigurePreset win_x64_gfx24_raster_release",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("approved Golden step must set -ConfigurePreset" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_step_rejects_each_substituted_evidence(self) -> None:
+        for evidence in GFX24_APPROVED_GOLDEN_CONTRACT["evidence"]:
+            with self.subTest(evidence=evidence):
+                self.replace_windows_gfx24_hardware(
+                    evidence,
+                    evidence + ".missing",
+                )
+                findings = validate(self.root)
+                self.assertTrue(any("approved Golden RequiredEvidence" in item
+                                    for item in findings))
+
+    def test_gfx24_approved_golden_step_rejects_duplicate_evidence(self) -> None:
+        first, second = GFX24_APPROVED_GOLDEN_CONTRACT["evidence"][:2]
+        self.replace_windows_gfx24_hardware(second, first)
+        findings = validate(self.root)
+        self.assertTrue(any("approved Golden RequiredEvidence" in item
+                            for item in findings))
+
+    def test_gfx24_hosted_raster_cannot_run_approved_golden_validation(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "  raster-correctness:\n",
+            "  raster-correctness:\n    # Tests/RenderQuality/Goldens\n",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("hosted GFX24 raster correctness" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_checkout_requires_lfs(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "with: {fetch-depth: 0, lfs: true}",
+            "with: {fetch-depth: 0, lfs: false}",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("checkout must fetch approved Golden LFS" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_checkout_cannot_omit_lfs(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "with: {fetch-depth: 0, lfs: true}",
+            "with: {fetch-depth: 0}",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("checkout must fetch approved Golden LFS" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_cannot_reuse_hosted_build_tree(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "-BuildDir build/win_x64_gfx24_approved_golden_release",
+            "-BuildDir build/win_x64_gfx24_raster_release",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("must not reuse a hosted raster build tree" in item
+                            for item in findings))
+
+    def test_gfx24_approved_golden_presets_must_remain_internal(self) -> None:
+        path = self.root / "CMakePresets.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        preset = next(
+            entry for entry in document["configurePresets"]
+            if entry["name"] == "win_x64_gfx24_approved_golden_release"
+        )
+        preset.pop("vendor")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any("approved Golden configure/test presets must remain internal"
+                            in item for item in findings))
+
+    def test_gfx24_approved_golden_preset_contract_fails_closed(self) -> None:
+        path = self.root / "CMakePresets.json"
+        source = path.read_text(encoding="utf-8")
+        for field, value in (
+            ("inherits", "win_x64_release"),
+            ("binaryDir", "${sourceDir}/build/win_x64_gfx24_raster_release"),
+            ("mode", "perceptual-hosted"),
+            ("root", {"value": "${sourceDir}/Tests/OtherGoldens", "type": "PATH"}),
+        ):
+            with self.subTest(field=field):
+                document = json.loads(source)
+                preset = next(
+                    entry for entry in document["configurePresets"]
+                    if entry["name"] == "win_x64_gfx24_approved_golden_release"
+                )
+                if field == "inherits":
+                    preset["inherits"] = value
+                elif field == "binaryDir":
+                    preset["binaryDir"] = value
+                elif field == "mode":
+                    preset["cacheVariables"]["RVX_GFX24_RASTER_GOLDEN_MODE"] = value
+                else:
+                    preset["cacheVariables"]["RVX_GFX24_RASTER_GOLDEN_ROOT"] = value
+                path.write_text(json.dumps(document), encoding="utf-8")
+                findings = validate(self.root)
+                self.assertTrue(any("approved Golden configure preset" in item
+                                    for item in findings))
+        path.write_text(source, encoding="utf-8")
+
+    def test_gfx24_approved_golden_upload_must_include_strict_tree(self) -> None:
+        self.replace_windows_gfx24_hardware(
+            "build/win_x64_gfx24_approved_golden_release/BuildTruth",
+            "build/win_x64_gfx24_approved_golden_release/MissingBuildTruth",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("upload is missing approved Golden evidence" in item
                             for item in findings))
 
     def test_gfx24_hardware_runner_labels_must_remain_exact(self) -> None:

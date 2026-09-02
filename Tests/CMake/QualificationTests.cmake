@@ -2475,7 +2475,8 @@ endfunction()
 # adapters remain valid correctness evidence. Self-hosted jobs can tighten
 # adapter, driver, and OS checks through the three cache variables below.
 function(rvx_add_renderverse_gfx24_raster_series_validator
-         TEST_NAME SERIES_PATH REPORT_PATH EXPECTED_BACKEND FIXTURE_NAME)
+         TEST_NAME SERIES_PATH REPORT_PATH GOLDEN_REPORT_PATH
+         EXPECTED_BACKEND GOLDEN_BACKEND GOLDEN_PIPELINE FIXTURE_NAME)
     set(_rvx_gfx24_series_validator
         "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/ValidateSeries.cmake")
     get_property(_rvx_gfx24_series_validator_generated GLOBAL
@@ -2539,6 +2540,45 @@ execute_process(COMMAND ${_rvx_command}
 if(NOT _rvx_result EQUAL 0)
     message(FATAL_ERROR "GFX24 raster correctness series validation failed")
 endif()
+
+if(NOT "${RVX_GFX24_GOLDEN_MODE}" STREQUAL "none")
+    foreach(_rvx_required_golden_argument IN ITEMS
+            RVX_GFX24_GOLDEN_REPORT
+            RVX_GFX24_GOLDEN_CHECKER
+            RVX_GFX24_GOLDEN_RECORD
+            RVX_GFX24_GOLDEN_BASELINE
+            RVX_GFX24_GOLDEN_POLICY
+            RVX_GFX24_GOLDEN_MANIFEST)
+        if(NOT DEFINED ${_rvx_required_golden_argument} OR
+           "${${_rvx_required_golden_argument}}" STREQUAL "")
+            message(FATAL_ERROR
+                "GFX24 approved-Golden validation received incomplete CTest arguments")
+        endif()
+    endforeach()
+
+    set(_rvx_golden_command
+        "${RVX_GFX24_PYTHON}" "${RVX_GFX24_GOLDEN_CHECKER}" compare-series
+        --series "${RVX_GFX24_SERIES}"
+        --record "${RVX_GFX24_GOLDEN_RECORD}"
+        --baseline "${RVX_GFX24_GOLDEN_BASELINE}"
+        --policy "${RVX_GFX24_GOLDEN_POLICY}"
+        --series-manifest "${RVX_GFX24_MANIFEST}"
+        --sample-manifest "${RVX_GFX24_GOLDEN_MANIFEST}"
+        --required-hardware-mode "${RVX_GFX24_GOLDEN_MODE}"
+        --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+        --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+        --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+        --report "${RVX_GFX24_GOLDEN_REPORT}")
+    if(NOT "${RVX_GFX24_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+        list(APPEND _rvx_golden_command
+            --runner-class "${RVX_GFX24_GOLDEN_RUNNER_CLASS}")
+    endif()
+    execute_process(COMMAND ${_rvx_golden_command}
+                    RESULT_VARIABLE _rvx_golden_result)
+    if(NOT _rvx_golden_result EQUAL 0)
+        message(FATAL_ERROR "GFX24 approved-Golden series validation failed")
+    endif()
+endif()
 ]==])
         set_property(GLOBAL PROPERTY
             RVX_GFX24_RASTER_SERIES_VALIDATOR_GENERATED TRUE)
@@ -2557,6 +2597,14 @@ endif()
             "-DRVX_GFX24_EXPECTED_ADAPTER_NAME=${RVX_GFX24_RASTER_EXPECTED_ADAPTER_NAME}"
             "-DRVX_GFX24_EXPECTED_DRIVER_VERSION=${RVX_GFX24_RASTER_EXPECTED_DRIVER_VERSION}"
             "-DRVX_GFX24_EXPECTED_OS_BUILD=${RVX_GFX24_RASTER_EXPECTED_OS_BUILD}"
+            "-DRVX_GFX24_GOLDEN_MODE=${RVX_GFX24_RASTER_GOLDEN_MODE}"
+            "-DRVX_GFX24_GOLDEN_REPORT=${GOLDEN_REPORT_PATH}"
+            "-DRVX_GFX24_GOLDEN_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/render_quality_golden.py"
+            "-DRVX_GFX24_GOLDEN_RECORD=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/golden-record.json"
+            "-DRVX_GFX24_GOLDEN_BASELINE=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/bundle/bundle.json"
+            "-DRVX_GFX24_GOLDEN_POLICY=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/visual-policy.json"
+            "-DRVX_GFX24_GOLDEN_MANIFEST=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/sample-manifest.json"
+            "-DRVX_GFX24_GOLDEN_RUNNER_CLASS=${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}"
             -P "${_rvx_gfx24_series_validator}"
         REQUIRED_FILES
             "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
@@ -2602,6 +2650,68 @@ function(rvx_add_renderverse_gfx24_raster_correctness)
         "Optional exact driver version for GFX24 raster correctness")
     set(RVX_GFX24_RASTER_EXPECTED_OS_BUILD "" CACHE STRING
         "Optional exact OS build for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_GOLDEN_MODE "none" CACHE STRING
+        "Approved-Golden validation mode for GFX24 raster correctness (none, exact-hardware, runner-class)")
+    set_property(CACHE RVX_GFX24_RASTER_GOLDEN_MODE PROPERTY STRINGS
+        none exact-hardware runner-class)
+    set(RVX_GFX24_RASTER_GOLDEN_ROOT "" CACHE PATH
+        "Root containing approved GFX24 raster Golden packages")
+    set(RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS "" CACHE STRING
+        "Required runner class for runner-class GFX24 raster Golden validation")
+
+    set(_rvx_gfx24_golden_modes none exact-hardware runner-class)
+    if(NOT RVX_GFX24_RASTER_GOLDEN_MODE IN_LIST _rvx_gfx24_golden_modes)
+        message(FATAL_ERROR
+            "RVX_GFX24_RASTER_GOLDEN_MODE must be none, exact-hardware, or runner-class")
+    endif()
+    if(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "none")
+        if(NOT "${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           NOT "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "GFX24 raster Golden root and runner class require a non-none Golden mode")
+        endif()
+    elseif(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "exact-hardware")
+        if(NOT WIN32 OR NOT backend_name STREQUAL "DX12")
+            message(FATAL_ERROR
+                "exact-hardware GFX24 raster Golden validation is supported only for Windows DX12")
+        endif()
+        if("${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           NOT "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "exact-hardware GFX24 raster Golden validation requires a root and no runner class")
+        endif()
+    elseif(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "runner-class")
+        if("${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "runner-class GFX24 raster Golden validation requires both root and runner class")
+        endif()
+    endif()
+
+    if(NOT RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "none")
+        get_filename_component(RVX_GFX24_RASTER_GOLDEN_ROOT
+            "${RVX_GFX24_RASTER_GOLDEN_ROOT}" ABSOLUTE
+            BASE_DIR "${CMAKE_SOURCE_DIR}")
+        if(NOT IS_DIRECTORY "${RVX_GFX24_RASTER_GOLDEN_ROOT}")
+            message(FATAL_ERROR
+                "GFX24 raster Golden root does not exist: ${RVX_GFX24_RASTER_GOLDEN_ROOT}")
+        endif()
+        foreach(_rvx_pipeline_label IN ITEMS ForwardPlus Deferred)
+            set(_rvx_golden_directory
+                "${RVX_GFX24_RASTER_GOLDEN_ROOT}/${backend_name}/${_rvx_pipeline_label}/High")
+            foreach(_rvx_golden_file IN ITEMS
+                    golden-record.json
+                    bundle/bundle.json
+                    visual-policy.json
+                    sample-manifest.json)
+                if(NOT EXISTS "${_rvx_golden_directory}/${_rvx_golden_file}")
+                    message(FATAL_ERROR
+                        "GFX24 raster Golden package is incomplete: "
+                        "${_rvx_golden_directory}/${_rvx_golden_file}")
+                endif()
+            endforeach()
+        endforeach()
+    endif()
 
     set(cooked_shader_root
         "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24RasterCorrectnessShaders/${backend_name}")
@@ -2690,7 +2800,10 @@ function(rvx_add_renderverse_gfx24_raster_correctness)
             "${test_prefix}SeriesValidation"
             "${series_root}/series.json"
             "${series_root}/series-validation.json"
+            "${series_root}/golden-validation.json"
             "${backend_lower}"
+            "${backend_name}"
+            "${pipeline_label}"
             "${producer}FreshSeries")
     endforeach()
 endfunction()

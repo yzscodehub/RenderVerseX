@@ -1,12 +1,12 @@
 {
   "approval": {
-    "approvedAtUtc": "2026-09-02T09:01:59.082604Z",
+    "approvedAtUtc": "2026-09-02T10:25:03.398974Z",
     "approvedBy": "yinzs",
     "reason": "User confirmed the post-ObjectVelocity-fix DX12 Forward+ Golden after five zero-tolerance same-process series"
   },
   "contactSheet": {
     "indexPath": "contact-sheet.json",
-    "indexSha256": "e1c87842dd6edcf5fbaf37e7e76846fc608b10809aa198e22f4a0c70c1526b0c",
+    "indexSha256": "46354a0d003356ac0693d6e7df134e2f1ca51c0e9a0bcffb4038c8cb3a1659b2",
     "ppmPath": "contact-sheet.ppm",
     "ppmSha256": "f344a746b3d0c0b52cae754f07d7734970d39d3f6cbaab8497a821bd500eb664"
   },
@@ -23,7 +23,7 @@
   "runnerClass": null,
   "sampleManifest": {
     "path": "sample-manifest.json",
-    "sha256": "6b616d7eb93cc977e457073f0fdc25e102af946ecc6fe4222c05bed8e8544c44"
+    "sha256": "8fedbc163951232787ea5b8b76c02e7b120854440d9d92bb846c891bf606c8f1"
   },
   "schema": "RVX.RenderQualityGoldenRecord",
   "schemaVersion": 1,
@@ -108,6 +108,6 @@
   "status": "approved",
   "visualPolicy": {
     "path": "visual-policy.json",
-    "sha256": "c5f0e448cb709934a75d46895c2b1a8805da4f4bfdbdd8f9a2decd6895e0bcf0"
+    "sha256": "5de41ea68a2b7f6d6d96ea447653fb8fc33502a752bd91f3c91f2160f5c1412a"
   }
 }

@@ -183,8 +183,27 @@
         "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
         "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
         "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
         "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
         "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release",
+      "displayName": "Windows x64 Release GFX24 Approved Golden",
+      "inherits": "win_x64_gfx24_raster_release",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_approved_golden_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "exact-hardware",
+        "RVX_GFX24_RASTER_GOLDEN_ROOT": {
+          "value": "${sourceDir}/Tests/RenderQuality/Goldens",
+          "type": "PATH"
+        }
       }
     },
     {
@@ -362,6 +381,7 @@
         "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
         "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
         "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
         "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
@@ -449,6 +469,7 @@
         "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
         "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
         "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
         "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
@@ -630,6 +651,12 @@
     {
       "name": "win_x64_gfx24_raster_release",
       "configurePreset": "win_x64_gfx24_raster_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release",
+      "configurePreset": "win_x64_gfx24_approved_golden_release",
       "configuration": "Release",
       "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
     },
@@ -1235,6 +1262,19 @@
     {
       "name": "win_x64_gfx24_raster_release_run",
       "configurePreset": "win_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release_run",
+      "configurePreset": "win_x64_gfx24_approved_golden_release",
       "vendor": {
         "renderversex.com/validation/1.0": {
           "visibility": "internal"

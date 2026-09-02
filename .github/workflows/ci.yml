@@ -507,6 +507,21 @@ jobs:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-gfx24-hardware-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-gfx24-hardware-windows-
+      - name: Run fail-closed DX12 approved Golden validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_gfx24_approved_golden_release
+          -BuildPreset win_x64_gfx24_approved_golden_release
+          -TestPreset win_x64_gfx24_approved_golden_release_run
+          -BuildDir build/win_x64_gfx24_approved_golden_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence 'Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/golden-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/golden-validation.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Run fixed DX12 performance calibration
         shell: pwsh
         run: >-
@@ -537,6 +552,8 @@ jobs:
         with:
           name: gfx24-hardware-dx12
           path: |
+            build/win_x64_gfx24_approved_golden_release/BuildTruth
+            build/win_x64_gfx24_approved_golden_release/Tests/Gfx24RasterCorrectness
             build/gfx24_perf_calibration/PerformanceCalibration
             build/gfx24_perf_calibration/BuildTruth
             build/win_x64_gfx24_hardware_rt_release/BuildTruth

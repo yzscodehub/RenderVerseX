@@ -69,7 +69,8 @@ TELEMETRY_COVERAGE = {
 
 
 def write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    path.write_bytes(payload.encode("utf-8"))
 
 
 def write_bundle(
@@ -83,6 +84,7 @@ def write_bundle(
     capture_tick: int = 300,
     receipt: str = "a" * 64,
     payload_offset: float = 0.0,
+    qualification_identity: dict[str, str | int] | None = None,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     attachments = []
@@ -136,7 +138,10 @@ def write_bundle(
         "schemaVersion": 1,
         "bundleId": name,
         "sourceCommit": source_commit,
-        "qualificationIdentity": {**IDENTITY, "captureTick": capture_tick},
+        "qualificationIdentity": {
+            **(IDENTITY if qualification_identity is None else qualification_identity),
+            "captureTick": capture_tick,
+        },
         "execution": {
             "runId": run_id,
             "preset": preset,
@@ -227,6 +232,8 @@ def write_visual_golden_record(
     sample_manifest: Path,
     *,
     approved: bool = True,
+    hardware_mode: str = "exact-hardware",
+    runner_class: str | None = None,
 ) -> Path:
     baseline_document = json.loads(baseline.read_text())
     packaged_manifest = path.parent / "golden-sample-manifest.json"
@@ -266,8 +273,8 @@ def write_visual_golden_record(
             "path": packaged_manifest.name,
             "sha256": hashlib.sha256(packaged_manifest.read_bytes()).hexdigest(),
         },
-        "hardwareMode": "exact-hardware",
-        "runnerClass": None,
+        "hardwareMode": hardware_mode,
+        "runnerClass": runner_class,
         "selectedBundle": {
             "seriesOrdinal": 3,
             "seriesSha256": series_hashes[2],
@@ -313,26 +320,38 @@ def write_attachment_series(
     payload_base: float = 0.0,
     tick_payload_offsets: dict[int, float] | None = None,
     hardware: dict[str, str] | None = None,
+    identity: dict[str, str | int] | None = None,
+    capture_ticks: tuple[int, int, int] = (300, 360, 361),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    identity = {
-        key: value for key, value in IDENTITY.items()
-        if key != "captureTick"
-    }
+    series_identity = (
+        {key: value for key, value in IDENTITY.items() if key != "captureTick"}
+        if identity is None else identity
+    )
+    if (
+        len(capture_ticks) != 3
+        or capture_ticks[0] < 1
+        or any(left >= right for left, right in zip(capture_ticks, capture_ticks[1:]))
+    ):
+        raise ValueError("test capture ticks must be three strictly increasing values")
     payload_offsets = {
-        300: payload_base,
-        360: payload_base + 0.5,
-        361: payload_base + 0.501,
+        capture_ticks[0]: payload_base,
+        capture_ticks[1]: payload_base + 0.5,
+        capture_ticks[2]: payload_base + 0.501,
     }
     if tick_payload_offsets is not None:
         unknown_ticks = set(tick_payload_offsets) - set(payload_offsets)
         if unknown_ticks:
             raise ValueError(f"unsupported test capture ticks: {sorted(unknown_ticks)}")
         payload_offsets.update(tick_payload_offsets)
-    tick_specs = (
-        (300, "1", "a" * 64, payload_offsets[300]),
-        (360, "2", "c" * 64, payload_offsets[360]),
-        (361, "3", "d" * 64, payload_offsets[361]),
+    tick_specs = tuple(
+        (capture_tick, bundle_id, receipt, payload_offsets[capture_tick])
+        for capture_tick, bundle_id, receipt in zip(
+            capture_ticks,
+            ("1", "2", "3"),
+            ("a" * 64, "c" * 64, "d" * 64),
+            strict=True,
+        )
     )
     tick_objects: list[series_contract.SeriesTick] = []
     tick_documents: list[dict[str, object]] = []
@@ -346,6 +365,7 @@ def write_attachment_series(
             receipt=receipt,
             run_id=run_id,
             payload_offset=offset,
+            qualification_identity=series_identity,
         )
         relative = Path(directory_name) / "bundle.json"
         bundle_sha = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
@@ -376,7 +396,7 @@ def write_attachment_series(
         "commit-a",
         run_id,
         "win_x64_debug_gfx24_qualification",
-        identity,
+        series_identity,
         SERIES_HARDWARE if hardware is None else hardware,
         manifest_sha,
         ticks,
@@ -388,7 +408,7 @@ def write_attachment_series(
         "sourceCommit": "commit-a",
         "runId": run_id,
         "preset": "win_x64_debug_gfx24_qualification",
-        "qualificationIdentity": identity,
+        "qualificationIdentity": series_identity,
         "hardwareIdentity": SERIES_HARDWARE if hardware is None else hardware,
         "manifestSha256": manifest_sha,
         "ticks": tick_documents,
@@ -1231,6 +1251,14 @@ class RenderQualityGoldenTests(unittest.TestCase):
             )
             ppm = record.parent / "contact-sheet.ppm"
             self.assertTrue(ppm.read_bytes().startswith(b"P6\n1280 360\n255\n"))
+            for json_path in (
+                record,
+                bundle,
+                policy,
+                manifest,
+                record.parent / "contact-sheet.json",
+            ):
+                self.assertNotIn(b"\r", json_path.read_bytes())
 
             valid = run_golden(
                 "verify",
@@ -1274,6 +1302,14 @@ class RenderQualityGoldenTests(unittest.TestCase):
             self.assertEqual(
                 verified.returncode, 0, verified.stdout + verified.stderr
             )
+            for json_path in (
+                approved_root / "golden-record.json",
+                approved_root / "bundle" / "bundle.json",
+                approved_root / "visual-policy.json",
+                approved_root / "sample-manifest.json",
+                approved_root / "contact-sheet.json",
+            ):
+                self.assertNotIn(b"\r", json_path.read_bytes())
 
     def test_prepare_rejects_visual_drift_in_a_nonselected_series(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1433,6 +1469,305 @@ class RenderQualityGoldenTests(unittest.TestCase):
                 or "SHA-256" in result.stderr
                 or "payload" in result.stderr
             )
+
+
+class RenderQualityGoldenComparisonTests(unittest.TestCase):
+    def _fixture(
+        self,
+        root: Path,
+        *,
+        approved: bool = True,
+        hardware_mode: str = "exact-hardware",
+        runner_class: str | None = None,
+        payload_base: float = 0.0,
+        tick_payload_offsets: dict[int, float] | None = None,
+        hardware: dict[str, str] | None = None,
+        identity: dict[str, str | int] | None = None,
+    ) -> dict[str, Path]:
+        root.mkdir(parents=True, exist_ok=True)
+        manifest = write_sample_manifest(root / "sample-manifest.json")
+        policy = write_visual_policy(root / "visual-policy.json")
+        baseline = write_bundle(
+            root / "baseline",
+            name="approved-golden",
+            completed_frame=300,
+        )
+        record = write_visual_golden_record(
+            root / "golden-record.json",
+            baseline,
+            policy,
+            manifest,
+            approved=approved,
+            hardware_mode=hardware_mode,
+            runner_class=runner_class,
+        )
+        series = write_attachment_series(
+            root / "current-series",
+            manifest,
+            payload_base=payload_base,
+            tick_payload_offsets=tick_payload_offsets,
+            hardware=hardware,
+            identity=identity,
+        )
+        return {
+            "record": record,
+            "baseline": baseline,
+            "policy": policy,
+            "manifest": manifest,
+            "series": series,
+        }
+
+    def _arguments(
+        self,
+        fixture: dict[str, Path],
+        report: Path,
+        *,
+        required_hardware_mode: str = "exact-hardware",
+        runner_class: str | None = None,
+        series_manifest: Path | None = None,
+    ) -> list[Path | str]:
+        arguments: list[Path | str] = [
+            "compare-series",
+            "--series", fixture["series"],
+            "--record", fixture["record"],
+            "--baseline", fixture["baseline"],
+            "--policy", fixture["policy"],
+            "--sample-manifest", fixture["manifest"],
+            "--required-hardware-mode", required_hardware_mode,
+            "--expected-source-commit", "commit-a",
+            "--expected-run-id", "run-a",
+            "--expected-preset", "win_x64_debug_gfx24_qualification",
+            "--report", report,
+        ]
+        if runner_class is not None:
+            arguments.extend(["--runner-class", runner_class])
+        if series_manifest is not None:
+            arguments.extend(["--series-manifest", series_manifest])
+        return arguments
+
+    def test_approved_exact_hardware_comparison_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root)
+            report = root / "comparison.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(report.read_text())
+            self.assertEqual(document["schema"], "RVX.RenderQualityGoldenComparisonResult")
+            self.assertEqual(document["status"], "passed")
+            self.assertTrue(document["comparisonPerformed"])
+            self.assertEqual(document["currentHardwareIdentity"], SERIES_HARDWARE)
+            self.assertEqual(document["baselineHardwareIdentity"], SERIES_HARDWARE)
+            self.assertEqual(len(document["visualMetrics"]), len(SEMANTICS))
+            self.assertEqual(len(document["temporalMetrics"]), len(SEMANTICS))
+
+    def test_candidate_missing_tampered_and_lfs_records_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root / "candidate", approved=False)
+            report = root / "candidate-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(report.read_text())["comparisonPerformed"], False)
+            self.assertIn("not approved", result.stderr)
+
+            fixture = self._fixture(root / "missing")
+            fixture["record"] = root / "missing" / "does-not-exist.json"
+            report = root / "missing-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertFalse(document["comparisonPerformed"])
+            self.assertIsNone(document["goldenRecord"]["sha256"])
+
+            fixture = self._fixture(root / "tampered")
+            fixture["baseline"].write_text(
+                fixture["baseline"].read_text(encoding="utf-8") + " ",
+                encoding="utf-8",
+            )
+            report = root / "tampered-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(json.loads(report.read_text())["comparisonPerformed"])
+            self.assertIn("SHA-256", result.stderr)
+
+            fixture = self._fixture(root / "lfs-pointer")
+            fixture["record"].write_text(
+                "version https://git-lfs.github.com/spec/v1\n"
+                + "oid sha256:" + "0" * 64 + "\nsize 16\n",
+                encoding="utf-8",
+            )
+            report = root / "lfs-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(json.loads(report.read_text())["comparisonPerformed"])
+            self.assertIn("not valid JSON", result.stderr)
+
+    def test_each_exact_hardware_field_fails_before_pixel_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for field in series_contract.HARDWARE_FIELDS:
+                hardware = dict(SERIES_HARDWARE)
+                identity = None
+                if field == "backend":
+                    hardware[field] = "Vulkan"
+                    identity = {
+                        key: value for key, value in IDENTITY.items()
+                        if key != "captureTick"
+                    }
+                    identity["backend"] = "Vulkan"
+                elif field == "capabilityHash":
+                    hardware[field] = "e" * 64
+                else:
+                    hardware[field] = f"different-{field}"
+                fixture = self._fixture(
+                    root / field,
+                    hardware=hardware,
+                    identity=identity,
+                )
+                report = root / f"{field}.json"
+                result = run_golden(*self._arguments(fixture, report))
+                self.assertEqual(result.returncode, 1, field)
+                document = json.loads(report.read_text())
+                self.assertFalse(document["comparisonPerformed"], field)
+                self.assertEqual(document["failureCategory"], "hardware-mismatch")
+                self.assertIn(field, document["diagnostic"])
+
+    def test_hardware_mode_and_runner_class_mismatches_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root / "mode")
+            report = root / "mode-report.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                required_hardware_mode="runner-class",
+                runner_class="hosted-gpu",
+            ))
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(report.read_text())["failureCategory"], "hardware-mode")
+
+            fixture = self._fixture(
+                root / "runner-class",
+                hardware_mode="runner-class",
+                runner_class="hosted-gpu",
+            )
+            report = root / "runner-class-report.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                required_hardware_mode="runner-class",
+                runner_class="other-gpu",
+            ))
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(report.read_text())["failureCategory"], "hardware-mode")
+
+            report = root / "runner-class-valid.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                required_hardware_mode="runner-class",
+                runner_class="hosted-gpu",
+            ))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_pixel_drift_and_frozen_temporal_fail_after_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root / "pixel", payload_base=0.02)
+            report = root / "pixel-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertTrue(document["comparisonPerformed"])
+            self.assertEqual(document["failureCategory"], "visual-metric")
+            self.assertTrue(document["visualMetrics"])
+
+            fixture = self._fixture(
+                root / "frozen",
+                tick_payload_offsets={360: 0.51, 361: 0.51},
+            )
+            report = root / "frozen-report.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertTrue(document["comparisonPerformed"])
+            self.assertEqual(document["failureCategory"], "temporal-metric")
+            self.assertTrue(document["temporalMetrics"])
+
+    def test_series_manifest_eol_is_ignored_but_semantic_drift_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root / "format-only")
+            formatted_manifest = root / "format-only" / "source-manifest.json"
+            source_document = json.loads(fixture["manifest"].read_text())
+            formatted_manifest.write_bytes(
+                (
+                    json.dumps(source_document, indent=4, sort_keys=False)
+                    .replace("\n", "\r\n")
+                    + "\r\n"
+                ).encode("utf-8")
+            )
+            fixture["series"] = write_attachment_series(
+                root / "format-only" / "formatted-series",
+                formatted_manifest,
+            )
+            report = root / "format-only.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                series_manifest=formatted_manifest,
+            ))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(report.read_text())
+            self.assertTrue(document["comparisonPerformed"])
+            self.assertNotEqual(
+                document["goldenSampleManifest"]["sha256"],
+                document["seriesManifest"]["sha256"],
+            )
+
+            fixture = self._fixture(root / "tick-drift")
+            source_manifest = root / "tick-drift" / "source-manifest.json"
+            source_document = json.loads(fixture["manifest"].read_text())
+            source_document["samples"][0]["captureTicks"] = [300, 360, 362]
+            write_json(source_manifest, source_document)
+            fixture["series"] = write_attachment_series(
+                root / "tick-drift" / "source-series",
+                source_manifest,
+                capture_ticks=(300, 360, 362),
+            )
+            report = root / "tick-drift.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                series_manifest=source_manifest,
+            ))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertFalse(document["comparisonPerformed"])
+            self.assertEqual(document["failureCategory"], "manifest-semantic-mismatch")
+
+            fixture = self._fixture(root / "roi-drift")
+            source_manifest = root / "roi-drift" / "source-manifest.json"
+            source_document = json.loads(fixture["manifest"].read_text())
+            source_document["samples"][0]["roiMetricPolicy"][
+                "regionsOfInterest"
+            ][0]["width"] = 0.5
+            write_json(source_manifest, source_document)
+            fixture["series"] = write_attachment_series(
+                root / "roi-drift" / "source-series",
+                source_manifest,
+            )
+            report = root / "roi-drift.json"
+            result = run_golden(*self._arguments(
+                fixture,
+                report,
+                series_manifest=source_manifest,
+            ))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertFalse(document["comparisonPerformed"])
+            self.assertEqual(document["failureCategory"], "manifest-semantic-mismatch")
 
 
 class RenderQualityPerformanceTests(unittest.TestCase):

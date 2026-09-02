@@ -112,6 +112,22 @@ GFX24_RASTER_LABEL = "suite.gfx24-raster-correctness"
 GFX24_INTERNAL_PRESET_VENDOR = {
     "renderversex.com/validation/1.0": {"visibility": "internal"}
 }
+GFX24_APPROVED_GOLDEN_CONTRACT = {
+    "configure": "win_x64_gfx24_approved_golden_release",
+    "build_dir": "build/win_x64_gfx24_approved_golden_release",
+    "test": "win_x64_gfx24_approved_golden_release_run",
+    "target": "RVXValidationSuiteGfx24RasterCorrectness",
+    "label": "suite.gfx24-raster-correctness",
+    "count": "4",
+    "evidence": (
+        "Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json",
+        "Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json",
+        "Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/golden-validation.json",
+        "Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json",
+        "Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json",
+        "Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/golden-validation.json",
+    ),
+}
 GFX24_RASTER_CONTRACTS = {
     "Windows": {
         "backend": "DX12",
@@ -563,6 +579,84 @@ def validate(root: Path) -> list[str]:
                 f"{label}: {job_name}"
             )
 
+    golden_configure = GFX24_APPROVED_GOLDEN_CONTRACT["configure"]
+    golden_test = GFX24_APPROVED_GOLDEN_CONTRACT["test"]
+    golden_target = GFX24_APPROVED_GOLDEN_CONTRACT["target"]
+    golden_label = GFX24_APPROVED_GOLDEN_CONTRACT["label"]
+    if (
+        golden_configure not in configure_names
+        or golden_configure not in build_names
+        or golden_test not in test_names
+    ):
+        findings.append(
+            "GFX24 approved Golden preset triplet is incomplete: "
+            f"{golden_configure}/{golden_test}"
+        )
+    else:
+        golden_configure_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == golden_configure
+        )
+        golden_build_preset = next(
+            entry
+            for entry in presets["buildPresets"]
+            if entry["name"] == golden_configure
+        )
+        golden_test_preset = next(
+            entry for entry in presets["testPresets"] if entry["name"] == golden_test
+        )
+        if (
+            golden_build_preset.get("configurePreset") != golden_configure
+            or golden_build_preset.get("configuration") not in (None, "Release")
+            or golden_build_preset.get("targets") != [golden_target]
+        ):
+            findings.append(
+                "GFX24 approved Golden build preset must build only "
+                f"{golden_target} in its Release tree"
+            )
+        if (
+            golden_configure_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+            or golden_test_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+        ):
+            findings.append(
+                "GFX24 approved Golden configure/test presets must remain internal"
+            )
+        if (
+            golden_configure_preset.get("inherits")
+            != "win_x64_gfx24_raster_release"
+            or golden_configure_preset.get("binaryDir")
+            != "${sourceDir}/build/win_x64_gfx24_approved_golden_release"
+        ):
+            findings.append(
+                "GFX24 approved Golden configure preset must inherit the raster "
+                "preset and use its isolated build tree"
+            )
+        golden_cache_variables = golden_configure_preset.get("cacheVariables")
+        expected_golden_root = {
+            "value": "${sourceDir}/Tests/RenderQuality/Goldens",
+            "type": "PATH",
+        }
+        if (
+            not isinstance(golden_cache_variables, dict)
+            or golden_cache_variables.get("RVX_GFX24_RASTER_GOLDEN_MODE")
+            != "exact-hardware"
+            or golden_cache_variables.get("RVX_GFX24_RASTER_GOLDEN_ROOT")
+            != expected_golden_root
+        ):
+            findings.append(
+                "GFX24 approved Golden configure preset must keep the exact "
+                "hardware Golden mode and root cache contract"
+            )
+        expected_golden_filter = {
+            "include": {"label": "^" + golden_label.replace(".", "\\.") + "$"}
+        }
+        if golden_test_preset.get("filter") != expected_golden_filter:
+            findings.append(
+                "GFX24 approved Golden test preset must select exactly "
+                f"{golden_label}"
+            )
+
     for configure, test in PR_SMOKE_PRESETS.items():
         if configure not in configure_names or configure not in build_names or test not in test_names:
             findings.append(f"PR smoke preset triplet is incomplete: {configure}/{test}")
@@ -664,6 +758,14 @@ def validate(root: Path) -> list[str]:
         if token not in raster:
             findings.append(f"ci.yml GFX24 raster correctness is missing {token}")
     for platform, contract in GFX24_RASTER_CONTRACTS.items():
+        expected_evidence = "required_evidence: '" + ";".join(
+            contract["evidence"]
+        ) + "'"
+        if expected_evidence not in raster:
+            findings.append(
+                "ci.yml GFX24 raster correctness must retain exactly four "
+                f"hosted evidence paths: {platform}"
+            )
         for token in (
             f"platform: {platform}",
             f"configure_preset: {contract['configure']}",
@@ -678,6 +780,16 @@ def validate(root: Path) -> list[str]:
                     "ci.yml GFX24 raster correctness is missing required "
                     f"{platform} token {token}"
                 )
+    for forbidden in (
+        "win_x64_gfx24_approved_golden_release",
+        "Tests/RenderQuality/Goldens",
+        "golden-validation.json",
+    ):
+        if forbidden in raster:
+            findings.append(
+                "ci.yml hosted GFX24 raster correctness must not perform "
+                f"approved Golden validation: {forbidden}"
+            )
 
     for job_name, contract in GFX24_HARDWARE_RT_CONTRACTS.items():
         hardware = ci_jobs.get(job_name, "")
@@ -714,6 +826,105 @@ def validate(root: Path) -> list[str]:
                 )
 
     windows_hardware = ci_jobs.get("windows-gfx24-hardware", "")
+    if not re.search(
+        r"actions/checkout@v4\s*\n\s*with:\s*\{fetch-depth: 0, lfs: true\}",
+        windows_hardware,
+    ):
+        findings.append(
+            "ci.yml Windows GFX24 hardware checkout must fetch approved Golden LFS objects"
+        )
+    golden_step = re.search(
+        r"^\s*- name: Run fail-closed DX12 approved Golden validation\s*$"
+        r"(?P<body>.*?)(?=^\s*- (?:name:|if:)|\Z)",
+        windows_hardware,
+        re.MULTILINE | re.DOTALL,
+    )
+    if golden_step is None:
+        findings.append(
+            "ci.yml Windows GFX24 hardware job is missing the strict approved Golden step"
+        )
+    else:
+        golden_body = golden_step.group("body")
+        golden_contract = GFX24_APPROVED_GOLDEN_CONTRACT
+        for argument, expected in (
+            ("ConfigurePreset", golden_contract["configure"]),
+            ("BuildPreset", golden_contract["configure"]),
+            ("TestPreset", golden_contract["test"]),
+            ("BuildDir", golden_contract["build_dir"]),
+            ("BuildTarget", golden_contract["target"]),
+            ("RequiredLabel", golden_contract["label"]),
+            ("ExpectedTestCount", golden_contract["count"]),
+            ("BaseRef", "origin/master"),
+        ):
+            argument_match = re.search(rf"-{argument}\s+(\S+)", golden_body)
+            if argument_match is None or argument_match.group(1) != expected:
+                findings.append(
+                    "ci.yml Windows GFX24 approved Golden step must set "
+                    f"-{argument} {expected}"
+                )
+        if "Scripts/run_required_suite.ps1" not in golden_body:
+            findings.append(
+                "ci.yml Windows GFX24 approved Golden step must use the required-suite runner"
+            )
+        if "-Fresh" not in golden_body or "-SkipConfigure" in golden_body:
+            findings.append(
+                "ci.yml Windows GFX24 approved Golden step must fresh-configure without skipping"
+            )
+        evidence_arguments = [
+            line.strip()
+            for line in golden_body.splitlines()
+            if "-RequiredEvidence" in line
+        ]
+        evidence_prefix = "-RequiredEvidence '"
+        if (
+            len(evidence_arguments) != 1
+            or not evidence_arguments[0].startswith(evidence_prefix)
+            or not evidence_arguments[0].endswith("'")
+        ):
+            findings.append(
+                "ci.yml Windows GFX24 approved Golden RequiredEvidence must contain "
+                "the exact six series/series-validation/golden-validation artifacts"
+            )
+        else:
+            actual_evidence = tuple(
+                item
+                for item in evidence_arguments[0][len(evidence_prefix):-1].split(";")
+                if item
+            )
+            expected_evidence = golden_contract["evidence"]
+            if (
+                len(actual_evidence) != len(expected_evidence)
+                or len(set(actual_evidence)) != len(expected_evidence)
+                or set(actual_evidence) != set(expected_evidence)
+            ):
+                findings.append(
+                    "ci.yml Windows GFX24 approved Golden RequiredEvidence must contain "
+                    "the exact six series/series-validation/golden-validation artifacts"
+                )
+        for hosted in GFX24_RASTER_CONTRACTS.values():
+            if f"-BuildDir {hosted['build_dir']}" in golden_body:
+                findings.append(
+                    "ci.yml Windows GFX24 approved Golden build tree must not reuse "
+                    "a hosted raster build tree"
+                )
+        performance_index = windows_hardware.find(
+            "Run fixed DX12 performance calibration"
+        )
+        golden_index = windows_hardware.find(
+            "Run fail-closed DX12 approved Golden validation"
+        )
+        if golden_index < 0 or (performance_index >= 0 and golden_index > performance_index):
+            findings.append(
+                "ci.yml Windows GFX24 approved Golden validation must run before performance calibration"
+            )
+    for token in (
+        f"{GFX24_APPROVED_GOLDEN_CONTRACT['build_dir']}/BuildTruth",
+        f"{GFX24_APPROVED_GOLDEN_CONTRACT['build_dir']}/Tests/Gfx24RasterCorrectness",
+    ):
+        if token not in windows_hardware:
+            findings.append(
+                f"ci.yml Windows GFX24 hardware upload is missing approved Golden evidence {token}"
+            )
     for token in (
         "Scripts/run_render_quality_performance_calibration.ps1",
         "win_x64_gfx24_performance_calibration_release",

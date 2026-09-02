@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from check_render_quality_bundle import (
     ContractError,
@@ -52,7 +53,18 @@ def _load(path: Path, label: str) -> dict[str, Any]:
 
 def _write(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    payload = json.dumps(
+        value, indent=2, sort_keys=True, allow_nan=False
+    ) + "\n"
+    path.write_bytes(payload.encode("utf-8"))
+
+
+def _copy_json_lf(source: Path, target: Path, label: str) -> None:
+    _load(source, label)
+    text = source.read_text(encoding="utf-8")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(normalized.encode("utf-8"))
 
 
 def _keys(value: dict[str, Any], required: set[str], label: str) -> None:
@@ -662,9 +674,9 @@ def _prepare(args: argparse.Namespace) -> int:
     if _hash(bundle_path) != source_tick.bundle_sha256:
         raise GoldenError("copied selected bundle hash drifted")
     saved_policy = output / "visual-policy.json"
-    shutil.copy2(policy_path, saved_policy)
+    _copy_json_lf(policy_path, saved_policy, "source VisualPolicy")
     saved_manifest = output / "sample-manifest.json"
-    shutil.copy2(manifest, saved_manifest)
+    _copy_json_lf(manifest, saved_manifest, "source sample manifest")
     ppm, index = output / "contact-sheet.ppm", output / "contact-sheet.json"
     _contact_sheet(bundle_path, selected.series_sha256, ppm, index)
     record = {
@@ -732,14 +744,14 @@ def _approve(args: argparse.Namespace) -> int:
     bundle_path = bundle_dir / source_bundle.name
     source_policy = _relative(candidate_root, candidate["visualPolicy"]["path"], "visualPolicy.path")
     policy_path = output / "visual-policy.json"
-    shutil.copy2(source_policy, policy_path)
+    _copy_json_lf(source_policy, policy_path, "candidate VisualPolicy")
     source_manifest = _relative(
         candidate_root,
         candidate["sampleManifest"]["path"],
         "sampleManifest.path",
     )
     manifest_path = output / "sample-manifest.json"
-    shutil.copy2(source_manifest, manifest_path)
+    _copy_json_lf(source_manifest, manifest_path, "candidate sample manifest")
     source_ppm = _relative(candidate_root, candidate["contactSheet"]["ppmPath"], "contactSheet.ppmPath")
     source_index = _relative(candidate_root, candidate["contactSheet"]["indexPath"], "contactSheet.indexPath")
     ppm, index = output / "contact-sheet.ppm", output / "contact-sheet.json"
@@ -782,6 +794,234 @@ def _verify(args: argparse.Namespace) -> int:
     return 0
 
 
+COMPARISON_SCHEMA = "RVX.RenderQualityGoldenComparisonResult"
+COMPARISON_VERSION = 1
+
+
+def _write_comparison_report(path: Path, value: dict[str, Any]) -> None:
+    """Publish a comparison result atomically, including a fail-closed result."""
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.parent / f".{target.name}.{uuid4().hex}.tmp"
+    try:
+        payload = json.dumps(
+            value, indent=2, sort_keys=True, allow_nan=False
+        ) + "\n"
+        temporary.write_bytes(payload.encode("utf-8"))
+        temporary.replace(target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _comparison_result(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    record_path = args.record.resolve()
+    sample_manifest_path = args.sample_manifest.resolve()
+    series_manifest_path = (
+        args.series_manifest.resolve()
+        if args.series_manifest is not None else sample_manifest_path
+    )
+    return {
+        "schema": COMPARISON_SCHEMA,
+        "schemaVersion": COMPARISON_VERSION,
+        "status": "failed",
+        "comparisonPerformed": False,
+        "goldenId": None,
+        "goldenRecord": {
+            "path": str(record_path),
+            "sha256": _hash(record_path) if record_path.is_file() else None,
+        },
+        "goldenSampleManifest": {
+            "path": str(sample_manifest_path),
+            "sha256": (
+                _hash(sample_manifest_path)
+                if sample_manifest_path.is_file() else None
+            ),
+        },
+        "seriesManifest": {
+            "path": str(series_manifest_path),
+            "sha256": (
+                _hash(series_manifest_path)
+                if series_manifest_path.is_file() else None
+            ),
+        },
+        "requiredHardwareMode": args.required_hardware_mode,
+        "runnerClass": args.runner_class,
+        "currentHardwareIdentity": None,
+        "baselineHardwareIdentity": None,
+        "visualMetrics": [],
+        "temporalMetrics": [],
+        "failureCategory": "series-validation",
+        "diagnostic": "comparison did not run",
+    }
+
+
+def _json_semantically_equal(left: Any, right: Any) -> bool:
+    """Compare parsed JSON without treating bool and integer values as equal."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return (
+            left.keys() == right.keys()
+            and all(_json_semantically_equal(left[key], right[key]) for key in left)
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _json_semantically_equal(item, other)
+            for item, other in zip(left, right, strict=True)
+        )
+    return left == right
+
+
+def _compare_series(args: argparse.Namespace) -> int:
+    """Compare a completion-owned attachment series with an approved Golden."""
+    result = _comparison_result(args)
+    failure_category = "series-validation"
+    try:
+        sample_manifest_path = args.sample_manifest.resolve()
+        series_manifest_path = (
+            args.series_manifest.resolve()
+            if args.series_manifest is not None else sample_manifest_path
+        )
+        series = load_series(args.series.resolve(), series_manifest_path)
+        result["currentHardwareIdentity"] = {
+            field: series.hardware_identity[field] for field in HARDWARE_FIELDS
+        }
+        if series.source_commit != args.expected_source_commit:
+            raise GoldenError("attachment series sourceCommit is stale")
+        if series.run_id != args.expected_run_id:
+            raise GoldenError("attachment series belongs to another run")
+        if series.preset != args.expected_preset:
+            raise GoldenError("attachment series belongs to another preset")
+
+        failure_category = "golden-validation"
+        record = verify_golden_record(
+            args.record.resolve(),
+            args.baseline.resolve(),
+            args.policy.resolve(),
+            sample_manifest_path,
+            require_approved=True,
+        )
+        result["goldenId"] = record["goldenId"]
+        result["goldenRecord"]["sha256"] = _hash(args.record.resolve())
+
+        failure_category = "manifest-validation"
+        source_manifest = _load(series_manifest_path, "series manifest")
+        packaged_manifest = _load(sample_manifest_path, "sample manifest")
+        if not _json_semantically_equal(source_manifest, packaged_manifest):
+            failure_category = "manifest-semantic-mismatch"
+            raise GoldenError(
+                "series manifest is not semantically equal to the Golden sample manifest"
+            )
+
+        failure_category = "hardware-mode"
+        if record["hardwareMode"] != args.required_hardware_mode:
+            raise GoldenError(
+                "Golden record hardwareMode does not match --required-hardware-mode"
+            )
+        selected_ordinal = int(record["seriesAudit"]["selectedSeriesOrdinal"])
+        baseline_hardware = record["seriesAudit"]["runs"][selected_ordinal - 1][
+            "hardwareIdentity"
+        ]
+        result["baselineHardwareIdentity"] = {
+            field: baseline_hardware[field] for field in HARDWARE_FIELDS
+        }
+        if args.required_hardware_mode == "exact-hardware":
+            if args.runner_class is not None:
+                raise GoldenError(
+                    "--runner-class is not valid for exact-hardware Golden comparison"
+                )
+            mismatches = [
+                field
+                for field in HARDWARE_FIELDS
+                if series.hardware_identity[field] != baseline_hardware[field]
+            ]
+            if mismatches:
+                failure_category = "hardware-mismatch"
+                raise GoldenError(
+                    "exact-hardware identity differs from approved Golden: "
+                    + ", ".join(mismatches)
+                )
+        else:
+            if not args.runner_class:
+                raise GoldenError(
+                    "runner-class Golden comparison requires --runner-class"
+                )
+            if args.runner_class != record["runnerClass"]:
+                raise GoldenError(
+                    "--runner-class does not match the approved Golden record"
+                )
+
+        failure_category = "comparison-contract"
+        policy, identity = _policy(args.policy.resolve())
+        normalized_regions, declared_capture_ticks = load_sample_contract(
+            sample_manifest_path,
+            str(identity["sampleId"]),
+        )
+        golden_tick = int(policy["temporal"]["goldenCaptureTick"])
+        adjacent_ticks = tuple(
+            int(value) for value in policy["temporal"]["adjacentCaptureTicks"]
+        )
+        expected_ticks = (golden_tick, *adjacent_ticks)
+        if (
+            series.qualification_identity != identity
+            or tuple(tick.capture_tick for tick in series.ticks) != expected_ticks
+            or tuple(declared_capture_ticks) != expected_ticks
+        ):
+            raise GoldenError(
+                "attachment series identity or capture ticks do not match VisualPolicy"
+            )
+
+        current_bundle = load_bundle(_tick(series, golden_tick)[0])
+        baseline_bundle = load_bundle(args.baseline.resolve())
+        result["comparisonPerformed"] = True
+        visual_metrics, visual_failures = _comparison(
+            current_bundle,
+            baseline_bundle,
+            policy,
+            normalized_regions,
+            None,
+        )
+        temporal_bundles = [
+            load_bundle(_tick(series, tick)[0]) for tick in adjacent_ticks
+        ]
+        temporal_metrics, temporal_failures = _temporal(
+            temporal_bundles,
+            policy,
+            normalized_regions,
+            tuple(declared_capture_ticks),
+            series.source_commit,
+            series.run_id,
+            series.preset,
+        )
+        result["visualMetrics"] = visual_metrics
+        result["temporalMetrics"] = temporal_metrics
+        if visual_failures or temporal_failures:
+            if visual_failures and temporal_failures:
+                failure_category = "visual-and-temporal-metric"
+            elif visual_failures:
+                failure_category = "visual-metric"
+            else:
+                failure_category = "temporal-metric"
+            raise GoldenError("; ".join([*visual_failures, *temporal_failures]))
+
+        result["status"] = "passed"
+        result["failureCategory"] = None
+        result["diagnostic"] = "approved Golden comparison passed"
+        _write_comparison_report(args.report, result)
+        print(f"Render quality Golden comparison passed: {record['goldenId']}")
+        return 0
+    except (GoldenError, ContractError, OSError, ValueError) as error:
+        result["status"] = "failed"
+        result["failureCategory"] = failure_category
+        result["diagnostic"] = str(error)
+        _write_comparison_report(args.report, result)
+        print(f"Render quality Golden comparison rejected: {error}", file=sys.stderr)
+        return 1
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -815,6 +1055,31 @@ def parse_args() -> argparse.Namespace:
     verify.add_argument("--sample-manifest", required=True, type=Path)
     verify.add_argument("--require-approved", action="store_true")
     verify.set_defaults(action=_verify)
+    compare = commands.add_parser(
+        "compare-series",
+        help="compare a completion-owned series with an approved Golden",
+    )
+    compare.add_argument("--series", required=True, type=Path)
+    compare.add_argument("--record", required=True, type=Path)
+    compare.add_argument("--baseline", required=True, type=Path)
+    compare.add_argument("--policy", required=True, type=Path)
+    compare.add_argument("--sample-manifest", required=True, type=Path)
+    compare.add_argument(
+        "--series-manifest",
+        type=Path,
+        help="source manifest bound by --series; defaults to --sample-manifest",
+    )
+    compare.add_argument(
+        "--required-hardware-mode",
+        required=True,
+        choices=("exact-hardware", "runner-class"),
+    )
+    compare.add_argument("--expected-source-commit", required=True)
+    compare.add_argument("--expected-run-id", required=True)
+    compare.add_argument("--expected-preset", required=True)
+    compare.add_argument("--runner-class")
+    compare.add_argument("--report", required=True, type=Path)
+    compare.set_defaults(action=_compare_series)
     return parser.parse_args()
 
 
