@@ -2,31 +2,50 @@
 
 # Session Handoff
 
-GFX24A3 is complete through `0aaddeaf`. High now uses a ceil-half SSR trace
-with depth/normal/confidence-guided full-resolution resolve; Ultra and
-non-High tiers retain full-resolution SSR. Bloom no longer repeats a 13-tap
-kernel for each already-filtered pyramid level, current-frame TAA inputs use
-pixel-aligned loads while history remains bilinear, and the transient pool
-reserves physical resources/views for both renderer frame slots before
-measurement. Sample report schema 35 carries exact SSR resolution evidence;
-schema 34 remains legacy.
+GFX24 closeout implementation is committed through `a79cee88`:
 
-The final product digest
-`a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f`
-passes Architecture 65/65, Unit 2072/2072, Integration 756/756, real DX12
-Native 61/61, PR Smoke 3/3, GFX19 DX12/Vulkan reflection qualification 12/12,
-and Shipping 5/5. The post-commit Candidate receipt is
-`.agent-harness/receipts/RequiredSuite.96116d630e9d485693940cb638f758ac.json`;
-its 60+300 report records 11.141120 ms Graphics qualification p95,
-10.852352 ms RenderGraph envelope p95, 44 stable transient textures, and
-689563800 stable transient bytes. No resource or footprint grew after warmup.
+- `2afce63b` hardens Golden preparation so five Series at ticks 300, 360,
+  and 361 are all compared before each temporal pair is validated.
+- `cbb38ddd` adds three-platform raster correctness plus Windows DX12 and
+  Linux Vulkan hardware-RT CI topology.
+- `7b8e11b0` replaces unbounded nested Cook transaction names with bounded
+  42-character components and covers a 128-character parent plus replacement
+  cook.
+- `a79cee88` keeps the new validation presets internal, so the public engine
+  capability contract remains unchanged.
 
-Keep `gfx-24` active. Next implement GFX24A4 calibration: retain five
-consecutive reports for the fixed RTX 4070 Ti / driver / OS identity, choose
-the median-p95 run, emit `RenderQualityPerformanceBaselineRecord V1`, and ask
-the user for explicit approval. No performance baseline or visual Golden is
-approved. GFX24B/C and Linux hardware Vulkan RT/macOS Metal evidence remain
-pending.
+Clean-tree evidence at `a79cee88` passes Architecture 65/65. CI policy
+self-tests pass 39/39, the engine capability contract passes, DX12 hardware RT
+passes 3/3, SkeletalAssetPipelineValidation passes 12/12, and the full Windows
+GFX24 raster aggregate builds past the former Water fixture MAX_PATH failure.
+An exact-current Shipping rerun was not produced because a new clean build
+tree stalled fetching the vcpkg registry; the previous product-digest Shipping
+5/5 evidence remains valid for the unchanged runtime product, while exact-tip
+Shipping stays a required remote job.
+
+Formal B2 evidence lives under
+`E:/g24/build/gfx24_perf_calibration/B2Visual/7b8e11b0`. Forward+ and Deferred
+each have five valid same-process Series for ticks 300/360/361. Candidate
+preparation passed all 30 same-tick bundle comparisons and 10 temporal pairs
+under zero-tolerance VisualPolicy V2. Both records remain `candidate`, and
+`--require-approved` correctly rejects them. They bind RTX 4070 Ti, driver
+`32.0.16.1062`, Windows `10.0.19045`, and selected Series ordinal 3.
+
+Keep `gfx-24` active. Two local human/environment gates remain:
+
+1. The user must visually review and explicitly approve both Golden candidates.
+   Switch `E:/g24` back to `7b8e11b0` before running the approval tool so
+   the clean approval source matches each record.
+2. The rejected A4 calibration set must not be reused or spliced. Only after
+   the interactive RTX 4070 Ti is demonstrably idle, switch the evidence tree
+   to the current tip and rerun all five 60+300 reports in one new session.
+   Prepare the median-p95 BaselineRecord and request explicit approval.
+
+After both approvals, commit the approved Golden/policy/baseline records,
+replace CI candidate calibration with approved baseline/Golden comparison,
+then obtain hosted Windows/Linux/macOS raster and self-hosted DX12/Vulkan RT
+evidence. Linux hardware runner absence or any missing required job keeps
+GFX24 active.
 
 Preserve the existing user-owned changes in `AGENTS.md`, `CLAUDE.md`,
 `Docs/README.md`, `Docs/engine-capabilities.json`, `ViewData.h`,

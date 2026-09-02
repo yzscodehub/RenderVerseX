@@ -327,3 +327,19 @@ Keep at most the ten most useful recent entries.
 - Follow-up: keep GFX24 active. Collect five consecutive fixed RTX 4070 Ti
   calibration reports for GFX24A4 and ask the user to approve the median-p95
   BaselineRecord. Golden promotion and Linux/macOS/RT CI remain pending.
+
+### 2026-09-02 - gfx-24 closeout contracts and candidates
+
+- Outcome: committed fail-closed five-Series Golden calibration, three-platform
+  raster and hardware-RT CI topology, bounded Cook transaction paths, and
+  internal validation-preset metadata through `a79cee88`.
+- Verification: clean-tree Architecture passes 65/65; CI checker self-tests
+  pass 39/39; engine capability contract, DX12 hardware RT 3/3,
+  SkeletalAssetPipelineValidation 12/12, and the Windows raster aggregate pass.
+  Forward+ and Deferred each produced five valid 300/360/361 Series; candidate
+  preparation passed 30 same-tick bundle comparisons and 10 temporal pairs.
+- Pending: neither Golden nor the performance baseline is approved. The prior
+  A4 five-run set remains rejected, and current interactive GPU load is too
+  noisy for a trustworthy unchanged rerun. After explicit Golden review and an
+  idle-GPU A4 rerun, wire approved records into CI and obtain required
+  Windows/Linux/macOS plus Vulkan-RT remote evidence.

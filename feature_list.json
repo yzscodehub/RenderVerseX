@@ -600,6 +600,7 @@
                                   "Source/Runtime/RHI/Include/RHI/RHICommandContext.h",
                                   "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
                                   "Source/Runtime/RHI_DX12/Private/DX12CommandContext.cpp",
+                                  "Source/Developer/AssetPipeline/Private/AssetPipeline.cpp",
                                   "Samples/Common/**",
                                                        "Samples/RenderVerseSamples/**",
                                                        "Scripts/check_render_quality_*.py",
@@ -640,7 +641,6 @@
                                                        ".agent-harness/**",
                                                        "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
                                                        "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
-                                                       "Source/Developer/**",
                                                        "Source/Programs/**",
                                                        "Source/Runtime/RHI_DX11/**",
                                   "Source/Runtime/RHI_Metal/**",
@@ -998,8 +998,8 @@
                                           }
                                       ],
                          "blocker":  null,
-            "nextStep":  "GFX24A3 and its measured remediation commits are complete through 0aaddeaf. Post-commit Architecture and Candidate evidence bind the final digest; complete Build Truth, PR smoke, GFX19 DX12/Vulkan reflection qualification, and Shipping also pass on that digest. The latest fixed RTX 4070 Ti report is 11.141120 ms Graphics qualification p95 and 10.852352 ms RenderGraph envelope p95 with zero post-warmup resource/footprint growth. Proceed to GFX24A4: collect five consecutive fixed-hardware reports under the exact approved runner identity, select the median-p95 candidate, generate a BaselineRecord V1, and request user approval. No baseline or Golden is approved yet; Linux hardware Vulkan RT and macOS Metal remain remote obligations.",
-            "updatedAt":  "2026-08-31T13:03:01.4452721+08:00"
+            "nextStep":  "GFX24 closeout code is committed through a79cee88. Clean-tree Architecture passes 65/65; CI policy tests pass 39/39; DX12 hardware RT passes 3/3; the bounded Cook transaction fix passes SkeletalAssetPipelineValidation 12/12 and the full raster aggregate. Forward+ and Deferred each have five valid same-process 300/360/361 Series and candidate Golden records bound to 7b8e11b0; all 30 same-tick bundle comparisons and 10 temporal pairs pass, but explicit human approval is still required. The prior A4 five-run performance session remains rejected because two runs exceeded the 15 ms RenderGraph budget, and current interactive GPU utilization is not idle enough for a trustworthy rerun. Next: obtain explicit Golden approval, rerun all five A4 reports only after the RTX 4070 Ti is idle, approve the median baseline, wire the approved artifacts into PR comparison gates, then obtain Windows/Linux/macOS and Vulkan RT remote evidence. Do not reuse or splice the rejected calibration runs.",
+            "updatedAt":  "2026-09-02T13:48:00.2294792+08:00"
                      }
                  ]
 }
