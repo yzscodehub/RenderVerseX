@@ -228,7 +228,7 @@ def validate(root: Path) -> list[str]:
     attributes = _read(root / ".gitattributes")
     for required in (
         "Tests/RenderQuality/Goldens/**/*.raw filter=lfs diff=lfs merge=lfs -text",
-        "Tests/RenderQuality/**/*.json -text",
+        "Tests/RenderQuality/**/*.json text eol=lf",
     ):
         if required not in attributes:
             findings.append(

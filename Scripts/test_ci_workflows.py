@@ -93,7 +93,7 @@ class CIWorkflowPolicyTests(unittest.TestCase):
     def test_render_quality_json_must_disable_eol_conversion(self) -> None:
         self.replace(
             ".gitattributes",
-            "Tests/RenderQuality/**/*.json -text",
+            "Tests/RenderQuality/**/*.json text eol=lf",
             "Tests/RenderQuality/**/*.json text=auto",
         )
         findings = validate(self.root)
