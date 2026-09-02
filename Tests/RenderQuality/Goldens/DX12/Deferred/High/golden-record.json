@@ -1,0 +1,113 @@
+{
+  "approval": {
+    "approvedAtUtc": "2026-09-02T09:02:01.599322Z",
+    "approvedBy": "yinzs",
+    "reason": "User confirmed the post-ObjectVelocity-fix DX12 Deferred Golden after five zero-tolerance same-process series"
+  },
+  "contactSheet": {
+    "indexPath": "contact-sheet.json",
+    "indexSha256": "3926da1f278cc25406d5dc2601f883097fabd2d7c173cdcfce12671b8240aa47",
+    "ppmPath": "contact-sheet.ppm",
+    "ppmSha256": "6682c1aba99c12268aa062ad2bff545290302e9a4285de8b2991cd2c3d7bd9d5"
+  },
+  "goldenId": "gfx24-dx12-deferred-high-v3",
+  "hardwareMode": "exact-hardware",
+  "qualificationIdentity": {
+    "backend": "dx12",
+    "pipeline": "deferred",
+    "quality": "high",
+    "sampleId": "render-quality-lab",
+    "view": "hero",
+    "visualContractVersion": 3
+  },
+  "runnerClass": null,
+  "sampleManifest": {
+    "path": "sample-manifest.json",
+    "sha256": "6b616d7eb93cc977e457073f0fdc25e102af946ecc6fe4222c05bed8e8544c44"
+  },
+  "schema": "RVX.RenderQualityGoldenRecord",
+  "schemaVersion": 1,
+  "selectedBundle": {
+    "bundleId": "1",
+    "bundlePath": "bundle/bundle.json",
+    "bundleSha256": "b05d2404b2f6bf835e61964054303169983601e64ebe49b481a02bad4a93bfda",
+    "captureTick": 300,
+    "preset": "win_x64_gfx24_performance_calibration_release_run",
+    "receiptSha256": "a4022e88a72263c06fce515722519acdaae33c0da37735ca48add1ed49359bbf",
+    "runId": "gfx24-b2-deferred-run-03-beb32666",
+    "seriesOrdinal": 3,
+    "seriesSha256": "be3f86c91a8c1ef91db5d8f17e14b19b716c161a61da7324ea1d04b5a5f5630b"
+  },
+  "seriesAudit": {
+    "requiredSeriesCount": 5,
+    "runs": [
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 1,
+        "runId": "gfx24-b2-deferred-run-01-beb32666",
+        "seriesSha256": "0b75c5cb1df358863d6b87f17964d4dc12d56ddc768c90653b14519b16f48d7c"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 2,
+        "runId": "gfx24-b2-deferred-run-02-beb32666",
+        "seriesSha256": "86597fa62025e1b92463c382c829609a4e0ff15613cbc1a290021cff2ecd9dfe"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 3,
+        "runId": "gfx24-b2-deferred-run-03-beb32666",
+        "seriesSha256": "be3f86c91a8c1ef91db5d8f17e14b19b716c161a61da7324ea1d04b5a5f5630b"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 4,
+        "runId": "gfx24-b2-deferred-run-04-beb32666",
+        "seriesSha256": "878a1425ff0b4c5d65f8c003555ba48aadaf2ba44a7cf7ce2daf1a98c1dd8c9e"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 5,
+        "runId": "gfx24-b2-deferred-run-05-beb32666",
+        "seriesSha256": "e45df4dfeb19d182e81642365e896e106ebbb76cfde3b2764af8ff4e04305a68"
+      }
+    ],
+    "selectedSeriesOrdinal": 3
+  },
+  "sourceCommit": "beb326665afddec3d6c9936e82883b8d0dad7a90",
+  "status": "approved",
+  "visualPolicy": {
+    "path": "visual-policy.json",
+    "sha256": "efedb43009b6d927510c1c7dd93ce91e681c65953732a6acdacc74dc67a32b89"
+  }
+}

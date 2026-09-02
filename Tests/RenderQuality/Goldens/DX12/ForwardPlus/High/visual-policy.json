@@ -1,0 +1,274 @@
+{
+    "schema":  "RVX.RenderQualityVisualPolicy",
+    "schemaVersion":  2,
+    "qualificationIdentity":  {
+                                  "sampleId":  "render-quality-lab",
+                                  "pipeline":  "forward-plus",
+                                  "quality":  "high",
+                                  "backend":  "dx12",
+                                  "view":  "hero",
+                                  "visualContractVersion":  3
+                              },
+    "attachments":  {
+                        "BeautyLDR":  {
+                                          "rois":  [
+                                                       {
+                                                           "id":  "frame",
+                                                           "normalizedRegionId":  "frame",
+                                                           "x":  0,
+                                                           "y":  0,
+                                                           "width":  1280,
+                                                           "height":  720,
+                                                           "temporalMode":  "dynamic",
+                                                           "dataRange":  1,
+                                                           "maxMae":  0,
+                                                           "maxAbs":  0,
+                                                           "minPsnr":  120,
+                                                           "minSsim":  1,
+                                                           "minTemporalMae":  0.0001,
+                                                           "maxTemporalMae":  0.005
+                                                       },
+                                                       {
+                                                           "id":  "interior",
+                                                           "normalizedRegionId":  "interior",
+                                                           "x":  51,
+                                                           "y":  57,
+                                                           "width":  564,
+                                                           "height":  591,
+                                                           "temporalMode":  "dynamic",
+                                                           "dataRange":  1,
+                                                           "maxMae":  0,
+                                                           "maxAbs":  0,
+                                                           "minPsnr":  120,
+                                                           "minSsim":  1,
+                                                           "minTemporalMae":  0.0001,
+                                                           "maxTemporalMae":  0.005
+                                                       },
+                                                       {
+                                                           "id":  "water-and-vfx",
+                                                           "normalizedRegionId":  "water-and-vfx",
+                                                           "x":  435,
+                                                           "y":  129,
+                                                           "width":  769,
+                                                           "height":  505,
+                                                           "temporalMode":  "dynamic",
+                                                           "dataRange":  1,
+                                                           "maxMae":  0,
+                                                           "maxAbs":  0,
+                                                           "minPsnr":  120,
+                                                           "minSsim":  1,
+                                                           "minTemporalMae":  0.0001,
+                                                           "maxTemporalMae":  0.005
+                                                       }
+                                                   ]
+                                      },
+                        "PreToneHDR":  {
+                                           "rois":  [
+                                                        {
+                                                            "id":  "frame",
+                                                            "normalizedRegionId":  "frame",
+                                                            "x":  0,
+                                                            "y":  0,
+                                                            "width":  1280,
+                                                            "height":  720,
+                                                            "temporalMode":  "dynamic",
+                                                            "dataRange":  16,
+                                                            "maxMae":  0,
+                                                            "maxAbs":  0,
+                                                            "minPsnr":  120,
+                                                            "minSsim":  1,
+                                                            "minTemporalMae":  0.0002,
+                                                            "maxTemporalMae":  0.01
+                                                        },
+                                                        {
+                                                            "id":  "interior",
+                                                            "normalizedRegionId":  "interior",
+                                                            "x":  51,
+                                                            "y":  57,
+                                                            "width":  564,
+                                                            "height":  591,
+                                                            "temporalMode":  "dynamic",
+                                                            "dataRange":  16,
+                                                            "maxMae":  0,
+                                                            "maxAbs":  0,
+                                                            "minPsnr":  120,
+                                                            "minSsim":  1,
+                                                            "minTemporalMae":  0.0002,
+                                                            "maxTemporalMae":  0.01
+                                                        },
+                                                        {
+                                                            "id":  "water-and-vfx",
+                                                            "normalizedRegionId":  "water-and-vfx",
+                                                            "x":  435,
+                                                            "y":  129,
+                                                            "width":  769,
+                                                            "height":  505,
+                                                            "temporalMode":  "dynamic",
+                                                            "dataRange":  16,
+                                                            "maxMae":  0,
+                                                            "maxAbs":  0,
+                                                            "minPsnr":  120,
+                                                            "minSsim":  1,
+                                                            "minTemporalMae":  0.0002,
+                                                            "maxTemporalMae":  0.01
+                                                        }
+                                                    ]
+                                       },
+                        "LinearDepth":  {
+                                            "rois":  [
+                                                         {
+                                                             "id":  "frame",
+                                                             "normalizedRegionId":  "frame",
+                                                             "x":  0,
+                                                             "y":  0,
+                                                             "width":  1280,
+                                                             "height":  720,
+                                                             "temporalMode":  "dynamic",
+                                                             "dataRange":  160,
+                                                             "maxMae":  0,
+                                                             "maxAbs":  0,
+                                                             "minPsnr":  120,
+                                                             "minSsim":  1,
+                                                             "minTemporalMae":  0.005,
+                                                             "maxTemporalMae":  0.2
+                                                         },
+                                                         {
+                                                             "id":  "water-and-vfx",
+                                                             "normalizedRegionId":  "water-and-vfx",
+                                                             "x":  435,
+                                                             "y":  129,
+                                                             "width":  769,
+                                                             "height":  505,
+                                                             "temporalMode":  "dynamic",
+                                                             "dataRange":  160,
+                                                             "maxMae":  0,
+                                                             "maxAbs":  0,
+                                                             "minPsnr":  120,
+                                                             "minSsim":  1,
+                                                             "minTemporalMae":  0.005,
+                                                             "maxTemporalMae":  0.2
+                                                         }
+                                                     ]
+                                        },
+                        "Normal":  {
+                                       "rois":  [
+                                                    {
+                                                        "id":  "frame",
+                                                        "normalizedRegionId":  "frame",
+                                                        "x":  0,
+                                                        "y":  0,
+                                                        "width":  1280,
+                                                        "height":  720,
+                                                        "temporalMode":  "dynamic",
+                                                        "dataRange":  2,
+                                                        "maxMae":  0,
+                                                        "maxAbs":  0,
+                                                        "minPsnr":  120,
+                                                        "minSsim":  1,
+                                                        "minTemporalMae":  0.00001,
+                                                        "maxTemporalMae":  0.001
+                                                    }
+                                                ]
+                                   },
+                        "Velocity":  {
+                                         "rois":  [
+                                                      {
+                                                          "id":  "frame",
+                                                          "normalizedRegionId":  "frame",
+                                                          "x":  0,
+                                                          "y":  0,
+                                                          "width":  1280,
+                                                          "height":  720,
+                                                          "temporalMode":  "dynamic",
+                                                          "dataRange":  1,
+                                                          "maxMae":  0,
+                                                          "maxAbs":  0,
+                                                          "minPsnr":  120,
+                                                          "minSsim":  1,
+                                                          "minTemporalMae":  0.00005,
+                                                          "maxTemporalMae":  0.002
+                                                      },
+                                                      {
+                                                          "id":  "water-and-vfx",
+                                                          "normalizedRegionId":  "water-and-vfx",
+                                                          "x":  435,
+                                                          "y":  129,
+                                                          "width":  769,
+                                                          "height":  505,
+                                                          "temporalMode":  "dynamic",
+                                                          "dataRange":  1,
+                                                          "maxMae":  0,
+                                                          "maxAbs":  0,
+                                                          "minPsnr":  120,
+                                                          "minSsim":  1,
+                                                          "minTemporalMae":  0.00005,
+                                                          "maxTemporalMae":  0.002
+                                                      }
+                                                  ]
+                                     },
+                        "AmbientOcclusion":  {
+                                                 "rois":  [
+                                                              {
+                                                                  "id":  "frame",
+                                                                  "normalizedRegionId":  "frame",
+                                                                  "x":  0,
+                                                                  "y":  0,
+                                                                  "width":  1280,
+                                                                  "height":  720,
+                                                                  "temporalMode":  "static",
+                                                                  "dataRange":  1,
+                                                                  "maxMae":  0,
+                                                                  "maxAbs":  0,
+                                                                  "minPsnr":  120,
+                                                                  "minSsim":  1,
+                                                                  "minTemporalMae":  0,
+                                                                  "maxTemporalMae":  0
+                                                              }
+                                                          ]
+                                             },
+                        "ReactiveMask":  {
+                                             "rois":  [
+                                                          {
+                                                              "id":  "frame",
+                                                              "normalizedRegionId":  "frame",
+                                                              "x":  0,
+                                                              "y":  0,
+                                                              "width":  1280,
+                                                              "height":  720,
+                                                              "temporalMode":  "dynamic",
+                                                              "dataRange":  1,
+                                                              "maxMae":  0,
+                                                              "maxAbs":  0,
+                                                              "minPsnr":  120,
+                                                              "minSsim":  1,
+                                                              "minTemporalMae":  0.0002,
+                                                              "maxTemporalMae":  0.01
+                                                          },
+                                                          {
+                                                              "id":  "water-and-vfx",
+                                                              "normalizedRegionId":  "water-and-vfx",
+                                                              "x":  435,
+                                                              "y":  129,
+                                                              "width":  769,
+                                                              "height":  505,
+                                                              "temporalMode":  "dynamic",
+                                                              "dataRange":  1,
+                                                              "maxMae":  0,
+                                                              "maxAbs":  0,
+                                                              "minPsnr":  120,
+                                                              "minSsim":  1,
+                                                              "minTemporalMae":  0.0002,
+                                                              "maxTemporalMae":  0.01
+                                                          }
+                                                      ]
+                                         }
+                    },
+    "temporal":  {
+                     "warmupCompletedFrames":  300,
+                     "goldenCaptureTick":  300,
+                     "adjacentCaptureTicks":  [
+                                                  360,
+                                                  361
+                                              ]
+                 }
+}

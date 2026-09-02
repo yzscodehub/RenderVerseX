@@ -1,0 +1,100 @@
+{
+  "bundleId": "1",
+  "bundleSha256": "b05d2404b2f6bf835e61964054303169983601e64ebe49b481a02bad4a93bfda",
+  "captureTick": 300,
+  "layout": {
+    "columns": 4,
+    "height": 360,
+    "panelHeight": 180,
+    "panelWidth": 320,
+    "rows": 2,
+    "width": 1280
+  },
+  "panels": [
+    {
+      "height": 180,
+      "mapping": "rgb-clamp",
+      "semantic": "BeautyLDR",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "reinhard",
+      "semantic": "PreToneHDR",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 320,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "inverse-depth-grayscale",
+      "semantic": "LinearDepth",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 640,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "normal-remap",
+      "semantic": "Normal",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 960,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "absolute-rg",
+      "semantic": "Velocity",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 0,
+      "y": 180
+    },
+    {
+      "height": 180,
+      "mapping": "grayscale",
+      "semantic": "AmbientOcclusion",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 320,
+      "y": 180
+    },
+    {
+      "height": 180,
+      "mapping": "grayscale",
+      "semantic": "ReactiveMask",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 640,
+      "y": 180
+    }
+  ],
+  "preset": "win_x64_gfx24_performance_calibration_release_run",
+  "qualificationIdentity": {
+    "backend": "dx12",
+    "captureTick": 300,
+    "pipeline": "deferred",
+    "quality": "high",
+    "sampleId": "render-quality-lab",
+    "view": "hero",
+    "visualContractVersion": 3
+  },
+  "runId": "gfx24-b2-deferred-run-03-beb32666",
+  "schema": "RVX.RenderQualityContactSheet",
+  "schemaVersion": 1,
+  "seriesSha256": "be3f86c91a8c1ef91db5d8f17e14b19b716c161a61da7324ea1d04b5a5f5630b",
+  "sourceCommit": "beb326665afddec3d6c9936e82883b8d0dad7a90"
+}
