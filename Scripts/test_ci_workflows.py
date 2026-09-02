@@ -383,6 +383,21 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         self.assertTrue(any("GFX24 raster correctness preset triplet" in item
                             for item in findings))
 
+    def test_gfx24_raster_test_preset_must_remain_internal(self) -> None:
+        path = self.root / "CMakePresets.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        preset = next(
+            entry for entry in document["testPresets"]
+            if entry["name"] == "win_x64_gfx24_raster_release_run"
+        )
+        preset.pop("vendor")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any(
+            "raster correctness configure/test presets must remain internal"
+            in item for item in findings
+        ))
+
     def test_gfx24_raster_required_evidence_cannot_be_substituted(self) -> None:
         self.replace(
             ".github/workflows/ci.yml",
@@ -410,6 +425,21 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         )
         findings = validate(self.root)
         self.assertTrue(any("windows-gfx24-hardware" in item for item in findings))
+
+    def test_gfx24_hardware_test_preset_must_remain_internal(self) -> None:
+        path = self.root / "CMakePresets.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        preset = next(
+            entry for entry in document["testPresets"]
+            if entry["name"] == "linux_x64_gfx24_hardware_rt_release_run"
+        )
+        preset.pop("vendor")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any(
+            "hardware ray-tracing configure/test presets must remain internal"
+            in item for item in findings
+        ))
 
     def test_gfx24_hardware_jobs_cannot_allow_software_adapter(self) -> None:
         self.replace(

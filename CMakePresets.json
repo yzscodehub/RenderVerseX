@@ -1235,6 +1235,11 @@
     {
       "name": "win_x64_gfx24_raster_release_run",
       "configurePreset": "win_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
       "configuration": "Release",
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
@@ -1243,6 +1248,11 @@
     {
       "name": "linux_x64_gfx24_raster_release_run",
       "configurePreset": "linux_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
@@ -1250,6 +1260,11 @@
     {
       "name": "macos_arm64_gfx24_raster_release_run",
       "configurePreset": "macos_arm64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
@@ -1257,6 +1272,11 @@
     {
       "name": "win_x64_gfx24_hardware_rt_release_run",
       "configurePreset": "win_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
       "configuration": "Release",
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
@@ -1265,6 +1285,11 @@
     {
       "name": "linux_x64_gfx24_hardware_rt_release_run",
       "configurePreset": "linux_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
       "execution": { "noTestsAction": "error" },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx24-hardware-rt-vulkan$" } }

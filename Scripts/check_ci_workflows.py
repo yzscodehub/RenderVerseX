@@ -109,6 +109,9 @@ GFX24_CANDIDATE_LABEL = "suite.gfx24-candidate"
 
 GFX24_RASTER_BUILD_TARGET = "RVXValidationSuiteGfx24RasterCorrectness"
 GFX24_RASTER_LABEL = "suite.gfx24-raster-correctness"
+GFX24_INTERNAL_PRESET_VENDOR = {
+    "renderversex.com/validation/1.0": {"visibility": "internal"}
+}
 GFX24_RASTER_CONTRACTS = {
     "Windows": {
         "backend": "DX12",
@@ -464,6 +467,11 @@ def validate(root: Path) -> list[str]:
                 f"{platform}/{configure}/{test}"
             )
             continue
+        configure_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == configure
+        )
         build_preset = next(
             entry for entry in presets["buildPresets"] if entry["name"] == configure
         )
@@ -479,6 +487,14 @@ def validate(root: Path) -> list[str]:
         test_preset = next(
             entry for entry in presets["testPresets"] if entry["name"] == test
         )
+        if (
+            configure_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+            or test_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+        ):
+            findings.append(
+                "GFX24 raster correctness configure/test presets must remain "
+                f"internal: {platform}"
+            )
         if test_preset.get("filter") != expected_raster_filter:
             findings.append(
                 "GFX24 raster correctness test preset must select exactly "
@@ -500,6 +516,11 @@ def validate(root: Path) -> list[str]:
                 f"{job_name}/{configure}/{test}"
             )
             continue
+        configure_preset = next(
+            entry
+            for entry in presets["configurePresets"]
+            if entry["name"] == configure
+        )
         build_preset = next(
             entry for entry in presets["buildPresets"] if entry["name"] == configure
         )
@@ -515,6 +536,14 @@ def validate(root: Path) -> list[str]:
         test_preset = next(
             entry for entry in presets["testPresets"] if entry["name"] == test
         )
+        if (
+            configure_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+            or test_preset.get("vendor") != GFX24_INTERNAL_PRESET_VENDOR
+        ):
+            findings.append(
+                "GFX24 hardware ray-tracing configure/test presets must remain "
+                f"internal: {job_name}"
+            )
         expected_filter = {
             "include": {"label": "^" + str(label).replace(".", "\\.") + "$"}
         }
