@@ -220,17 +220,12 @@ namespace
         Add("Floor_Aisle_North", "floor", 1U, {0.0f, 0.02f, -3.2f}, {9.0f, 0.07f, 0.7f});
         Add("Floor_Aisle_South", "floor", 1U, {0.0f, 0.02f, 3.2f}, {9.0f, 0.07f, 0.7f});
         Add("Ceiling_Main", "ceiling", 0U, {0.0f, 6.25f, 0.0f}, {24.0f, 0.5f, 16.0f});
-        // Keep the beams and side walls behind the front/back shell's inner
-        // faces. Their old 16 m span made differently shaded faces exactly
-        // coplanar at z=+/-8, so a legal instance-batch reorder changed which
-        // color won the depth tie and made the qualification image unstable.
-        constexpr float InteriorLongitudinalInsetSpan = 14.8f;
-        Add("Ceiling_Beam_Center", "ceiling", 2U, {0.0f, 5.75f, 0.0f}, {0.55f, 0.5f, InteriorLongitudinalInsetSpan});
-        Add("Ceiling_Beam_Left", "ceiling", 2U, {-6.0f, 5.75f, 0.0f}, {0.35f, 0.5f, InteriorLongitudinalInsetSpan});
-        Add("Ceiling_Beam_Right", "ceiling", 2U, {6.0f, 5.75f, 0.0f}, {0.35f, 0.5f, InteriorLongitudinalInsetSpan});
+        Add("Ceiling_Beam_Center", "ceiling", 2U, {0.0f, 5.75f, 0.0f}, {0.55f, 0.5f, 16.0f});
+        Add("Ceiling_Beam_Left", "ceiling", 2U, {-6.0f, 5.75f, 0.0f}, {0.35f, 0.5f, 16.0f});
+        Add("Ceiling_Beam_Right", "ceiling", 2U, {6.0f, 5.75f, 0.0f}, {0.35f, 0.5f, 16.0f});
 
-        Add("Wall_West", "wall", 2U, {-11.75f, 3.0f, 0.0f}, {0.5f, 6.0f, InteriorLongitudinalInsetSpan});
-        Add("Wall_East", "wall", 2U, {11.75f, 3.0f, 0.0f}, {0.5f, 6.0f, InteriorLongitudinalInsetSpan});
+        Add("Wall_West", "wall", 2U, {-11.75f, 3.0f, 0.0f}, {0.5f, 6.0f, 16.0f});
+        Add("Wall_East", "wall", 2U, {11.75f, 3.0f, 0.0f}, {0.5f, 6.0f, 16.0f});
         Add("Wall_Back", "wall", 3U, {0.0f, 3.0f, -7.75f}, {24.0f, 6.0f, 0.5f});
         Add("Wall_Front", "wall", 3U, {0.0f, 3.0f, 7.75f}, {24.0f, 6.0f, 0.5f});
         Add("Wall_Back_Upper", "wall", 4U, {0.0f, 5.15f, -7.4f}, {18.0f, 0.65f, 0.35f});
