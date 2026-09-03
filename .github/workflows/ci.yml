@@ -586,6 +586,21 @@ jobs:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-gfx24-hardware-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-gfx24-hardware-linux-
+      - name: Run fail-closed Vulkan hardware raster correctness
+        shell: bash
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_gfx24_raster_release
+          -BuildPreset linux_x64_gfx24_raster_release
+          -TestPreset linux_x64_gfx24_raster_release_run
+          -BuildDir build/linux_x64_gfx24_raster_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence 'Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Run fail-closed Vulkan hardware ray tracing
         run: >-
           pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
@@ -600,22 +615,68 @@ jobs:
           -RequiredEvidence 'Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json;Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json'
           -BaseRef origin/master
           -Fresh
-      - name: Upload Vulkan ray-tracing evidence
+      - name: Upload Vulkan raster and ray-tracing evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gfx24-hardware-vulkan
           path: |
+            build/linux_x64_gfx24_raster_release/BuildTruth
+            build/linux_x64_gfx24_raster_release/Tests/Gfx24RasterCorrectness
             build/linux_x64_gfx24_hardware_rt_release/BuildTruth
             build/linux_x64_gfx24_hardware_rt_release/Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json
             build/linux_x64_gfx24_hardware_rt_release/Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json
             .agent-harness/receipts/RequiredSuite.*.json
           if-no-files-found: error
 
+  raster-cross-backend:
+    name: GFX24 Raster Cross-Backend Qualification
+    if: ${{ needs.raster-correctness.result == 'success' }}
+    needs: [raster-correctness]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Download Windows raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-Windows
+          path: artifacts/windows
+      - name: Download Linux raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-Linux
+          path: artifacts/linux
+      - name: Download macOS raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-macOS
+          path: artifacts/macos
+      - name: Run fail-closed cross-backend visual comparison
+        run: >-
+          python3 Scripts/compare_render_quality_backends.py
+          --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json
+          --policy Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json
+          --expected-source-commit ${{ github.sha }}
+          --series windows/dx12/forward-plus=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json
+          --series windows/dx12/deferred=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json
+          --series linux/vulkan/forward-plus=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json
+          --series linux/vulkan/deferred=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json
+          --series macos/metal/forward-plus=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json
+          --series macos/metal/deferred=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json
+          --report artifacts/cross-backend/BuildTruth/cross-backend-comparison.json
+      - name: Upload cross-backend visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-raster-cross-backend
+          path: artifacts/cross-backend/BuildTruth/cross-backend-comparison.json
+          if-no-files-found: error
+
   pr-verdict:
     name: PR Verdict
     if: always()
-    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]
+    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt, raster-cross-backend]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every PR gate
@@ -629,7 +690,8 @@ jobs:
           RASTER_CORRECTNESS: ${{ needs.raster-correctness.result }}
           WINDOWS_GFX24_HARDWARE: ${{ needs.windows-gfx24-hardware.result }}
           LINUX_GFX24_VULKAN_RT: ${{ needs.linux-gfx24-vulkan-rt.result }}
+          RASTER_CROSS_BACKEND: ${{ needs.raster-cross-backend.result }}
         run: |
-          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING" "$RASTER_CORRECTNESS" "$WINDOWS_GFX24_HARDWARE" "$LINUX_GFX24_VULKAN_RT"; do
+          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING" "$RASTER_CORRECTNESS" "$WINDOWS_GFX24_HARDWARE" "$LINUX_GFX24_VULKAN_RT" "$RASTER_CROSS_BACKEND"; do
             test "$result" = success || exit 1
           done

@@ -100,6 +100,32 @@ class CIWorkflowPolicyTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def replace_linux_gfx24_hardware(self, old: str, new: str) -> None:
+        path = self.root / ".github" / "workflows" / "ci.yml"
+        text = path.read_text(encoding="utf-8")
+        marker = "  linux-gfx24-vulkan-rt:\n"
+        prefix, remainder = text.split(marker, 1)
+        body, suffix = remainder.split("  raster-cross-backend:\n", 1)
+        self.assertIn(old, body)
+        path.write_text(
+            prefix + marker + body.replace(old, new, 1)
+            + "  raster-cross-backend:\n" + suffix,
+            encoding="utf-8",
+        )
+
+    def replace_gfx24_cross_backend(self, old: str, new: str) -> None:
+        path = self.root / ".github" / "workflows" / "ci.yml"
+        text = path.read_text(encoding="utf-8")
+        marker = "  raster-cross-backend:\n"
+        prefix, remainder = text.split(marker, 1)
+        body, suffix = remainder.split("  pr-verdict:\n", 1)
+        self.assertIn(old, body)
+        path.write_text(
+            prefix + marker + body.replace(old, new, 1)
+            + "  pr-verdict:\n" + suffix,
+            encoding="utf-8",
+        )
+
     def test_repository_contract_passes(self) -> None:
         self.assertEqual(validate(self.root), [])
 
@@ -122,8 +148,8 @@ class CIWorkflowPolicyTests(unittest.TestCase):
     def test_verdict_must_require_shipping(self) -> None:
         self.replace(
             ".github/workflows/ci.yml",
-            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]",
-            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt]",
+            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt, raster-cross-backend]",
+            "needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt, raster-cross-backend]",
         )
         findings = validate(self.root)
         self.assertTrue(any("does not require shipping" in item for item in findings))
@@ -368,6 +394,16 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         self.assertTrue(any("RenderQualityMetricsValidationSelfTest" in item
                             for item in findings))
 
+    def test_gfx24_contract_registration_cannot_drop_cross_backend_self_test(self) -> None:
+        self.replace(
+            "Tests/CMake/UnitTests.cmake",
+            "RenderQualityCrossBackendValidationSelfTest",
+            "MissingRenderQualityCrossBackendSelfTest",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("RenderQualityCrossBackendValidationSelfTest" in item
+                            for item in findings))
+
     def test_gfx24_contract_registration_cannot_drop_pass_timing_test(self) -> None:
         self.replace(
             "Tests/RenderGraphPassTimingValidation/CMakeLists.txt",
@@ -441,6 +477,87 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         findings = validate(self.root)
         self.assertTrue(any("does not require raster-correctness" in item
                             for item in findings))
+
+    def test_gfx24_verdict_must_require_cross_backend_aggregation(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            ", raster-cross-backend]",
+            "]",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("does not require raster-cross-backend" in item
+                            for item in findings))
+
+    def test_gfx24_linux_hardware_must_run_raster_before_ray_tracing(self) -> None:
+        self.replace_linux_gfx24_hardware(
+            "Run fail-closed Vulkan hardware raster correctness",
+            "Run removed Vulkan hardware raster correctness",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("missing the Vulkan raster correctness step" in item
+                            for item in findings))
+
+    def test_gfx24_linux_hardware_raster_requires_exact_evidence(self) -> None:
+        self.replace_linux_gfx24_hardware(
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json",
+            "Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/missing.json",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("hardware raster RequiredEvidence" in item
+                            for item in findings))
+
+    def test_gfx24_linux_hardware_raster_requires_xvfb(self) -> None:
+        self.replace_linux_gfx24_hardware(
+            "xvfb-run -a pwsh",
+            "pwsh",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("xvfb-run -a" in item for item in findings))
+
+    def test_verdict_env_mapping_must_cover_cross_backend_job(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "RASTER_CROSS_BACKEND: ${{ needs.raster-cross-backend.result }}",
+            "RASTER_CROSS_BACKEND_MISSING: ${{ needs.raster-cross-backend.result }}",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("env mappings must exactly cover" in item
+                            for item in findings))
+
+    def test_verdict_result_loop_must_test_each_mapping_once(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            '"$RASTER_CROSS_BACKEND"',
+            '"$RASTER_CROSS_BACKEND_MISSING"',
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("result loop must test every mapped job exactly once" in item
+                            for item in findings))
+
+    def test_gfx24_cross_backend_requires_each_hosted_artifact(self) -> None:
+        self.replace_gfx24_cross_backend(
+            "gfx24-raster-macOS",
+            "gfx24-raster-missing",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("gfx24-raster-macOS" in item for item in findings))
+
+    def test_gfx24_cross_backend_requires_the_real_comparator(self) -> None:
+        self.replace_gfx24_cross_backend(
+            "Scripts/compare_render_quality_backends.py",
+            "Scripts/check_render_quality_series.py",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("Scripts/compare_render_quality_backends.py" in item
+                            for item in findings))
+
+    def test_gfx24_cross_backend_requires_exact_six_series_mapping(self) -> None:
+        self.replace_gfx24_cross_backend(
+            "linux/vulkan/deferred=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json",
+            "linux/vulkan/deferred=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("linux/vulkan/deferred=" in item for item in findings))
 
     def test_gfx24_approved_golden_step_cannot_be_removed(self) -> None:
         self.replace_windows_gfx24_hardware(

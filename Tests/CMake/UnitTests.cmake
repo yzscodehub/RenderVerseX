@@ -1346,6 +1346,25 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
         INFRASTRUCTURE
     )
 
+    # Keep the cross-backend evidence comparator independently discoverable in
+    # the Unit lane. It validates only hermetic fixture evidence; native
+    # raster capture remains owned by the required GFX24 suites.
+    add_custom_target(RenderQualityCrossBackendValidation
+        DEPENDS
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/compare_render_quality_backends.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_cross_backend.py"
+            "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py"
+            "${CMAKE_SOURCE_DIR}/Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json"
+            "${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+    )
+    rvx_register_module_target(
+        TARGET RenderQualityCrossBackendValidation
+        MODULE Tests
+        INFRASTRUCTURE
+    )
+
     rvx_add_gtest(
         NAME RenderQualityLabSampleValidation
         LANE unit
@@ -1396,6 +1415,26 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
             ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
         TAGS subsystem.render trait.contract suite.gfx24-qualification
         SUITE gfx24-qualification
+        TIMEOUT 60
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
+    rvx_add_validation_test(
+        LANE unit
+        NAME RenderQualityCrossBackendValidationSelfTest
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_cross_backend.py
+            -v
+        BUILD_TARGETS RenderQualityCrossBackendValidation
+        REQUIRED_FILES
+            ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py
+            ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py
+            ${CMAKE_SOURCE_DIR}/Scripts/compare_render_quality_backends.py
+            ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_cross_backend.py
+            ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
+            ${CMAKE_SOURCE_DIR}/Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json
+            ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json
+        TAGS subsystem.render trait.contract suite.cross-backend
         TIMEOUT 60
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )

@@ -1,0 +1,275 @@
+{
+  "schema": "RVX.RenderQualityCrossBackendVisualPolicy",
+  "schemaVersion": 1,
+  "policyId": "gfx24-primary-raster-cross-backend-v1",
+  "rationale": "DX12 is the approved reference. These bounded initial tolerances admit reproducible API precision and tone-mapping differences while preserving geometry, material, motion, AO, and reactive-mask regressions. No ROI permits mean error above one quarter of its declared data range.",
+  "reference": {
+    "platform": "windows",
+    "backend": "dx12"
+  },
+  "candidates": [
+    {
+      "platform": "linux",
+      "backend": "vulkan"
+    },
+    {
+      "platform": "macos",
+      "backend": "metal"
+    }
+  ],
+  "qualificationIdentity": {
+    "sampleId": "render-quality-lab",
+    "quality": "high",
+    "view": "hero",
+    "visualContractVersion": 3
+  },
+  "requiredPipelines": [
+    "forward-plus",
+    "deferred"
+  ],
+  "requiredCaptureTicks": {
+    "comparisonTick": 300,
+    "temporalTicks": [
+      360,
+      361
+    ]
+  },
+  "attachments": {
+    "BeautyLDR": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 1.0,
+          "maxMae": 0.04,
+          "maxAbs": 0.25,
+          "minPsnr": 22.0,
+          "minSsim": 0.92,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00005,
+          "maxTemporalMae": 0.008,
+          "maxTemporalDeltaFieldMae": 0.004
+        },
+        {
+          "id": "interior",
+          "normalizedRegionId": "interior",
+          "dataRange": 1.0,
+          "maxMae": 0.035,
+          "maxAbs": 0.2,
+          "minPsnr": 24.0,
+          "minSsim": 0.94,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00005,
+          "maxTemporalMae": 0.006,
+          "maxTemporalDeltaFieldMae": 0.003
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 1.0,
+          "maxMae": 0.05,
+          "maxAbs": 0.3,
+          "minPsnr": 20.0,
+          "minSsim": 0.9,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.0001,
+          "maxTemporalMae": 0.012,
+          "maxTemporalDeltaFieldMae": 0.006
+        }
+      ]
+    },
+    "PreToneHDR": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 16.0,
+          "maxMae": 0.3,
+          "maxAbs": 2.5,
+          "minPsnr": 25.0,
+          "minSsim": 0.94,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.0002,
+          "maxTemporalMae": 0.015,
+          "maxTemporalDeltaFieldMae": 0.008
+        },
+        {
+          "id": "interior",
+          "normalizedRegionId": "interior",
+          "dataRange": 16.0,
+          "maxMae": 0.24,
+          "maxAbs": 2.0,
+          "minPsnr": 27.0,
+          "minSsim": 0.95,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.0002,
+          "maxTemporalMae": 0.012,
+          "maxTemporalDeltaFieldMae": 0.006
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 16.0,
+          "maxMae": 0.4,
+          "maxAbs": 3.0,
+          "minPsnr": 22.0,
+          "minSsim": 0.91,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.0003,
+          "maxTemporalMae": 0.025,
+          "maxTemporalDeltaFieldMae": 0.012
+        }
+      ]
+    },
+    "LinearDepth": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 160.0,
+          "maxMae": 0.5,
+          "maxAbs": 3.0,
+          "minPsnr": 40.0,
+          "minSsim": 0.995,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.003,
+          "maxTemporalMae": 0.25,
+          "maxTemporalDeltaFieldMae": 0.12
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 160.0,
+          "maxMae": 0.75,
+          "maxAbs": 4.0,
+          "minPsnr": 36.0,
+          "minSsim": 0.99,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.004,
+          "maxTemporalMae": 0.35,
+          "maxTemporalDeltaFieldMae": 0.18
+        }
+      ]
+    },
+    "Normal": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 2.0,
+          "maxMae": 0.02,
+          "maxAbs": 0.12,
+          "minPsnr": 30.0,
+          "minSsim": 0.97,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00001,
+          "maxTemporalMae": 0.003,
+          "maxTemporalDeltaFieldMae": 0.002
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 2.0,
+          "maxMae": 0.03,
+          "maxAbs": 0.16,
+          "minPsnr": 27.0,
+          "minSsim": 0.95,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00002,
+          "maxTemporalMae": 0.005,
+          "maxTemporalDeltaFieldMae": 0.003
+        }
+      ]
+    },
+    "Velocity": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 1.0,
+          "maxMae": 0.006,
+          "maxAbs": 0.04,
+          "minPsnr": 35.0,
+          "minSsim": 0.99,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00005,
+          "maxTemporalMae": 0.004,
+          "maxTemporalDeltaFieldMae": 0.003
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 1.0,
+          "maxMae": 0.01,
+          "maxAbs": 0.06,
+          "minPsnr": 32.0,
+          "minSsim": 0.98,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00005,
+          "maxTemporalMae": 0.006,
+          "maxTemporalDeltaFieldMae": 0.004
+        }
+      ]
+    },
+    "AmbientOcclusion": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 1.0,
+          "maxMae": 0.02,
+          "maxAbs": 0.1,
+          "minPsnr": 30.0,
+          "minSsim": 0.97,
+          "temporalMode": "static",
+          "minTemporalMae": 0.0,
+          "maxTemporalMae": 0.001,
+          "maxTemporalDeltaFieldMae": 0.001
+        },
+        {
+          "id": "interior",
+          "normalizedRegionId": "interior",
+          "dataRange": 1.0,
+          "maxMae": 0.018,
+          "maxAbs": 0.08,
+          "minPsnr": 32.0,
+          "minSsim": 0.98,
+          "temporalMode": "static",
+          "minTemporalMae": 0.0,
+          "maxTemporalMae": 0.001,
+          "maxTemporalDeltaFieldMae": 0.001
+        }
+      ]
+    },
+    "ReactiveMask": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "dataRange": 1.0,
+          "maxMae": 0.04,
+          "maxAbs": 0.2,
+          "minPsnr": 24.0,
+          "minSsim": 0.94,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.00015,
+          "maxTemporalMae": 0.015,
+          "maxTemporalDeltaFieldMae": 0.008
+        },
+        {
+          "id": "water-and-vfx",
+          "normalizedRegionId": "water-and-vfx",
+          "dataRange": 1.0,
+          "maxMae": 0.06,
+          "maxAbs": 0.3,
+          "minPsnr": 20.0,
+          "minSsim": 0.9,
+          "temporalMode": "dynamic",
+          "minTemporalMae": 0.0002,
+          "maxTemporalMae": 0.02,
+          "maxTemporalDeltaFieldMae": 0.01
+        }
+      ]
+    }
+  }
+}

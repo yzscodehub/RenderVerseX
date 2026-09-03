@@ -21,6 +21,7 @@ WORKFLOWS = {
         "raster-correctness",
         "windows-gfx24-hardware",
         "linux-gfx24-vulkan-rt",
+        "raster-cross-backend",
         "pr-verdict",
     },
     "nightly.yml": {
@@ -193,6 +194,41 @@ GFX24_HARDWARE_RT_CONTRACTS = {
             "Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json",
         ),
     },
+}
+
+GFX24_LINUX_HARDWARE_RASTER_CONTRACT = {
+    "configure": GFX24_RASTER_CONTRACTS["Linux"]["configure"],
+    "build_dir": GFX24_RASTER_CONTRACTS["Linux"]["build_dir"],
+    "test": GFX24_RASTER_CONTRACTS["Linux"]["test"],
+    "target": GFX24_RASTER_BUILD_TARGET,
+    "label": GFX24_RASTER_LABEL,
+    "count": "4",
+    "evidence": GFX24_RASTER_CONTRACTS["Linux"]["evidence"],
+}
+
+GFX24_CROSS_BACKEND_CONTRACT = {
+    "job": "raster-cross-backend",
+    "needs": "needs: [raster-correctness]",
+    "condition": "if: ${{ needs.raster-correctness.result == 'success' }}",
+    "artifacts": (
+        "gfx24-raster-Windows",
+        "gfx24-raster-Linux",
+        "gfx24-raster-macOS",
+    ),
+    "comparator_step": "Run fail-closed cross-backend visual comparison",
+    "comparator": "Scripts/compare_render_quality_backends.py",
+    "manifest": "Samples/RenderVerseSamples/Manifests/renderverse-samples.json",
+    "policy": "Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json",
+    "report": "artifacts/cross-backend/BuildTruth/cross-backend-comparison.json",
+    "upload_artifact": "gfx24-raster-cross-backend",
+    "series": (
+        "windows/dx12/forward-plus=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json",
+        "windows/dx12/deferred=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json",
+        "linux/vulkan/forward-plus=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json",
+        "linux/vulkan/deferred=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json",
+        "macos/metal/forward-plus=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json",
+        "macos/metal/deferred=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json",
+    ),
 }
 
 
@@ -948,6 +984,107 @@ def validate(root: Path) -> list[str]:
                 f"ci.yml Linux GFX24 hardware job is missing adapter gate {token}"
             )
 
+    linux_raster_step = re.search(
+        r"^\s*- name: Run fail-closed Vulkan hardware raster correctness\s*$"
+        r"(?P<body>.*?)(?=^\s*- (?:name:|if:)|\Z)",
+        linux_hardware,
+        re.MULTILINE | re.DOTALL,
+    )
+    if linux_raster_step is None:
+        findings.append(
+            "ci.yml Linux GFX24 hardware job is missing the Vulkan raster correctness step"
+        )
+    else:
+        linux_raster_body = linux_raster_step.group("body")
+        for argument, expected in (
+            ("ConfigurePreset", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["configure"]),
+            ("BuildPreset", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["configure"]),
+            ("TestPreset", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["test"]),
+            ("BuildDir", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["build_dir"]),
+            ("BuildTarget", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["target"]),
+            ("RequiredLabel", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["label"]),
+            ("ExpectedTestCount", GFX24_LINUX_HARDWARE_RASTER_CONTRACT["count"]),
+            ("BaseRef", "origin/master"),
+        ):
+            argument_match = re.search(rf"-{argument}\s+(\S+)", linux_raster_body)
+            if argument_match is None or argument_match.group(1) != expected:
+                findings.append(
+                    "ci.yml Linux GFX24 hardware raster step must set "
+                    f"-{argument} {expected}"
+                )
+        if "Scripts/run_required_suite.ps1" not in linux_raster_body:
+            findings.append(
+                "ci.yml Linux GFX24 hardware raster step must use the required-suite runner"
+            )
+        if not re.search(r"\bxvfb-run\s+-a\s+pwsh\b", linux_raster_body):
+            findings.append(
+                "ci.yml Linux GFX24 hardware raster step must run the required-suite runner through xvfb-run -a"
+            )
+        if "-Fresh" not in linux_raster_body or "-SkipConfigure" in linux_raster_body:
+            findings.append(
+                "ci.yml Linux GFX24 hardware raster step must fresh-configure without skipping"
+            )
+        evidence_arguments = [
+            line.strip()
+            for line in linux_raster_body.splitlines()
+            if "-RequiredEvidence" in line
+        ]
+        evidence_prefix = "-RequiredEvidence '"
+        expected_evidence = GFX24_LINUX_HARDWARE_RASTER_CONTRACT["evidence"]
+        if (
+            len(evidence_arguments) != 1
+            or not evidence_arguments[0].startswith(evidence_prefix)
+            or not evidence_arguments[0].endswith("'")
+            or tuple(item for item in evidence_arguments[0][len(evidence_prefix):-1].split(";") if item)
+            != expected_evidence
+        ):
+            findings.append(
+                "ci.yml Linux GFX24 hardware raster RequiredEvidence must contain "
+                "the exact four Vulkan series/series-validation artifacts"
+            )
+        rt_index = linux_hardware.find("Run fail-closed Vulkan hardware ray tracing")
+        raster_index = linux_hardware.find("Run fail-closed Vulkan hardware raster correctness")
+        if raster_index < 0 or (rt_index >= 0 and raster_index > rt_index):
+            findings.append(
+                "ci.yml Linux GFX24 hardware raster correctness must run before ray tracing"
+            )
+    for token in (
+        f"{GFX24_LINUX_HARDWARE_RASTER_CONTRACT['build_dir']}/BuildTruth",
+        f"{GFX24_LINUX_HARDWARE_RASTER_CONTRACT['build_dir']}/Tests/Gfx24RasterCorrectness",
+    ):
+        if token not in linux_hardware:
+            findings.append(
+                f"ci.yml Linux GFX24 hardware upload is missing raster evidence {token}"
+            )
+
+    cross_backend = ci_jobs.get(GFX24_CROSS_BACKEND_CONTRACT["job"], "")
+    for token in (
+        GFX24_CROSS_BACKEND_CONTRACT["condition"],
+        GFX24_CROSS_BACKEND_CONTRACT["needs"],
+        "actions/download-artifact@v4",
+        *GFX24_CROSS_BACKEND_CONTRACT["artifacts"],
+        GFX24_CROSS_BACKEND_CONTRACT["comparator_step"],
+        GFX24_CROSS_BACKEND_CONTRACT["comparator"],
+        GFX24_CROSS_BACKEND_CONTRACT["manifest"],
+        GFX24_CROSS_BACKEND_CONTRACT["policy"],
+        GFX24_CROSS_BACKEND_CONTRACT["report"],
+        GFX24_CROSS_BACKEND_CONTRACT["upload_artifact"],
+        "--expected-source-commit ${{ github.sha }}",
+        *GFX24_CROSS_BACKEND_CONTRACT["series"],
+    ):
+        if token not in cross_backend:
+            findings.append(
+                f"ci.yml GFX24 cross-backend aggregation is missing fail-closed token {token}"
+            )
+    if "Reject missing cross-backend visual comparator" in cross_backend or "exit 1" in cross_backend:
+        findings.append(
+            "ci.yml GFX24 cross-backend aggregation still contains a placeholder blocker"
+        )
+    if "render_quality_golden.py" in cross_backend or "Tests/RenderQuality/Goldens" in cross_backend:
+        findings.append(
+            "ci.yml GFX24 cross-backend aggregation must not reuse a backend-specific approved Golden policy"
+        )
+
     verdict = ci_jobs.get("pr-verdict", "")
     if "if: always()" not in verdict:
         findings.append("ci.yml PR Verdict must run with if: always()")
@@ -961,6 +1098,47 @@ def validate(root: Path) -> list[str]:
             findings.append(f"ci.yml PR Verdict does not require {required}")
     if actual_needs - required_needs:
         findings.append(f"ci.yml PR Verdict has unexpected needs {sorted(actual_needs - required_needs)}")
+    expected_verdict_env = {
+        job.upper().replace("-", "_"): job for job in required_needs
+    }
+    verdict_step = re.search(
+        r"^\s+- name: Require every PR gate\s*$"
+        r"\s+env:\s*\n(?P<env>.*?)"
+        r"^\s+run:\s*\|\s*\n(?P<run>.*)\Z",
+        verdict,
+        re.MULTILINE | re.DOTALL,
+    )
+    if verdict_step is None:
+        findings.append("ci.yml PR Verdict must define one gate env mapping and result loop")
+    else:
+        actual_verdict_env: dict[str, str] = {}
+        for line in verdict_step.group("env").splitlines():
+            match = re.fullmatch(
+                r"\s*([A-Z][A-Z0-9_]*):\s*\$\{\{\s*needs\.([a-z0-9-]+)\.result\s*\}\}\s*",
+                line,
+            )
+            if match is None:
+                findings.append("ci.yml PR Verdict env mappings must bind only needs.<job>.result")
+                continue
+            key, job = match.groups()
+            if key in actual_verdict_env:
+                findings.append(f"ci.yml PR Verdict has duplicate env mapping {key}")
+            actual_verdict_env[key] = job
+        if actual_verdict_env != expected_verdict_env:
+            findings.append(
+                "ci.yml PR Verdict env mappings must exactly cover its required jobs"
+            )
+        loop_variables = re.findall(
+            r'"\$([A-Z][A-Z0-9_]*)"', verdict_step.group("run")
+        )
+        expected_variables = set(expected_verdict_env)
+        if (
+            set(loop_variables) != expected_variables
+            or len(loop_variables) != len(expected_variables)
+        ):
+            findings.append(
+                "ci.yml PR Verdict result loop must test every mapped job exactly once"
+            )
     if 'test "$result" = success || exit 1' not in verdict:
         findings.append("ci.yml PR Verdict must fail unless every required job succeeds")
 
@@ -1095,6 +1273,12 @@ def validate(root: Path) -> list[str]:
         "Scripts/render_quality_golden.py",
         "Scripts/test_render_quality_qualification.py",
         "SUITE gfx24-qualification",
+        "RenderQualityCrossBackendValidation",
+        "RenderQualityCrossBackendValidationSelfTest",
+        "Scripts/compare_render_quality_backends.py",
+        "Scripts/test_render_quality_cross_backend.py",
+        "Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json",
+        "suite.cross-backend",
     ):
         if token not in unit:
             findings.append(
