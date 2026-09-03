@@ -686,6 +686,9 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", pipelineReady=" << frame.gpuDrivenCullingStats.opaquePipelineReady
        << ", eligible=" << frame.gpuDrivenCullingStats.opaqueIndirectEligible
        << ", submitted=" << frame.gpuDrivenCullingStats.opaqueIndirectSubmitted
+       << ", submittedSourcePackets="
+       << frame.gpuDrivenCullingStats
+              .opaqueGpuDrivenSubmittedSourcePacketCount
        << ", submittedDrawUpperBound="
        << frame.gpuDrivenCullingStats
               .opaqueGpuDrivenIndirectSubmittedDrawUpperBound

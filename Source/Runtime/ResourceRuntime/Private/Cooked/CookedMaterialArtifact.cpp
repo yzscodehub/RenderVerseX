@@ -68,6 +68,39 @@ namespace
             left.magFilter == right.magFilter;
     }
 
+    bool HasExpectedTextureSemantic(
+        const CookedMaterialTextureBinding& binding) noexcept
+    {
+        switch (binding.definition.slot)
+        {
+            case MaterialTextureSlot::BaseColor:
+            case MaterialTextureSlot::ToonRamp:
+            case MaterialTextureSlot::SpecularColor:
+                return binding.usage == TextureUsage::Color && binding.isSRGB &&
+                    binding.fallbackSemantic == TextureFallbackSemantic::White;
+
+            case MaterialTextureSlot::Emissive:
+                return binding.usage == TextureUsage::Color && binding.isSRGB &&
+                    binding.fallbackSemantic == TextureFallbackSemantic::Black;
+
+            case MaterialTextureSlot::Normal:
+            case MaterialTextureSlot::ClearcoatNormal:
+                return binding.usage == TextureUsage::Normal && !binding.isSRGB &&
+                    binding.fallbackSemantic == TextureFallbackSemantic::FlatNormal;
+
+            case MaterialTextureSlot::MetallicRoughness:
+            case MaterialTextureSlot::Occlusion:
+            case MaterialTextureSlot::Transmission:
+            case MaterialTextureSlot::Thickness:
+            case MaterialTextureSlot::Specular:
+            case MaterialTextureSlot::Clearcoat:
+            case MaterialTextureSlot::ClearcoatRoughness:
+                return binding.usage == TextureUsage::Data && !binding.isSRGB &&
+                    binding.fallbackSemantic == TextureFallbackSemantic::White;
+        }
+        return false;
+    }
+
     Hash::SHA256Digest ComputeDependencyHash(
         const std::vector<CookedMaterialTextureBinding>& bindings)
     {
@@ -158,6 +191,11 @@ namespace
         writer.Float(value.occlusionStrength);
         WriteVec3(writer, value.emissiveColor);
         writer.Float(value.emissiveStrength);
+        writer.Float(value.specularFactor);
+        WriteVec3(writer, value.specularColor);
+        writer.Float(value.clearcoatFactor);
+        writer.Float(value.clearcoatRoughness);
+        writer.Float(value.clearcoatNormalScale);
         writer.U32(value.textureFlags);
         writer.U8(static_cast<uint8>(value.alphaMode));
         writer.Float(value.alphaCutoff);
@@ -254,6 +292,11 @@ namespace
             !reader.Float(value.occlusionStrength) ||
             !ReadVec3(reader, value.emissiveColor) ||
             !reader.Float(value.emissiveStrength) ||
+            !reader.Float(value.specularFactor) ||
+            !ReadVec3(reader, value.specularColor) ||
+            !reader.Float(value.clearcoatFactor) ||
+            !reader.Float(value.clearcoatRoughness) ||
+            !reader.Float(value.clearcoatNormalScale) ||
             !reader.U32(value.textureFlags) || !reader.U8(alphaMode) ||
             !reader.Float(value.alphaCutoff) || !reader.U8(workflow) ||
             !reader.U8(doubleSided) || !reader.Float(value.toonBands) ||
@@ -339,12 +382,20 @@ namespace
     }
 } // namespace
 
+uint64 GetCookedMaterialPermutation(
+    const MaterialStaticDescriptor& descriptor) noexcept
+{
+    return (static_cast<uint64>(descriptor.shadingModel) << 56u) |
+        (static_cast<uint64>(descriptor.blendMode) << 48u) |
+        (descriptor.featureMask & 0x0000ffffffffffffull);
+}
+
 bool FinalizeCookedMaterialArtifact(
     CookedMaterialArtifact& artifact,
     std::string& outError)
 {
     artifact.material.descriptor.parameterLayoutHash =
-        GetMaterialParameterLayoutHashV1();
+        GetMaterialParameterLayoutHashV2();
     std::sort(
         artifact.textureBindings.begin(), artifact.textureBindings.end(),
         [](const CookedMaterialTextureBinding& left,
@@ -354,21 +405,20 @@ bool FinalizeCookedMaterialArtifact(
         });
     artifact.material.textureSlots.clear();
     artifact.material.textureSlots.reserve(artifact.textureBindings.size());
-    constexpr uint64 textureFeatureBits =
-        (1ull << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
-    artifact.material.descriptor.featureMask &= ~textureFeatureBits;
     artifact.material.parameters.textureFlags = 0;
     for (const CookedMaterialTextureBinding& binding : artifact.textureBindings)
     {
         artifact.material.textureSlots.push_back(binding.definition);
-        artifact.material.descriptor.featureMask |=
-            1ull << static_cast<uint8>(binding.definition.slot);
-        if (binding.definition.slot <= MaterialTextureSlot::Thickness)
+        if (binding.definition.slot <= MaterialTextureSlot::ClearcoatNormal)
         {
             artifact.material.parameters.textureFlags |=
                 1u << static_cast<uint8>(binding.definition.slot);
         }
     }
+    artifact.material.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        artifact.material.parameters, artifact.material.textureSlots);
+    artifact.permutation = GetCookedMaterialPermutation(
+        artifact.material.descriptor);
     artifact.dependencyHash = ComputeDependencyHash(artifact.textureBindings);
     artifact.contentHash = {};
     return ValidateCookedMaterialArtifact(artifact, outError);
@@ -388,6 +438,12 @@ bool ValidateCookedMaterialArtifact(
     }
     if (!ValidateMaterialDefinition(artifact.material, outError))
         return false;
+    if (artifact.permutation != GetCookedMaterialPermutation(
+            artifact.material.descriptor))
+    {
+        outError = "Material artifact permutation does not match the static descriptor";
+        return false;
+    }
 
     for (size_t index = 0; index < artifact.textureBindings.size(); ++index)
     {
@@ -406,7 +462,8 @@ bool ValidateCookedMaterialArtifact(
             IsZeroDigest(binding.expectedContentHash) ||
             !IsEnumInRange(binding.usage, TextureUsage::Data) ||
             !IsEnumInRange(binding.fallbackSemantic,
-                           TextureFallbackSemantic::Black))
+                           TextureFallbackSemantic::Black) ||
+            !HasExpectedTextureSemantic(binding))
         {
             outError = "Material artifact texture dependency is invalid";
             return false;

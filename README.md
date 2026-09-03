@@ -26,7 +26,7 @@ explained in [`Docs/README.md`](Docs/README.md).
 - RenderGraph is the independent `RVX::RenderGraph` link target inside the
   `Render` Manifest module.
 - Model products use only `RVX_MODEL_ARTIFACT_V3`, with standalone
-  `RVX_MATERIAL_ARTIFACT_V1` dependencies; source FBX support is a
+  `RVX_MATERIAL_ARTIFACT_V2` dependencies; source FBX support is a
   development-only, feature-gated static subset.
 
 Core/HAL/RHI/Render, Scene/ECS/World, Animation, Built-in Physics, Particle,

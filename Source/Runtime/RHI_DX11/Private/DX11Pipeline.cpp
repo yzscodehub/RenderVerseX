@@ -108,7 +108,7 @@ namespace RVX
             RVX_RHI_ERROR(
                 "DX11: Rejecting unsupported sampler descriptor set {} binding {}; "
                 "the fixed sampler ABI only permits set 0 {{0,1,2,5,7,9,13,19}} "
-                "and set 2 {{9..16}}",
+                "and set 2 {{14..21}}",
                 setIndex,
                 binding);
             std::array<ID3D11SamplerState*,

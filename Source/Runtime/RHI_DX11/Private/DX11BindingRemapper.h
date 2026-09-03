@@ -20,9 +20,11 @@ namespace RVX
     // Renderer ABI allocation:
     // - CBs preserve sparse frame slots; object/material set b0 map to b1/b2.
     // - SRVs and UAVs use fixed per-set ranges.
-    // - Samplers use one fixed, lossless 16-slot ABI:
+    // - Samplers use one fixed 16-slot ABI:
     //   set 0 logical {0,1,2,5,7,9,13,19} -> physical 0..7;
-    //   set 2 logical {9..16} -> physical 8..15.
+    //   set 2 logical {14..21} -> physical 8..15.
+    //   Material V2 extension samplers alias these eight primary slots and
+    //   are admitted only after MaterialSystem proves policy compatibility.
     //   Every other sampler set/binding is invalid.
 
     class DX11BindingRemapper

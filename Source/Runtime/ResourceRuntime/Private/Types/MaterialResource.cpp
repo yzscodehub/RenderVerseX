@@ -121,37 +121,23 @@ namespace
         return definition;
     }
 
-    constexpr uint64 GetMaterialFeatureBit(MaterialTextureSlot slot) noexcept
-    {
-        return 1ull << static_cast<uint32>(slot);
-    }
-
-    constexpr uint64 GetTextureSlotFeatureMask() noexcept
-    {
-        return (1ull <<
-                (static_cast<uint32>(MaterialTextureSlot::Thickness) + 1u)) -
-            1ull;
-    }
-
     constexpr uint32 GetMaterialTextureFlag(MaterialTextureSlot slot) noexcept
     {
         const uint32 index = static_cast<uint32>(slot);
-        return index <= static_cast<uint32>(MaterialTextureSlot::Thickness)
+        return index <= static_cast<uint32>(MaterialTextureSlot::ClearcoatNormal)
             ? (1u << index) : 0u;
     }
 
     void SynchronizeTextureSlotMasks(MaterialDefinition& definition) noexcept
     {
-        uint64 featureMask = 0;
         uint32 textureFlags = 0;
         for (const MaterialTextureSlotDefinition& slot : definition.textureSlots)
         {
-            featureMask |= GetMaterialFeatureBit(slot.slot);
             textureFlags |= GetMaterialTextureFlag(slot.slot);
         }
-        definition.descriptor.featureMask &= ~GetTextureSlotFeatureMask();
-        definition.descriptor.featureMask |= featureMask;
         definition.parameters.textureFlags = textureFlags;
+        definition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+            definition.parameters, definition.textureSlots);
     }
 
     void AddSlotDefinition(
@@ -174,7 +160,10 @@ namespace
 
         descriptor.shadingModel = material.GetWorkflow() == MaterialWorkflow::Unlit
             ? MaterialShadingModel::Unlit
-            : MaterialShadingModel::StandardLit;
+            : material.GetTransmissionFactor() != 0.0f ||
+                    material.GetTransmissionTexture().has_value()
+                ? MaterialShadingModel::ThinTransmission
+                : MaterialShadingModel::StandardLit;
         descriptor.programFamily = std::string(GetMaterialProgramFamily(
             descriptor.shadingModel));
         descriptor.cullMode = material.IsDoubleSided()
@@ -213,6 +202,16 @@ namespace
         parameters.occlusionStrength = material.GetOcclusionStrength();
         parameters.emissiveColor = material.GetEmissiveColor();
         parameters.emissiveStrength = material.GetEmissiveStrength();
+        parameters.specularFactor = material.GetSpecularFactor();
+        parameters.specularColor = material.GetSpecularColor();
+        parameters.clearcoatFactor = material.GetClearcoatFactor();
+        parameters.clearcoatRoughness = material.GetClearcoatRoughness();
+        parameters.clearcoatNormalScale = material.GetClearcoatNormalScale();
+        parameters.transmission = material.GetTransmissionFactor();
+        parameters.indexOfRefraction = material.GetIndexOfRefraction();
+        parameters.thickness = material.GetThicknessFactor();
+        parameters.attenuationColor = material.GetAttenuationColor();
+        parameters.attenuationDistance = material.GetAttenuationDistance();
         parameters.alphaCutoff = material.GetAlphaCutoff();
         parameters.workflow = material.GetWorkflow() == MaterialWorkflow::SpecularGlossiness
             ? MaterialSourceWorkflow::SpecularGlossiness
@@ -236,6 +235,27 @@ namespace
         AddSlotDefinition(
             definition, MaterialTextureSlot::Emissive,
             material.GetEmissiveTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::Specular,
+            material.GetSpecularTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::SpecularColor,
+            material.GetSpecularColorTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::Clearcoat,
+            material.GetClearcoatTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::ClearcoatRoughness,
+            material.GetClearcoatRoughnessTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::ClearcoatNormal,
+            material.GetClearcoatNormalTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::Transmission,
+            material.GetTransmissionTexture());
+        AddSlotDefinition(
+            definition, MaterialTextureSlot::Thickness,
+            material.GetThicknessTexture());
         return definition;
     }
 
@@ -303,6 +323,16 @@ namespace
         material->SetOcclusionStrength(parameters.occlusionStrength);
         material->SetEmissiveColor(parameters.emissiveColor);
         material->SetEmissiveStrength(parameters.emissiveStrength);
+        material->SetSpecularFactor(parameters.specularFactor);
+        material->SetSpecularColor(parameters.specularColor);
+        material->SetClearcoatFactor(parameters.clearcoatFactor);
+        material->SetClearcoatRoughness(parameters.clearcoatRoughness);
+        material->SetClearcoatNormalScale(parameters.clearcoatNormalScale);
+        material->SetTransmissionFactor(parameters.transmission);
+        material->SetIndexOfRefraction(parameters.indexOfRefraction);
+        material->SetThicknessFactor(parameters.thickness);
+        material->SetAttenuationColor(parameters.attenuationColor);
+        material->SetAttenuationDistance(parameters.attenuationDistance);
         for (const MaterialTextureSlotDefinition& slot : definition.textureSlots)
         {
             const TextureInfo info = MakeCompatibilityTextureInfo(slot);
@@ -323,13 +353,31 @@ namespace
                 case MaterialTextureSlot::Emissive:
                     material->SetEmissiveTexture(info);
                     break;
-                case MaterialTextureSlot::ToonRamp:
+                case MaterialTextureSlot::Specular:
+                    material->SetSpecularTexture(info);
+                    break;
+                case MaterialTextureSlot::SpecularColor:
+                    material->SetSpecularColorTexture(info);
+                    break;
+                case MaterialTextureSlot::Clearcoat:
+                    material->SetClearcoatTexture(info);
+                    break;
+                case MaterialTextureSlot::ClearcoatRoughness:
+                    material->SetClearcoatRoughnessTexture(info);
+                    break;
+                case MaterialTextureSlot::ClearcoatNormal:
+                    material->SetClearcoatNormalTexture(info);
+                    break;
                 case MaterialTextureSlot::Transmission:
+                    material->SetTransmissionTexture(info);
+                    break;
                 case MaterialTextureSlot::Thickness:
-                    // Geometry::Material is a legacy source-import mirror
-                    // with only the five core glTF slots.  The canonical
-                    // MaterialDefinition and m_textures retain these typed
-                    // runtime bindings; never synthesize a lossy fallback.
+                    material->SetThicknessTexture(info);
+                    break;
+                case MaterialTextureSlot::ToonRamp:
+                    // Geometry::Material has no ToonRamp authoring field. The
+                    // canonical MaterialDefinition and m_textures retain the
+                    // typed runtime binding without a lossy source fallback.
                     break;
                 default:
                     break;
@@ -350,6 +398,13 @@ namespace
         if (slot == "toon_ramp") return MaterialTextureSlot::ToonRamp;
         if (slot == "transmission") return MaterialTextureSlot::Transmission;
         if (slot == "thickness") return MaterialTextureSlot::Thickness;
+        if (slot == "specular") return MaterialTextureSlot::Specular;
+        if (slot == "specular_color") return MaterialTextureSlot::SpecularColor;
+        if (slot == "clearcoat") return MaterialTextureSlot::Clearcoat;
+        if (slot == "clearcoat_roughness")
+            return MaterialTextureSlot::ClearcoatRoughness;
+        if (slot == "clearcoat_normal")
+            return MaterialTextureSlot::ClearcoatNormal;
         return std::nullopt;
     }
 

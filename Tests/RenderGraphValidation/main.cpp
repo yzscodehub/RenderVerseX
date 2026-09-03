@@ -4773,6 +4773,86 @@ TEST(RenderGraphValidation, GraphicsOnlyFallbackRejectsExternalNonGraphicsOwners
     EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
 }
 
+TEST(RenderGraphValidation,
+     MultiQueueKeepsOwnershipOnlyPlanForCopyOwnedGraphicsInput)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.completionMode =
+        RHIQueueCompletionMode::NativeTimeline;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHIBufferDesc desc;
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(
+        graph,
+        &buffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Copy,
+            RHIContentValidity::Valid));
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "CopyOwnedGraphicsRead",
+        RenderGraphPassType::Graphics,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.ReadWrite(resource);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+
+    RenderGraphCompileOptions options;
+    options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    options.capabilities = capabilities;
+    options.hasCapabilitySnapshot = true;
+    RenderGraphValidationAccess::Compile(graph, options);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(RenderGraph::QueueExecutionMode::MultiQueue,
+              graph.GetQueueExecutionMode());
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    EXPECT_TRUE(std::any_of(
+        plan.queueBatches.begin(),
+        plan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.syntheticInitialRelease &&
+                   batch.queue ==
+                       RenderGraph::DiagnosticExecutionQueue::Copy;
+        }));
+    EXPECT_TRUE(std::any_of(
+        plan.queueBatches.begin(),
+        plan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return !batch.syntheticInitialRelease &&
+                   batch.queue ==
+                       RenderGraph::DiagnosticExecutionQueue::Graphics;
+        }));
+}
+
 TEST(RenderGraphValidation, CompileFinalizesGraphicsOnlyFallbackBeforeRealization)
 {
     FakeDevice device;

@@ -13,8 +13,6 @@ add_executable(RenderVerseSamples
     Scenes/InteriorRenderingSample.cpp
     Scenes/LightingShadowShowcaseSample.cpp
     Scenes/ModelRenderingSample.cpp
-    Scenes/ModelViewerSample.cpp
-    Scenes/PBRMaterialsSample.cpp
     Scenes/PhysicsSandboxSample.cpp
     Scenes/PhysicalExposureSample.cpp
     Scenes/PostProcessingShowcaseSample.cpp
@@ -49,11 +47,12 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::Gfx17SampleScenarios
     RVX::Gfx18SampleScenarios
     RVX::Gfx24SampleScenarios
+    RVX::Gfx25SampleScenarios
 )
 
-# A separately-linked cooked product root demonstrates that GFX24 has no
-# runtime dependency on source importers, shader compilers, or the broad
-# development Sample host.  It intentionally compiles only the lab scenario.
+# A separately-linked cooked product root demonstrates that the GFX24/GFX25
+# qualification scenarios have no runtime dependency on source importers,
+# shader compilers, or the broad development Sample host.
 add_executable(RenderVerseSamplesCooked
     CookedMain.cpp
     RegisterCookedSamples.cpp
@@ -69,6 +68,7 @@ target_link_libraries(RenderVerseSamplesCooked PRIVATE
     RVX::RHI_BackendFactory
     RVX::SampleCookedComposition
     RVX::Gfx24SampleScenarios
+    RVX::Gfx25SampleScenarios
 )
 
 # GFX17 scenarios compile against the narrow scenario contracts only. Their
@@ -185,6 +185,45 @@ rvx_register_module_target(
     TARGET RVX_Gfx24SampleScenarios
     MODULE Samples
     ALIASES RVX::Gfx24SampleScenarios
+)
+
+# GFX25 contains the model and PBR scenarios in the same narrow scenario
+# boundary. They author public scene/resource contracts only; the executable
+# host remains responsible for renderer/backend composition and cooked assets.
+add_library(RVX_Gfx25SampleScenarios STATIC
+    Scenes/ModelViewerSample.cpp
+    Scenes/PBRMaterialsSample.cpp
+)
+target_compile_features(RVX_Gfx25SampleScenarios PRIVATE cxx_std_20)
+target_include_directories(RVX_Gfx25SampleScenarios PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+rvx_apply_scenario_contract_include_roots(
+    RVX_Gfx25SampleScenarios
+    RVX_Animation
+    RVX_AnimationSceneAdapters
+    RVX_AssetContracts
+    RVX_Core
+    RVX_ECS
+    RVX_Engine
+    RVX_Geometry
+    RVX_Physics
+    RVX_RenderContracts
+    RVX_ResourceRuntime
+    RVX_ResourceSceneAdapters
+    RVX_RuntimeServices
+    RVX_Scene
+    RVX_World
+)
+target_link_libraries(RVX_Gfx25SampleScenarios PRIVATE
+    RVX::SampleScenarioContracts
+    glm::glm-header-only
+)
+add_library(RVX::Gfx25SampleScenarios ALIAS RVX_Gfx25SampleScenarios)
+rvx_register_module_target(
+    TARGET RVX_Gfx25SampleScenarios
+    MODULE Samples
+    ALIASES RVX::Gfx25SampleScenarios
 )
 
 # Keep the GFX17 scene target honest even while the legacy SampleCommon host
@@ -382,6 +421,18 @@ rvx_assert_gfx_sample_scenario_closure(
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderQualityDiagnostics.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
+rvx_assert_gfx_sample_scenario_closure(
+    RVX_Gfx25SampleScenarios
+    SOURCE_CONTRACT_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ModelViewerSample.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ModelViewerSample.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/PBRMaterialsSample.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/PBRMaterialsSample.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleEnvironmentLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
 
 if(RVX_ENABLE_DX11)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX11)
@@ -472,7 +523,7 @@ rvx_register_module_target(
 )
 
 # The normal Sample staging tree contains source assets for development
-# scenarios.  The Cooked product receives a separate seven-package subset so
+# scenarios.  The Cooked product receives a separate nine-package subset so
 # its final runtime directory has no authoring model, image, HDR, or shader
 # source fallback to accidentally mount.
 set(RVX_SAMPLE_COOKED_PRODUCT_ASSET_DESTINATION

@@ -1215,6 +1215,29 @@ TEST(GPUSceneValidation, AcceptedDrawLookupRequiresOneLiveContiguousGenerationCh
               update.GetCommittedMirrorForTesting().draws[resolved->draw.slot]
                   .header.generation);
 
+    // MaterialSystem freezes these fields after the resource-neutral
+    // MeshBatch packet is built. The GPUScene lookup must preserve that
+    // authority instead of comparing conservative legacy defaults.
+    RenderDrawPacket frozenMaterialPacket = packet;
+    frozenMaterialPacket.pipelineKey.cullMode = MaterialCullMode::NoCull;
+    frozenMaterialPacket.pipelineKey.shadowPolicy =
+        MaterialShadowPolicy::Receive;
+    frozenMaterialPacket.pipelineKey.blendMode = MaterialBlendMode::Opaque;
+    frozenMaterialPacket.pipelineKey.shadingModel =
+        MaterialShadingModel::StandardLit;
+    frozenMaterialPacket.pipelineKey.surfacePathEligibility =
+        SurfacePathEligibility::DeferredOpaque;
+    frozenMaterialPacket.pipelineKey.requiresUV1 = true;
+    frozenMaterialPacket.pipelineKey.reverseWinding = true;
+    EXPECT_TRUE(update.ResolveAcceptedDraw(
+        scene, candidate, frozenMaterialPacket).has_value());
+
+    RenderDrawPacket wrongTopologyPacket = frozenMaterialPacket;
+    wrongTopologyPacket.pipelineKey.topology =
+        MeshUploadPrimitiveTopology::Lines;
+    EXPECT_FALSE(update.ResolveAcceptedDraw(
+        scene, candidate, wrongTopologyPacket).has_value());
+
     RenderDrawPacket outOfRangePacket = packet;
     outOfRangePacket.submeshIndex = 9;
     EXPECT_FALSE(update.ResolveAcceptedDraw(scene, candidate, outOfRangePacket).has_value());

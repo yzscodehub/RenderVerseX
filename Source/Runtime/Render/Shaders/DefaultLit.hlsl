@@ -130,15 +130,13 @@ Texture2D EmissiveTexture : register(t5, space2);
 Texture2D ToonRampTexture : register(t6, space2);
 Texture2D TransmissionTexture : register(t7, space2);
 Texture2D ThicknessTexture : register(t8, space2);
-SamplerState BaseColorSampler : register(s9, space2);
-SamplerState NormalSampler : register(s10, space2);
-SamplerState MetallicRoughnessSampler : register(s11, space2);
-SamplerState OcclusionSampler : register(s12, space2);
-SamplerState EmissiveSampler : register(s13, space2);
-SamplerState ToonRampSampler : register(s14, space2);
-SamplerState TransmissionSampler : register(s15, space2);
-SamplerState ThicknessSampler : register(s16, space2);
-StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t17, space2);
+Texture2D SpecularTexture : register(t9, space2);
+Texture2D SpecularColorTexture : register(t10, space2);
+Texture2D ClearcoatTexture : register(t11, space2);
+Texture2D ClearcoatRoughnessTexture : register(t12, space2);
+Texture2D ClearcoatNormalTexture : register(t13, space2);
+#include "Include/MaterialSamplers.hlsli"
+StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t27, space2);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
 StructuredBuffer<PointLight> PointLights : register(t4, space0);
@@ -459,6 +457,12 @@ float3 EvaluateLinearLocalLights(
     float3 baseColor,
     float metallic,
     float roughness,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor,
+    float clearcoatRoughness,
+    float3 clearcoatNormal,
     bool receivesShadow)
 {
     float3 localLight = float3(0.0, 0.0, 0.0);
@@ -467,7 +471,7 @@ float3 EvaluateLinearLocalLights(
     [loop]
     for (uint pointLightIndex = 0; pointLightIndex < pointLightCount; ++pointLightIndex)
     {
-        localLight += EvaluatePointLight(
+        localLight += EvaluatePointLightWithExtensions(
             PointLights[pointLightIndex],
             normal,
             viewDir,
@@ -475,6 +479,12 @@ float3 EvaluateLinearLocalLights(
             baseColor,
             metallic,
             roughness,
+            indexOfRefraction,
+            specularFactor,
+            specularColor,
+            clearcoatFactor,
+            clearcoatRoughness,
+            clearcoatNormal,
             receivesShadow
                 ? RVX_SamplePointLocalShadow(
                     PointLights[pointLightIndex], worldPos, normal)
@@ -485,7 +495,7 @@ float3 EvaluateLinearLocalLights(
     [loop]
     for (uint spotLightIndex = 0; spotLightIndex < spotLightCount; ++spotLightIndex)
     {
-        localLight += EvaluateSpotLight(
+        localLight += EvaluateSpotLightWithExtensions(
             SpotLights[spotLightIndex],
             normal,
             viewDir,
@@ -493,6 +503,12 @@ float3 EvaluateLinearLocalLights(
             baseColor,
             metallic,
             roughness,
+            indexOfRefraction,
+            specularFactor,
+            specularColor,
+            clearcoatFactor,
+            clearcoatRoughness,
+            clearcoatNormal,
             receivesShadow
                 ? RVX_SampleSpotLocalShadow(
                     SpotLights[spotLightIndex], worldPos, normal)
@@ -510,6 +526,12 @@ float3 EvaluateClusteredLocalLights(
     float3 baseColor,
     float metallic,
     float roughness,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor,
+    float clearcoatRoughness,
+    float3 clearcoatNormal,
     bool receivesShadow)
 {
     const uint clusterIndex = ResolveClusterIndex(svPosition, worldPos);
@@ -517,6 +539,9 @@ float3 EvaluateClusteredLocalLights(
     {
         return EvaluateLinearLocalLights(
             normal, viewDir, worldPos, baseColor, metallic, roughness,
+            indexOfRefraction,
+            specularFactor, specularColor, clearcoatFactor,
+            clearcoatRoughness, clearcoatNormal,
             receivesShadow);
     }
 
@@ -533,7 +558,7 @@ float3 EvaluateClusteredLocalLights(
 
         if (lightType == 0u && lightIndex < NumPointLights)
         {
-            localLight += EvaluatePointLight(
+            localLight += EvaluatePointLightWithExtensions(
                 PointLights[lightIndex],
                 normal,
                 viewDir,
@@ -541,6 +566,12 @@ float3 EvaluateClusteredLocalLights(
                 baseColor,
                 metallic,
                 roughness,
+                indexOfRefraction,
+                specularFactor,
+                specularColor,
+                clearcoatFactor,
+                clearcoatRoughness,
+                clearcoatNormal,
                 receivesShadow
                     ? RVX_SamplePointLocalShadow(
                         PointLights[lightIndex], worldPos, normal)
@@ -548,7 +579,7 @@ float3 EvaluateClusteredLocalLights(
         }
         else if (lightType == 1u && lightIndex < NumSpotLights)
         {
-            localLight += EvaluateSpotLight(
+            localLight += EvaluateSpotLightWithExtensions(
                 SpotLights[lightIndex],
                 normal,
                 viewDir,
@@ -556,6 +587,12 @@ float3 EvaluateClusteredLocalLights(
                 baseColor,
                 metallic,
                 roughness,
+                indexOfRefraction,
+                specularFactor,
+                specularColor,
+                clearcoatFactor,
+                clearcoatRoughness,
+                clearcoatNormal,
                 receivesShadow
                     ? RVX_SampleSpotLocalShadow(
                         SpotLights[lightIndex], worldPos, normal)
@@ -891,6 +928,11 @@ struct ResolvedForwardSurfaceData
     float occlusion;
     float3 emissive;
     float3 normal;
+    float specularFactor;
+    float3 specularColor;
+    float clearcoatFactor;
+    float clearcoatRoughness;
+    float3 clearcoatNormal;
 };
 
 ResolvedForwardSurfaceData ResolveForwardSurfaceData(
@@ -948,20 +990,67 @@ ResolvedForwardSurfaceData ResolveForwardSurfaceData(
         surface.emissive *= EmissiveTexture.Sample(
             EmissiveSampler,
             RVXResolveMaterialUV(
+            surface.material,
+            MATERIAL_TEXTURE_SLOT_EMISSIVE,
+            input.TexCoord,
+            input.TexCoord1)).rgb;
+    }
+
+    surface.specularFactor = surface.material.SpecularColor_Factor.w;
+    surface.specularColor = surface.material.SpecularColor_Factor.xyz;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_SPECULAR) != 0u)
+    {
+        surface.specularFactor *= SpecularTexture.Sample(
+            SpecularSampler,
+            RVXResolveMaterialUV(
                 surface.material,
-                MATERIAL_TEXTURE_SLOT_EMISSIVE,
+                MATERIAL_TEXTURE_SLOT_SPECULAR,
+                input.TexCoord,
+                input.TexCoord1)).a;
+    }
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_SPECULAR_COLOR) != 0u)
+    {
+        surface.specularColor *= SpecularColorTexture.Sample(
+            SpecularColorSampler,
+            RVXResolveMaterialUV(
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_SPECULAR_COLOR,
                 input.TexCoord,
                 input.TexCoord1)).rgb;
     }
+    surface.clearcoatFactor = surface.material.ClearcoatParams.x;
+    surface.clearcoatRoughness = surface.material.ClearcoatParams.y;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_CLEARCOAT) != 0u)
+    {
+        surface.clearcoatFactor *= ClearcoatTexture.Sample(
+            ClearcoatSampler,
+            RVXResolveMaterialUV(
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_CLEARCOAT,
+                input.TexCoord,
+                input.TexCoord1)).r;
+    }
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS) != 0u)
+    {
+        surface.clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(
+            ClearcoatRoughnessSampler,
+            RVXResolveMaterialUV(
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS,
+                input.TexCoord,
+                input.TexCoord1)).g;
+    }
 
-    surface.normal = SafeNormalize(
+    const float3 geometricNormal = SafeNormalize(
         input.WorldNormal, float3(0.0f, 0.0f, 1.0f));
     float4 doubleSidedTangent = input.WorldTangent;
+    float3 doubleSidedGeometricNormal = geometricNormal;
     RVXResolveFrontFaceBasis(
         isFrontFace,
         surface.material.DoubleSided,
-        surface.normal,
+        doubleSidedGeometricNormal,
         doubleSidedTangent);
+    surface.normal = doubleSidedGeometricNormal;
     if ((surface.material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
         surface.normal = RVXSampleNormalMap(
@@ -976,6 +1065,25 @@ ResolvedForwardSurfaceData ResolveForwardSurfaceData(
             surface.normal,
             doubleSidedTangent,
             surface.material.NormalScale);
+    }
+    // KHR_materials_clearcoat owns an independent normal layer. Start both
+    // normal maps from the same double-sided geometric basis rather than
+    // perturbing the clearcoat layer a second time by the base normal map.
+    surface.clearcoatNormal = doubleSidedGeometricNormal;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_CLEARCOAT_NORMAL) != 0u)
+    {
+        surface.clearcoatNormal = RVXSampleNormalMap(
+            ClearcoatNormalTexture,
+            ClearcoatNormalSampler,
+            RVXResolveMaterialUV(
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_CLEARCOAT_NORMAL,
+                input.TexCoord,
+                input.TexCoord1),
+            input.WorldPos,
+            doubleSidedGeometricNormal,
+            doubleSidedTangent,
+            surface.material.ClearcoatParams.z);
     }
     return surface;
 }
@@ -993,6 +1101,21 @@ GBufferOutput PSGBuffer(PSInput input, bool isFrontFace : SV_IsFrontFace)
     if (surface.material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS ||
         (surface.material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
          surface.material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT))
+    {
+        clip(-1.0f);
+    }
+    // The Deferred material table contains factor-only KHR extension values,
+    // but the GBuffer has no extension UV/tangent payload. Textured specular
+    // or clearcoat is therefore classified as ForwardSpecialOpaque by CPU
+    // policy. Keep the same rule shader-side so a stale/forged packet cannot
+    // silently drop authored extension textures in the GBuffer path.
+    const uint deferredUnsupportedExtensionTextures =
+        MATERIAL_TEXTURE_SPECULAR |
+        MATERIAL_TEXTURE_SPECULAR_COLOR |
+        MATERIAL_TEXTURE_CLEARCOAT |
+        MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS |
+        MATERIAL_TEXTURE_CLEARCOAT_NORMAL;
+    if ((surface.material.TextureFlags & deferredUnsupportedExtensionTextures) != 0u)
     {
         clip(-1.0f);
     }
@@ -1053,7 +1176,8 @@ float4 ShadeForwardSurface(
     }
 
     if ((material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
-         material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT) ||
+         material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT &&
+         material.ShadingModel != MATERIAL_SHADING_MODEL_THIN_TRANSMISSION) ||
         material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
     {
         // Unsupported workflows must never be approximated as StandardLit.
@@ -1068,7 +1192,15 @@ float4 ShadeForwardSurface(
     const float3 normal = surface.normal;
     float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
-    float3 f0 = ComputeF0(baseColor.rgb, metallic);
+    const float specularFactor = saturate(surface.specularFactor);
+    const float3 specularColor = max(surface.specularColor, 0.0);
+    const float indexOfRefraction = max(
+        material.ThinTransmissionParams.y, 1.0f);
+    const float clearcoatFactor = saturate(surface.clearcoatFactor);
+    const float clearcoatRoughness = clamp(surface.clearcoatRoughness, 0.04, 1.0);
+    const float3 clearcoatNormal = SafeNormalize(surface.clearcoatNormal, normal);
+    const float3 f0 = ComputeF0WithSpecular(
+        baseColor.rgb, metallic, indexOfRefraction, specularFactor, specularColor);
 
     const bool receivesShadow = input.ReceivesShadowValue > 0.5;
     const float rasterShadowVisibility =
@@ -1102,13 +1234,19 @@ float4 ShadeForwardSurface(
     }
     else
     {
-        directLight = EvaluatePBR(
+        directLight = EvaluatePBRWithExtensions(
             normal,
             viewDir,
             toLight,
             baseColor.rgb,
             metallic,
             clampedRoughness,
+            indexOfRefraction,
+            specularFactor,
+            specularColor,
+            clearcoatFactor,
+            clearcoatRoughness,
+            clearcoatNormal,
             DirectionalLightColor * DirectionalLightIntensity,
             shadowVisibility);
         directLight += EvaluateClusteredLocalLights(
@@ -1119,13 +1257,24 @@ float4 ShadeForwardSurface(
             baseColor.rgb,
             metallic,
             clampedRoughness,
+            indexOfRefraction,
+            specularFactor,
+            specularColor,
+            clearcoatFactor,
+            clearcoatRoughness,
+            clearcoatNormal,
             receivesShadow);
     }
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     const float screenAmbientOcclusion =
         SampleScreenSpaceAmbientOcclusion(input.Position);
-    float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);
+    const float3 specularF90 = ComputeSpecularF90(metallic, specularFactor);
+    float3 fresnel = F_SchlickRoughnessWithF90(
+        nDotV, f0, specularF90, clampedRoughness);
+    const float3 clearcoatFresnel = EvaluateClearcoatFresnel(
+        clearcoatNormal, viewDir, clearcoatFactor);
+    const float3 clearcoatTransmission = 1.0 - clearcoatFresnel;
     float3 ambientDiffuse;
     float3 ambientSpecular;
     if (IBLTextureParams.x > 0.5)
@@ -1145,12 +1294,33 @@ float4 ShadeForwardSurface(
             float2(nDotV, clampedRoughness),
             0.0f).rg;
 
-        float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
+        const float diffuseWeight =
+            (1.0 - max(fresnel.x, max(fresnel.y, fresnel.z))) *
+            (1.0 - metallic);
+        float3 diffuseEnergy = baseColor.rgb * diffuseWeight *
+            clearcoatTransmission;
         ambientDiffuse = RVX_ApplyIndirectDiffuseAmbientOcclusion(
             diffuseEnergy * irradiance * occlusion,
             screenAmbientOcclusion);
+        const float3 baseSpecular = prefilteredColor *
+            (fresnel * brdf.x + specularF90 * brdf.y) * occlusion *
+                clearcoatTransmission;
+        const float clearcoatNdotV = max(dot(clearcoatNormal, viewDir), 0.001);
+        const float clearcoatMip = clearcoatRoughness *
+            max(IBLTextureParams.y - 1.0, 0.0);
+        const float3 clearcoatPrefiltered = PrefilteredEnvironmentTexture.SampleLevel(
+            IBLLinearClampSampler,
+            reflect(-viewDir, clearcoatNormal),
+            clearcoatMip).rgb * IBLTextureParams.z;
+        const float2 clearcoatBrdf = BRDFLUTTexture.SampleLevel(
+            IBLLinearClampSampler,
+            float2(clearcoatNdotV, clearcoatRoughness),
+            0.0f).rg;
+        const float3 clearcoatSpecular = clearcoatPrefiltered *
+            (clearcoatFresnel * clearcoatBrdf.x +
+             clearcoatFactor * clearcoatBrdf.y) * occlusion;
         ambientSpecular = RVX_ApplyIndirectSpecularAmbientOcclusion(
-            prefilteredColor * (fresnel * brdf.x + brdf.y) * occlusion,
+            baseSpecular + clearcoatSpecular,
             screenAmbientOcclusion,
             clampedRoughness,
             nDotV);
@@ -1160,19 +1330,24 @@ float4 ShadeForwardSurface(
         float3 iblDiffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
         float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
         ambientDiffuse = RVX_ApplyIndirectDiffuseAmbientOcclusion(
-            baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) *
+            baseColor.rgb *
+                ((1.0 - max(fresnel.x, max(fresnel.y, fresnel.z))) *
+                 (1.0 - metallic)) * clearcoatTransmission *
                 occlusion * iblDiffuse,
             screenAmbientOcclusion);
         ambientSpecular = RVX_ApplyIndirectSpecularAmbientOcclusion(
-            f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular,
+            (f0 * clearcoatTransmission * (1.0 - clampedRoughness) +
+             clearcoatFresnel * (1.0 - clearcoatRoughness)) *
+                occlusion * iblSpecular,
             screenAmbientOcclusion,
             clampedRoughness,
             nDotV);
     }
     float3 ambientFloor = RVX_ApplyIndirectDiffuseAmbientOcclusion(
-        baseColor.rgb * max(IBLTextureParams.w, 0.0),
+        baseColor.rgb * clearcoatTransmission * max(IBLTextureParams.w, 0.0),
         screenAmbientOcclusion);
-    float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
+    float3 finalColor = ambientDiffuse + ambientSpecular + directLight +
+        emissive * clearcoatTransmission + ambientFloor;
 
     return float4(
         RVXApplyVolumetricSurfaceExtinction(
@@ -1237,9 +1412,17 @@ float3 RVXApplyThinTransmission(
     const float attenuationDistance = surface.material.ThinTransmissionParams.w;
     const float3 viewDirection = RVXSafeNormalize(
         CameraPosition - input.WorldPos, float3(0.0f, 0.0f, 1.0f));
-    const float f0 = pow((ior - 1.0f) / (ior + 1.0f), 2.0f);
-    const float fresnel = f0 + (1.0f - f0) *
-        pow(1.0f - saturate(dot(surface.normal, viewDirection)), 5.0f);
+    const float specularFactor = saturate(surface.specularFactor);
+    const float3 dielectricF0 = min(
+        F0FromIOR(ior) * max(surface.specularColor, 0.0f),
+        1.0f) * specularFactor;
+    const float3 dielectricFresnel = F_SchlickWithF90(
+        saturate(dot(surface.normal, viewDirection)),
+        dielectricF0,
+        specularFactor.xxx);
+    const float fresnel = max(
+        dielectricFresnel.x,
+        max(dielectricFresnel.y, dielectricFresnel.z));
     const float refractionScale = (ior - 1.0f) / ior *
         (0.5f + saturate(surface.roughness));
     const float2 baseUV = saturate(input.Position.xy / sourceExtent);
@@ -1350,7 +1533,15 @@ IndirectSpecularSurfaceData EvaluateForwardIndirectSpecular(
         CameraPosition - input.WorldPos, float3(0.0f, 0.0f, 1.0f));
     const float3 normal = surface.normal;
     const float roughness = clamp(surface.roughness, 0.04f, 1.0f);
-    const float3 f0 = ComputeF0(surface.baseColor.rgb, surface.metallic);
+    const float specularFactor = saturate(surface.specularFactor);
+    const float indexOfRefraction = max(
+        surface.material.ThinTransmissionParams.y, 1.0f);
+    const float3 f0 = ComputeF0WithSpecular(
+        surface.baseColor.rgb,
+        surface.metallic,
+        indexOfRefraction,
+        specularFactor,
+        surface.specularColor);
     const float nDotV = max(dot(normal, viewDir), 0.001f);
     const float screenAmbientOcclusion =
         SampleScreenSpaceAmbientOcclusion(input.Position);
@@ -1369,7 +1560,12 @@ IndirectSpecularSurfaceData EvaluateForwardIndirectSpecular(
         const float2 brdf = BRDFLUTTexture.SampleLevel(
             IBLLinearClampSampler, float2(nDotV, roughness), 0.0f).rg;
         output.specularResponse =
-            (F_SchlickRoughness(nDotV, f0, roughness) * brdf.x + brdf.y) *
+            (F_SchlickRoughnessWithF90(
+                 nDotV,
+                 f0,
+                 ComputeSpecularF90(surface.metallic, specularFactor),
+                 roughness) * brdf.x +
+             ComputeSpecularF90(surface.metallic, specularFactor) * brdf.y) *
             surface.occlusion * specularAO;
     }
     else

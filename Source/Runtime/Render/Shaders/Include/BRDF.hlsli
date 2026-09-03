@@ -89,6 +89,11 @@ float3 F_Schlick(float VdotH, float3 F0)
     return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
 }
 
+float3 F_SchlickWithF90(float VdotH, float3 F0, float3 F90)
+{
+    return F0 + (F90 - F0) * pow(1.0 - VdotH, 5.0);
+}
+
 // Fresnel with roughness for ambient specular
 float3 F_SchlickRoughness(float NdotV, float3 F0, float roughness)
 {
@@ -125,6 +130,26 @@ float3 CookTorranceSpecular(
     // Combine: (D * G * F) / (4 * NdotV * NdotL)
     // Note: G_SmithGGXCorrelated already includes the 1/(4*NdotV*NdotL) factor
     return D * G * F;
+}
+
+float3 CookTorranceSpecularWithF90(
+    float3 N,
+    float3 V,
+    float3 L,
+    float3 F0,
+    float3 F90,
+    float perceptualRoughness)
+{
+    const float3 H = normalize(V + L);
+    const float NdotV = max(dot(N, V), 0.001);
+    const float NdotL = max(dot(N, L), 0.0);
+    const float NdotH = max(dot(N, H), 0.0);
+    const float VdotH = max(dot(V, H), 0.0);
+    const float alphaRoughness =
+        PerceptualRoughnessToAlpha(perceptualRoughness);
+    const float D = D_GGX(NdotH, alphaRoughness);
+    const float G = G_SmithGGXCorrelated(NdotV, NdotL, alphaRoughness);
+    return D * G * F_SchlickWithF90(VdotH, F0, F90);
 }
 
 // =============================================================================
@@ -166,6 +191,110 @@ float3 ComputeF0(float3 albedo, float metallic)
 {
     float3 dielectricF0 = float3(0.04, 0.04, 0.04);
     return lerp(dielectricF0, albedo, metallic);
+}
+
+float3 F_SchlickRoughnessWithF90(
+    float NdotV,
+    float3 F0,
+    float3 F90,
+    float roughness)
+{
+    const float3 roughF90 = max((1.0 - roughness) * F90, F0);
+    return F0 + (roughF90 - F0) * pow(1.0 - NdotV, 5.0);
+}
+
+/** KHR_materials_specular dielectric F0, preserving the metallic endpoint. */
+float3 ComputeF0WithSpecular(
+    float3 albedo,
+    float metallic,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor)
+{
+    const float3 dielectricF0 = min(
+        F0FromIOR(max(indexOfRefraction, 1.0)) *
+            max(specularColor, 0.0),
+        1.0) * saturate(specularFactor);
+    return lerp(dielectricF0, albedo, saturate(metallic));
+}
+
+float3 ComputeSpecularF90(float metallic, float specularFactor)
+{
+    return lerp(
+        saturate(specularFactor).xxx,
+        1.0.xxx,
+        saturate(metallic));
+}
+
+/** Fresnel energy taken by KHR_materials_clearcoat's dielectric top layer. */
+float3 EvaluateClearcoatFresnel(float3 normal, float3 viewDir, float factor)
+{
+    const float nDotV = max(dot(normal, viewDir), 0.001);
+    const float factorClamped = saturate(factor);
+    return F_SchlickWithF90(
+        nDotV,
+        float3(0.04, 0.04, 0.04) * factorClamped,
+        factorClamped.xxx);
+}
+
+/**
+ * Layered metallic-roughness direct lighting. The clearcoat lobe uses its own
+ * normal/roughness and attenuates the underlying diffuse, specular and
+ * emissive layers through its view Fresnel, so enabling it cannot create
+ * unbounded energy.
+ */
+float3 EvaluatePBRWithExtensions(
+    float3 N,
+    float3 V,
+    float3 L,
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor,
+    float clearcoatRoughness,
+    float3 clearcoatNormal,
+    float3 lightColor,
+    float lightAtten)
+{
+    const float nDotL = max(dot(N, L), 0.0);
+    if (nDotL <= 0.0)
+    {
+        return 0.0;
+    }
+
+    const float3 H = normalize(V + L);
+    const float vDotH = max(dot(V, H), 0.0);
+    const float3 f0 = ComputeF0WithSpecular(
+        albedo, metallic, indexOfRefraction, specularFactor, specularColor);
+    const float3 fresnel = F_SchlickWithF90(
+        vDotH, f0, ComputeSpecularF90(metallic, specularFactor));
+    const float diffuseWeight = (1.0 - max(fresnel.x, max(fresnel.y, fresnel.z))) *
+        (1.0 - metallic);
+    const float3 diffuse = diffuseWeight *
+        LambertianDiffuse(albedo);
+    const float3 baseSpecular = CookTorranceSpecularWithF90(
+        N, V, L, f0, ComputeSpecularF90(metallic, specularFactor), roughness);
+
+    const float3 coatNormal = normalize(clearcoatNormal);
+    const float coatNdotL = max(dot(coatNormal, L), 0.0);
+    const float3 coatFresnel = EvaluateClearcoatFresnel(
+        coatNormal, V, clearcoatFactor);
+    const float3 coatSpecular = coatNdotL > 0.0
+        ? CookTorranceSpecular(
+              coatNormal,
+              V,
+              L,
+              float3(0.04, 0.04, 0.04),
+              clamp(clearcoatRoughness, 0.04, 1.0)) *
+            saturate(clearcoatFactor)
+        : 0.0;
+
+    const float3 baseLayer = (diffuse + baseSpecular) * nDotL *
+        (1.0 - coatFresnel);
+    return (baseLayer + coatSpecular * coatNdotL) * lightColor * lightAtten;
 }
 
 // =============================================================================

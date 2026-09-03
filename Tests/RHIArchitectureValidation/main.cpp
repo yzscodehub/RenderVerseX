@@ -51,7 +51,7 @@ namespace RVX::Tests
         EXPECT_EQ(metalCommands.find("binding.binding + binding.arrayElement"), std::string::npos);
         EXPECT_NE(metalBindingABI.find("RVX_METAL_FIRST_MATERIAL_BUFFER_INDEX"),
                   std::string::npos);
-        EXPECT_NE(metalBindingABI.find("set == 2 && binding == 17 && arrayElement == 0"),
+        EXPECT_NE(metalBindingABI.find("set == 2 && binding == 27 && arrayElement == 0"),
                   std::string::npos);
         EXPECT_NE(metalBindingABI.find("binding <= 23"),
                   std::string::npos);

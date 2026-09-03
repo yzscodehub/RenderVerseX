@@ -4688,10 +4688,64 @@ namespace
         parameters.occlusionStrength = source.GetOcclusionStrength();
         parameters.emissiveColor = source.GetEmissiveColor();
         parameters.emissiveStrength = source.GetEmissiveStrength();
+        const bool replacePbrExtensionsWithToon =
+            importOptions.overrideAllMaterialsToToonLit;
+        if (!replacePbrExtensionsWithToon)
+        {
+            parameters.specularFactor = source.GetSpecularFactor();
+            parameters.specularColor = source.GetSpecularColor();
+            parameters.clearcoatFactor = source.GetClearcoatFactor();
+            if (parameters.clearcoatFactor > 0.0f)
+            {
+                parameters.clearcoatRoughness =
+                    source.GetClearcoatRoughness();
+                parameters.clearcoatNormalScale =
+                    source.GetClearcoatNormalScale();
+            }
+        }
         parameters.alphaMode = ToMaterialSourceAlphaMode(source.GetAlphaMode());
         parameters.alphaCutoff = source.GetAlphaCutoff();
         parameters.workflow = ToMaterialSourceWorkflow(source.GetWorkflow());
         parameters.doubleSided = source.IsDoubleSided();
+        const bool transmissionActive =
+            !replacePbrExtensionsWithToon &&
+            source.GetTransmissionFactor() > 0.0f;
+        if (transmissionActive)
+        {
+            material.descriptor.shadingModel =
+                MaterialShadingModel::ThinTransmission;
+            material.descriptor.programFamily = std::string(
+                GetMaterialProgramFamily(
+                    material.descriptor.shadingModel));
+            material.descriptor.blendMode =
+                MaterialBlendMode::AlphaBlend;
+            material.descriptor.shadowPolicy =
+                MaterialShadowPolicy::Receive;
+            material.descriptor.translucencyPhase =
+                MaterialTranslucencyPhase::Standard;
+            parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+            parameters.transmission =
+                source.GetTransmissionFactor();
+            parameters.indexOfRefraction =
+                source.GetIndexOfRefraction();
+            parameters.thickness =
+                source.GetThicknessFactor() *
+                importOptions.mesh.scaleFactor;
+            parameters.attenuationColor =
+                source.GetAttenuationColor();
+            parameters.attenuationDistance =
+                source.GetAttenuationDistance() *
+                importOptions.mesh.scaleFactor;
+        }
+        else
+        {
+            // KHR_materials_ior also affects opaque dielectric F0. Volume and
+            // transmission textures are no-ops when transmissionFactor is
+            // zero, so omit them from the canonical runtime permutation.
+            parameters.indexOfRefraction = replacePbrExtensionsWithToon
+                ? 1.5f
+                : source.GetIndexOfRefraction();
+        }
         if (importOptions.overrideAllMaterialsToToonLit)
         {
             parameters.toonBands = importOptions.toonBands;
@@ -4727,16 +4781,51 @@ namespace
             !AddCookedMaterialTextureBinding(
                 source.GetEmissiveTexture(), MaterialTextureSlot::Emissive,
                 cookedTextures, cookedTextureContentHashes,
-                outArtifact, outError))
+                outArtifact, outError) ||
+            (!replacePbrExtensionsWithToon &&
+             (!AddCookedMaterialTextureBinding(
+                  source.GetSpecularTexture(),
+                  MaterialTextureSlot::Specular,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError) ||
+              !AddCookedMaterialTextureBinding(
+                  source.GetSpecularColorTexture(),
+                  MaterialTextureSlot::SpecularColor,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError))) ||
+            (!replacePbrExtensionsWithToon &&
+             parameters.clearcoatFactor > 0.0f &&
+             (!AddCookedMaterialTextureBinding(
+                  source.GetClearcoatTexture(),
+                  MaterialTextureSlot::Clearcoat,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError) ||
+              !AddCookedMaterialTextureBinding(
+                  source.GetClearcoatRoughnessTexture(),
+                  MaterialTextureSlot::ClearcoatRoughness,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError) ||
+              !AddCookedMaterialTextureBinding(
+                  source.GetClearcoatNormalTexture(),
+                  MaterialTextureSlot::ClearcoatNormal,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError))) ||
+            (transmissionActive &&
+             (!AddCookedMaterialTextureBinding(
+                  source.GetTransmissionTexture(),
+                  MaterialTextureSlot::Transmission,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError) ||
+              !AddCookedMaterialTextureBinding(
+                  source.GetThicknessTexture(),
+                  MaterialTextureSlot::Thickness,
+                  cookedTextures, cookedTextureContentHashes,
+                  outArtifact, outError))))
         {
             return false;
         }
         parameters.textureFlags = static_cast<uint32>(
             material.descriptor.featureMask & 0xffffffffull);
-        outArtifact.permutation =
-            (static_cast<uint64>(material.descriptor.shadingModel) << 56u) |
-            (static_cast<uint64>(material.descriptor.blendMode) << 48u) |
-            (material.descriptor.featureMask & 0x0000ffffffffffffull);
         return Resource::FinalizeCookedMaterialArtifact(outArtifact, outError);
     }
 } // namespace
@@ -4858,24 +4947,22 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         return result;
     }
 
-    // Fully implemented extensions are translated into the canonical cooked
-    // contracts. Source-compatible extensions intentionally retain the current
-    // core metallic/roughness interpretation and therefore emit a diagnostic.
-    // Geometry, compression and every unlisted extension remain fail-closed.
+    // Every admitted extension is translated into the canonical Material V2
+    // contract. Geometry, compression, legacy specular-glossiness, and every
+    // unlisted extension remain fail-closed.
     const std::unordered_set<std::string> fullyImplementedExtensions = {
         "KHR_texture_transform",
-    };
-    const std::unordered_set<std::string> sourceCompatibleExtensions = {
         "KHR_materials_specular",
         "KHR_materials_clearcoat",
         "KHR_materials_transmission",
+        "KHR_materials_volume",
+        "KHR_materials_ior",
+        "KHR_materials_emissive_strength",
     };
     const auto supportsExtension =
-        [&fullyImplementedExtensions,
-         &sourceCompatibleExtensions](const std::string& extension)
+        [&fullyImplementedExtensions](const std::string& extension)
     {
-        return fullyImplementedExtensions.contains(extension) ||
-               sourceCompatibleExtensions.contains(extension);
+        return fullyImplementedExtensions.contains(extension);
     };
     for (const std::string& used : imported.extensionsUsed)
     {
@@ -4883,12 +4970,6 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         {
             result.error = "Cooked model products do not support glTF extension: " + used;
             return result;
-        }
-        if (sourceCompatibleExtensions.contains(used))
-        {
-            result.warnings.push_back(
-                "Cooked model preserves current source-runtime core PBR semantics and does not add extension-specific shading for " +
-                used);
         }
     }
     for (const std::string& required : imported.extensionsRequired)
@@ -4899,6 +4980,32 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         {
             result.error = "Cooked model products cannot satisfy required glTF extension: " + required;
             return result;
+        }
+    }
+    if (importOptions.overrideAllMaterialsToToonLit)
+    {
+        const std::unordered_set<std::string> replacedPbrExtensions = {
+            "KHR_materials_specular",
+            "KHR_materials_clearcoat",
+            "KHR_materials_transmission",
+            "KHR_materials_volume",
+            "KHR_materials_ior",
+        };
+        std::vector<std::string> replaced;
+        for (const std::string& used : imported.extensionsUsed)
+        {
+            if (replacedPbrExtensions.contains(used))
+                replaced.push_back(used);
+        }
+        if (!replaced.empty())
+        {
+            std::sort(replaced.begin(), replaced.end());
+            std::string diagnostic =
+                "The explicit ToonLit cook profile replaces PBR extension "
+                "shading and clears these Material V2 feature identities:";
+            for (const std::string& replacedExtension : replaced)
+                diagnostic += " " + replacedExtension;
+            result.warnings.push_back(std::move(diagnostic));
         }
     }
     for (const std::string& warning : imported.warnings)

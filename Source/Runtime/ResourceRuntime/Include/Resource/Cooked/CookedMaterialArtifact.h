@@ -14,10 +14,10 @@
 namespace RVX::Resource
 {
     inline constexpr std::string_view RVX_MATERIAL_ARTIFACT_MAGIC =
-        "RVX_MATERIAL_ARTIFACT_V1";
-    inline constexpr uint32 RVX_MATERIAL_ARTIFACT_SCHEMA_VERSION = 1;
+        "RVX_MATERIAL_ARTIFACT_V2";
+    inline constexpr uint32 RVX_MATERIAL_ARTIFACT_SCHEMA_VERSION = 2;
     inline constexpr std::string_view RVX_MATERIAL_ARTIFACT_WRITER_ABI =
-        "RVX_MATERIAL_ARTIFACT_WRITER_ABI_V1";
+        "RVX_MATERIAL_ARTIFACT_WRITER_ABI_V2";
 
     /** @brief One typed material slot and its contained cooked dependency. */
     struct CookedMaterialTextureBinding
@@ -41,6 +41,15 @@ namespace RVX::Resource
         Hash::SHA256Digest dependencyHash{};
         Hash::SHA256Digest contentHash{};
     };
+
+    /**
+     * @brief Canonical shader permutation identity for one finalized material.
+     *
+     * The packed value is intentionally derived only from immutable pipeline
+     * routing fields. Dynamic numeric factors remain in the parameter block.
+     */
+    [[nodiscard]] uint64 GetCookedMaterialPermutation(
+        const MaterialStaticDescriptor& descriptor) noexcept;
 
     /**
      * @brief Canonicalize binding order and seal layout/dependency hashes.

@@ -657,7 +657,8 @@ void ForwardLightingFeatureAdapter::Prepare(
     {
         const OpaqueRasterOutputFamily outputFamily =
             (m_recordContext.view.toonOutlineRequested != 0 ||
-             m_recordContext.requiresReflectionSurfaceData)
+             m_recordContext.requiresReflectionSurfaceData ||
+             m_recordContext.requiresQualificationSurfaceData)
                 ? OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData
                 : OpaqueRasterOutputFamily::ForwardSceneHDR;
         opaquePipelinePreflight = opaquePass->PreflightRasterPipelines(
@@ -673,6 +674,7 @@ void ForwardLightingFeatureAdapter::Prepare(
         m_recordContext.lightingResources->HasCurrentGraphResources(
             m_recordContext.identity) &&
         (!(m_recordContext.requiresReflectionSurfaceData ||
+           m_recordContext.requiresQualificationSurfaceData ||
            m_recordContext.view.toonOutlineRequested != 0) ||
          m_recordContext.view.exposureStateContentHash != 0);
 
@@ -846,7 +848,8 @@ void ForwardLightingFeatureAdapter::AddPasses(
     const bool toonOutlineRequested =
         opaqueContext.view.toonOutlineRequested != 0;
     const bool needsSurfaceData = toonOutlineRequested ||
-        opaqueContext.requiresReflectionSurfaceData;
+        opaqueContext.requiresReflectionSurfaceData ||
+        opaqueContext.requiresQualificationSurfaceData;
     bool opaqueRegistered = false;
     if (needsSurfaceData)
     {

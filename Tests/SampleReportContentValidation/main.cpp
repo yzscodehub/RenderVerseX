@@ -8167,7 +8167,7 @@ namespace
             return false;
         }
         Json qualifiedHiZReflectionReport = {
-            {"schemaVersion", 35},
+            {"schemaVersion", 36},
             {"quality", "high"},
             {"width", 1281},
             {"height", 721},
@@ -8494,7 +8494,7 @@ namespace
             return false;
         }
         Json qualifiedTranslucencyReport = {
-            {"schemaVersion", 35},
+            {"schemaVersion", 36},
             {"renderDiagnostics", {
                 {"transparentAlphaBlendDrawCount", 1},
                 {"transparentPremultipliedDrawCount", 1},
@@ -8894,7 +8894,7 @@ namespace
             return false;
         }
         Json qualifiedWaterReport = {
-            {"schemaVersion", 35},
+            {"schemaVersion", 36},
             {"renderDiagnostics", {
                 {"waterSurfaceActualExecution", {
                     {"available", true},

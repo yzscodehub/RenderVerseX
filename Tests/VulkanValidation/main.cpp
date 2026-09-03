@@ -810,6 +810,13 @@ namespace
             PipelineCache::DefaultLitLocalShadowAtlasBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        // DefaultLit always declares its fixed froxel Texture3D binding. Keep
+        // this native fixture ABI-complete even though the coverage scenario
+        // consumes the exact neutral volume.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device.CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "VulkanNativeSurfaceAlphaEmptySet";
@@ -817,17 +824,22 @@ namespace
         RHIDescriptorSetLayoutDesc materialLayoutDesc;
         materialLayoutDesc.debugName = "VulkanNativeSurfaceAlphaMaterialSet";
         materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::AllGraphics);
-        for (uint32 binding = 1; binding <= 8; ++binding)
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
                                           RHIShaderStage::Pixel);
         }
-        for (uint32 binding = 9; binding <= 16; ++binding)
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
                                           RHIShaderStage::Pixel);
         }
-        materialLayoutDesc.AddBinding(17, RHIBindingType::ShaderResourceBuffer,
+        materialLayoutDesc.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                      RHIBindingType::ShaderResourceBuffer,
                                       RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef materialLayout = device.CreateDescriptorSetLayout(materialLayoutDesc);
         if (!frameLayout || !emptySet1 || !materialLayout)
@@ -916,6 +928,30 @@ namespace
             device, environmentCube.Get(), RHITextureViewType::ShaderResource,
             RHIFormat::RGBA8_UNORM, RHITextureDimension::TextureCube,
             "VulkanNativeSurfaceAlphaEnvironmentCubeSRV");
+        // Match PipelineCache's fallback exactly: zero in-scattering and unit
+        // transmittance in a real 1x1x1 RGBA16F Texture3D.
+        RHITextureDesc froxelVolumeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        froxelVolumeDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeDesc.depth = 1u;
+        froxelVolumeDesc.arraySize = 1u;
+        froxelVolumeDesc.mipLevels = 1u;
+        froxelVolumeDesc.debugName = "VulkanNativeSurfaceAlphaFroxelVolume";
+        RHITextureRef froxelVolume = device.CreateTexture(froxelVolumeDesc);
+        RHITextureViewRef froxelVolumeView = CreateVulkanTextureView(
+            device, froxelVolume.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::RGBA16_FLOAT, RHITextureDimension::Texture3D,
+            "VulkanNativeSurfaceAlphaFroxelVolumeSRV");
+        const std::array<uint16, 4> neutralFroxelTexel = {
+            0u, 0u, 0u, 0x3c00u};
+        std::array<uint8, kRowPitch> froxelUploadBytes{};
+        std::memcpy(froxelUploadBytes.data(), neutralFroxelTexel.data(),
+                    sizeof(neutralFroxelTexel));
+        RHIBufferRef froxelVolumeUpload = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::CopySrc, 0, froxelUploadBytes.data(),
+            froxelUploadBytes.size(),
+            "VulkanNativeSurfaceAlphaFroxelVolumeUpload");
         RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
         samplerDesc.debugName = "VulkanNativeSurfaceAlphaPointClamp";
         RHISamplerRef sampler = device.CreateSampler(samplerDesc);
@@ -974,15 +1010,18 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitLocalShadowAtlasBinding,
             directionalShadowArrayView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            froxelVolumeView.Get());
         RHIDescriptorSetRef frameSet = device.CreateDescriptorSet(frameSetDesc);
         RHIDescriptorSetDesc materialSetDesc;
         materialSetDesc.layout = materialLayout.Get();
         materialSetDesc.debugName = "VulkanNativeSurfaceAlphaMaterialDescriptorSet";
         materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
                                   kMaterialConstantBufferSize);
-        for (uint32 binding = 1; binding <= 8; ++binding) materialSetDesc.BindTexture(binding, sourceTextureView.Get());
-        for (uint32 binding = 9; binding <= 16; ++binding) materialSetDesc.BindSampler(binding, sampler.Get());
-        materialSetDesc.BindBuffer(17, dummyStructuredBuffer.Get());
+        for (uint32 binding = 1; binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; ++binding) materialSetDesc.BindTexture(binding, sourceTextureView.Get());
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2; ++binding) materialSetDesc.BindSampler(binding, sampler.Get());
+        materialSetDesc.BindBuffer(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2, dummyStructuredBuffer.Get());
         RHIDescriptorSetRef materialSet = device.CreateDescriptorSet(materialSetDesc);
 
         RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
@@ -1019,7 +1058,8 @@ namespace
         RHIBufferRef readbackBuffer = device.CreateBuffer(readbackDesc);
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
             !sourceTextureView || !directionalShadowArray || !directionalShadowArrayView ||
-            !environmentCube || !environmentCubeView || !sampler ||
+            !environmentCube || !environmentCubeView || !froxelVolume ||
+            !froxelVolumeView || !froxelVolumeUpload || !sampler ||
             !frameConstantsBuffer || !dummyStructuredBuffer ||
             !exposureStateBuffer || !frameSet || !materialSet ||
             !renderTarget || !renderTargetView || !readbackBuffer ||
@@ -1125,6 +1165,17 @@ namespace
         context->TextureBarrier({directionalShadowArray.Get(), RHIResourceState::Undefined,
                                  RHIResourceState::ShaderResource});
         context->TextureBarrier({environmentCube.Get(), RHIResourceState::Undefined, RHIResourceState::ShaderResource});
+        context->TextureBarrier({froxelVolume.Get(), RHIResourceState::Undefined,
+                                 RHIResourceState::CopyDest});
+        RHIBufferTextureCopyDesc froxelUploadCopy;
+        froxelUploadCopy.bufferRowPitch = kRowPitch;
+        froxelUploadCopy.bufferImageHeight = 1u;
+        froxelUploadCopy.textureRegion = {0, 0, 1, 1};
+        froxelUploadCopy.textureDepthSlice = 0u;
+        context->CopyBufferToTexture(
+            froxelVolumeUpload.Get(), froxelVolume.Get(), froxelUploadCopy);
+        context->TextureBarrier({froxelVolume.Get(), RHIResourceState::CopyDest,
+                                 RHIResourceState::ShaderResource});
         phase = "production target transition";
         if (isDepthOnly)
         {

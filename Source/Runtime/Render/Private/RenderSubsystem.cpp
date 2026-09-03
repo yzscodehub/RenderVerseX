@@ -853,6 +853,8 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectSubmitted);
             RVX_COPY_GPU_CULLING_FIELD(opaqueDirectDrawCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectBatchCount);
+            RVX_COPY_GPU_CULLING_FIELD(
+                opaqueGpuDrivenSubmittedSourcePacketCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectSubmittedDrawUpperBound);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenExecutedDrawCountAvailable);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectDrawCount);

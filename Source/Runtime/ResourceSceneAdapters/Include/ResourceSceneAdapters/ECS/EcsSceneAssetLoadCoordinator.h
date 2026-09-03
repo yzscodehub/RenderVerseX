@@ -149,6 +149,8 @@ namespace RVX::ResourceSceneAdapters
             Vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};
             float metallicFactor = 1.0f;
             float roughnessFactor = 1.0f;
+            /** Immutable Material V2 feature identity from the cooked definition. */
+            uint64 featureMask = 0;
             /** Lexically sorted by @ref TextureSlot::slot. */
             std::vector<TextureSlot> textureSlots;
         };

@@ -948,7 +948,7 @@ TEST(CookedModelProductValidation,
           }
         },
         "metallicRoughnessTexture": {
-          "index": 0,
+          "index": 1,
           "texCoord": 1,
           "extensions": {
             "KHR_texture_transform": {
@@ -960,18 +960,18 @@ TEST(CookedModelProductValidation,
         }
       },
       "normalTexture": {
-        "index": 0,
+        "index": 2,
         "texCoord": 1,
         "extensions": {
           "KHR_texture_transform": {
             "offset": [0.0, 0.5],
             "scale": [1.0, 1.0],
-            "rotation": 1.0
+            "rotation": 0.0
           }
         }
       },
       "occlusionTexture": {
-        "index": 0,
+        "index": 3,
         "texCoord": 1,
         "extensions": {
           "KHR_texture_transform": {
@@ -982,7 +982,7 @@ TEST(CookedModelProductValidation,
         }
       },
       "emissiveTexture": {
-        "index": 0,
+        "index": 4,
         "texCoord": 0,
         "extensions": {
           "KHR_texture_transform": {
@@ -994,10 +994,20 @@ TEST(CookedModelProductValidation,
       }
     }
   ],
-  "textures": [{ "source": 0 }],
-  "images": [{
-    "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-  }],
+  "textures": [
+    { "source": 0 },
+    { "source": 1 },
+    { "source": 2 },
+    { "source": 3 },
+    { "source": 4 }
+  ],
+  "images": [
+    { "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" }
+  ],
   "extensionsUsed": ["KHR_texture_transform"],
   "extensionsRequired": ["KHR_texture_transform"],
 )json";
@@ -1052,7 +1062,7 @@ TEST(CookedModelProductValidation,
                   1,
                   RVX::Vec2(0.0f, 0.5f),
                   RVX::Vec2(1.0f),
-                  1.0f);
+                  0.0f);
     expectTexture(material.GetOcclusionTexture(),
                   0,
                   RVX::Vec2(0.25f, 0.0f),
@@ -1063,6 +1073,25 @@ TEST(CookedModelProductValidation,
                   RVX::Vec2(0.0f, -0.25f),
                   RVX::Vec2(1.0f, -1.0f),
                   -0.75f);
+
+    std::string conflictingInterpretation = gltf;
+    const size_t dataImage =
+        conflictingInterpretation.find("{ \"source\": 1 }");
+    ASSERT_NE(dataImage, std::string::npos);
+    conflictingInterpretation.replace(
+        dataImage,
+        std::string_view("{ \"source\": 1 }").size(),
+        "{ \"source\": 0 }");
+    const fs::path conflictingSource =
+        temporary.Get() / "ConflictingTextureInterpretation.gltf";
+    ASSERT_TRUE(writeVariant(conflictingSource, conflictingInterpretation));
+    const RVX::Resource::GLTFImportResult conflicting =
+        importer.Import(conflictingSource.string());
+    EXPECT_FALSE(conflicting.success);
+    EXPECT_NE(conflicting.errorMessage.find(
+                  "incompatible texture interpretations"),
+              std::string::npos)
+        << conflicting.errorMessage;
 
     const fs::path cookedOutput = temporary.Get() / "TextureTransform.rva";
     RVX::Tools::ModelImporter productImporter;
@@ -1115,7 +1144,7 @@ TEST(CookedModelProductValidation,
         requiredExtension,
         std::string_view(
             "\"extensionsRequired\": [\"KHR_texture_transform\"]").size(),
-        "\"extensionsRequired\": [\"KHR_materials_transmission\"]");
+        "\"extensionsRequired\": [\"KHR_materials_sheen\"]");
     const fs::path unsupportedRequiredSource =
         temporary.Get() / "UnsupportedRequiredExtension.gltf";
     ASSERT_TRUE(writeVariant(unsupportedRequiredSource, unsupportedRequired));
@@ -1126,7 +1155,7 @@ TEST(CookedModelProductValidation,
     EXPECT_FALSE(unsupportedRequiredCook.success);
     EXPECT_NE(unsupportedRequiredCook.error.find(
                   "cannot satisfy required glTF extension: "
-                  "KHR_materials_transmission"),
+                  "KHR_materials_sheen"),
               std::string::npos)
         << unsupportedRequiredCook.error;
 
@@ -1171,15 +1200,556 @@ TEST(CookedModelProductValidation,
     ASSERT_TRUE(writeVariant(zeroScaleSource, zeroScale));
     const RVX::Resource::GLTFImportResult zeroScaleResult =
         importer.Import(zeroScaleSource.string());
-    ASSERT_TRUE(zeroScaleResult.success) << zeroScaleResult.errorMessage;
-    ASSERT_EQ(zeroScaleResult.materials.size(), 1u);
-    ASSERT_TRUE(zeroScaleResult.materials[0]->GetNormalTexture().has_value());
-    EXPECT_EQ(zeroScaleResult.materials[0]->GetNormalTexture()->scale,
-              RVX::Vec2(0.0f, 1.0f));
+    EXPECT_FALSE(zeroScaleResult.success);
+    EXPECT_NE(zeroScaleResult.errorMessage.find(
+                  "normal texture KHR_texture_transform.scale"),
+              std::string::npos)
+        << zeroScaleResult.errorMessage;
     const RVX::Tools::ImportResult zeroScaleCook = productImporter.Import(
         zeroScaleSource, temporary.Get() / "ZeroScale.rva");
-    EXPECT_TRUE(zeroScaleCook.success) << zeroScaleCook.error;
+    EXPECT_FALSE(zeroScaleCook.success);
+    EXPECT_NE(zeroScaleCook.error.find(
+                  "normal texture KHR_texture_transform.scale"),
+              std::string::npos)
+        << zeroScaleCook.error;
 
+    std::string rotatedNormal = gltf;
+    const size_t normalRotation = rotatedNormal.find("\"rotation\": 0.0");
+    ASSERT_NE(normalRotation, std::string::npos);
+    rotatedNormal.replace(
+        normalRotation,
+        std::string_view("\"rotation\": 0.0").size(),
+        "\"rotation\": 0.25");
+    const fs::path rotatedNormalSource =
+        temporary.Get() / "RotatedNormal.gltf";
+    ASSERT_TRUE(writeVariant(rotatedNormalSource, rotatedNormal));
+    const RVX::Resource::GLTFImportResult rotatedNormalResult =
+        importer.Import(rotatedNormalSource.string());
+    EXPECT_FALSE(rotatedNormalResult.success);
+    EXPECT_NE(rotatedNormalResult.errorMessage.find(
+                  "normal texture KHR_texture_transform.rotation"),
+              std::string::npos)
+        << rotatedNormalResult.errorMessage;
+
+}
+
+TEST(CookedModelProductValidation,
+     GLTFImporterPreservesKhronosPbrExtensionFactors)
+{
+    const fs::path source =
+        fs::path(RVX_SOURCE_DIR) /
+        "Tests/Fixtures/ModelViewer/R7Triangle.gltf";
+    const std::vector<RVX::uint8> sourceBytes = ReadBytes(source);
+    std::string gltf(
+        reinterpret_cast<const char*>(sourceBytes.data()),
+        sourceBytes.size());
+
+    const std::string materialNeedle =
+        "      \"name\": \"R7Red\",\n"
+        "      \"pbrMetallicRoughness\": {";
+    const std::string materialReplacement =
+        "      \"name\": \"R7Red\",\n"
+        "      \"emissiveFactor\": [1.0, 0.5, 0.25],\n"
+        "      \"extensions\": {\n"
+        "        \"KHR_materials_specular\": {\n"
+        "          \"specularFactor\": 0.25,\n"
+        "          \"specularColorFactor\": [1.25, 0.75, 0.5]\n"
+        "        },\n"
+        "        \"KHR_materials_clearcoat\": {\n"
+        "          \"clearcoatFactor\": 0.8,\n"
+        "          \"clearcoatRoughnessFactor\": 0.2\n"
+        "        },\n"
+        "        \"KHR_materials_transmission\": {\n"
+        "          \"transmissionFactor\": 0.6\n"
+        "        },\n"
+        "        \"KHR_materials_volume\": {\n"
+        "          \"thicknessFactor\": 0.35,\n"
+        "          \"attenuationDistance\": 2.5,\n"
+        "          \"attenuationColor\": [0.8, 0.9, 1.0]\n"
+        "        },\n"
+        "        \"KHR_materials_ior\": { \"ior\": 1.33 },\n"
+        "        \"KHR_materials_emissive_strength\": {\n"
+        "          \"emissiveStrength\": 4.0\n"
+        "        }\n"
+        "      },\n"
+        "      \"pbrMetallicRoughness\": {";
+    const size_t materialPosition = gltf.find(materialNeedle);
+    ASSERT_NE(materialPosition, std::string::npos);
+    gltf.replace(
+        materialPosition, materialNeedle.size(), materialReplacement);
+
+    const std::string buffersNeedle = "  \"buffers\": [";
+    const size_t buffersPosition = gltf.find(buffersNeedle);
+    ASSERT_NE(buffersPosition, std::string::npos);
+    gltf.insert(
+        buffersPosition,
+        "  \"extensionsUsed\": [\n"
+        "    \"KHR_materials_specular\",\n"
+        "    \"KHR_materials_clearcoat\",\n"
+        "    \"KHR_materials_transmission\",\n"
+        "    \"KHR_materials_volume\",\n"
+        "    \"KHR_materials_ior\",\n"
+        "    \"KHR_materials_emissive_strength\"\n"
+        "  ],\n"
+        "  \"extensionsRequired\": [\n"
+        "    \"KHR_materials_specular\",\n"
+        "    \"KHR_materials_clearcoat\",\n"
+        "    \"KHR_materials_transmission\",\n"
+        "    \"KHR_materials_volume\",\n"
+        "    \"KHR_materials_ior\",\n"
+        "    \"KHR_materials_emissive_strength\"\n"
+        "  ],\n");
+
+    TemporaryDirectory temporary;
+    const fs::path validPath = temporary.Get() / "PbrExtensions.gltf";
+    {
+        std::ofstream output(validPath, std::ios::binary);
+        output.write(gltf.data(), static_cast<std::streamsize>(gltf.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    RVX::Resource::GLTFImporter importer;
+    const RVX::Resource::GLTFImportResult imported =
+        importer.Import(validPath.string());
+    ASSERT_TRUE(imported.success) << imported.errorMessage;
+    ASSERT_EQ(imported.materials.size(), 1u);
+    ASSERT_NE(imported.materials[0], nullptr);
+    const RVX::Material& material = *imported.materials[0];
+    EXPECT_FLOAT_EQ(material.GetSpecularFactor(), 0.25f);
+    EXPECT_EQ(material.GetSpecularColor(), RVX::Vec3(1.25f, 0.75f, 0.5f));
+    EXPECT_FLOAT_EQ(material.GetClearcoatFactor(), 0.8f);
+    EXPECT_FLOAT_EQ(material.GetClearcoatRoughness(), 0.2f);
+    EXPECT_FLOAT_EQ(material.GetTransmissionFactor(), 0.6f);
+    EXPECT_FLOAT_EQ(material.GetThicknessFactor(), 0.35f);
+    EXPECT_FLOAT_EQ(material.GetAttenuationDistance(), 2.5f);
+    EXPECT_EQ(material.GetAttenuationColor(), RVX::Vec3(0.8f, 0.9f, 1.0f));
+    EXPECT_FLOAT_EQ(material.GetIndexOfRefraction(), 1.33f);
+    EXPECT_FLOAT_EQ(material.GetEmissiveStrength(), 4.0f);
+
+    const fs::path cookedPath = temporary.Get() / "PbrExtensions.rva";
+    RVX::Tools::ModelImporter productImporter;
+    const RVX::Tools::ImportResult cooked =
+        productImporter.Import(validPath, cookedPath);
+    ASSERT_TRUE(cooked.success) << cooked.error;
+    RVX::Resource::CookedModelArtifact cookedModel;
+    std::string cookedError;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        ReadBytes(cookedPath), cookedModel, cookedError))
+        << cookedError;
+    ASSERT_EQ(cookedModel.materialArtifacts.size(), 1u);
+    const fs::path cookedMaterialPath =
+        cookedPath.parent_path() /
+        cookedModel.materialArtifacts.front().packageRelativePath;
+    const std::vector<RVX::uint8> cookedMaterialBytes =
+        ReadBytes(cookedMaterialPath);
+    ASSERT_FALSE(cookedMaterialBytes.empty());
+    EXPECT_TRUE(ReadPrefix(cookedMaterialPath, 64).starts_with(
+        RVX::Resource::RVX_MATERIAL_ARTIFACT_MAGIC));
+    RVX::Resource::CookedMaterialArtifact cookedMaterial;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        cookedMaterialBytes, cookedMaterial, cookedError))
+        << cookedError;
+    EXPECT_EQ(cookedMaterial.material.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ThinTransmission);
+    EXPECT_EQ(cookedMaterial.material.descriptor.blendMode,
+              RVX::MaterialBlendMode::AlphaBlend);
+    EXPECT_FLOAT_EQ(cookedMaterial.material.parameters.specularFactor, 0.25f);
+    EXPECT_EQ(cookedMaterial.material.parameters.specularColor,
+              RVX::Vec3(1.25f, 0.75f, 0.5f));
+    EXPECT_FLOAT_EQ(
+        cookedMaterial.material.parameters.clearcoatFactor, 0.8f);
+    EXPECT_FLOAT_EQ(
+        cookedMaterial.material.parameters.clearcoatRoughness, 0.2f);
+    EXPECT_FLOAT_EQ(cookedMaterial.material.parameters.transmission, 0.6f);
+    EXPECT_FLOAT_EQ(cookedMaterial.material.parameters.thickness, 0.35f);
+    EXPECT_FLOAT_EQ(
+        cookedMaterial.material.parameters.attenuationDistance, 2.5f);
+    EXPECT_FLOAT_EQ(
+        cookedMaterial.material.parameters.indexOfRefraction, 1.33f);
+    EXPECT_FLOAT_EQ(
+        cookedMaterial.material.parameters.emissiveStrength, 4.0f);
+    const RVX::uint64 extensionFeatures =
+        RVX::RVX_MATERIAL_FEATURE_SPECULAR |
+        RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+        RVX::RVX_MATERIAL_FEATURE_TRANSMISSION |
+        RVX::RVX_MATERIAL_FEATURE_VOLUME |
+        RVX::RVX_MATERIAL_FEATURE_IOR;
+    EXPECT_EQ(cookedMaterial.material.descriptor.featureMask &
+                  extensionFeatures,
+              extensionFeatures);
+    EXPECT_EQ(
+        cookedMaterial.permutation,
+        RVX::Resource::GetCookedMaterialPermutation(
+            cookedMaterial.material.descriptor));
+
+    const fs::path toonCookedPath =
+        temporary.Get() / "PbrExtensionsToon.rva";
+    RVX::Tools::ModelImportOptions toonOptions;
+    toonOptions.overrideAllMaterialsToToonLit = true;
+    const RVX::Tools::ImportResult toonCooked =
+        productImporter.Import(validPath, toonCookedPath, &toonOptions);
+    ASSERT_TRUE(toonCooked.success) << toonCooked.error;
+    const auto toonReplacementWarning = std::find_if(
+        toonCooked.warnings.begin(),
+        toonCooked.warnings.end(),
+        [](const std::string& warning)
+        {
+            return warning.find("explicit ToonLit cook profile replaces") !=
+                       std::string::npos &&
+                   warning.find("KHR_materials_specular") !=
+                       std::string::npos &&
+                   warning.find("KHR_materials_clearcoat") !=
+                       std::string::npos &&
+                   warning.find("KHR_materials_transmission") !=
+                       std::string::npos &&
+                   warning.find("KHR_materials_volume") !=
+                       std::string::npos &&
+                   warning.find("KHR_materials_ior") !=
+                       std::string::npos;
+        });
+    EXPECT_NE(toonReplacementWarning, toonCooked.warnings.end());
+
+    RVX::Resource::CookedModelArtifact toonCookedModel;
+    cookedError.clear();
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        ReadBytes(toonCookedPath), toonCookedModel, cookedError))
+        << cookedError;
+    ASSERT_EQ(toonCookedModel.materialArtifacts.size(), 1u);
+    const fs::path toonCookedMaterialPath =
+        toonCookedPath.parent_path() /
+        toonCookedModel.materialArtifacts.front().packageRelativePath;
+    RVX::Resource::CookedMaterialArtifact toonCookedMaterial;
+    cookedError.clear();
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        ReadBytes(toonCookedMaterialPath), toonCookedMaterial, cookedError))
+        << cookedError;
+    const RVX::MaterialDefinition& toonMaterial = toonCookedMaterial.material;
+    EXPECT_EQ(toonMaterial.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ToonLit);
+    EXPECT_EQ(toonMaterial.descriptor.featureMask & extensionFeatures, 0u);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.specularFactor, 1.0f);
+    EXPECT_EQ(toonMaterial.parameters.specularColor,
+              RVX::Vec3(1.0f, 1.0f, 1.0f));
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.clearcoatFactor, 0.0f);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.clearcoatRoughness, 0.0f);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.clearcoatNormalScale, 1.0f);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.transmission, 0.0f);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.indexOfRefraction, 1.5f);
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.thickness, 0.0f);
+    EXPECT_EQ(toonMaterial.parameters.attenuationColor,
+              RVX::Vec3(1.0f, 1.0f, 1.0f));
+    EXPECT_FLOAT_EQ(toonMaterial.parameters.attenuationDistance, 0.0f);
+
+    std::string invalidIor = gltf;
+    const size_t ior = invalidIor.find("\"ior\": 1.33");
+    ASSERT_NE(ior, std::string::npos);
+    invalidIor.replace(
+        ior,
+        std::string_view("\"ior\": 1.33").size(),
+        "\"ior\": 0.5");
+    const fs::path invalidPath = temporary.Get() / "InvalidIor.gltf";
+    {
+        std::ofstream output(invalidPath, std::ios::binary);
+        output.write(
+            invalidIor.data(),
+            static_cast<std::streamsize>(invalidIor.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult rejected =
+        importer.Import(invalidPath.string());
+    EXPECT_FALSE(rejected.success);
+    EXPECT_NE(rejected.errorMessage.find("KHR_materials_ior.ior"),
+              std::string::npos)
+        << rejected.errorMessage;
+}
+
+TEST(CookedModelProductValidation,
+     ModelCookPreservesActiveMaterialV2ExtensionTextureBindings)
+{
+    const fs::path baseSource =
+        fs::path(RVX_SOURCE_DIR) /
+        "Tests/Fixtures/ModelViewer/R7Triangle.gltf";
+    const std::vector<RVX::uint8> baseBytes = ReadBytes(baseSource);
+    std::string gltf(
+        reinterpret_cast<const char*>(baseBytes.data()), baseBytes.size());
+    const size_t materialsStart = gltf.find("  \"materials\": ");
+    const size_t buffersStart = gltf.find("  \"buffers\": ");
+    ASSERT_NE(materialsStart, std::string::npos);
+    ASSERT_NE(buffersStart, std::string::npos);
+    ASSERT_LT(materialsStart, buffersStart);
+
+    constexpr std::string_view extensionMaterialAndTextures = R"json(  "materials": [
+    {
+      "name": "ExtensionTextureMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.8, 0.25, 0.15, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.8
+      },
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.5,
+          "specularTexture": {
+            "index": 0,
+            "texCoord": 0,
+            "extensions": {
+              "KHR_texture_transform": {
+                "offset": [0.125, -0.25],
+                "scale": [1.5, 0.75],
+                "rotation": 0.0,
+                "texCoord": 0
+              }
+            }
+          },
+          "specularColorTexture": { "index": 1, "texCoord": 0 }
+        },
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.3,
+          "clearcoatTexture": { "index": 2, "texCoord": 0 },
+          "clearcoatRoughnessTexture": { "index": 3, "texCoord": 0 },
+          "clearcoatNormalTexture": { "index": 4, "texCoord": 0 }
+        },
+        "KHR_materials_transmission": {
+          "transmissionFactor": 0.6,
+          "transmissionTexture": { "index": 5, "texCoord": 0 }
+        },
+        "KHR_materials_volume": {
+          "thicknessFactor": 0.2,
+          "attenuationColor": [0.8, 0.9, 1.0],
+          "attenuationDistance": 2.0,
+          "thicknessTexture": { "index": 6, "texCoord": 0 }
+        }
+      }
+    }
+  ],
+  "samplers": [{
+    "magFilter": 9728,
+    "minFilter": 9985,
+    "wrapS": 33071,
+    "wrapT": 33648
+  }],
+  "textures": [
+    { "source": 0, "sampler": 0 },
+    { "source": 1, "sampler": 0 },
+    { "source": 2, "sampler": 0 },
+    { "source": 3, "sampler": 0 },
+    { "source": 4, "sampler": 0 },
+    { "source": 5, "sampler": 0 },
+    { "source": 6, "sampler": 0 }
+  ],
+  "images": [
+    { "name": "SpecularData", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "SpecularColor", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "Clearcoat", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "ClearcoatRoughness", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "ClearcoatNormal", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "Transmission", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" },
+    { "name": "Thickness", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=" }
+  ],
+  "extensionsUsed": [
+    "KHR_texture_transform",
+    "KHR_materials_specular",
+    "KHR_materials_clearcoat",
+    "KHR_materials_transmission",
+    "KHR_materials_volume"
+  ],
+  "extensionsRequired": [
+    "KHR_texture_transform",
+    "KHR_materials_specular",
+    "KHR_materials_clearcoat",
+    "KHR_materials_transmission",
+    "KHR_materials_volume"
+  ],
+)json";
+    gltf.replace(
+        materialsStart,
+        buffersStart - materialsStart,
+        extensionMaterialAndTextures);
+
+    TemporaryDirectory temporary;
+    const fs::path sourcePath = temporary.Get() / "ExtensionTextures.gltf";
+    {
+        std::ofstream output(sourcePath, std::ios::binary);
+        output.write(gltf.data(), static_cast<std::streamsize>(gltf.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    const auto cookAndReadMaterial = [&temporary, &sourcePath](
+                                         std::string_view directoryName,
+                                         RVX::Resource::CookedMaterialArtifact& outMaterial,
+                                         std::vector<RVX::uint8>& outModelBytes)
+    {
+        const fs::path outputDirectory = temporary.Get() / directoryName;
+        fs::create_directories(outputDirectory);
+        const fs::path outputPath = outputDirectory / "ExtensionTextures.rva";
+        RVX::Tools::ModelImporter importer;
+        const RVX::Tools::ImportResult cooked =
+            importer.Import(sourcePath, outputPath);
+        EXPECT_TRUE(cooked.success) << cooked.error;
+        if (!cooked.success)
+            return fs::path{};
+        std::string error;
+        RVX::Resource::CookedModelArtifact model;
+        outModelBytes = ReadBytes(outputPath);
+        EXPECT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+            outModelBytes, model, error)) << error;
+        if (model.materialArtifacts.size() != 1u)
+            return fs::path{};
+        const fs::path materialPath =
+            outputPath.parent_path() /
+            model.materialArtifacts.front().packageRelativePath;
+        error.clear();
+        EXPECT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+            ReadBytes(materialPath), outMaterial, error)) << error;
+        return materialPath;
+    };
+
+    RVX::Resource::CookedMaterialArtifact firstMaterial;
+    std::vector<RVX::uint8> firstModelBytes;
+    const fs::path firstMaterialPath =
+        cookAndReadMaterial("First", firstMaterial, firstModelBytes);
+    ASSERT_FALSE(firstMaterialPath.empty());
+    ASSERT_EQ(firstMaterial.textureBindings.size(), 7u);
+    const RVX::uint64 requiredFeatures =
+        RVX::RVX_MATERIAL_FEATURE_SPECULAR |
+        RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+        RVX::RVX_MATERIAL_FEATURE_TRANSMISSION |
+        RVX::RVX_MATERIAL_FEATURE_VOLUME;
+    EXPECT_EQ(firstMaterial.material.descriptor.featureMask & requiredFeatures,
+              requiredFeatures);
+
+    struct ExpectedBinding
+    {
+        RVX::MaterialTextureSlot slot;
+        RVX::Resource::TextureUsage usage;
+        bool isSRGB;
+        RVX::Resource::TextureFallbackSemantic fallback;
+    };
+    const std::array<ExpectedBinding, 7> expectedBindings{{
+        {RVX::MaterialTextureSlot::Specular, RVX::Resource::TextureUsage::Data,
+         false, RVX::Resource::TextureFallbackSemantic::White},
+        {RVX::MaterialTextureSlot::SpecularColor, RVX::Resource::TextureUsage::Color,
+         true, RVX::Resource::TextureFallbackSemantic::White},
+        {RVX::MaterialTextureSlot::Clearcoat, RVX::Resource::TextureUsage::Data,
+         false, RVX::Resource::TextureFallbackSemantic::White},
+        {RVX::MaterialTextureSlot::ClearcoatRoughness, RVX::Resource::TextureUsage::Data,
+         false, RVX::Resource::TextureFallbackSemantic::White},
+        {RVX::MaterialTextureSlot::ClearcoatNormal, RVX::Resource::TextureUsage::Normal,
+         false, RVX::Resource::TextureFallbackSemantic::FlatNormal},
+        {RVX::MaterialTextureSlot::Transmission, RVX::Resource::TextureUsage::Data,
+         false, RVX::Resource::TextureFallbackSemantic::White},
+        {RVX::MaterialTextureSlot::Thickness, RVX::Resource::TextureUsage::Data,
+         false, RVX::Resource::TextureFallbackSemantic::White},
+    }};
+    for (const ExpectedBinding& expected : expectedBindings)
+    {
+        const auto binding = std::find_if(
+            firstMaterial.textureBindings.begin(),
+            firstMaterial.textureBindings.end(),
+            [&expected](const RVX::Resource::CookedMaterialTextureBinding& value)
+            {
+                return value.definition.slot == expected.slot;
+            });
+        ASSERT_NE(binding, firstMaterial.textureBindings.end());
+        EXPECT_EQ(binding->usage, expected.usage);
+        EXPECT_EQ(binding->isSRGB, expected.isSRGB);
+        EXPECT_EQ(binding->fallbackSemantic, expected.fallback);
+        EXPECT_NE(binding->expectedContentHash, RVX::Hash::SHA256Digest{});
+        const fs::path texturePath =
+            firstMaterialPath.parent_path() / binding->artifactPath;
+        const std::vector<RVX::uint8> textureBytes = ReadBytes(texturePath);
+        ASSERT_FALSE(textureBytes.empty()) << texturePath;
+        EXPECT_EQ(RVX::Hash::ComputeSHA256(
+                      textureBytes.data(), textureBytes.size()),
+                  binding->expectedContentHash);
+        EXPECT_NE(ReadPrefix(texturePath).find("RVX_TEXTURE_PREBAKE_V1"),
+                  std::string::npos);
+    }
+    const auto specularBinding = std::find_if(
+        firstMaterial.textureBindings.begin(),
+        firstMaterial.textureBindings.end(),
+        [](const RVX::Resource::CookedMaterialTextureBinding& binding)
+        {
+            return binding.definition.slot == RVX::MaterialTextureSlot::Specular;
+        });
+    ASSERT_NE(specularBinding, firstMaterial.textureBindings.end());
+    EXPECT_EQ(specularBinding->definition.uvSet, 0u);
+    EXPECT_EQ(specularBinding->definition.offset,
+              RVX::Vec2(0.125f, -0.25f));
+    EXPECT_EQ(specularBinding->definition.scale, RVX::Vec2(1.5f, 0.75f));
+    EXPECT_FLOAT_EQ(specularBinding->definition.rotation, 0.0f);
+    EXPECT_EQ(specularBinding->definition.wrapS,
+              RVX::MaterialSamplerWrap::ClampToEdge);
+    EXPECT_EQ(specularBinding->definition.wrapT,
+              RVX::MaterialSamplerWrap::MirrorRepeat);
+    EXPECT_EQ(specularBinding->definition.minFilter,
+              RVX::MaterialSamplerFilter::LinearMipmapNearest);
+    EXPECT_EQ(specularBinding->definition.magFilter,
+              RVX::MaterialSamplerFilter::Nearest);
+
+    RVX::Resource::CookedMaterialArtifact secondMaterial;
+    std::vector<RVX::uint8> secondModelBytes;
+    const fs::path secondMaterialPath =
+        cookAndReadMaterial("Second", secondMaterial, secondModelBytes);
+    ASSERT_FALSE(secondMaterialPath.empty());
+    EXPECT_EQ(firstModelBytes, secondModelBytes);
+    EXPECT_EQ(ReadBytes(firstMaterialPath), ReadBytes(secondMaterialPath));
+
+    std::string inactive = gltf;
+    const size_t clearcoatFactor = inactive.find("\"clearcoatFactor\": 0.8");
+    ASSERT_NE(clearcoatFactor, std::string::npos);
+    inactive.replace(clearcoatFactor,
+                     std::string_view("\"clearcoatFactor\": 0.8").size(),
+                     "\"clearcoatFactor\": 0.0");
+    const size_t transmissionFactor =
+        inactive.find("\"transmissionFactor\": 0.6");
+    ASSERT_NE(transmissionFactor, std::string::npos);
+    inactive.replace(transmissionFactor,
+                     std::string_view("\"transmissionFactor\": 0.6").size(),
+                     "\"transmissionFactor\": 0.0");
+    const fs::path inactiveSource = temporary.Get() / "InactiveExtensions.gltf";
+    {
+        std::ofstream output(inactiveSource, std::ios::binary);
+        output.write(inactive.data(), static_cast<std::streamsize>(inactive.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const fs::path inactiveOutput = temporary.Get() / "InactiveExtensions.rva";
+    RVX::Tools::ModelImporter inactiveImporter;
+    const RVX::Tools::ImportResult inactiveCook =
+        inactiveImporter.Import(inactiveSource, inactiveOutput);
+    ASSERT_TRUE(inactiveCook.success) << inactiveCook.error;
+    RVX::Resource::CookedModelArtifact inactiveModel;
+    std::string inactiveError;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        ReadBytes(inactiveOutput), inactiveModel, inactiveError)) << inactiveError;
+    ASSERT_EQ(inactiveModel.materialArtifacts.size(), 1u);
+    RVX::Resource::CookedMaterialArtifact inactiveMaterial;
+    const fs::path inactiveMaterialPath =
+        inactiveOutput.parent_path() /
+        inactiveModel.materialArtifacts.front().packageRelativePath;
+    inactiveError.clear();
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        ReadBytes(inactiveMaterialPath), inactiveMaterial, inactiveError))
+        << inactiveError;
+    const RVX::uint64 inactiveFeatures =
+        RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+        RVX::RVX_MATERIAL_FEATURE_TRANSMISSION |
+        RVX::RVX_MATERIAL_FEATURE_VOLUME;
+    EXPECT_EQ(inactiveMaterial.material.descriptor.featureMask & inactiveFeatures,
+              0u);
+    for (const RVX::Resource::CookedMaterialTextureBinding& binding :
+         inactiveMaterial.textureBindings)
+    {
+        EXPECT_NE(binding.definition.slot, RVX::MaterialTextureSlot::Clearcoat);
+        EXPECT_NE(binding.definition.slot,
+                  RVX::MaterialTextureSlot::ClearcoatRoughness);
+        EXPECT_NE(binding.definition.slot,
+                  RVX::MaterialTextureSlot::ClearcoatNormal);
+        EXPECT_NE(binding.definition.slot,
+                  RVX::MaterialTextureSlot::Transmission);
+        EXPECT_NE(binding.definition.slot, RVX::MaterialTextureSlot::Thickness);
+    }
 }
 
 TEST(CookedModelProductValidation,
@@ -1253,8 +1823,8 @@ TEST(CookedModelProductValidation,
         "KHR_texture_transform": {
           "texCoord": 1,
           "offset": [0.125, 0.25],
-          "rotation": 0.25,
-          "scale": [1.5, -0.75]
+          "rotation": 0.0,
+          "scale": [1.5, 0.75]
         }
       }
     }
@@ -1301,6 +1871,29 @@ TEST(CookedModelProductValidation,
         EXPECT_NEAR(values[2], 0.0f, 1.0e-5f);
         EXPECT_NEAR(values[3], -1.0f, 1.0e-5f);
     };
+    const auto expectFiniteDegenerateFallback = [](const RVX::Mesh& mesh)
+    {
+        const RVX::VertexAttribute* tangent =
+            mesh.GetAttribute(RVX::VertexBufferNames::Tangent);
+        ASSERT_NE(tangent, nullptr);
+        ASSERT_EQ(tangent->GetVertexCount(), 3u);
+        const auto* values = static_cast<const float*>(tangent->GetData());
+        ASSERT_NE(values, nullptr);
+        for (size_t vertex = 0; vertex < tangent->GetVertexCount(); ++vertex)
+        {
+            const size_t offset = vertex * 4u;
+            const float lengthSquared =
+                values[offset] * values[offset] +
+                values[offset + 1u] * values[offset + 1u] +
+                values[offset + 2u] * values[offset + 2u];
+            EXPECT_TRUE(std::isfinite(lengthSquared));
+            EXPECT_NEAR(lengthSquared, 1.0f, 1.0e-5f);
+            // The fixture normal is +Z, so a valid fallback remains in its
+            // tangent plane even when UV derivatives are unavailable.
+            EXPECT_NEAR(values[offset + 2u], 0.0f, 1.0e-5f);
+            EXPECT_NEAR(std::abs(values[offset + 3u]), 1.0f, 1.0e-5f);
+        }
+    };
 
     RVX::Resource::GLTFImporter importer;
     const RVX::Resource::GLTFImportResult imported =
@@ -1309,6 +1902,100 @@ TEST(CookedModelProductValidation,
     ASSERT_EQ(imported.meshes.size(), 1u);
     ASSERT_NE(imported.meshes[0], nullptr);
     expectUV1Tangent(*imported.meshes[0]);
+
+    std::string rotatedNormalSource{source};
+    const size_t normalRotation =
+        rotatedNormalSource.find("\"rotation\": 0.0");
+    ASSERT_NE(normalRotation, std::string::npos);
+    rotatedNormalSource.replace(
+        normalRotation,
+        std::string_view("\"rotation\": 0.0").size(),
+        "\"rotation\": 0.25");
+    const fs::path rotatedNormalPath =
+        temporary.Get() / "RotatedNormal.gltf";
+    {
+        std::ofstream output(rotatedNormalPath, std::ios::binary);
+        output.write(
+            rotatedNormalSource.data(),
+            static_cast<std::streamsize>(rotatedNormalSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult rotatedNormalRejected =
+        importer.Import(rotatedNormalPath.string());
+    EXPECT_FALSE(rotatedNormalRejected.success);
+    EXPECT_NE(rotatedNormalRejected.errorMessage.find(
+                  "normal texture KHR_texture_transform.rotation"),
+              std::string::npos)
+        << rotatedNormalRejected.errorMessage;
+
+    std::string mirroredNormalSource{source};
+    const size_t normalScale =
+        mirroredNormalSource.find("\"scale\": [1.5, 0.75]");
+    ASSERT_NE(normalScale, std::string::npos);
+    mirroredNormalSource.replace(
+        normalScale,
+        std::string_view("\"scale\": [1.5, 0.75]").size(),
+        "\"scale\": [1.5, -0.75]");
+    const fs::path mirroredNormalPath =
+        temporary.Get() / "MirroredNormal.gltf";
+    {
+        std::ofstream output(mirroredNormalPath, std::ios::binary);
+        output.write(
+            mirroredNormalSource.data(),
+            static_cast<std::streamsize>(mirroredNormalSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult mirroredNormalRejected =
+        importer.Import(mirroredNormalPath.string());
+    EXPECT_FALSE(mirroredNormalRejected.success);
+    EXPECT_NE(mirroredNormalRejected.errorMessage.find(
+                  "normal texture KHR_texture_transform.scale"),
+              std::string::npos)
+        << mirroredNormalRejected.errorMessage;
+
+    std::string rotatedClearcoatNormalSource{source};
+    const std::string materialTail = "    }\n  }],\n  \"textures\"";
+    const size_t materialTailPosition =
+        rotatedClearcoatNormalSource.find(materialTail);
+    ASSERT_NE(materialTailPosition, std::string::npos);
+    rotatedClearcoatNormalSource.replace(
+        materialTailPosition,
+        materialTail.size(),
+        "    },\n"
+        "    \"extensions\": {\n"
+        "      \"KHR_materials_clearcoat\": {\n"
+        "        \"clearcoatNormalTexture\": {\n"
+        "          \"index\": 0,\n"
+        "          \"texCoord\": 1,\n"
+        "          \"extensions\": {\n"
+        "            \"KHR_texture_transform\": {\n"
+        "              \"rotation\": 0.25,\n"
+        "              \"scale\": [1.0, 1.0]\n"
+        "            }\n"
+        "          }\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }],\n"
+        "  \"textures\"");
+    const fs::path rotatedClearcoatNormalPath =
+        temporary.Get() / "RotatedClearcoatNormal.gltf";
+    {
+        std::ofstream output(rotatedClearcoatNormalPath, std::ios::binary);
+        output.write(
+            rotatedClearcoatNormalSource.data(),
+            static_cast<std::streamsize>(
+                rotatedClearcoatNormalSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult rotatedClearcoatNormalRejected =
+        importer.Import(rotatedClearcoatNormalPath.string());
+    EXPECT_FALSE(rotatedClearcoatNormalRejected.success);
+    EXPECT_NE(rotatedClearcoatNormalRejected.errorMessage.find(
+                  "KHR_materials_clearcoat.clearcoatNormalTexture "
+                  "KHR_texture_transform.rotation"),
+              std::string::npos)
+        << rotatedClearcoatNormalRejected.errorMessage;
 
     std::vector<RVX::uint8> degenerateUvGeometry = geometry;
     ASSERT_GE(degenerateUvGeometry.size(), 120u);
@@ -1343,13 +2030,44 @@ TEST(CookedModelProductValidation,
             static_cast<std::streamsize>(degenerateNormalMappedSource.size()));
         ASSERT_TRUE(output.good());
     }
-    const RVX::Resource::GLTFImportResult degenerateNormalMappedRejected =
+    const RVX::Resource::GLTFImportResult degenerateNormalMappedImported =
         importer.Import(degenerateNormalMappedPath.string());
-    EXPECT_FALSE(degenerateNormalMappedRejected.success);
-    EXPECT_NE(degenerateNormalMappedRejected.errorMessage.find(
-                  "Failed to generate a tangent basis from uv1"),
-              std::string::npos)
-        << degenerateNormalMappedRejected.errorMessage;
+    ASSERT_TRUE(degenerateNormalMappedImported.success)
+        << degenerateNormalMappedImported.errorMessage;
+    ASSERT_EQ(degenerateNormalMappedImported.meshes.size(), 1u);
+    ASSERT_NE(degenerateNormalMappedImported.meshes[0], nullptr);
+    expectFiniteDegenerateFallback(*degenerateNormalMappedImported.meshes[0]);
+    const auto fallbackWarning = std::find_if(
+        degenerateNormalMappedImported.warnings.begin(),
+        degenerateNormalMappedImported.warnings.end(),
+        [](const std::string& warning)
+        {
+            return warning.find("glTF tangent fallback: mesh=") !=
+                       std::string::npos &&
+                   warning.find("primitive=0") != std::string::npos &&
+                   warning.find("degenerateGeometryTriangles=0") !=
+                       std::string::npos &&
+                   warning.find("degenerateUVTriangles=1") !=
+                       std::string::npos;
+        });
+    EXPECT_NE(fallbackWarning, degenerateNormalMappedImported.warnings.end());
+
+    const fs::path fallbackCookedPath =
+        temporary.Get() / "DegenerateNormalMapped.rva";
+    RVX::Tools::ModelImporter fallbackProductImporter;
+    const RVX::Tools::ImportResult fallbackCooked =
+        fallbackProductImporter.Import(
+            degenerateNormalMappedPath, fallbackCookedPath);
+    ASSERT_TRUE(fallbackCooked.success) << fallbackCooked.error;
+    EXPECT_NE(std::find_if(
+                  fallbackCooked.warnings.begin(),
+                  fallbackCooked.warnings.end(),
+                  [](const std::string& warning)
+                  {
+                      return warning.find("glTF tangent fallback: mesh=") !=
+                             std::string::npos;
+                  }),
+              fallbackCooked.warnings.end());
 
     std::string degenerateCorePbrSource = degenerateNormalMappedSource;
     const size_t degenerateMaterialStart =

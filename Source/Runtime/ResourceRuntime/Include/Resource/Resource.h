@@ -16,7 +16,7 @@
  * 
  * Runtime cooked formats:
  * - Models: .rva Model Artifact V3 plus contained mesh/material products
- * - Materials: .rvmat CookedMaterial Artifact V1
+ * - Materials: .rvmat CookedMaterial Artifact V2
  * - Textures: .rva cooked texture products
  * - Audio: cooked audio products
  *

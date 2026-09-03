@@ -1264,6 +1264,11 @@ namespace
         thin.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
         thin.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
         thin.parameters.transmission = 1.0f;
+        // The immutable V2 descriptor owns the feature identity. Keep this
+        // focused policy fixture internally coherent rather than relying on a
+        // legacy runtime repair of the transmission bit.
+        thin.descriptor.featureMask = GetMaterialFeatureMaskV2(
+            thin.parameters, thin.textureSlots);
         const RenderResourceHandle thinHandle = uploadDefinition(
             9102, "DeferredThinTransmissionMaterial", thin);
         ASSERT_TRUE(thinHandle.IsValid());
@@ -1617,7 +1622,7 @@ namespace
 
         const MaterialGPUConstants constants =
             MaterialBinder::ConvertToGPU(source, bindings);
-        static_assert(sizeof(MaterialGPUConstants) == 400);
+        static_assert(sizeof(MaterialGPUConstants) == 592);
         ASSERT_EQ(RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT,
                   constants.uvTransforms.size());
         EXPECT_FLOAT_EQ(2.0f, constants.uvTransforms[0].scaleOffset.x);
@@ -1634,6 +1639,117 @@ namespace
                         constants.uvTransforms[1].rotationUVSet.z);
         EXPECT_FLOAT_EQ(1.0f, constants.uvTransforms[4].scaleOffset.x);
         EXPECT_FLOAT_EQ(0.0f, constants.uvTransforms[4].rotationUVSet.z);
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialGPUEncodingPacksV2SpecularClearcoatParametersAndExtensionTransforms)
+    {
+        MaterialStaticDescriptor descriptor;
+        MaterialSourceData source;
+        source.specularFactor = 0.65f;
+        source.specularColor = {0.2f, 0.4f, 0.8f};
+        source.clearcoatFactor = 0.75f;
+        source.clearcoatRoughness = 0.3f;
+        source.clearcoatNormalScale = 0.5f;
+        source.textureFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasSpecular) |
+            static_cast<uint32>(MaterialTextureFlags::HasSpecularColor) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoat) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoatRoughness) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoatNormal);
+
+        std::array<MaterialUploadTextureBinding, 5> bindings{};
+        const std::array slots = {
+            MaterialUploadTextureSlot::Specular,
+            MaterialUploadTextureSlot::SpecularColor,
+            MaterialUploadTextureSlot::Clearcoat,
+            MaterialUploadTextureSlot::ClearcoatRoughness,
+            MaterialUploadTextureSlot::ClearcoatNormal};
+        for (uint32 index = 0; index < slots.size(); ++index)
+        {
+            bindings[index].slot = slots[index];
+            bindings[index].uvSet = static_cast<int32>(index % 2u);
+            bindings[index].offset = {
+                static_cast<float32>(index) * 0.1f,
+                static_cast<float32>(index) * 0.2f};
+        }
+
+        const MaterialGPUConstants constants = EncodeMaterialGPUConstants(
+            descriptor, source, bindings, 11u);
+        EXPECT_EQ(constants.specularColorFactor,
+                  (Vec4{0.2f, 0.4f, 0.8f, 0.65f}));
+        EXPECT_EQ(constants.clearcoatParams,
+                  (Vec4{0.75f, 0.3f, 0.5f, 0.0f}));
+        EXPECT_EQ(constants.textureFlags, source.textureFlags);
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::SpecularColor)]
+                      .rotationUVSet.z,
+                  1.0f);
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::ClearcoatNormal)]
+                      .scaleOffset.z,
+                  0.4f);
+        EXPECT_EQ(constants.uvTransforms.size(), 13u);
+    }
+
+    TEST(MaterialSystemValidation,
+         KhronosSpecularIorAndClearcoatReferencePreservesEnergyContracts)
+    {
+        const auto f0FromIor = [](float ior)
+        {
+            const float ratio = (ior - 1.0f) / (ior + 1.0f);
+            return ratio * ratio;
+        };
+        const auto dielectricF0 = [&f0FromIor](
+                                      float ior,
+                                      float color,
+                                      float specularFactor)
+        {
+            return std::min(
+                       f0FromIor(std::max(ior, 1.0f)) *
+                           std::max(color, 0.0f),
+                       1.0f) *
+                std::clamp(specularFactor, 0.0f, 1.0f);
+        };
+        const auto fresnel = [](float f0, float f90, float cosine)
+        {
+            const float oneMinusCosine = 1.0f - std::clamp(cosine, 0.0f, 1.0f);
+            return f0 + (f90 - f0) *
+                oneMinusCosine * oneMinusCosine * oneMinusCosine *
+                oneMinusCosine * oneMinusCosine;
+        };
+
+        EXPECT_FLOAT_EQ(dielectricF0(1.0f, 1.0f, 1.0f), 0.0f);
+        EXPECT_NEAR(dielectricF0(1.5f, 1.0f, 1.0f), 0.04f, 0.00001f);
+        EXPECT_NEAR(dielectricF0(2.42f, 1.0f, 1.0f), 0.1723f, 0.0002f);
+        // Color is not clamped before IOR multiplication: a high authored
+        // color may reach F0=1, after which the scalar factor applies.
+        EXPECT_FLOAT_EQ(dielectricF0(2.42f, 10.0f, 0.5f), 0.5f);
+
+        const float zeroSpecularF0 = dielectricF0(1.5f, 1.0f, 0.0f);
+        EXPECT_FLOAT_EQ(zeroSpecularF0, 0.0f);
+        EXPECT_FLOAT_EQ(fresnel(zeroSpecularF0, 0.0f, 0.0f), 0.0f);
+        EXPECT_FLOAT_EQ(1.0f - fresnel(zeroSpecularF0, 0.0f, 0.5f), 1.0f);
+        const float coloredTransmissionFresnel = fresnel(
+            dielectricF0(1.5f, 0.25f, 1.0f), 1.0f, 0.5f);
+        EXPECT_LT(coloredTransmissionFresnel, 1.0f);
+        EXPECT_GT(1.0f - coloredTransmissionFresnel, 0.0f);
+
+        const float metallic = 1.0f;
+        const float metalF0 = metallic * 0.8f + (1.0f - metallic) *
+            dielectricF0(1.5f, 0.1f, 0.0f);
+        const float metalF90 = metallic * 1.0f + (1.0f - metallic) * 0.0f;
+        EXPECT_FLOAT_EQ(metalF0, 0.8f);
+        EXPECT_FLOAT_EQ(metalF90, 1.0f);
+
+        const float clearcoatFactor = 0.0f;
+        const float clearcoatFresnel = fresnel(
+            0.04f * clearcoatFactor, clearcoatFactor, 0.2f);
+        EXPECT_FLOAT_EQ(clearcoatFresnel, 0.0f);
+        EXPECT_FLOAT_EQ(1.0f - clearcoatFresnel, 1.0f);
+        const float boundedLayerEnergy =
+            (1.0f - clearcoatFresnel) + clearcoatFresnel;
+        EXPECT_LE(boundedLayerEnergy, 1.0f);
     }
 
     TEST(MaterialSystemValidation,
@@ -1922,26 +2038,32 @@ namespace
         auto* defaultSet = static_cast<FakeDescriptorSet*>(
             materialSystem.GetDefaultMaterialSet());
         ASSERT_NE(nullptr, defaultSet);
-        ASSERT_EQ(18u, defaultSet->bindings.size());
+        ASSERT_EQ(1u + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2 + 1u,
+                  defaultSet->bindings.size());
 
         const RHIDescriptorBinding* constants = defaultSet->FindBinding(0);
         ASSERT_NE(nullptr, constants);
         EXPECT_NE(nullptr, constants->buffer);
-        for (uint32 binding = 1; binding <= 8; ++binding)
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
         {
             const RHIDescriptorBinding* texture = defaultSet->FindBinding(binding);
             ASSERT_NE(nullptr, texture) << "Missing default texture slot " << binding;
             EXPECT_NE(nullptr, texture->textureView)
                 << "Default texture slot " << binding << " is null";
         }
-        for (uint32 binding = 9; binding <= 16; ++binding)
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
         {
             const RHIDescriptorBinding* sampler = defaultSet->FindBinding(binding);
             ASSERT_NE(nullptr, sampler) << "Missing default sampler slot " << binding;
             EXPECT_NE(nullptr, sampler->sampler)
                 << "Default sampler slot " << binding << " is null";
         }
-        const RHIDescriptorBinding* parameterTable = defaultSet->FindBinding(17);
+        const RHIDescriptorBinding* parameterTable = defaultSet->FindBinding(
+            1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2);
         ASSERT_NE(nullptr, parameterTable);
         EXPECT_NE(nullptr, parameterTable->buffer);
 
@@ -1983,6 +2105,12 @@ namespace
             static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
             static_cast<uint32>(MaterialTextureFlags::HasEmissive);
         EXPECT_EQ(expectedFlags, result.textureFlags);
+        EXPECT_EQ(result.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV2());
+        EXPECT_EQ(result.featureMask, static_cast<uint64>(expectedFlags));
+        EXPECT_EQ(result.shadingModel, MaterialShadingModel::StandardLit);
+        EXPECT_EQ(result.surfacePathEligibility,
+                  SurfacePathEligibility::DeferredOpaque);
         EXPECT_TRUE(Contains(result.materialName, "render-material["));
         EXPECT_EQ(expectedFlags, materialSystem.GetLastBindingResult().textureFlags);
         EXPECT_EQ(result.materialName,
@@ -3142,6 +3270,20 @@ namespace
         ASSERT_LT(second.slot, snapshot.rasterMaterialSemanticKeysBySlot.size());
         EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[first.slot]);
         EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[second.slot]);
+        EXPECT_TRUE(snapshot.containsResolvedRasterBindingEvidence);
+        ASSERT_EQ(2u, snapshot.resolvedRasterBindingEvidence.size());
+        EXPECT_EQ(first,
+                  snapshot.resolvedRasterBindingEvidence[0].material);
+        EXPECT_EQ(second,
+                  snapshot.resolvedRasterBindingEvidence[1].material);
+        for (const MaterialParameterTableBindingEvidence& evidence :
+             snapshot.resolvedRasterBindingEvidence)
+        {
+            EXPECT_TRUE(evidence.IsValid());
+            EXPECT_FALSE(evidence.fallbackUsed);
+            EXPECT_EQ(GetMaterialParameterLayoutHashV2(),
+                      evidence.parameterLayoutHash);
+        }
 
         auto* buffer = static_cast<FakeBuffer*>(snapshot.buffer.Get());
         const std::vector<uint8>& bytes = buffer->GetStorage();
@@ -3253,9 +3395,9 @@ namespace
         EXPECT_TRUE(toonEvidence.isAsset);
         EXPECT_EQ(toonEvidence.shadingModel, MaterialShadingModel::ToonLit);
         EXPECT_EQ(toonEvidence.programFamilyHash,
-                  GetMaterialProgramFamilyValueIdentity("toon-lit-v1"));
+                  GetMaterialProgramFamilyValueIdentity("toon-lit-v2"));
         EXPECT_EQ(toonEvidence.parameterLayoutHash,
-                  GetMaterialParameterLayoutHashV1());
+                  GetMaterialParameterLayoutHashV2());
         EXPECT_FLOAT_EQ(toonEvidence.toonBands, 6.0f);
         EXPECT_FLOAT_EQ(toonEvidence.toonSpecularThreshold, 0.55f);
         EXPECT_FLOAT_EQ(toonEvidence.toonRimStrength, 1.5f);
@@ -3341,9 +3483,9 @@ namespace
         EXPECT_EQ(sentinelEvidence.shadingModel,
                   MaterialShadingModel::StandardLit);
         EXPECT_EQ(sentinelEvidence.programFamilyHash,
-                  GetMaterialProgramFamilyValueIdentity("standard-lit-v1"));
+                  GetMaterialProgramFamilyValueIdentity("standard-lit-v2"));
         EXPECT_EQ(sentinelEvidence.parameterLayoutHash,
-                  GetMaterialParameterLayoutHashV1());
+                  GetMaterialParameterLayoutHashV2());
         EXPECT_FALSE(sentinelEvidence.toonParametersValid);
         EXPECT_TRUE(sentinelEvidence.IsStructurallyValid());
 

@@ -33,6 +33,36 @@ namespace RVX
     inline constexpr uint8 RVX_RENDER_DIAGNOSTICS_UNAVAILABLE_INDEX = 0xFFU;
     inline constexpr uint32 RVX_RENDER_DIAGNOSTICS_TRANSITION_CAPACITY = 8U;
     inline constexpr uint32 RVX_RENDER_PRESENTED_MATERIAL_RECEIPT_CAPACITY = 512U;
+
+    [[nodiscard]] inline constexpr bool IsValidMaterialReceiptRoute(
+        MaterialShadingModel shadingModel,
+        MaterialBlendMode blendMode,
+        SurfacePathEligibility route) noexcept
+    {
+        const bool opaqueOrMasked = blendMode == MaterialBlendMode::Opaque ||
+            blendMode == MaterialBlendMode::Masked;
+        switch (shadingModel)
+        {
+            case MaterialShadingModel::StandardLit:
+                return opaqueOrMasked
+                    ? (route == SurfacePathEligibility::DeferredOpaque ||
+                       route == SurfacePathEligibility::ForwardSpecialOpaque)
+                    : route == SurfacePathEligibility::ForwardTranslucency;
+            case MaterialShadingModel::Unlit:
+                return opaqueOrMasked
+                    ? route == SurfacePathEligibility::ForwardSpecialOpaque
+                    : route == SurfacePathEligibility::ForwardTranslucency;
+            case MaterialShadingModel::ThinTransmission:
+                return !opaqueOrMasked &&
+                    (blendMode == MaterialBlendMode::AlphaBlend ||
+                     blendMode == MaterialBlendMode::Premultiplied) &&
+                    route == SurfacePathEligibility::ForwardTranslucency;
+            case MaterialShadingModel::ToonLit:
+                return opaqueOrMasked &&
+                    route == SurfacePathEligibility::DeferredOpaque;
+        }
+        return false;
+    }
     inline constexpr uint32 RVX_RENDER_PRESENTED_SKINNING_PALETTE_RECEIPT_CAPACITY =
         512U;
 
@@ -90,11 +120,22 @@ namespace RVX
         bool fallbackUsed = false;
         uint64 frameSequence = 0;
         uint64 presentationSequence = 0;
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::DeferredOpaque;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return material.IsValid() && contentRevision != 0 &&
                    descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   (featureMask & ~RVX_MATERIAL_FEATURE_MASK_V2) == 0 &&
+                   shadingModel <= MaterialShadingModel::ThinTransmission &&
+                   IsValidMaterialReceiptRoute(
+                       shadingModel, blendMode, surfacePathEligibility) &&
                    frameSequence != 0 && presentationSequence != 0;
         }
     };
@@ -1112,6 +1153,7 @@ namespace RVX
         bool opaqueIndirectSubmitted = false;
         uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenSubmittedSourcePacketCount = 0;
         uint32 opaqueGpuDrivenIndirectSubmittedDrawUpperBound = 0;
         bool opaqueGpuDrivenExecutedDrawCountAvailable = false;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;

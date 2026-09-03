@@ -927,6 +927,25 @@ bool RenderContext::WaitForSurfaceGeneration()
         return false;
     }
 
+    // Frame completion points are signalled when the render command plan is
+    // submitted, before the subsequent swap-chain Present call. Native
+    // presentation may therefore still own a back buffer after every frame
+    // point has completed. Until RHISwapChain exposes a backend-neutral
+    // present-completion token, an infrequent surface replacement must drain
+    // the device before releasing any presentation resource.
+    if (m_device &&
+        m_device->GetCapabilities().queueTopology.completionMode ==
+            RHIQueueCompletionMode::NativeTimeline)
+    {
+        m_device->WaitIdle();
+        if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            RVX_CORE_ERROR(
+                "RenderContext: Native presentation completion was lost while retiring a surface generation");
+            return false;
+        }
+    }
+
     // Waiting establishes GPU completion, but it does not release the
     // completion-owned graph executions. Imported swap-chain textures and
     // their explicit views are deliberately retained by those executions.
@@ -950,8 +969,9 @@ bool RenderContext::WaitForSurfaceGeneration()
     }
 
     // Compatibility trackers perform at most one bounded WaitIdle while
-    // resolving the first pending Graphics point. Native timelines never
-    // require a device-wide idle for surface-generation replacement.
+    // resolving the first pending Graphics point. Native timelines use the
+    // explicit presentation drain above because their frame point precedes
+    // Present.
     return true;
 }
 

@@ -19,8 +19,9 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID = 0x52565855U;
-    // Schema v4 extends immutable material upload to every declared texture
-    // slot. This prevents a renderer from silently dropping GFX15 inputs.
+    // Schema v4 carries every declared material V2 texture slot and immutable
+    // extension feature identity. This prevents Render from silently dropping
+    // optional PBR inputs at the Runtime boundary.
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 4;
 
     enum class RenderResourceContentOperation : uint8
@@ -71,7 +72,12 @@ namespace RVX
         Emissive = 4,
         ToonRamp = 5,
         Transmission = 6,
-        Thickness = 7
+        Thickness = 7,
+        Specular = 8,
+        SpecularColor = 9,
+        Clearcoat = 10,
+        ClearcoatRoughness = 11,
+        ClearcoatNormal = 12
     };
 
     enum class MaterialUploadWrapMode : uint8
@@ -376,6 +382,11 @@ namespace RVX
     static_assert(static_cast<uint8>(MaterialUploadTextureSlot::ToonRamp) == 5);
     static_assert(static_cast<uint8>(MaterialUploadTextureSlot::Transmission) == 6);
     static_assert(static_cast<uint8>(MaterialUploadTextureSlot::Thickness) == 7);
+    static_assert(static_cast<uint8>(MaterialUploadTextureSlot::Specular) == 8);
+    static_assert(static_cast<uint8>(MaterialUploadTextureSlot::SpecularColor) == 9);
+    static_assert(static_cast<uint8>(MaterialUploadTextureSlot::Clearcoat) == 10);
+    static_assert(static_cast<uint8>(MaterialUploadTextureSlot::ClearcoatRoughness) == 11);
+    static_assert(static_cast<uint8>(MaterialUploadTextureSlot::ClearcoatNormal) == 12);
     static_assert(static_cast<uint8>(MaterialUploadWrapMode::Repeat) == 0);
     static_assert(static_cast<uint8>(MaterialUploadWrapMode::MirrorRepeat) == 1);
     static_assert(static_cast<uint8>(MaterialUploadWrapMode::ClampToEdge) == 2);

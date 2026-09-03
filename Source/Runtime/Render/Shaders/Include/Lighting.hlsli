@@ -133,6 +133,37 @@ float3 EvaluatePointLight(
     return EvaluatePBR(N, V, L, albedo, metallic, roughness, lightColor, attenuation);
 }
 
+float3 EvaluatePointLightWithExtensions(
+    PointLight light,
+    float3 N,
+    float3 V,
+    float3 worldPos,
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor,
+    float clearcoatRoughness,
+    float3 clearcoatNormal,
+    float shadow)
+{
+    const float3 lightVec = light.position - worldPos;
+    const float distance = length(lightVec);
+    if (distance > light.range || distance <= 0.0 || light.range <= 1.0e-4)
+    {
+        return 0.0;
+    }
+    const float3 L = lightVec / distance;
+    return EvaluatePBRWithExtensions(
+        N, V, L, albedo, metallic, roughness, indexOfRefraction,
+        specularFactor, specularColor,
+        clearcoatFactor, clearcoatRoughness, clearcoatNormal,
+        light.color * light.intensity,
+        AttenuatePoint(distance, light.range) * saturate(shadow));
+}
+
 // Compatibility overload for shader families that deliberately do not bind a
 // local-shadow atlas.  Renderer paths that can receive local shadows must
 // call the explicit visibility overload above.
@@ -183,6 +214,43 @@ float3 EvaluateSpotLight(
     float3 lightColor = light.color * light.intensity;
     
     return EvaluatePBR(N, V, L, albedo, metallic, roughness, lightColor, attenuation);
+}
+
+float3 EvaluateSpotLightWithExtensions(
+    SpotLight light,
+    float3 N,
+    float3 V,
+    float3 worldPos,
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor,
+    float clearcoatRoughness,
+    float3 clearcoatNormal,
+    float shadow)
+{
+    const float3 lightVec = light.position - worldPos;
+    const float distance = length(lightVec);
+    if (distance > light.range || distance <= 0.0 || light.range <= 1.0e-4)
+    {
+        return 0.0;
+    }
+    const float3 L = lightVec / distance;
+    const float coneAtten = AttenuateSpot(
+        -L, normalize(light.direction), light.innerConeAngle, light.outerConeAngle);
+    if (coneAtten <= 0.0)
+    {
+        return 0.0;
+    }
+    return EvaluatePBRWithExtensions(
+        N, V, L, albedo, metallic, roughness, indexOfRefraction,
+        specularFactor, specularColor,
+        clearcoatFactor, clearcoatRoughness, clearcoatNormal,
+        light.color * light.intensity,
+        AttenuatePoint(distance, light.range) * coneAtten * saturate(shadow));
 }
 
 // =============================================================================

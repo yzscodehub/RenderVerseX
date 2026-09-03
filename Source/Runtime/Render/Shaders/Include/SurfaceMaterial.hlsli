@@ -9,6 +9,11 @@
 #define MATERIAL_TEXTURE_TOON_RAMP 0x20
 #define MATERIAL_TEXTURE_TRANSMISSION 0x40
 #define MATERIAL_TEXTURE_THICKNESS 0x80
+#define MATERIAL_TEXTURE_SPECULAR 0x100
+#define MATERIAL_TEXTURE_SPECULAR_COLOR 0x200
+#define MATERIAL_TEXTURE_CLEARCOAT 0x400
+#define MATERIAL_TEXTURE_CLEARCOAT_ROUGHNESS 0x800
+#define MATERIAL_TEXTURE_CLEARCOAT_NORMAL 0x1000
 
 #define MATERIAL_ALPHA_OPAQUE 0
 #define MATERIAL_ALPHA_MASK 1
@@ -37,6 +42,20 @@
 #define MATERIAL_TEXTURE_SLOT_TOON_RAMP 5u
 #define MATERIAL_TEXTURE_SLOT_TRANSMISSION 6u
 #define MATERIAL_TEXTURE_SLOT_THICKNESS 7u
+#define MATERIAL_TEXTURE_SLOT_SPECULAR 8u
+#define MATERIAL_TEXTURE_SLOT_SPECULAR_COLOR 9u
+#define MATERIAL_TEXTURE_SLOT_CLEARCOAT 10u
+#define MATERIAL_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS 11u
+#define MATERIAL_TEXTURE_SLOT_CLEARCOAT_NORMAL 12u
+
+// Depth and velocity only consume base-color alpha. Keep their declaration
+// macro in this include because DX11 source register flattening only sees the
+// root file before nested includes are expanded.
+#if defined(RVX_DX11_FLATTENED_REGISTER_SPACES)
+#define RVX_MATERIAL_BASE_COLOR_SAMPLER_REGISTER register(s8)
+#else
+#define RVX_MATERIAL_BASE_COLOR_SAMPLER_REGISTER register(s14, space2)
+#endif
 
 // Keep this list byte-for-byte compatible with MaterialGPUConstants.
 #define RVX_MATERIAL_PARAMETER_FIELDS \
@@ -46,6 +65,8 @@
     float NormalScale; \
     float OcclusionStrength; \
     float4 EmissiveColor_Strength; \
+    float4 SpecularColor_Factor; \
+    float4 ClearcoatParams; \
     uint TextureFlags; \
     uint AlphaMode; \
     float AlphaCutoff; \
@@ -76,7 +97,17 @@
     float4 TransmissionUVScaleOffset; \
     float4 TransmissionUVRotationSet; \
     float4 ThicknessUVScaleOffset; \
-    float4 ThicknessUVRotationSet
+    float4 ThicknessUVRotationSet; \
+    float4 SpecularUVScaleOffset; \
+    float4 SpecularUVRotationSet; \
+    float4 SpecularColorUVScaleOffset; \
+    float4 SpecularColorUVRotationSet; \
+    float4 ClearcoatUVScaleOffset; \
+    float4 ClearcoatUVRotationSet; \
+    float4 ClearcoatRoughnessUVScaleOffset; \
+    float4 ClearcoatRoughnessUVRotationSet; \
+    float4 ClearcoatNormalUVScaleOffset; \
+    float4 ClearcoatNormalUVRotationSet
 
 struct MaterialParameterData
 {
@@ -136,6 +167,26 @@ float2 RVXResolveMaterialUV(
         case MATERIAL_TEXTURE_SLOT_THICKNESS:
             scaleOffset = material.ThicknessUVScaleOffset;
             rotationSet = material.ThicknessUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_SPECULAR:
+            scaleOffset = material.SpecularUVScaleOffset;
+            rotationSet = material.SpecularUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_SPECULAR_COLOR:
+            scaleOffset = material.SpecularColorUVScaleOffset;
+            rotationSet = material.SpecularColorUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_CLEARCOAT:
+            scaleOffset = material.ClearcoatUVScaleOffset;
+            rotationSet = material.ClearcoatUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
+            scaleOffset = material.ClearcoatRoughnessUVScaleOffset;
+            rotationSet = material.ClearcoatRoughnessUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_CLEARCOAT_NORMAL:
+            scaleOffset = material.ClearcoatNormalUVScaleOffset;
+            rotationSet = material.ClearcoatNormalUVRotationSet;
             break;
     }
     const float2 selectedUV = rotationSet.z >= 0.5f ? uv1 : uv0;

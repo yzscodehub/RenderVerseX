@@ -1119,6 +1119,7 @@ namespace
         static constexpr uint32 Extent = 32u;
         std::array<uint8, Extent * Extent> coverage{};
         std::array<uint8, 4> centerPixel{};
+        uint8 reactiveCenter = 0u;
         bool completed = false;
     };
 
@@ -1170,7 +1171,8 @@ namespace
         bool useUV1,
         const char* debugName,
         bool normalMapProbe = false,
-        Vec4 authoredTangent = {1.0f, 0.0f, 0.0f, 1.0f})
+        Vec4 authoredTangent = {1.0f, 0.0f, 0.0f, 1.0f},
+        bool thinTransmissionProbe = false)
     {
         NativeSurfaceAlphaMaskReadback result;
 
@@ -1303,6 +1305,7 @@ namespace
         }
         const bool isDepthOnly = std::string_view(sourceFile) == "DepthOnly.hlsl";
         const bool isVelocity = std::string_view(sourceFile) == "ObjectVelocity.hlsl";
+        const bool isThinTransmission = thinTransmissionProbe;
         if (normalMapProbe && (isDepthOnly || isVelocity))
         {
             ADD_FAILURE() << debugName << " normal-map probe requires DefaultLit::PSMain";
@@ -1372,17 +1375,22 @@ namespace
         materialLayoutDesc.debugName = "NativeSurfaceAlphaMaterialSet";
         materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
                                       RHIShaderStage::AllGraphics);
-        for (uint32 binding = 1; binding <= 8; ++binding)
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
                                           RHIShaderStage::Pixel);
         }
-        for (uint32 binding = 9; binding <= 16; ++binding)
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
                                           RHIShaderStage::Pixel);
         }
-        materialLayoutDesc.AddBinding(17, RHIBindingType::ShaderResourceBuffer,
+        materialLayoutDesc.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                      RHIBindingType::ShaderResourceBuffer,
                                       RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef materialLayout =
             device->CreateDescriptorSetLayout(materialLayoutDesc);
@@ -1427,26 +1435,39 @@ namespace
         material.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
         material.textureFlags = normalMapProbe
             ? static_cast<uint32>(MaterialTextureFlags::HasNormal)
-            : static_cast<uint32>(MaterialTextureFlags::HasBaseColor);
-        material.alphaMode = static_cast<uint32>(normalMapProbe
+            : (isThinTransmission ? 0u
+                                  : static_cast<uint32>(MaterialTextureFlags::HasBaseColor));
+        material.alphaMode = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUAlphaMode::Blend
+            : (normalMapProbe
             ? MaterialGPUAlphaMode::Opaque
-            : MaterialGPUAlphaMode::Mask);
+            : MaterialGPUAlphaMode::Mask));
         material.alphaCutoff = 0.5f;
-        material.workflow = static_cast<uint32>(normalMapProbe
+        material.workflow = static_cast<uint32>((normalMapProbe || isThinTransmission)
             ? MaterialGPUWorkflow::MetallicRoughness
             : MaterialGPUWorkflow::Unlit);
         // DefaultLit rejects a workflow/shading-model disagreement before
         // producing color. The alpha-silhouette fixture deliberately uses the
         // Unlit branch, while the normal-map probe exercises StandardLit.
-        material.shadingModel = static_cast<uint32>(normalMapProbe
+        material.shadingModel = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUShadingModel::ThinTransmission
+            : (normalMapProbe
             ? MaterialGPUShadingModel::StandardLit
-            : MaterialGPUShadingModel::Unlit);
-        material.blendMode = static_cast<uint32>(normalMapProbe
+            : MaterialGPUShadingModel::Unlit));
+        material.blendMode = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUBlendMode::AlphaBlend
+            : (normalMapProbe
             ? MaterialGPUBlendMode::Opaque
-            : MaterialGPUBlendMode::Masked);
+            : MaterialGPUBlendMode::Masked));
         material.metallicFactor = 0.0f;
         material.roughnessFactor = 1.0f;
         material.normalScale = 1.0f;
+        if (isThinTransmission)
+        {
+            material.baseColorFactor = {0.8f, 0.8f, 0.8f, 1.0f};
+            material.thinTransmissionParams = {1.0f, 1.5f, 1.0f, 1.0f};
+            material.attenuationColor = {0.5f, 0.5f, 0.5f, 0.0f};
+        }
         material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
         material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
         constexpr uint32 kConstantBufferAlignment = 256u;
@@ -1619,19 +1640,26 @@ namespace
         materialSetDesc.debugName = "NativeSurfaceAlphaMaterialDescriptorSet";
         materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
                                   kMaterialConstantBufferSize);
-        for (uint32 binding = 1; binding <= 8; ++binding)
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
         {
             materialSetDesc.BindTexture(binding, sourceTextureView.Get());
         }
-        for (uint32 binding = 9; binding <= 16; ++binding)
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
         {
             materialSetDesc.BindSampler(binding, sampler.Get());
         }
-        materialSetDesc.BindBuffer(17, dummyStructuredBuffer.Get());
+        materialSetDesc.BindBuffer(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                   dummyStructuredBuffer.Get());
         RHIDescriptorSetRef materialSet = device->CreateDescriptorSet(materialSetDesc);
 
         RHITextureRef renderTarget;
         RHITextureViewRef renderTargetView;
+        RHITextureRef reactiveTarget;
+        RHITextureViewRef reactiveTargetView;
         RHITextureRef depthTarget;
         RHITextureViewRef depthTargetView;
         if (isDepthOnly)
@@ -1659,6 +1687,19 @@ namespace
             renderTargetView = CreateTestTextureView(
                 *device, renderTarget.Get(), RHITextureViewType::RenderTarget,
                 RHIFormat::RGBA8_UNORM, "NativeSurfaceAlphaRTV");
+            if (isThinTransmission)
+            {
+                RHITextureDesc reactiveTargetDesc = RHITextureDesc::Texture2D(
+                    NativeSurfaceAlphaMaskReadback::Extent,
+                    NativeSurfaceAlphaMaskReadback::Extent,
+                    RHIFormat::R8_UNORM,
+                    RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+                reactiveTargetDesc.debugName = "NativeThinTransmissionReactiveMask";
+                reactiveTarget = device->CreateTexture(reactiveTargetDesc);
+                reactiveTargetView = CreateTestTextureView(
+                    *device, reactiveTarget.Get(), RHITextureViewType::RenderTarget,
+                    RHIFormat::R8_UNORM, "NativeThinTransmissionReactiveMaskRTV");
+            }
         }
         RHIBufferDesc readbackDesc;
         readbackDesc.size = static_cast<uint64>(kRowPitch) *
@@ -1667,6 +1708,13 @@ namespace
         readbackDesc.memoryType = RHIMemoryType::Readback;
         readbackDesc.debugName = "NativeSurfaceAlphaReadback";
         RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+        RHIBufferRef reactiveReadbackBuffer;
+        if (isThinTransmission)
+        {
+            RHIBufferDesc reactiveReadbackDesc = readbackDesc;
+            reactiveReadbackDesc.debugName = "NativeThinTransmissionReactiveMaskReadback";
+            reactiveReadbackBuffer = device->CreateBuffer(reactiveReadbackDesc);
+        }
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
             !sourceTextureView || !environmentCube || !environmentCubeView ||
             !localShadowAtlas || !localShadowAtlasView || !froxelVolume ||
@@ -1674,6 +1722,8 @@ namespace
             !frameConstantsBuffer ||
             !dummyStructuredBuffer || !exposureStateBuffer || !frameSet ||
             !materialSet || !readbackBuffer ||
+            (isThinTransmission && (!reactiveTarget || !reactiveTargetView ||
+                                    !reactiveReadbackBuffer)) ||
             (isDepthOnly && (!depthTarget || !depthTargetView)) ||
             (!isDepthOnly && (!renderTarget || !renderTargetView)))
         {
@@ -1694,10 +1744,13 @@ namespace
         pipelineDesc.depthStencilState = isDepthOnly
             ? RHIDepthStencilState::Default()
             : RHIDepthStencilState::Disabled();
-        pipelineDesc.numRenderTargets = isDepthOnly ? 0u : 1u;
+        pipelineDesc.numRenderTargets = isDepthOnly ? 0u : (isThinTransmission ? 2u : 1u);
         pipelineDesc.renderTargetFormats[0] = isDepthOnly
             ? RHIFormat::Unknown
             : RHIFormat::RGBA8_UNORM;
+        pipelineDesc.renderTargetFormats[1] = isThinTransmission
+            ? RHIFormat::R8_UNORM
+            : RHIFormat::Unknown;
         pipelineDesc.depthStencilFormat = isDepthOnly
             ? RHIFormat::D32_FLOAT
             : RHIFormat::Unknown;
@@ -1747,6 +1800,11 @@ namespace
         {
             context->TextureBarrier(renderTarget.Get(), RHIResourceState::Common,
                                     RHIResourceState::RenderTarget);
+            if (isThinTransmission)
+            {
+                context->TextureBarrier(reactiveTarget.Get(), RHIResourceState::Common,
+                                        RHIResourceState::RenderTarget);
+            }
         }
         RHIRenderPassDesc renderPass;
         if (isDepthOnly)
@@ -1761,6 +1819,12 @@ namespace
                 : RHIClearColor{0.0f, 0.0f, 0.0f, 1.0f};
             renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
                                           RHIStoreOp::Store, clearColor);
+            if (isThinTransmission)
+            {
+                renderPass.AddColorAttachment(
+                    reactiveTargetView.Get(), RHILoadOp::Clear,
+                    RHIStoreOp::Store, RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+            }
         }
         context->BeginRenderPass(renderPass);
         context->SetViewport({0.0f, 0.0f,
@@ -1784,15 +1848,32 @@ namespace
         {
             context->TextureBarrier(renderTarget.Get(), RHIResourceState::RenderTarget,
                                     RHIResourceState::CopySource);
+            if (isThinTransmission)
+            {
+                context->TextureBarrier(reactiveTarget.Get(), RHIResourceState::RenderTarget,
+                                        RHIResourceState::CopySource);
+            }
         }
         context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::Common,
                                 RHIResourceState::CopyDest});
+        if (isThinTransmission)
+        {
+            context->BufferBarrier({reactiveReadbackBuffer.Get(), RHIResourceState::Common,
+                                    RHIResourceState::CopyDest});
+        }
         RHIBufferTextureCopyDesc readbackCopy;
         readbackCopy.bufferRowPitch = kRowPitch;
         readbackCopy.textureRegion = {0, 0, NativeSurfaceAlphaMaskReadback::Extent,
                                       NativeSurfaceAlphaMaskReadback::Extent};
         context->CopyTextureToBuffer(
             isDepthOnly ? depthTarget.Get() : renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        if (isThinTransmission)
+        {
+            context->CopyTextureToBuffer(
+                reactiveTarget.Get(), reactiveReadbackBuffer.Get(), readbackCopy);
+            context->BufferBarrier({reactiveReadbackBuffer.Get(), RHIResourceState::CopyDest,
+                                    RHIResourceState::Common});
+        }
         context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::CopyDest,
                                 RHIResourceState::Common});
         context->End();
@@ -1839,7 +1920,7 @@ namespace
                 else
                 {
                     result.coverage[y * NativeSurfaceAlphaMaskReadback::Extent + x] =
-                        bytes[offset] > 200u ? 1u : 0u;
+                        bytes[offset] > (isThinTransmission ? 32u : 200u) ? 1u : 0u;
                 }
             }
         }
@@ -1848,6 +1929,20 @@ namespace
             static_cast<size_t>(NativeSurfaceAlphaMaskReadback::Extent / 2u) * 4u;
         std::memcpy(result.centerPixel.data(), bytes + centerOffset, result.centerPixel.size());
         readbackBuffer->Unmap();
+        if (isThinTransmission)
+        {
+            const auto* reactiveBytes = static_cast<const uint8*>(
+                reactiveReadbackBuffer->Map());
+            if (!reactiveBytes)
+            {
+                ADD_FAILURE() << debugName << " failed to map ThinTransmission reactive readback";
+                return result;
+            }
+            result.reactiveCenter = reactiveBytes[
+                static_cast<size_t>(NativeSurfaceAlphaMaskReadback::Extent / 2u) *
+                    kRowPitch + NativeSurfaceAlphaMaskReadback::Extent / 2u];
+            reactiveReadbackBuffer->Unmap();
+        }
         device->WaitIdle();
         result.completed = VerifyDX12InfoQueueClean(*dx12Device, debugName);
         return result;
@@ -3604,6 +3699,30 @@ TEST(DX12Validation,
                   (NativeSurfaceAlphaMaskReadback::Extent - 1u));
     EXPECT_NE(main.coverage, uv0Control.coverage)
         << "UV1 plus the non-trivial material transform must affect the native silhouette";
+}
+
+TEST(DX12Validation,
+     NativeThinTransmissionExecutesSceneColorBeerLambertAndReactiveMask)
+{
+    const NativeSurfaceAlphaMaskReadback thin = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl",
+        "PSForwardTranslucency",
+        false,
+        "DX12ThinTransmissionForward",
+        false,
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        true);
+
+    ASSERT_TRUE(thin.completed);
+    const uint32 coveredPixels = static_cast<uint32>(std::count(
+        thin.coverage.begin(), thin.coverage.end(), static_cast<uint8>(1u)));
+    EXPECT_GT(coveredPixels, NativeSurfaceAlphaMaskReadback::Extent);
+    EXPECT_GT(thin.centerPixel[0], 32u)
+        << "ThinTransmission must not discard before sampling the opaque scene pyramid";
+    EXPECT_LT(thin.centerPixel[0], 240u)
+        << "Beer-Lambert attenuation must alter the white scene-color pyramid input";
+    EXPECT_GT(thin.reactiveCenter, 200u)
+        << "PSForwardTranslucency must write the reactive-mask MRT";
 }
 
 TEST(DX12Validation,

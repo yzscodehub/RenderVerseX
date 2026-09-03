@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for the cooked RenderQualityLab Sample product closure gate."""
+"""Self-tests for the cooked GFX24/GFX25 Sample product closure gate."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from check_sample_cooked_product_closure import (
     COOKED_COMPOSITION,
     DEVELOPMENT_COMPOSITION,
     PRODUCT_TARGET,
-    REQUIRED_SCENARIO,
+    REQUIRED_SCENARIOS,
     validate_sample_cooked_product_closure,
 )
 from module_policy import Module, Policy, Target
@@ -95,14 +95,23 @@ def valid_policy() -> Policy:
             aliases=("RVX::SampleDevelopmentComposition",),
         ),
         target(
-            REQUIRED_SCENARIO,
+            "RVX_Gfx24SampleScenarios",
             "Samples",
             aliases=("RVX::Gfx24SampleScenarios",),
         ),
         target(
+            "RVX_Gfx25SampleScenarios",
+            "Samples",
+            aliases=("RVX::Gfx25SampleScenarios",),
+        ),
+        target(
             PRODUCT_TARGET,
             "Samples",
-            links=("RVX::SampleCookedComposition", "RVX::Gfx24SampleScenarios"),
+            links=(
+                "RVX::SampleCookedComposition",
+                "RVX::Gfx24SampleScenarios",
+                "RVX::Gfx25SampleScenarios",
+            ),
             target_type="EXECUTABLE",
         ),
     ))
@@ -156,6 +165,44 @@ class CookedSampleProductClosureTests(unittest.TestCase):
         )
         findings = validate_sample_cooked_product_closure(policy)
         self.assertTrue(any("must reach RVX_SampleCookedComposition" in item for item in findings), findings)
+
+    def test_rejects_missing_required_gfx25_scenario(self) -> None:
+        policy = valid_policy()
+        product = next(item for item in policy.targets if item.name == PRODUCT_TARGET)
+        policy = replace_target(
+            policy,
+            replace(
+                product,
+                link_libraries=(
+                    "RVX::SampleCookedComposition",
+                    "RVX::Gfx24SampleScenarios",
+                ),
+            ),
+        )
+        findings = validate_sample_cooked_product_closure(policy)
+        self.assertTrue(
+            any("RVX_Gfx25SampleScenarios" in item for item in findings),
+            findings,
+        )
+
+    def test_rejects_developer_owned_required_scenario(self) -> None:
+        policy = valid_policy()
+        scenario = next(
+            item for item in policy.targets if item.name == "RVX_Gfx25SampleScenarios"
+        )
+        policy = replace_target(policy, replace(scenario, module="Developer"))
+        findings = validate_sample_cooked_product_closure(policy)
+        self.assertTrue(
+            any("developer module target RVX_Gfx25SampleScenarios" in item
+                for item in findings),
+            findings,
+        )
+
+    def test_declares_the_complete_gfx24_gfx25_scenario_set(self) -> None:
+        self.assertEqual(
+            REQUIRED_SCENARIOS,
+            frozenset({"RVX_Gfx24SampleScenarios", "RVX_Gfx25SampleScenarios"}),
+        )
 
 
 if __name__ == "__main__":

@@ -305,6 +305,7 @@ namespace RVX
         bool opaqueIndirectSubmitted = false;
         uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenSubmittedSourcePacketCount = 0;
         uint32 opaqueGpuDrivenIndirectSubmittedDrawUpperBound = 0;
         bool opaqueGpuDrivenExecutedDrawCountAvailable = false;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;

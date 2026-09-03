@@ -56,7 +56,7 @@ namespace
         // `declared` is a parsed SampleAssetCatalog state derived from the
         // presence of this cook object; it is not a serialized catalog field.
         // The package-only bit plus canonical CookManifest/root paths are the
-        // machine-readable admission boundary in catalog schema v3.
+        // machine-readable admission boundary in catalog schema v4.
         if (!cook.value("packageOnly", false) ||
             !cook.contains("manifestPath") || !
                 IsCookedRelativePath(cook.at("manifestPath")) ||
@@ -65,6 +65,30 @@ namespace
         {
             outError = "Cooked product entry '" + outId +
                 "' is not an admitted package-only CookManifest product.";
+            return false;
+        }
+        if (!asset.contains("usagePolicy") ||
+            !asset.at("usagePolicy").is_string() ||
+            !asset.contains("qualificationEligible") ||
+            !asset.at("qualificationEligible").is_boolean())
+        {
+            outError = "Cooked product entry '" + outId +
+                "' lacks schema-v4 usage policy metadata.";
+            return false;
+        }
+        const std::string usagePolicy = asset.at("usagePolicy").get<std::string>();
+        const bool qualificationEligible =
+            asset.at("qualificationEligible").get<bool>();
+        const bool validUsagePolicy =
+            usagePolicy == "required-qualification" ||
+            usagePolicy == "development-only" ||
+            usagePolicy == "optional-nightly";
+        if (!validUsagePolicy ||
+            qualificationEligible !=
+                (usagePolicy == "required-qualification"))
+        {
+            outError = "Cooked product entry '" + outId +
+                "' has contradictory schema-v4 usage policy metadata.";
             return false;
         }
         return true;
@@ -125,10 +149,13 @@ int main(int argc, char* argv[])
         std::cerr << "Failed to parse input catalog: " << error.what() << "\n";
         return 1;
     }
-    if (!input || !catalog.is_object() || !catalog.contains("assets") ||
+    if (!input || !catalog.is_object() ||
+        catalog.value("schemaId", std::string{}) != "RVX.SampleAssetCatalog" ||
+        catalog.value("schemaVersion", 0u) != 4u ||
+        !catalog.contains("assets") ||
         !catalog.at("assets").is_array())
     {
-        std::cerr << "Input is not a Sample asset catalog with an assets array.\n";
+        std::cerr << "Input is not a schema-v4 Sample asset catalog with an assets array.\n";
         return 1;
     }
 

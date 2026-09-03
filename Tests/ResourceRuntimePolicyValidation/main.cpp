@@ -2169,74 +2169,156 @@ TEST(ResourceRuntimePolicyValidation,
 }
 
 TEST(ResourceRuntimePolicyValidation,
-     RenderUploadBuilderPreservesAllCanonicalTextureSlots)
+     RenderUploadBuilderPreservesAllLegalV2TextureSlotsAndFeatures)
 {
-    MaterialResource material;
-    material.SetId(205);
-
-    MaterialDefinition definition;
-    definition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
-    definition.descriptor.programFamily =
-        std::string(GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
-    constexpr uint32 textureFlags =
-        (1u << (static_cast<uint32>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
-    definition.descriptor.featureMask = textureFlags;
-    definition.parameters.textureFlags = textureFlags;
-    for (uint32 slot = static_cast<uint32>(MaterialTextureSlot::BaseColor);
-         slot <= static_cast<uint32>(MaterialTextureSlot::Thickness);
-         ++slot)
-    {
-        MaterialTextureSlotDefinition textureSlot;
-        textureSlot.slot = static_cast<MaterialTextureSlot>(slot);
-        definition.textureSlots.push_back(textureSlot);
-    }
-    ASSERT_TRUE(material.SetMaterialDefinition(definition));
-
-    const auto bindTexture = [&material](const char* slot, ResourceId id)
+    const auto bindTexture = [](MaterialResource& material,
+                                const char* slot,
+                                ResourceId id)
     {
         auto* texture = new TextureResource();
         texture->SetId(id);
-        ASSERT_TRUE(material.SetTexture(slot, ResourceHandle<TextureResource>(texture)));
+        return material.SetTexture(
+            slot, ResourceHandle<TextureResource>(texture));
     };
-    bindTexture("albedo", 206);
-    bindTexture("normal", 207);
-    bindTexture("metallic_roughness", 208);
-    bindTexture("ao", 209);
-    bindTexture("emissive", 210);
-    bindTexture("toon_ramp", 211);
-    bindTexture("transmission", 212);
-    bindTexture("thickness", 213);
-
-    // The v4 material upload contract covers all eight canonical slots.
-    // This proves the builder preserves that complete mapping, rather than
-    // retaining the obsolete ToonRamp rejection behavior.
-    const RenderUploadRequestBuildResult build =
-        RenderUploadRequestBuilder::Build(
+    const auto buildMaterial = [](const MaterialResource& material,
+                                  RenderResourceHandle handle,
+                                  uint64 sequence)
+    {
+        return RenderUploadRequestBuilder::Build(
             material,
-            {10, 2},
-            6,
+            handle,
+            sequence,
             [](AssetId assetId, RenderResourceKind kind)
             {
                 EXPECT_EQ(kind, RenderResourceKind::Texture);
                 return RenderResourceHandle{static_cast<uint32>(assetId.value),
                                             1};
             });
-    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
-    ASSERT_NE(build.request, nullptr);
+    };
 
-    const auto& payload =
-        std::get<MaterialUploadPayload>(build.request->GetPayload());
-    EXPECT_EQ(payload.staticDescriptor.featureMask, textureFlags);
-    EXPECT_EQ(payload.sourceData.textureFlags, textureFlags);
-    ASSERT_EQ(payload.textureBindings.size(), 8u);
-    ASSERT_EQ(build.request->GetDependencies().size(), 8u);
-    for (uint32 slot = static_cast<uint32>(MaterialUploadTextureSlot::BaseColor);
-         slot <= static_cast<uint32>(MaterialUploadTextureSlot::Thickness);
-         ++slot)
+    MaterialResource standard;
+    standard.SetId(205);
+    MaterialDefinition standardDefinition;
+    standardDefinition.parameters.specularFactor = 0.7f;
+    standardDefinition.parameters.clearcoatFactor = 0.5f;
+    for (const MaterialTextureSlot slot : {
+             MaterialTextureSlot::BaseColor,
+             MaterialTextureSlot::Normal,
+             MaterialTextureSlot::MetallicRoughness,
+             MaterialTextureSlot::Occlusion,
+             MaterialTextureSlot::Emissive,
+             MaterialTextureSlot::Specular,
+             MaterialTextureSlot::SpecularColor,
+             MaterialTextureSlot::Clearcoat,
+             MaterialTextureSlot::ClearcoatRoughness,
+             MaterialTextureSlot::ClearcoatNormal})
     {
-        EXPECT_EQ(payload.textureBindings[slot].slot,
-                  static_cast<MaterialUploadTextureSlot>(slot));
+        standardDefinition.textureSlots.push_back(
+            MaterialTextureSlotDefinition{slot});
     }
+    standardDefinition.parameters.textureFlags = static_cast<uint32>(
+        GetMaterialFeatureMaskV2(
+            standardDefinition.parameters, standardDefinition.textureSlots));
+    standardDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        standardDefinition.parameters, standardDefinition.textureSlots);
+    ASSERT_TRUE(standard.SetMaterialDefinition(standardDefinition));
+    ResourceId standardTextureId = 206;
+    for (const char* slot : {
+             "albedo", "normal", "metallic_roughness", "ao", "emissive",
+             "specular", "specular_color", "clearcoat",
+             "clearcoat_roughness", "clearcoat_normal"})
+    {
+        ASSERT_TRUE(bindTexture(standard, slot, standardTextureId++));
+    }
+
+    const RenderUploadRequestBuildResult standardBuild = buildMaterial(
+        standard, {10, 2}, 6);
+    ASSERT_EQ(standardBuild.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(standardBuild.request, nullptr);
+    const auto& standardPayload =
+        std::get<MaterialUploadPayload>(standardBuild.request->GetPayload());
+    EXPECT_NE(standardPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(standardPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    ASSERT_EQ(standardPayload.textureBindings.size(), 10u);
+    EXPECT_EQ(standardPayload.textureBindings[5].slot,
+              MaterialUploadTextureSlot::Specular);
+    EXPECT_EQ(standardPayload.textureBindings[6].slot,
+              MaterialUploadTextureSlot::SpecularColor);
+    EXPECT_EQ(standardPayload.textureBindings[7].slot,
+              MaterialUploadTextureSlot::Clearcoat);
+    EXPECT_EQ(standardPayload.textureBindings[8].slot,
+              MaterialUploadTextureSlot::ClearcoatRoughness);
+    EXPECT_EQ(standardPayload.textureBindings[9].slot,
+              MaterialUploadTextureSlot::ClearcoatNormal);
+
+    MaterialResource transmission;
+    transmission.SetId(220);
+    MaterialDefinition transmissionDefinition;
+    transmissionDefinition.descriptor.shadingModel =
+        MaterialShadingModel::ThinTransmission;
+    transmissionDefinition.descriptor.programFamily = std::string(
+        GetMaterialProgramFamily(MaterialShadingModel::ThinTransmission));
+    transmissionDefinition.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+    transmissionDefinition.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+    transmissionDefinition.descriptor.translucencyPhase =
+        MaterialTranslucencyPhase::Standard;
+    transmissionDefinition.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+    transmissionDefinition.parameters.transmission = 0.75f;
+    transmissionDefinition.textureSlots = {
+        MaterialTextureSlotDefinition{MaterialTextureSlot::Transmission},
+        MaterialTextureSlotDefinition{MaterialTextureSlot::Thickness}};
+    transmissionDefinition.parameters.textureFlags = static_cast<uint32>(
+        GetMaterialFeatureMaskV2(
+            transmissionDefinition.parameters,
+            transmissionDefinition.textureSlots));
+    transmissionDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        transmissionDefinition.parameters, transmissionDefinition.textureSlots);
+    ASSERT_TRUE(transmission.SetMaterialDefinition(transmissionDefinition));
+    ASSERT_TRUE(bindTexture(transmission, "transmission", 221));
+    ASSERT_TRUE(bindTexture(transmission, "thickness", 222));
+    const RenderUploadRequestBuildResult transmissionBuild = buildMaterial(
+        transmission, {11, 2}, 7);
+    ASSERT_EQ(transmissionBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& transmissionPayload = std::get<MaterialUploadPayload>(
+        transmissionBuild.request->GetPayload());
+    EXPECT_NE(transmissionPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_TRANSMISSION,
+              0u);
+    EXPECT_NE(transmissionPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_VOLUME,
+              0u);
+    ASSERT_EQ(transmissionPayload.textureBindings.size(), 2u);
+    EXPECT_EQ(transmissionPayload.textureBindings[0].slot,
+              MaterialUploadTextureSlot::Transmission);
+    EXPECT_EQ(transmissionPayload.textureBindings[1].slot,
+              MaterialUploadTextureSlot::Thickness);
+
+    MaterialResource toon;
+    toon.SetId(230);
+    MaterialDefinition toonDefinition;
+    toonDefinition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+    toonDefinition.descriptor.programFamily = std::string(
+        GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+    toonDefinition.textureSlots = {
+        MaterialTextureSlotDefinition{MaterialTextureSlot::ToonRamp}};
+    toonDefinition.parameters.textureFlags =
+        1u << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+    toonDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        toonDefinition.parameters, toonDefinition.textureSlots);
+    ASSERT_TRUE(toon.SetMaterialDefinition(toonDefinition));
+    ASSERT_TRUE(bindTexture(toon, "toon_ramp", 231));
+    const RenderUploadRequestBuildResult toonBuild = buildMaterial(
+        toon, {12, 2}, 8);
+    ASSERT_EQ(toonBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& toonPayload =
+        std::get<MaterialUploadPayload>(toonBuild.request->GetPayload());
+    ASSERT_EQ(toonPayload.textureBindings.size(), 1u);
+    EXPECT_EQ(toonPayload.textureBindings[0].slot,
+              MaterialUploadTextureSlot::ToonRamp);
 }
 
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderDescribesCubemapMipStorageExactly)

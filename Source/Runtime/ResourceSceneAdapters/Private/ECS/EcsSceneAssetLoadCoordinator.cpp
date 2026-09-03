@@ -272,9 +272,13 @@ namespace RVX::ResourceSceneAdapters
                 materialMetadata.baseColor = material->GetBaseColor();
                 materialMetadata.metallicFactor = material->GetMetallicFactor();
                 materialMetadata.roughnessFactor = material->GetRoughnessFactor();
+                materialMetadata.featureMask =
+                    material->GetMaterialDefinition().descriptor.featureMask;
                 if (!IsFinite(materialMetadata.baseColor) ||
                     !std::isfinite(materialMetadata.metallicFactor) ||
-                    !std::isfinite(materialMetadata.roughnessFactor))
+                    !std::isfinite(materialMetadata.roughnessFactor) ||
+                    (materialMetadata.featureMask &
+                     ~RVX_MATERIAL_FEATURE_MASK_V2) != 0)
                 {
                     return false;
                 }

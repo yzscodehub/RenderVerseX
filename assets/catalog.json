@@ -1,53 +1,326 @@
 {
   "schemaId": "RVX.SampleAssetCatalog",
-  "schemaVersion": 1,
+  "schemaVersion": 4,
   "assets": [
-    {
-      "id": "free-1975-porsche-911-930-turbo",
-      "kind": "model",
-      "path": "models/free_1975_porsche_911_930_turbo/scene.gltf",
-      "license": {
-        "spdxId": "CC-BY-4.0",
-        "file": "models/free_1975_porsche_911_930_turbo/license.txt"
-      },
-      "source": {
-        "name": "FREE 1975 Porsche 911 (930) Turbo",
-        "uri": "https://sketchfab.com/3d-models/free-1975-porsche-911-930-turbo-8568d9d14a994b9cae59499f0dbed21e",
-        "author": "Lionsharp Studios"
-      },
-      "attribution": "FREE 1975 Porsche 911 (930) Turbo by Lionsharp Studios, licensed under CC-BY-4.0.",
-      "redistributable": true
-    },
     {
       "id": "cowboy-town-hall-8k",
       "kind": "environment",
+      "usagePolicy": "optional-nightly",
+      "qualificationEligible": false,
       "path": "textures/cowboy_town_hall_8k.exr",
       "license": {
         "spdxId": "CC0-1.0",
-        "file": "LICENSE.polyhaven-cc0.txt"
+        "file": "LICENSE.polyhaven-cc0.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
         "name": "Cowboy Town Hall HDRI",
         "uri": "https://polyhaven.com/a/cowboy_town_hall",
-        "author": "Dimitrios Savva (photography); Jarod Guest (processing)"
+        "author": "Dimitrios Savva (photography); Jarod Guest (processing)",
+        "version": "polyhaven-hdri-source-bytes-recorded-2026-08-06"
       },
-      "attribution": "Cowboy Town Hall HDRI from Poly Haven.",
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "01aedfaa0851c656ab839b5e1b1cb289b97d3202f4d4d9656904194c3899ba63",
+        "byteCount": 385704096,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "e12ff2bbdabc05131b767cd08a7c4862a16baf1bbb8a2248a8035eced014a228",
+        "byteCount": 385704501,
+        "fileCount": 2
+      },
+      "files": [
+        {
+          "path": "LICENSE.polyhaven-cc0.txt",
+          "purpose": "license",
+          "byteCount": 405,
+          "sha256": "bf6034e973c6cee300c6f0e88ba5db018fc51df59e9fc628bd6380179df0f560"
+        },
+        {
+          "path": "textures/cowboy_town_hall_8k.exr",
+          "purpose": "runtime-root",
+          "byteCount": 385704096,
+          "sha256": "01aedfaa0851c656ab839b5e1b1cb289b97d3202f4d4d9656904194c3899ba63"
+        }
+      ],
+      "attribution": "Cowboy Town Hall HDRI from Poly Haven, CC0 1.0 Universal.",
+      "modificationNotice": "Vendored EXR bytes are unmodified; environment derivatives are produced by the cook contract.",
+      "redistributable": true
+    },
+    {
+      "id": "free-1975-porsche-911-930-turbo",
+      "kind": "model",
+      "usagePolicy": "optional-nightly",
+      "qualificationEligible": false,
+      "path": "models/free_1975_porsche_911_930_turbo/scene.gltf",
+      "license": {
+        "spdxId": "CC-BY-4.0",
+        "file": "models/free_1975_porsche_911_930_turbo/license.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "FREE 1975 Porsche 911 (930) Turbo",
+        "uri": "https://sketchfab.com/3d-models/free-1975-porsche-911-930-turbo-8568d9d14a994b9cae59499f0dbed21e",
+        "author": "Lionsharp Studios",
+        "version": "Sketchfab model 8568d9d14a994b9cae59499f0dbed21e"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "dependency-closure",
+        "algorithm": "sha256",
+        "digest": "fc58ba7ae0b9708c1801c19d87d16e05876ae30aa7a143c3e7b74c64a72a7ce6",
+        "byteCount": 74214042,
+        "fileCount": 29
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "25238ae0186c010007db8b41c678a158998b64a0ac1118bd430e85edf6f04bb5",
+        "byteCount": 74214810,
+        "fileCount": 30
+      },
+      "files": [
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/license.txt",
+          "purpose": "license",
+          "byteCount": 768,
+          "sha256": "8ae97c491345a3bb4e9d58aa081e715adc40ac8db30b245e29a97d0d2f17fc5d"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/scene.bin",
+          "purpose": "runtime-dependency",
+          "byteCount": 8820304,
+          "sha256": "36db5a9592f2e4f30be9624ff59eeb7dbeb5b744cd0ac1daa944b2a49e6b398f"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 152000,
+          "sha256": "e46e51895ed0f4010a552ee0c3158fb4daf7a29f9f5215cfa900398d5e45b6b2"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_chromes_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 782212,
+          "sha256": "06646bfb17dfb1e548f1e7d61b9f20bd07e11deed77a56cf8febfdbf42433988"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_chromes_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1071445,
+          "sha256": "ecdffed774d269183f3273801b6db2e5bf9ce3da99985df4b2cac8fd1e377f1c"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_lights_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 3162716,
+          "sha256": "c16c763150df9f6f934d51b22705b66e1c52b3d3448219a686ca42b71b559d27"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_lights_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1948,
+          "sha256": "866197794f9eabda288cc5d28a54fe6a33e33bb8e2c726742d477cca7e9af8e1"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_lights_normal.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1709547,
+          "sha256": "cd6e2ab71bfa5221de12ae3442652c9e0e79f435efe000e895135db4a4f3653b"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_plastics_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2715386,
+          "sha256": "19057ba7f0a6a5b3905c5332ec1592e8087a2643bd2884ffd13d77455a7ad7ac"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_plastics_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1848923,
+          "sha256": "805e02cdd0d693df4c73cd30b36ba8cba0a34bf3608a037d4ddaf548b2aa6577"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_rim_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1075764,
+          "sha256": "590b7500444996bd9760bc021169a295d150899bf100d1d8692cce96ae4aa67e"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_rim_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 15740109,
+          "sha256": "27413fe1b950fdb79aaacefd154b591aa77102d3cb03545c9fb91fac379a7a2c"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_rim_normal.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 79811,
+          "sha256": "21625b2133edb298a83c19651e6a3af0a8e76211dd1b4fa317f908d7b1c4f409"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_stickers_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 636003,
+          "sha256": "8eb1b054987e1f1275a2d98b1bfcad12840466c7777af52afef9f4e1297d26b3"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_tire_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 3485313,
+          "sha256": "a70a326fa0700130d10358777310fb0171790b88677c9cf9e61da8a305d5f6fc"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_tire_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 5614807,
+          "sha256": "5390fd31bfc75b190b3854bb4f8d0900089f0df36c44de9800d86d7164a38959"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_tire_normal.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 4174822,
+          "sha256": "e3fd2599aae6204eb3f44736cad89062180f95c3ce5f61ee315fc55239cf395e"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_wunderbaum_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 324664,
+          "sha256": "cef411532794ebf78c65b4a194bd77793582023c09d71aa426110f1e839c977a"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/930_wunderbaum_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 19677,
+          "sha256": "2f4e14a501e04724ef8867d0a7bf55a2379485dc0c5a085df7ca4c963d99d3f5"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/coat_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2496465,
+          "sha256": "749625ceb741f2dd674505af7fab9fff5976f7175b5ff1a4a6a781fb0f9cb010"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/coat_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 3620309,
+          "sha256": "fa8f041d1b01787a1b7cdd8add3947857b37618f33f6f1124f16b80e74b4dbe4"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/glass_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 588274,
+          "sha256": "30d47294626f7f8a140822744b865dc30271b412f518f1814caf58f4a9953681"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/glass_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1473620,
+          "sha256": "91f2ce3bd37bbd87dfaf80959577a8ddc3b2d1d10bd0c0828b0593926b3d16f4"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/material_0_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 549031,
+          "sha256": "b337bda64647ea1e5fa15683c726a82b5b3fd23c5a731b11e43305c7b084411d"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/paint_clearcoat.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1315781,
+          "sha256": "4a2f022e9e0904eb54d5d43ea4a32961eba8ae5831e1667bad6a8d67f26b6ca6"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/paint_clearcoat_normal.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 4231062,
+          "sha256": "abcfeec5ef2ea608f6fcbec010e04e0accebf42430a934e6b07f8b85964ea85a"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/paint_clearcoat_roughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 3620309,
+          "sha256": "fa8f041d1b01787a1b7cdd8add3947857b37618f33f6f1124f16b80e74b4dbe4"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/paint_metallicRoughness.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 4845021,
+          "sha256": "a520b03cff89bdcf94fef44a4e497283f0a4da2608342ad9354d594840a8668e"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/plate_baseColor.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 30656,
+          "sha256": "80f2cb2040668c76f945aecc3962e4341e6bea0d0ccb87f54e2ff7382a1e8e99"
+        },
+        {
+          "path": "models/free_1975_porsche_911_930_turbo/textures/plate_normal.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 28063,
+          "sha256": "e2a54e7d1d2f9158eb7dc0942eca91d431a55e06b400aca2aaa0c7b472a21998"
+        }
+      ],
+      "attribution": "This work is based on \"FREE 1975 Porsche 911 (930) Turbo\" by Lionsharp Studios, licensed under CC-BY-4.0.",
+      "modificationNotice": "Vendored scene.gltf, scene.bin, and the declared textures are unmodified source-export bytes.",
       "redistributable": true
     },
     {
       "id": "valley-of-desolation-4k",
       "kind": "environment",
+      "usagePolicy": "optional-nightly",
+      "qualificationEligible": false,
       "path": "textures/valley_of_desolation_4k.exr",
       "license": {
         "spdxId": "CC0-1.0",
-        "file": "LICENSE.polyhaven-cc0.txt"
+        "file": "LICENSE.polyhaven-cc0.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
         "name": "Valley Of Desolation HDRI",
         "uri": "https://polyhaven.com/a/valley_of_desolation",
-        "author": "Dario Barresi"
+        "author": "Dario Barresi",
+        "version": "polyhaven-hdri-source-bytes-recorded-2026-08-06"
       },
-      "attribution": "Valley Of Desolation HDRI from Poly Haven.",
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "add015370503f4927f08ae128e9f50bf1ef28a3b2be4370d5032d5fb9b2ace05",
+        "byteCount": 82670215,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "65336f2ed79a7bd3feaad0f898e91b1c66acabc0c2ffbf19003bca8c352b92d1",
+        "byteCount": 82670620,
+        "fileCount": 2
+      },
+      "files": [
+        {
+          "path": "LICENSE.polyhaven-cc0.txt",
+          "purpose": "license",
+          "byteCount": 405,
+          "sha256": "bf6034e973c6cee300c6f0e88ba5db018fc51df59e9fc628bd6380179df0f560"
+        },
+        {
+          "path": "textures/valley_of_desolation_4k.exr",
+          "purpose": "runtime-root",
+          "byteCount": 82670215,
+          "sha256": "add015370503f4927f08ae128e9f50bf1ef28a3b2be4370d5032d5fb9b2ace05"
+        }
+      ],
+      "attribution": "Valley Of Desolation HDRI from Poly Haven, CC0 1.0 Universal.",
+      "modificationNotice": "Vendored EXR bytes are unmodified; environment derivatives are produced by the cook contract.",
       "redistributable": true
     }
   ]

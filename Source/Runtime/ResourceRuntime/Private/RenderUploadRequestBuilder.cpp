@@ -535,16 +535,12 @@ namespace
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
-        constexpr uint64 supportedTextureFeatureMask =
-            (1ull <<
-             (static_cast<uint32>(MaterialTextureSlot::Thickness) + 1U)) -
-            1ull;
         if ((definition.descriptor.featureMask &
-             ~supportedTextureFeatureMask) != 0)
+             ~RVX_MATERIAL_FEATURE_MASK_V2) != 0)
         {
-            // The v4 upload enum represents every canonical texture slot.
-            // A definition outside that contract must never be partially
-            // published to Render.
+            // The upload schema transports every declared V2 texture slot and
+            // extension feature identity. A definition outside that contract
+            // must never be partially published to Render.
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
@@ -575,7 +571,17 @@ namespace
             {MaterialUploadTextureSlot::Transmission,
              MaterialTextureSlot::Transmission, "transmission"},
             {MaterialUploadTextureSlot::Thickness,
-             MaterialTextureSlot::Thickness, "thickness"}};
+             MaterialTextureSlot::Thickness, "thickness"},
+            {MaterialUploadTextureSlot::Specular,
+             MaterialTextureSlot::Specular, "specular"},
+            {MaterialUploadTextureSlot::SpecularColor,
+             MaterialTextureSlot::SpecularColor, "specular_color"},
+            {MaterialUploadTextureSlot::Clearcoat,
+             MaterialTextureSlot::Clearcoat, "clearcoat"},
+            {MaterialUploadTextureSlot::ClearcoatRoughness,
+             MaterialTextureSlot::ClearcoatRoughness, "clearcoat_roughness"},
+            {MaterialUploadTextureSlot::ClearcoatNormal,
+             MaterialTextureSlot::ClearcoatNormal, "clearcoat_normal"}};
 
         std::vector<RenderResourceHandle> dependencies;
         for (const UploadSlot& slot : slots)

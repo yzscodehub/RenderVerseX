@@ -1668,7 +1668,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(modelArtifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
     const std::string materialArtifact = ReadBinaryFile(
         outputRoot / "Meshes" / "Quad.rvdeps" / "material_0.rvmat");
-    EXPECT_NE(materialArtifact.find("RVX_MATERIAL_ARTIFACT_V1"),
+    EXPECT_NE(materialArtifact.find("RVX_MATERIAL_ARTIFACT_V2"),
               std::string::npos);
     const std::string artifact =
         ReadBinaryFile(outputRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
@@ -2544,6 +2544,286 @@ TEST_F(RenderHonestyValidationFixture, MeshGenerateTangentsUsesUInt16Indices)
 }
 
 TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsUsesMikkAndDeterministicDegenerateFallback)
+{
+    const auto makeMesh = []()
+    {
+        RVX::Mesh mesh;
+        mesh.SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {2.0f, 0.0f, 0.0f},
+            {3.0f, 0.0f, 0.0f},
+            {2.0f, 1.0f, 0.0f},
+        });
+        mesh.SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+        });
+        mesh.SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u});
+        return mesh;
+    };
+
+    RVX::Mesh first = makeMesh();
+    RVX::Mesh second = makeMesh();
+    const RVX::TangentGenerationResult firstResult =
+        first.GenerateTangentsDetailed();
+    const RVX::TangentGenerationResult secondResult =
+        second.GenerateTangentsDetailed();
+    ASSERT_TRUE(firstResult.success);
+    ASSERT_TRUE(secondResult.success);
+    EXPECT_EQ(firstResult.triangleCount, 2u);
+    EXPECT_EQ(firstResult.mikkTriangleCount, 1u);
+    EXPECT_EQ(firstResult.fallbackTriangleCount, 1u);
+    EXPECT_EQ(firstResult.degenerateGeometryTriangleCount, 0u);
+    EXPECT_EQ(firstResult.degenerateUVTriangleCount, 1u);
+    EXPECT_EQ(firstResult.fallbackCornerCount, 3u);
+
+    const RVX::VertexAttribute* firstTangents =
+        first.GetAttribute(RVX::VertexBufferNames::Tangent);
+    const RVX::VertexAttribute* secondTangents =
+        second.GetAttribute(RVX::VertexBufferNames::Tangent);
+    ASSERT_NE(firstTangents, nullptr);
+    ASSERT_NE(secondTangents, nullptr);
+    ASSERT_EQ(firstTangents->GetVertexCount(), 6u);
+    ASSERT_EQ(secondTangents->GetVertexCount(), 6u);
+    const float* firstData = static_cast<const float*>(firstTangents->GetData());
+    const float* secondData = static_cast<const float*>(secondTangents->GetData());
+    ASSERT_NE(firstData, nullptr);
+    ASSERT_NE(secondData, nullptr);
+    EXPECT_GT(firstData[0], 0.9f);
+    EXPECT_NEAR(firstData[1], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(firstData[2], 0.0f, 1.0e-4f);
+    EXPECT_EQ(0, std::memcmp(
+        firstData,
+        secondData,
+        sizeof(float) * firstTangents->GetVertexCount() * 4u));
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsSplitsOnlyConflictingCornerTopology)
+{
+    EXPECT_EQ(RVX::ClassifyMikkGenerationResult(false),
+              RVX::TangentGenerationFailure::MikkGenerationFailed);
+    EXPECT_EQ(RVX::ClassifyMikkGenerationResult(true),
+              RVX::TangentGenerationFailure::None);
+
+    const auto makeConflictMesh = []()
+    {
+        RVX::Mesh mesh;
+        mesh.SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {-1.0f, 0.0f, 0.0f},
+        });
+        mesh.SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+            {1.0f, 0.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {0.0f, 1.0f},
+            {1.0f, 1.0f},
+            {1.0f, 0.0f},
+        }, RVX::VertexBufferNames::UV1);
+        mesh.SetColors({
+            {1.0f, 0.0f, 0.0f, 1.0f},
+            {0.0f, 1.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f, 1.0f},
+        });
+        mesh.SetBoneData(
+            {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}, {12, 13, 14, 15}},
+            {{1.0f, 0.0f, 0.0f, 0.0f},
+             {0.5f, 0.5f, 0.0f, 0.0f},
+             {0.0f, 0.5f, 0.5f, 0.0f},
+             {0.0f, 0.0f, 0.5f, 0.5f}});
+        mesh.SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u, 0u, 2u, 3u});
+        RVX::SubMesh subMesh;
+        subMesh.indexOffset = 0u;
+        subMesh.indexCount = 6u;
+        subMesh.materialId = 17u;
+        subMesh.name = "ConflictMesh";
+        mesh.AddSubMesh(subMesh);
+        mesh.ComputeBoundingBox();
+        return mesh;
+    };
+
+    RVX::Mesh unchanged = makeConflictMesh();
+    const RVX::TangentGenerationResult rejected =
+        unchanged.GenerateTangentsDetailed();
+    EXPECT_FALSE(rejected.success);
+    EXPECT_EQ(rejected.failure,
+              RVX::TangentGenerationFailure::ConflictingCornerBasis);
+    EXPECT_EQ(unchanged.GetVertexCount(), 4u);
+    EXPECT_FALSE(unchanged.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh split = makeConflictMesh();
+    const RVX::TangentGenerationResult result =
+        split.GenerateTangentsDetailed(0u, true);
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.topologySplit);
+    EXPECT_EQ(result.originalVertexCount, 4u);
+    EXPECT_EQ(result.publishedVertexCount, 6u);
+    EXPECT_EQ(result.splitVertexCount, 2u);
+    EXPECT_EQ(split.GetIndices32(),
+              (std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u}));
+    ASSERT_EQ(split.GetSubMeshes().size(), 1u);
+    EXPECT_EQ(split.GetSubMeshes()[0].indexOffset, 0u);
+    EXPECT_EQ(split.GetSubMeshes()[0].indexCount, 6u);
+    EXPECT_EQ(split.GetSubMeshes()[0].materialId, 17u);
+    ASSERT_TRUE(split.GetBoundingBox().has_value());
+    EXPECT_EQ(split.GetBoundingBox()->GetMin(), RVX::Vec3(-1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(split.GetBoundingBox()->GetMax(), RVX::Vec3(1.0f, 1.0f, 0.0f));
+
+    const std::vector<RVX::uint32> sourceCornerIndices{
+        0u, 1u, 2u, 0u, 2u, 3u};
+    for (const char* name : {RVX::VertexBufferNames::Position,
+                             RVX::VertexBufferNames::Normal,
+                             RVX::VertexBufferNames::UV,
+                             RVX::VertexBufferNames::UV1,
+                             RVX::VertexBufferNames::Color,
+                             RVX::VertexBufferNames::BoneIndices,
+                             RVX::VertexBufferNames::BoneWeights})
+    {
+        const RVX::VertexAttribute* source = unchanged.GetAttribute(name);
+        const RVX::VertexAttribute* published = split.GetAttribute(name);
+        ASSERT_NE(source, nullptr) << name;
+        ASSERT_NE(published, nullptr) << name;
+        ASSERT_EQ(published->GetVertexCount(), sourceCornerIndices.size())
+            << name;
+        const auto* sourceBytes = static_cast<const RVX::uint8*>(source->GetData());
+        const auto* publishedBytes =
+            static_cast<const RVX::uint8*>(published->GetData());
+        ASSERT_NE(sourceBytes, nullptr);
+        ASSERT_NE(publishedBytes, nullptr);
+        for (size_t corner = 0; corner < sourceCornerIndices.size(); ++corner)
+        {
+            EXPECT_EQ(0, std::memcmp(
+                publishedBytes + corner * published->GetStride(),
+                sourceBytes +
+                    static_cast<size_t>(sourceCornerIndices[corner]) *
+                        source->GetStride(),
+                source->GetStride())) << name << " corner=" << corner;
+        }
+    }
+
+    const RVX::VertexAttribute* tangents =
+        split.GetAttribute(RVX::VertexBufferNames::Tangent);
+    ASSERT_NE(tangents, nullptr);
+    const auto* tangentValues = static_cast<const float*>(tangents->GetData());
+    ASSERT_NE(tangentValues, nullptr);
+    for (size_t corner = 0; corner < tangents->GetVertexCount(); ++corner)
+    {
+        const size_t offset = corner * 4u;
+        const float lengthSquared =
+            tangentValues[offset] * tangentValues[offset] +
+            tangentValues[offset + 1u] * tangentValues[offset + 1u] +
+            tangentValues[offset + 2u] * tangentValues[offset + 2u];
+        EXPECT_NEAR(lengthSquared, 1.0f, 1.0e-5f);
+        EXPECT_NEAR(tangentValues[offset + 2u], 0.0f, 1.0e-5f);
+        EXPECT_NEAR(std::abs(tangentValues[offset + 3u]), 1.0f, 1.0e-5f);
+    }
+
+    RVX::Mesh::Ptr alreadySplit = split.Clone();
+    ASSERT_NE(alreadySplit, nullptr);
+    const RVX::TangentGenerationResult repeated =
+        alreadySplit->GenerateTangentsDetailed(0u, true);
+    EXPECT_TRUE(repeated.success);
+    EXPECT_FALSE(repeated.topologySplit);
+    EXPECT_EQ(repeated.originalVertexCount, 6u);
+    EXPECT_EQ(repeated.publishedVertexCount, 6u);
+    EXPECT_EQ(repeated.splitVertexCount, 0u);
+
+    RVX::Mesh limited = makeConflictMesh();
+    const RVX::TangentGenerationResult limitedResult =
+        limited.GenerateTangentsDetailed(0u, true, 5u);
+    EXPECT_FALSE(limitedResult.success);
+    EXPECT_EQ(limitedResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitLimitExceeded);
+    EXPECT_EQ(limited.GetVertexCount(), 4u);
+    EXPECT_FALSE(limited.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh nonZeroBaseVertex = makeConflictMesh();
+    std::vector<RVX::SubMesh> baseVertexSubMeshes =
+        nonZeroBaseVertex.GetSubMeshes();
+    ASSERT_EQ(baseVertexSubMeshes.size(), 1u);
+    baseVertexSubMeshes[0].baseVertex = 1;
+    nonZeroBaseVertex.SetSubMeshes(std::move(baseVertexSubMeshes));
+    const RVX::TangentGenerationResult baseVertexResult =
+        nonZeroBaseVertex.GenerateTangentsDetailed(0u, true);
+    EXPECT_FALSE(baseVertexResult.success);
+    EXPECT_EQ(baseVertexResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitBaseVertexUnsupported);
+    EXPECT_EQ(nonZeroBaseVertex.GetVertexCount(), 4u);
+    EXPECT_FALSE(nonZeroBaseVertex.HasAttribute(
+        RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh byteBudgetLimited = makeConflictMesh();
+    const RVX::TangentGenerationResult byteBudgetResult =
+        byteBudgetLimited.GenerateTangentsDetailed(
+            0u,
+            true,
+            RVX::RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_VERTEX_LIMIT,
+            1u);
+    EXPECT_FALSE(byteBudgetResult.success);
+    EXPECT_EQ(byteBudgetResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitByteBudgetExceeded);
+    EXPECT_EQ(byteBudgetLimited.GetVertexCount(), 4u);
+    EXPECT_FALSE(byteBudgetLimited.HasAttribute(
+        RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh deterministic = makeConflictMesh();
+    const RVX::TangentGenerationResult deterministicResult =
+        deterministic.GenerateTangentsDetailed(0u, true);
+    ASSERT_TRUE(deterministicResult.success);
+    EXPECT_TRUE(deterministicResult.topologySplit);
+    EXPECT_EQ(deterministic.GetIndices32(), split.GetIndices32());
+    for (const char* name : {RVX::VertexBufferNames::Position,
+                             RVX::VertexBufferNames::Normal,
+                             RVX::VertexBufferNames::UV,
+                             RVX::VertexBufferNames::UV1,
+                             RVX::VertexBufferNames::Color,
+                             RVX::VertexBufferNames::BoneIndices,
+                             RVX::VertexBufferNames::BoneWeights,
+                             RVX::VertexBufferNames::Tangent})
+    {
+        const RVX::VertexAttribute* first = split.GetAttribute(name);
+        const RVX::VertexAttribute* second = deterministic.GetAttribute(name);
+        ASSERT_NE(first, nullptr) << name;
+        ASSERT_NE(second, nullptr) << name;
+        ASSERT_EQ(first->GetVertexCount(), second->GetVertexCount()) << name;
+        ASSERT_EQ(first->GetStride(), second->GetStride()) << name;
+        EXPECT_EQ(0, std::memcmp(
+            first->GetData(),
+            second->GetData(),
+            first->GetVertexCount() * first->GetStride())) << name;
+    }
+}
+
+TEST_F(RenderHonestyValidationFixture,
        MeshFlatNormalsSplitCornersAndInvalidateAuthoredTangents)
 {
     RVX::Mesh mesh;
@@ -2607,7 +2887,7 @@ TEST_F(RenderHonestyValidationFixture,
 }
 
 TEST_F(RenderHonestyValidationFixture,
-       MeshGenerateTangentsRejectsMalformedOrAmbiguousGeometry)
+       MeshGenerateTangentsRejectsMalformedGeometryAndReportsFallbacks)
 {
     const auto makeTriangle = []()
     {
@@ -2661,7 +2941,13 @@ TEST_F(RenderHonestyValidationFixture,
             {0.0f, 0.0f},
             {0.0f, 0.0f},
         });
-        EXPECT_FALSE(mesh->GenerateTangents());
+        const RVX::TangentGenerationResult result =
+            mesh->GenerateTangentsDetailed();
+        EXPECT_TRUE(result.success);
+        EXPECT_EQ(result.mikkTriangleCount, 0u);
+        EXPECT_EQ(result.fallbackTriangleCount, 1u);
+        EXPECT_EQ(result.degenerateUVTriangleCount, 1u);
+        EXPECT_EQ(result.fallbackCornerCount, 3u);
     }
     {
         auto mesh = makeTriangle();
@@ -2676,6 +2962,19 @@ TEST_F(RenderHonestyValidationFixture,
             {0.0f, 1.0f},
         });
         EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetNormals({
+            {0.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f},
+        });
+        const RVX::TangentGenerationResult result =
+            mesh->GenerateTangentsDetailed();
+        EXPECT_FALSE(result.success);
+        EXPECT_EQ(result.failure,
+                  RVX::TangentGenerationFailure::InvalidVertexData);
     }
 }
 

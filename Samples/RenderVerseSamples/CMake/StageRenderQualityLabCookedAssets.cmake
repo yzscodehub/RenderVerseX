@@ -24,7 +24,9 @@ set(_rvx_asset_ids
     particle-fire-v1
     particle-smoke-v1
     water-surface-reference-fixture-v1
-    particle-vfx-ground-caster-v1)
+    particle-vfx-ground-caster-v1
+    water-bottle-cooked-v1
+    pbr-material-grid-cooked-v1)
 set(_rvx_staging "${_rvx_destination}.staging")
 file(REMOVE_RECURSE "${_rvx_staging}")
 file(MAKE_DIRECTORY "${_rvx_staging}/cooked")
@@ -33,7 +35,7 @@ foreach(_rvx_asset_id IN LISTS _rvx_asset_ids)
     set(_rvx_source_package "${FULL_ASSET_ROOT}/cooked/${_rvx_asset_id}")
     if(NOT IS_DIRECTORY "${_rvx_source_package}")
         message(FATAL_ERROR
-            "GFX24 cooked product is missing admitted package ${_rvx_asset_id}")
+            "Cooked Sample product is missing admitted package ${_rvx_asset_id}")
     endif()
     file(COPY "${_rvx_source_package}" DESTINATION "${_rvx_staging}/cooked")
 endforeach()
@@ -62,7 +64,7 @@ execute_process(
     COMMAND "${CATALOG_WRITER}" ${_rvx_catalog_arguments}
     RESULT_VARIABLE _rvx_catalog_result)
 if(NOT _rvx_catalog_result EQUAL 0)
-    message(FATAL_ERROR "GFX24 cooked product catalog publication failed")
+    message(FATAL_ERROR "Cooked Sample product catalog publication failed")
 endif()
 
 # The final product directory is intentionally a strict artifact-only subset.
@@ -79,11 +81,11 @@ file(GLOB_RECURSE _rvx_source_residue RELATIVE "${_rvx_staging}"
     "${_rvx_staging}/*.msl")
 if(_rvx_source_residue)
     message(FATAL_ERROR
-        "GFX24 cooked product contains forbidden source residue: ${_rvx_source_residue}")
+        "Cooked Sample product contains forbidden source residue: ${_rvx_source_residue}")
 endif()
 
 file(WRITE "${_rvx_staging}/.rvx-staged"
-    "schemaVersion=1\nsource=RenderQualityLabCooked\nassetCount=7\n")
+    "schemaVersion=1\nsource=RenderVerseSamplesCooked\nassetCount=9\n")
 file(REMOVE_RECURSE "${_rvx_destination}")
 file(RENAME "${_rvx_staging}" "${_rvx_destination}")
 if(NOT EXISTS "${STAMP_PATH}")

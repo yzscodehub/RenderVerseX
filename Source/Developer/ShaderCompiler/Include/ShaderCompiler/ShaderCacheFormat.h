@@ -11,7 +11,7 @@ namespace RVX
     // =========================================================================
     constexpr uint32 RVX_SHADER_CACHE_MAGIC = 0x52565853; // "RVXS"
     constexpr uint32 RVX_SHADER_CACHE_VERSION = 2;
-    constexpr uint64 RVX_SHADER_COMPILER_CACHE_ABI_VERSION = 17;
+    constexpr uint64 RVX_SHADER_COMPILER_CACHE_ABI_VERSION = 18;
 
     // =========================================================================
     // Cache Flags

@@ -1,6 +1,6 @@
 /**
  * @file SampleCookedCatalogWriter.cpp
- * @brief Emits one schema-v3 cooked-only Sample catalog entry from RVXCook output.
+ * @brief Emits one schema-v4 cooked-only Sample catalog entry from RVXCook output.
  *
  * This tool deliberately derives every identity from the runtime manifest and
  * mounted cooked bytes.  It is a build-time publisher: it never edits a cooked
@@ -49,6 +49,9 @@ namespace
         std::string modificationNotice;
         std::string derivedFrom;
         std::string generationRecipe;
+        std::string usagePolicy;
+        bool qualificationEligible = false;
+        bool hasQualificationEligible = false;
     };
 
     struct PackageFile
@@ -80,13 +83,84 @@ namespace
             << "  --attribution <text>\n"
             << "  --modification-notice <text>\n"
             << "  --derived-from <id>\n"
-            << "  --generation-recipe <id>\n";
+            << "  --generation-recipe <id>\n"
+            << "  --usage-policy <required-qualification|development-only|optional-nightly>\n"
+            << "  --qualification-eligible <true|false>\n"
+            << "  --self-test\n";
     }
 
     bool IsSupportedAssetKind(const std::string_view assetKind) noexcept
     {
         return assetKind == "model" || assetKind == "environment" ||
                assetKind == "effect";
+    }
+
+    bool IsValidUsagePolicy(const std::string_view policy) noexcept
+    {
+        return policy == "required-qualification" ||
+               policy == "development-only" ||
+               policy == "optional-nightly";
+    }
+
+    bool ValidateUsagePolicy(const std::string_view policy,
+                             const bool qualificationEligible,
+                             std::string& outError)
+    {
+        if (!IsValidUsagePolicy(policy))
+        {
+            outError = "usage policy is missing or unknown";
+            return false;
+        }
+        if (qualificationEligible !=
+            (policy == "required-qualification"))
+        {
+            outError =
+                "qualification eligibility must exactly match required-qualification";
+            return false;
+        }
+        return true;
+    }
+
+    bool ParseQualificationEligible(const std::string_view text,
+                                    bool& outValue) noexcept
+    {
+        if (text == "true")
+        {
+            outValue = true;
+            return true;
+        }
+        if (text == "false")
+        {
+            outValue = false;
+            return true;
+        }
+        return false;
+    }
+
+    bool RunSelfTest()
+    {
+        std::string error;
+        const bool acceptsRequired =
+            ValidateUsagePolicy("required-qualification", true, error);
+        error.clear();
+        const bool acceptsDevelopment =
+            ValidateUsagePolicy("development-only", false, error);
+        error.clear();
+        const bool acceptsNightly =
+            ValidateUsagePolicy("optional-nightly", false, error);
+        error.clear();
+        const bool rejectsUnknown =
+            !ValidateUsagePolicy("unknown", false, error);
+        error.clear();
+        const bool rejectsContradictory =
+            !ValidateUsagePolicy("development-only", true, error);
+        if (!acceptsRequired || !acceptsDevelopment || !acceptsNightly ||
+            !rejectsUnknown || !rejectsContradictory)
+        {
+            std::cerr << "Sample cooked catalog writer self-test failed.\n";
+            return false;
+        }
+        return true;
     }
 
     bool ResolveCookAssetType(const std::string_view assetKind,
@@ -147,11 +221,33 @@ namespace
             else if (argument == "--modification-notice") outOptions.modificationNotice = value;
             else if (argument == "--derived-from") outOptions.derivedFrom = value;
             else if (argument == "--generation-recipe") outOptions.generationRecipe = value;
+            else if (argument == "--usage-policy") outOptions.usagePolicy = value;
+            else if (argument == "--qualification-eligible")
+            {
+                if (!ParseQualificationEligible(value,
+                                                outOptions.qualificationEligible))
+                {
+                    std::cerr << "--qualification-eligible must be true or false\n";
+                    return false;
+                }
+                outOptions.hasQualificationEligible = true;
+            }
             else
             {
                 std::cerr << "Unknown argument: " << argument << "\n";
                 return false;
             }
+        }
+
+        std::string usagePolicyError;
+        if (!outOptions.hasQualificationEligible ||
+            !ValidateUsagePolicy(outOptions.usagePolicy,
+                                 outOptions.qualificationEligible,
+                                 usagePolicyError))
+        {
+            std::cerr << "Invalid --usage-policy/--qualification-eligible: "
+                      << usagePolicyError << "\n";
+            return false;
         }
 
         return !outOptions.inputCatalog.empty() && !outOptions.outputCatalog.empty() &&
@@ -293,10 +389,10 @@ namespace
         if (!catalogInput || catalog.is_discarded() || !catalog.is_object() ||
             !catalog.contains("schemaId") ||
             catalog.value("schemaId", std::string{}) != "RVX.SampleAssetCatalog" ||
-            catalog.value("schemaVersion", 0u) != 3u ||
+            catalog.value("schemaVersion", 0u) != 4u ||
             !catalog.contains("assets") || !catalog["assets"].is_array())
         {
-            outError = "Input Sample catalog is not schema-v3 RVX.SampleAssetCatalog";
+            outError = "Input Sample catalog is not schema-v4 RVX.SampleAssetCatalog";
             return false;
         }
         // Windows does not permit renaming the temporary output over this
@@ -470,6 +566,8 @@ namespace
         Json entry = {
             {"id", options.assetId},
             {"kind", options.assetKind},
+            {"usagePolicy", options.usagePolicy},
+            {"qualificationEligible", options.qualificationEligible},
             {"path", options.assetPathRelative},
             {"license", {
                 {"spdxId", "LicenseRef-RenderVerseX-Generated"},
@@ -555,6 +653,11 @@ namespace
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && argv[1] != nullptr &&
+        std::string_view(argv[1]) == "--self-test")
+    {
+        return RunSelfTest() ? 0 : 3;
+    }
     Options options;
     if (!ParseOptions(argc, argv, options))
     {

@@ -622,6 +622,7 @@ if(TARGET RVX_SampleCommon)
         LANE unit
         SOURCES SampleManifestValidation/main.cpp
         LIBS RVX::SampleCommon
+        DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
         TAGS product.samples suite.contracts
         TIMEOUT 30
     )
@@ -638,6 +639,27 @@ if(TARGET RVX_SampleCommon)
     )
     target_compile_definitions(SampleAssetCatalogValidation PRIVATE
         RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+    if(RVX_ENABLE_EXTERNAL_ASSET_TESTS)
+        if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+            message(FATAL_ERROR
+                "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+        endif()
+        cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+            NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_CATALOG_ROOT)
+        file(TO_CMAKE_PATH "${RVX_EXTERNAL_CATALOG_ROOT}"
+            RVX_EXTERNAL_CATALOG_ROOT_CMAKE_PATH)
+        rvx_add_gtest(
+            NAME ExternalAssetCatalogValidation
+            LANE qualification
+            SOURCES ExternalAssetCatalogValidation/main.cpp
+            LIBS RVX::SampleCommon
+            DEFINES
+                RVX_EXTERNAL_TEST_ASSET_ROOT="${RVX_EXTERNAL_CATALOG_ROOT_CMAKE_PATH}"
+            TAGS product.samples trait.external-assets suite.assets
+            TIMEOUT 120
+        )
+    endif()
 
     # GFX17 receipt predicates are ordinary deterministic unit coverage. The
     # native qualification suite owns the sole suite.gfx17-vfx label.

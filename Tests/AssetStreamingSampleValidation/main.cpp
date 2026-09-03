@@ -159,6 +159,11 @@ namespace RVX
             receipt.descriptorRevision = 1;
             receipt.frameSequence = 39;
             receipt.presentationSequence = 40;
+            receipt.parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+            receipt.featureMask = 0;
+            receipt.shadingModel = MaterialShadingModel::StandardLit;
+            receipt.surfacePathEligibility =
+                SurfacePathEligibility::DeferredOpaque;
             MaterialBindingTextureEntry entry;
             entry.texture = Texture;
             entry.contentRevision = 9;

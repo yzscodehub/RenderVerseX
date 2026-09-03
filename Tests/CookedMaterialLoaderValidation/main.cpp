@@ -1,9 +1,11 @@
 #include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/Loader/CookedMaterialLoader.h"
+#include "Resource/RenderUploadRequestBuilder.h"
 #include "Resource/Types/MaterialResource.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -413,6 +415,135 @@ TEST(CookedMaterialLoaderValidation,
     EXPECT_EQ(definition.parameters.textureFlags, 0xc1u);
     EXPECT_TRUE(material->GetTexture("transmission"));
     EXPECT_TRUE(material->GetTexture("thickness"));
+}
+
+TEST(CookedMaterialLoaderValidation,
+     PreparesV2SpecularAndClearcoatSlotsWithoutSourceFallback)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "SpecularClearcoat.rvmat";
+    const fs::path albedoPath = temporary.Get() / "textures" / "albedo.rva";
+    const fs::path specularPath = temporary.Get() / "textures" / "specular.rva";
+    const fs::path specularColorPath =
+        temporary.Get() / "textures" / "specular_color.rva";
+    const fs::path clearcoatPath =
+        temporary.Get() / "textures" / "clearcoat.rva";
+    const fs::path clearcoatRoughnessPath =
+        temporary.Get() / "textures" / "clearcoat_roughness.rva";
+    const fs::path clearcoatNormalPath =
+        temporary.Get() / "textures" / "clearcoat_normal.rva";
+    ASSERT_TRUE(WriteTexture(albedoPath, RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(specularPath, RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(specularColorPath,
+                             RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(clearcoatPath,
+                             RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(clearcoatRoughnessPath,
+                             RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(clearcoatNormalPath,
+                             RVX::Resource::TextureUsage::Normal, false));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(albedoPath));
+    artifact.material.parameters.specularFactor = 0.65f;
+    artifact.material.parameters.specularColor = {1.2f, 0.8f, 0.6f};
+    artifact.material.parameters.clearcoatFactor = 0.9f;
+    artifact.material.parameters.clearcoatRoughness = 0.2f;
+    artifact.material.parameters.clearcoatNormalScale = 0.5f;
+
+    const auto addBinding = [&artifact](RVX::MaterialTextureSlot slot,
+                                        const fs::path& path,
+                                        RVX::Resource::TextureUsage usage,
+                                        bool isSRGB,
+                                        RVX::Resource::TextureFallbackSemantic fallback)
+    {
+        RVX::Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = slot;
+        binding.artifactPath = (fs::path("textures") / path.filename()).generic_string();
+        binding.expectedContentHash = HashFile(path);
+        binding.usage = usage;
+        binding.isSRGB = isSRGB;
+        binding.fallbackSemantic = fallback;
+        artifact.textureBindings.push_back(std::move(binding));
+    };
+    addBinding(RVX::MaterialTextureSlot::Specular, specularPath,
+               RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::SpecularColor, specularColorPath,
+               RVX::Resource::TextureUsage::Color, true,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::Clearcoat, clearcoatPath,
+               RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::ClearcoatRoughness,
+               clearcoatRoughnessPath, RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::ClearcoatNormal, clearcoatNormalPath,
+               RVX::Resource::TextureUsage::Normal, false,
+               RVX::Resource::TextureFallbackSemantic::FlatNormal);
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition = material->GetMaterialDefinition();
+    EXPECT_FLOAT_EQ(definition.parameters.specularFactor, 0.65f);
+    EXPECT_EQ(definition.parameters.specularColor, (RVX::Vec3{1.2f, 0.8f, 0.6f}));
+    EXPECT_FLOAT_EQ(definition.parameters.clearcoatFactor, 0.9f);
+    EXPECT_NE(definition.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(definition.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    EXPECT_TRUE(material->GetTexture("specular"));
+    EXPECT_TRUE(material->GetTexture("specular_color"));
+    EXPECT_TRUE(material->GetTexture("clearcoat"));
+    EXPECT_TRUE(material->GetTexture("clearcoat_roughness"));
+    EXPECT_TRUE(material->GetTexture("clearcoat_normal"));
+
+    const RVX::Resource::RenderUploadRequestBuildResult upload =
+        RVX::Resource::RenderUploadRequestBuilder::Build(
+            *material,
+            RVX::RenderResourceHandle{901u, 1u},
+            7u,
+            [](RVX::AssetId, RVX::RenderResourceKind kind)
+            {
+                EXPECT_EQ(kind, RVX::RenderResourceKind::Texture);
+                return RVX::RenderResourceHandle{902u, 1u};
+            });
+    ASSERT_EQ(upload.code, RVX::Resource::RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(upload.request, nullptr);
+    const auto& uploadPayload = std::get<RVX::MaterialUploadPayload>(
+        upload.request->GetPayload());
+    EXPECT_NE(uploadPayload.staticDescriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(uploadPayload.staticDescriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    EXPECT_EQ(uploadPayload.textureBindings.size(), 6u);
+    const auto hasUploadSlot = [&uploadPayload](RVX::MaterialUploadTextureSlot slot)
+    {
+        return std::any_of(
+            uploadPayload.textureBindings.begin(),
+            uploadPayload.textureBindings.end(),
+            [slot](const RVX::MaterialUploadTextureBinding& binding)
+            {
+                return binding.slot == slot;
+            });
+    };
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::Specular));
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::SpecularColor));
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::Clearcoat));
+    EXPECT_TRUE(hasUploadSlot(
+        RVX::MaterialUploadTextureSlot::ClearcoatRoughness));
+    EXPECT_TRUE(hasUploadSlot(
+        RVX::MaterialUploadTextureSlot::ClearcoatNormal));
 }
 
 TEST(CookedMaterialLoaderValidation,

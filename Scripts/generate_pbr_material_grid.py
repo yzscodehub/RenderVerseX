@@ -27,6 +27,42 @@ BASE_COLOR_SLICES = (
     ("blue", (0.06, 0.18, 0.72, 1.0)),
     ("neutral", (0.50, 0.50, 0.50, 1.0)),
 )
+FACTOR_REQUIRED_EXTENSIONS = (
+    "KHR_materials_specular",
+    "KHR_materials_clearcoat",
+    "KHR_materials_ior",
+    "KHR_materials_emissive_strength",
+)
+EMISSIVE_FACTOR = (0.08, 0.03, 0.01)
+
+
+def factor_layer_extensions(layer: int) -> dict[str, object]:
+    """Return the fixed Material V2 extension coverage for one color layer."""
+    if layer == 0:
+        return {}
+    if layer == 1:
+        return {
+            "KHR_materials_specular": {
+                "specularFactor": 0.65,
+                "specularColorFactor": [0.85, 0.95, 1.0],
+            }
+        }
+    if layer == 2:
+        return {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.2,
+            }
+        }
+    if layer == 3:
+        return {"KHR_materials_ior": {"ior": 1.45}}
+    if layer == 4:
+        return {
+            "KHR_materials_emissive_strength": {
+                "emissiveStrength": 3.0,
+            }
+        }
+    raise ValueError(f"unexpected PBR factor layer: {layer}")
 
 
 def build_sphere() -> tuple[list[float], list[float], list[float], list[int]]:
@@ -220,17 +256,21 @@ def build_document(workflow: str) -> dict[str, object]:
                         f"PBRFactor_C{layer}_{color_name}_"
                         f"M{metallic:.2f}_R{roughness:.2f}"
                     )
-                    materials.append(
-                        {
-                            "name": material_name,
-                            "pbrMetallicRoughness": {
-                                "baseColorFactor": list(base_color),
-                                "metallicFactor": metallic,
-                                "roughnessFactor": roughness,
-                            },
-                            "alphaMode": "OPAQUE",
-                        }
-                    )
+                    material = {
+                        "name": material_name,
+                        "pbrMetallicRoughness": {
+                            "baseColorFactor": list(base_color),
+                            "metallicFactor": metallic,
+                            "roughnessFactor": roughness,
+                        },
+                        "alphaMode": "OPAQUE",
+                    }
+                    extensions = factor_layer_extensions(layer)
+                    if extensions:
+                        material["extensions"] = extensions
+                    if layer == 4:
+                        material["emissiveFactor"] = list(EMISSIVE_FACTOR)
+                    materials.append(material)
                     nodes.append(
                         {
                             "name": material_name,
@@ -304,7 +344,7 @@ def build_document(workflow: str) -> dict[str, object]:
             )
 
     texture_resources = workflow == "texture"
-    return {
+    document = {
         "asset": {
             "version": "2.0",
             "generator":
@@ -415,24 +455,106 @@ def build_document(workflow: str) -> dict[str, object]:
             },
         ],
     }
+    if workflow == "factor":
+        document["extensionsUsed"] = list(FACTOR_REQUIRED_EXTENSIONS)
+        document["extensionsRequired"] = list(FACTOR_REQUIRED_EXTENSIONS)
+        validate_factor_document(document)
+    return document
+
+
+def validate_factor_document(document: dict[str, object]) -> None:
+    """Fail closed if the deterministic factor matrix drifts from its contract."""
+    materials = document.get("materials")
+    nodes = document.get("nodes")
+    meshes = document.get("meshes")
+    if not isinstance(materials, list) or len(materials) != 125:
+        raise ValueError("factor fixture must contain exactly 125 materials")
+    if not isinstance(nodes, list) or len(nodes) != 125:
+        raise ValueError("factor fixture must contain exactly 125 nodes")
+    if not isinstance(meshes, list) or len(meshes) != 1:
+        raise ValueError("factor fixture must keep its single shared mesh")
+    expected_extensions = list(FACTOR_REQUIRED_EXTENSIONS)
+    if document.get("extensionsUsed") != expected_extensions:
+        raise ValueError("factor fixture extensionsUsed must be the exact V2 set")
+    if document.get("extensionsRequired") != expected_extensions:
+        raise ValueError("factor fixture extensionsRequired must be the exact V2 set")
+
+    for layer, (color_name, base_color) in enumerate(BASE_COLOR_SLICES):
+        layer_start = layer * len(METALLIC_LEVELS) * len(ROUGHNESS_LEVELS)
+        layer_materials = materials[layer_start:layer_start + 25]
+        expected_layer_extensions = factor_layer_extensions(layer)
+        if len(layer_materials) != 25:
+            raise ValueError(f"factor fixture layer {layer} must contain 25 materials")
+        for row, roughness in enumerate(ROUGHNESS_LEVELS):
+            for column, metallic in enumerate(METALLIC_LEVELS):
+                local_index = row * len(METALLIC_LEVELS) + column
+                material = layer_materials[local_index]
+                node = nodes[layer_start + local_index]
+                expected_name = (
+                    f"PBRFactor_C{layer}_{color_name}_"
+                    f"M{metallic:.2f}_R{roughness:.2f}"
+                )
+                if material.get("name") != expected_name or node.get("name") != expected_name:
+                    raise ValueError("factor fixture material or node naming drifted")
+                if material.get("alphaMode") != "OPAQUE":
+                    raise ValueError("factor fixture must remain opaque")
+                if material.get("pbrMetallicRoughness") != {
+                    "baseColorFactor": list(base_color),
+                    "metallicFactor": metallic,
+                    "roughnessFactor": roughness,
+                }:
+                    raise ValueError("factor fixture PBR matrix drifted")
+                if material.get("extensions", {}) != expected_layer_extensions:
+                    raise ValueError("factor fixture extension layer drifted")
+                if layer == 4:
+                    if material.get("emissiveFactor") != list(EMISSIVE_FACTOR):
+                        raise ValueError("emissive-strength layer must have a non-zero factor")
+                elif "emissiveFactor" in material:
+                    raise ValueError("only the emissive-strength layer may set emissiveFactor")
+                if any(
+                    "Texture" in key
+                    for extension in material.get("extensions", {}).values()
+                    for key in extension
+                ):
+                    raise ValueError("factor fixture must not declare extension textures")
+    if "KHR_materials_transmission" in json.dumps(document, sort_keys=True):
+        raise ValueError("factor fixture must not declare transmission")
+
+
+def serialize_document(workflow: str) -> bytes:
+    return (
+        json.dumps(build_document(workflow), indent=2) + "\n"
+    ).encode("utf-8")
+
+
+def run_self_test() -> None:
+    first = serialize_document("factor")
+    second = serialize_document("factor")
+    if first != second:
+        raise RuntimeError("factor fixture generation is not byte-identical")
+    document = json.loads(first)
+    validate_factor_document(document)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("output", type=Path)
+    parser.add_argument("output", type=Path, nargs="?")
     parser.add_argument(
         "--workflow",
         choices=("factor", "texture"),
         default="factor",
     )
+    parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args()
 
+    if arguments.self_test:
+        run_self_test()
+        print("PBR material grid generator self-test passed")
+        return 0
+    if arguments.output is None:
+        parser.error("output is required unless --self-test is specified")
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    arguments.output.write_text(
-        json.dumps(build_document(arguments.workflow), indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    arguments.output.write_bytes(serialize_document(arguments.workflow))
     return 0
 
 

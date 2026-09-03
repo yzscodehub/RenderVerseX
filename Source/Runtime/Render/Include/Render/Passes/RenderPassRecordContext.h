@@ -374,6 +374,8 @@ namespace RVX
         bool gpuDrivenEligible = false;
         bool gpuDrivenSubmitted = false;
         uint32 gpuDrivenIndirectBatchCount = 0;
+        /** Source packets represented by successfully recorded indirect groups. */
+        uint32 gpuDrivenSubmittedSourcePacketCount = 0;
         uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
         bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
         uint32 gpuDrivenIndirectDrawCount = 0;
@@ -1542,11 +1544,22 @@ namespace RVX
         uint64 descriptorRevision = 0;
         std::vector<MaterialBindingTextureEntry> textureEntries{};
         bool fallbackUsed = false;
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::DeferredOpaque;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return material.IsValid() && contentRevision != 0 &&
                    descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   (featureMask & ~RVX_MATERIAL_FEATURE_MASK_V2) == 0 &&
+                   shadingModel <= MaterialShadingModel::ThinTransmission &&
+                   IsValidMaterialReceiptRoute(
+                       shadingModel, blendMode, surfacePathEligibility) &&
                    std::all_of(textureEntries.begin(), textureEntries.end(),
                        [](const MaterialBindingTextureEntry& entry)
                        {
@@ -1698,11 +1711,48 @@ namespace RVX
             receipt.descriptorRevision = binding.descriptorRevision;
             receipt.textureEntries = binding.textureEntries;
             receipt.fallbackUsed = binding.usedFallback;
-            if (!binding.IsDrawable() || !receipt.IsValid())
+            receipt.parameterLayoutHash = binding.parameterLayoutHash;
+            receipt.featureMask = binding.featureMask;
+            receipt.shadingModel = binding.shadingModel;
+            receipt.blendMode = binding.blendMode;
+            receipt.surfacePathEligibility = binding.surfacePathEligibility;
+            if (!binding.IsDrawable())
             {
                 return false;
             }
+            return RecordSuccessfulMaterialBindingReceipt(std::move(receipt));
+        }
 
+        /** Record a material actually indexed by a successful table draw. */
+        [[nodiscard]] bool RecordSuccessfulMaterialBinding(
+            const MaterialParameterTableBindingEvidence& evidence)
+        {
+            if (!evidence.IsValid())
+            {
+                return false;
+            }
+            RenderRecordedMaterialBindingReceipt receipt;
+            receipt.material = evidence.material;
+            receipt.contentRevision = evidence.contentRevision;
+            receipt.descriptorContentKey = evidence.descriptorContentKey;
+            receipt.descriptorRevision = evidence.descriptorRevision;
+            receipt.textureEntries = evidence.textureEntries;
+            receipt.fallbackUsed = evidence.fallbackUsed;
+            receipt.parameterLayoutHash = evidence.parameterLayoutHash;
+            receipt.featureMask = evidence.featureMask;
+            receipt.shadingModel = evidence.shadingModel;
+            receipt.blendMode = evidence.blendMode;
+            receipt.surfacePathEligibility = evidence.surfacePathEligibility;
+            return RecordSuccessfulMaterialBindingReceipt(std::move(receipt));
+        }
+
+        [[nodiscard]] bool RecordSuccessfulMaterialBindingReceipt(
+            RenderRecordedMaterialBindingReceipt receipt)
+        {
+            if (!receipt.IsValid())
+            {
+                return false;
+            }
             const auto position = std::lower_bound(
                 successfulMaterialBindings.begin(),
                 successfulMaterialBindings.end(),
@@ -1875,6 +1925,13 @@ namespace RVX
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
         /** Sealed reflection plan requires materialized receiver MRT outputs. */
         bool requiresReflectionSurfaceData = false;
+        /**
+         * A complete visual qualification bundle requires the Forward+
+         * normal attachment even when no reflection or Toon consumer is
+         * active. This is a one-frame recording requirement, not a reason to
+         * allocate the surface MRTs for ordinary Forward+ frames.
+         */
+        bool requiresQualificationSurfaceData = false;
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         /// True only for the legacy ViewData adapter.  Migrated scene passes

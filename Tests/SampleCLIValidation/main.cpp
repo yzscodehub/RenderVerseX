@@ -7,6 +7,7 @@
 #include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleManifest.h"
 #include "Samples/SampleRunner.h"
+#include "Samples/SampleScenarioDiagnostics.h"
 #include "Samples/SampleScreenshotWriter.h"
 
 #include <gtest/gtest.h>
@@ -347,7 +348,7 @@ namespace
         receipt.toonLighting.inputsReady = true;
         receipt.toonLighting.executed = true;
         receipt.toonLighting.programFamilyHash =
-            RVX::GetMaterialProgramFamilyValueIdentity("toon-lit-v1");
+            RVX::GetMaterialProgramFamilyValueIdentity("toon-lit-v2");
         receipt.toonLighting.materialCount = 1;
         receipt.toonLighting.drawCount = 2;
         receipt.toonLighting.forwardShadedDrawCount = 2;
@@ -749,7 +750,7 @@ namespace
         const RVX::SampleToonOutlineExecutionDiagnostics outline =
             RVX::ProjectSampleToonOutlineExecutionDiagnostics(snapshot);
         EXPECT_TRUE(lighting.IsExecutionReady());
-        EXPECT_EQ(lighting.programFamily, "toon-lit-v1");
+        EXPECT_EQ(lighting.programFamily, "toon-lit-v2");
         EXPECT_TRUE(outline.IsExecutionReady());
         EXPECT_TRUE(outline.IsQualificationReady());
         EXPECT_EQ(outline.outlinedPixelCount, 128u);
@@ -1380,7 +1381,7 @@ namespace
         std::ostringstream currentStream;
         RVX::WriteSampleReportJson(currentStream, current);
         const std::string currentJson = currentStream.str();
-        EXPECT_NE(currentJson.find("\"schemaVersion\": 35"),
+        EXPECT_NE(currentJson.find("\"schemaVersion\": 36"),
                   std::string::npos);
         EXPECT_NE(currentJson.find("\"halfResolutionTrace\": true"),
                   std::string::npos);
@@ -1457,7 +1458,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 36"), std::string::npos);
         EXPECT_NE(json.find("\"waterSurfaceActualExecution\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualifiedWater\": false"),
@@ -2750,6 +2751,7 @@ namespace
         report.renderDiagnostics.gpuDrivenExecutionRecorded = true;
         report.renderDiagnostics.gpuDrivenOpaqueIndirectSubmitted = true;
         report.renderDiagnostics.gpuDrivenOpaqueIndirectBatchCount = 2;
+        report.renderDiagnostics.gpuDrivenOpaqueSubmittedSourcePacketCount = 12;
         report.renderDiagnostics.opaqueExecutionCompleted = true;
         report.renderDiagnostics.opaqueExecutedDrawCountAvailable = true;
         report.renderDiagnostics.opaqueExecutedDrawCount = 12;
@@ -2843,7 +2845,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 36"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2867,6 +2869,9 @@ namespace
         EXPECT_NE(json.find("\"rasterPayloadMatched\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"gpuOnlyVisiblePacketCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"gpuDrivenOpaqueSubmittedSourcePacketCount\": 12"),
                   std::string::npos);
         EXPECT_NE(json.find("\"expectedIndirectArgumentsHash\": 41"),
                   std::string::npos);
@@ -2978,7 +2983,7 @@ namespace
         EXPECT_NE(json.find("\"qualified\": true"), std::string::npos);
         EXPECT_NE(json.find("\"toonLightingActualExecution\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"programFamily\": \"toon-lit-v1\""),
+        EXPECT_NE(json.find("\"programFamily\": \"toon-lit-v2\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"toonOutlineActualExecution\": {"),
                   std::string::npos);
@@ -3139,7 +3144,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 36"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -3630,7 +3635,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 35"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 36"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),
@@ -3685,6 +3690,111 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"lane\":\"Direct\""),
                   std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         CurrentReportProjectsPresentedMaterialV2Receipts)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        auto& diagnostics = report.renderDiagnostics;
+        diagnostics.presentedMaterialBindingsAvailable = true;
+        diagnostics.presentedMaterialBindings.push_back(
+            {{17u, 9u},
+             41u,
+             51u,
+             61u,
+             {},
+             false,
+             71u,
+             71u,
+             RVX::GetMaterialParameterLayoutHashV2(),
+             RVX::RVX_MATERIAL_FEATURE_SPECULAR |
+                 RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+                 RVX::RVX_MATERIAL_FEATURE_IOR,
+             RVX::MaterialShadingModel::StandardLit,
+             RVX::SurfacePathEligibility::DeferredOpaque});
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"schemaVersion\": 36"), std::string::npos);
+        EXPECT_NE(json.find("\"presentedMaterialBindingsAvailable\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"materialSlot\":17"), std::string::npos);
+        EXPECT_NE(json.find("\"parameterLayoutHash\":" +
+                                std::to_string(
+                                    RVX::GetMaterialParameterLayoutHashV2())),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"surfacePathEligibility\":\"DeferredOpaque\""),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         PresentedMaterialV2AggregateRequiresPresentationAndFeatureCoverage)
+    {
+        RVX::SampleRenderDiagnostics diagnostics;
+        diagnostics.opaqueExecutionCompleted = true;
+        diagnostics.gpuDrivenOpaqueSubmittedSourcePacketCount = 125;
+        diagnostics.presentedMaterialBindingsAvailable = true;
+        diagnostics.presentedMaterialBindings.push_back(
+            {{17u, 9u},
+             41u,
+             51u,
+             61u,
+             {},
+             false,
+             71u,
+             71u,
+             RVX::GetMaterialParameterLayoutHashV2(),
+             RVX::RVX_MATERIAL_FEATURE_SPECULAR |
+                 RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+                 RVX::RVX_MATERIAL_FEATURE_IOR,
+             RVX::MaterialShadingModel::StandardLit,
+             RVX::SurfacePathEligibility::DeferredOpaque});
+
+        const RVX::SampleRasterScenarioDiagnostics aggregate =
+            RVX::ProjectSampleRasterScenarioDiagnostics(diagnostics);
+        EXPECT_EQ(125u,
+                  aggregate.gpuDrivenOpaqueSubmittedSourcePacketCount);
+        EXPECT_TRUE(RVX::HasPresentedOpaqueStandardLitRasterEvidence(aggregate));
+        EXPECT_TRUE(RVX::HasPresentedMaterialFeatureEvidence(
+            aggregate,
+            RVX::RVX_MATERIAL_FEATURE_SPECULAR |
+                RVX::RVX_MATERIAL_FEATURE_CLEARCOAT |
+                RVX::RVX_MATERIAL_FEATURE_IOR));
+
+        RVX::SampleRasterScenarioDiagnostics mixedMaterialModel = aggregate;
+        mixedMaterialModel.presentedMaterialBindings.push_back(
+            {RVX::GetMaterialParameterLayoutHashV2(),
+             RVX::RVX_MATERIAL_FEATURE_TRANSMISSION,
+             RVX::MaterialShadingModel::ThinTransmission,
+             RVX::SurfacePathEligibility::ForwardTranslucency,
+             false,
+             71u,
+             71u});
+        EXPECT_TRUE(RVX::HasPresentedOpaqueStandardLitRasterEvidence(
+            mixedMaterialModel));
+
+        mixedMaterialModel.presentedMaterialBindings.front()
+            .surfacePathEligibility =
+            RVX::SurfacePathEligibility::ForwardSpecialOpaque;
+        EXPECT_TRUE(RVX::HasPresentedOpaqueStandardLitRasterEvidence(
+            mixedMaterialModel));
+        mixedMaterialModel.presentedMaterialBindings.front()
+            .surfacePathEligibility =
+            RVX::SurfacePathEligibility::ForwardTranslucency;
+        EXPECT_FALSE(RVX::HasPresentedOpaqueStandardLitRasterEvidence(
+            mixedMaterialModel));
+
+        diagnostics.presentedMaterialBindingsOverflow = true;
+        EXPECT_FALSE(RVX::HasPresentedOpaqueStandardLitRasterEvidence(
+            RVX::ProjectSampleRasterScenarioDiagnostics(diagnostics)));
+        diagnostics.presentedMaterialBindingsOverflow = false;
+        diagnostics.presentedMaterialBindings.front().fallbackUsed = true;
+        EXPECT_FALSE(RVX::HasPresentedMaterialFeatureEvidence(
+            RVX::ProjectSampleRasterScenarioDiagnostics(diagnostics),
+            RVX::RVX_MATERIAL_FEATURE_SPECULAR));
     }
 
     TEST(SampleCLIValidation,

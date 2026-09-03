@@ -86,9 +86,9 @@ namespace RVX
             return UINT32_MAX;
         }
 
-        if (set == 2 && binding >= 9u && binding <= 16u)
+        if (set == 2 && binding >= 14u && binding <= 21u)
         {
-            return 8u + binding - 9u;
+            return 8u + binding - 14u;
         }
 
         return UINT32_MAX;

@@ -712,8 +712,10 @@ TEST(EcsSceneAssetLoadCoordinatorValidation,
     EXPECT_FLOAT_EQ(metadata.materials[0].baseColor.w, 0.75f);
     EXPECT_FLOAT_EQ(metadata.materials[0].metallicFactor, 0.7f);
     EXPECT_FLOAT_EQ(metadata.materials[0].roughnessFactor, 0.2f);
+    EXPECT_EQ(metadata.materials[0].featureMask, 0x3u);
     EXPECT_EQ(metadata.materials[1].workflow, RVX::Resource::MaterialWorkflowMode::Unlit);
     EXPECT_EQ(metadata.materials[1].alphaMode, RVX::Resource::MaterialAlphaMode::Mask);
+    EXPECT_EQ(metadata.materials[1].featureMask, 0u);
     ASSERT_EQ(metadata.materials[0].textureSlots.size(), 2u);
     EXPECT_EQ(metadata.materials[0].textureSlots[0].slot, "albedo");
     EXPECT_EQ(metadata.materials[0].textureSlots[0].textureAssetId.value, 7201u);

@@ -59,6 +59,7 @@ namespace RVX
                  Vec4(1.0f),
                  0.0f,
                  0.8f,
+                 0u,
                  {{"baseColor", {sourceAssetValue + 5u}},
                   {"normal", {sourceAssetValue + 6u}}}},
                 {{sourceAssetValue + 4u},
@@ -68,6 +69,7 @@ namespace RVX
                  Vec4(1.0f),
                  1.0f,
                  0.25f,
+                 0u,
                  {{"baseColor", {sourceAssetValue + 7u}}}}};
             return model;
         }

@@ -111,7 +111,12 @@ namespace
             case MaterialUploadTextureSlot::Emissive:
             case MaterialUploadTextureSlot::ToonRamp:
             case MaterialUploadTextureSlot::Transmission:
-            case MaterialUploadTextureSlot::Thickness: return true;
+            case MaterialUploadTextureSlot::Thickness:
+            case MaterialUploadTextureSlot::Specular:
+            case MaterialUploadTextureSlot::SpecularColor:
+            case MaterialUploadTextureSlot::Clearcoat:
+            case MaterialUploadTextureSlot::ClearcoatRoughness:
+            case MaterialUploadTextureSlot::ClearcoatNormal: return true;
         }
         return false;
     }
@@ -143,7 +148,7 @@ namespace
     }
 
     constexpr uint32 RVX_MATERIAL_UPLOAD_TEXTURE_FLAGS =
-        (1U << (static_cast<uint32>(MaterialUploadTextureSlot::Thickness) + 1U)) -
+        (1U << (static_cast<uint32>(MaterialUploadTextureSlot::ClearcoatNormal) + 1U)) -
         1U;
 
     constexpr uint64 RVX_MATERIAL_UPLOAD_FEATURE_MASK =
@@ -493,13 +498,17 @@ namespace
             return false;
         }
         if ((payload.staticDescriptor.featureMask &
-             ~RVX_MATERIAL_UPLOAD_FEATURE_MASK) != 0)
+             ~RVX_MATERIAL_FEATURE_MASK_V2) != 0)
         {
             outError =
-                "Material descriptor enables texture slots outside the v4 upload contract";
+                "Material descriptor enables features outside the v2 upload contract";
             return false;
         }
 
+        MaterialDefinition definition;
+        definition.descriptor = payload.staticDescriptor;
+        definition.parameters = source;
+        definition.textureSlots.reserve(payload.textureBindings.size());
         uint32 observedTextureFlags = 0;
         for (size_t index = 0; index < payload.textureBindings.size(); ++index)
         {
@@ -527,6 +536,17 @@ namespace
             }
             observedTextureFlags |=
                 1U << static_cast<uint32>(binding.slot);
+            MaterialTextureSlotDefinition slot;
+            slot.slot = static_cast<MaterialTextureSlot>(binding.slot);
+            slot.uvSet = static_cast<uint8>(binding.uvSet);
+            slot.offset = binding.offset;
+            slot.scale = binding.scale;
+            slot.rotation = binding.rotation;
+            slot.wrapS = static_cast<MaterialSamplerWrap>(binding.wrapS);
+            slot.wrapT = static_cast<MaterialSamplerWrap>(binding.wrapT);
+            slot.minFilter = static_cast<MaterialSamplerFilter>(binding.minFilter);
+            slot.magFilter = static_cast<MaterialSamplerFilter>(binding.magFilter);
+            definition.textureSlots.push_back(slot);
         }
         if (source.textureFlags != observedTextureFlags ||
             (payload.staticDescriptor.featureMask &
@@ -537,6 +557,8 @@ namespace
                 "Material source and descriptor texture feature masks do not match upload bindings";
             return false;
         }
+        if (!ValidateMaterialDefinition(definition, outError))
+            return false;
         outError.clear();
         return true;
     }

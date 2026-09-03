@@ -2,6 +2,7 @@
 
 #include <mikktspace.h>
 
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -11,6 +12,7 @@ namespace RVX
     {
         constexpr float RVX_TANGENT_EPSILON = 1.0e-8f;
         constexpr float RVX_UV_DETERMINANT_EPSILON = 1.0e-12f;
+        constexpr float RVX_GEOMETRIC_DEGENERACY_RELATIVE_EPSILON = 1.0e-12f;
 
         bool IsFiniteVec3(const Vec3& value)
         {
@@ -42,17 +44,350 @@ namespace RVX
             return NormalizeOr(cross(axis, n), Vec3(1.0f, 0.0f, 0.0f));
         }
 
+        bool TryNormalize(const Vec3& value, Vec3& outNormalized)
+        {
+            if (!IsFiniteVec3(value))
+            {
+                return false;
+            }
+
+            const float lengthSquared = dot(value, value);
+            if (!std::isfinite(lengthSquared) ||
+                lengthSquared <= RVX_TANGENT_EPSILON)
+            {
+                return false;
+            }
+
+            outNormalized = value * glm::inversesqrt(lengthSquared);
+            return IsFiniteVec3(outNormalized);
+        }
+
+        bool IsGeometricallyDegenerate(const Vec3& position0,
+                                       const Vec3& position1,
+                                       const Vec3& position2)
+        {
+            const Vec3 edge01 = position1 - position0;
+            const Vec3 edge02 = position2 - position0;
+            const Vec3 edge12 = position2 - position1;
+            const float largestEdgeLengthSquared = std::max({
+                dot(edge01, edge01),
+                dot(edge02, edge02),
+                dot(edge12, edge12)});
+            const Vec3 geometricNormal = cross(edge01, edge02);
+            const float geometricAreaSquared =
+                dot(geometricNormal, geometricNormal);
+            if (!std::isfinite(largestEdgeLengthSquared) ||
+                !std::isfinite(geometricAreaSquared) ||
+                largestEdgeLengthSquared <=
+                    std::numeric_limits<float>::min())
+            {
+                return true;
+            }
+
+            // This is deliberately scale-relative.  An absolute area test
+            // incorrectly rejects valid small meshes such as the Porsche
+            // detail geometry, while this still rejects a numerically
+            // collapsed triangle.
+            return geometricAreaSquared <=
+                largestEdgeLengthSquared * largestEdgeLengthSquared *
+                    RVX_GEOMETRIC_DEGENERACY_RELATIVE_EPSILON;
+        }
+
+        bool TryBuildDegenerateFallbackTangent(const Vec3& normal,
+                                               const Vec3& position0,
+                                               const Vec3& position1,
+                                               const Vec3& position2,
+                                               Vec4& outTangent)
+        {
+            Vec3 normalizedNormal;
+            if (!TryNormalize(normal, normalizedNormal))
+            {
+                return false;
+            }
+
+            const std::array<Vec3, 3> edges{
+                position1 - position0,
+                position2 - position0,
+                position2 - position1};
+            for (const Vec3& edge : edges)
+            {
+                const Vec3 planarEdge =
+                    edge - normalizedNormal * dot(normalizedNormal, edge);
+                Vec3 tangent;
+                if (TryNormalize(planarEdge, tangent))
+                {
+                    outTangent = Vec4(tangent, 1.0f);
+                    return true;
+                }
+            }
+
+            // A collapsed triangle can have no usable edge.  A finite normal
+            // still defines one deterministic orthogonal frame; do not
+            // fabricate one when that normal itself is invalid.
+            Vec3 tangent;
+            if (!TryNormalize(BuildFallbackTangent(normalizedNormal), tangent) ||
+                std::abs(dot(normalizedNormal, tangent)) > 1.0e-4f)
+            {
+                return false;
+            }
+
+            outTangent = Vec4(tangent, 1.0f);
+            return true;
+        }
+
+        enum class TangentCornerSplitBuildResult : uint8
+        {
+            Success,
+            VertexLimitExceeded,
+            ByteBudgetExceeded,
+            BaseVertexUnsupported,
+            CopyFailed
+        };
+
+        bool CheckedAddSize(size_t left, size_t right, size_t& outValue)
+        {
+            if (left > std::numeric_limits<size_t>::max() - right)
+            {
+                return false;
+            }
+            outValue = left + right;
+            return true;
+        }
+
+        bool CheckedMultiplySize(size_t left, size_t right, size_t& outValue)
+        {
+            if (left != 0u &&
+                right > std::numeric_limits<size_t>::max() / left)
+            {
+                return false;
+            }
+            outValue = left * right;
+            return true;
+        }
+
+        TangentCornerSplitBuildResult TryBuildTangentCornerSplitMesh(
+            const Mesh& source,
+            const std::vector<uint32>& sourceIndices,
+            uint32 vertexLimit,
+            size_t byteLimit,
+            Mesh& outMesh)
+        {
+            if (sourceIndices.empty() ||
+                vertexLimit == 0u ||
+                sourceIndices.size() > static_cast<size_t>(vertexLimit))
+            {
+                return TangentCornerSplitBuildResult::VertexLimitExceeded;
+            }
+            if (!source.ValidateSubMeshes())
+            {
+                return TangentCornerSplitBuildResult::CopyFailed;
+            }
+            for (const SubMesh& subMesh : source.GetSubMeshes())
+            {
+                if (subMesh.baseVertex != 0)
+                {
+                    return TangentCornerSplitBuildResult::BaseVertexUnsupported;
+                }
+            }
+
+            const size_t sourceVertexCount = source.GetVertexCount();
+            if (sourceVertexCount == 0u ||
+                sourceIndices.size() >
+                    static_cast<size_t>(std::numeric_limits<uint32>::max()))
+            {
+                return TangentCornerSplitBuildResult::CopyFailed;
+            }
+
+            size_t totalAttributeBytes = 0u;
+            for (const auto& [attributeName, attribute] :
+                 source.GetAttributes())
+            {
+                (void)attributeName;
+                if (!attribute || attribute->GetVertexCount() !=
+                                      sourceVertexCount ||
+                    attribute->GetComponents() == 0u ||
+                    attribute->GetComponents() > 4u ||
+                    !attribute->GetData() || attribute->GetStride() == 0u)
+                {
+                    return TangentCornerSplitBuildResult::CopyFailed;
+                }
+                size_t expandedAttributeBytes = 0u;
+                if (!CheckedMultiplySize(sourceIndices.size(),
+                                         attribute->GetStride(),
+                                         expandedAttributeBytes) ||
+                    !CheckedAddSize(totalAttributeBytes,
+                                    expandedAttributeBytes,
+                                    totalAttributeBytes))
+                {
+                    return TangentCornerSplitBuildResult::ByteBudgetExceeded;
+                }
+            }
+
+            size_t expandedIndexBytes = 0u;
+            size_t requiredWorkingBytes = 0u;
+            if (!CheckedMultiplySize(sourceIndices.size(), sizeof(uint32),
+                                     expandedIndexBytes) ||
+                // Each attribute has a published VertexAttribute payload and
+                // one temporary expanded byte vector. Index data exists in the
+                // temporary vector and again after SetIndices().
+                !CheckedMultiplySize(totalAttributeBytes, 2u,
+                                     requiredWorkingBytes) ||
+                !CheckedAddSize(requiredWorkingBytes, expandedIndexBytes,
+                                requiredWorkingBytes) ||
+                !CheckedAddSize(requiredWorkingBytes, expandedIndexBytes,
+                                requiredWorkingBytes) ||
+                !CheckedAddSize(requiredWorkingBytes, expandedIndexBytes,
+                                requiredWorkingBytes) ||
+                requiredWorkingBytes > byteLimit)
+            {
+                return TangentCornerSplitBuildResult::ByteBudgetExceeded;
+            }
+
+            try
+            {
+                outMesh.name = source.name;
+                outMesh.SetPrimitiveType(source.GetPrimitiveType());
+                for (const auto& [attributeName, attribute] :
+                     source.GetAttributes())
+                {
+                    if (!attribute || attribute->GetVertexCount() !=
+                                          sourceVertexCount ||
+                        attribute->GetComponents() == 0u ||
+                        attribute->GetComponents() > 4u ||
+                        !attribute->GetData())
+                    {
+                        return TangentCornerSplitBuildResult::CopyFailed;
+                    }
+
+                    const size_t stride = attribute->GetStride();
+                    if (stride == 0u ||
+                        sourceIndices.size() >
+                            std::numeric_limits<size_t>::max() / stride)
+                    {
+                        return TangentCornerSplitBuildResult::CopyFailed;
+                    }
+
+                    std::vector<uint8> expandedBytes(
+                        sourceIndices.size() * stride);
+                    const auto* sourceBytes =
+                        static_cast<const uint8*>(attribute->GetData());
+                    for (size_t corner = 0; corner < sourceIndices.size();
+                         ++corner)
+                    {
+                        const uint32 sourceIndex = sourceIndices[corner];
+                        if (sourceIndex >= sourceVertexCount)
+                        {
+                            return TangentCornerSplitBuildResult::CopyFailed;
+                        }
+                        std::memcpy(
+                            expandedBytes.data() + corner * stride,
+                            sourceBytes + static_cast<size_t>(sourceIndex) *
+                                              stride,
+                            stride);
+                    }
+                    outMesh.AddAttribute(
+                        attributeName,
+                        std::make_unique<VertexAttribute>(
+                            expandedBytes.data(),
+                            sourceIndices.size(),
+                            attribute->GetComponents(),
+                            attribute->GetType(),
+                            attribute->IsNormalized()));
+                }
+
+                std::vector<uint32> expandedIndices(sourceIndices.size());
+                for (size_t corner = 0; corner < expandedIndices.size();
+                     ++corner)
+                {
+                    expandedIndices[corner] = static_cast<uint32>(corner);
+                }
+                outMesh.SetIndices(expandedIndices);
+
+                std::vector<SubMesh> splitSubMeshes = source.GetSubMeshes();
+                outMesh.SetSubMeshes(std::move(splitSubMeshes));
+                if (const std::optional<AABB>& sourceBounds =
+                        source.GetBoundingBox();
+                    sourceBounds.has_value())
+                {
+                    outMesh.SetBoundingBox(
+                        sourceBounds->GetMin(), sourceBounds->GetMax());
+                }
+                else if (!outMesh.ComputeBoundingBox())
+                {
+                    return TangentCornerSplitBuildResult::CopyFailed;
+                }
+            }
+            catch (const std::exception&)
+            {
+                return TangentCornerSplitBuildResult::CopyFailed;
+            }
+
+            return outMesh.GetVertexCount() == sourceIndices.size() &&
+                   outMesh.GetIndexCount() == sourceIndices.size() &&
+                   outMesh.ValidateSubMeshes()
+                ? TangentCornerSplitBuildResult::Success
+                : TangentCornerSplitBuildResult::CopyFailed;
+        }
+
         struct MikkMeshData
         {
             const float* positions = nullptr;
             const float* normals = nullptr;
             const float* uvs = nullptr;
             const std::vector<uint32>* indices = nullptr;
+            const std::vector<uint32>* originalFaceIndices = nullptr;
             std::vector<Vec4>* tangents = nullptr;
             std::vector<bool>* assigned = nullptr;
+            std::vector<Vec4>* cornerTangents = nullptr;
+            std::vector<bool>* cornerAssigned = nullptr;
+            std::vector<uint32>* invalidOutputFaces = nullptr;
             bool invalidOutput = false;
             bool conflictingCornerBasis = false;
         };
+
+        enum class TangentAssignmentResult : uint8
+        {
+            Assigned,
+            CompatibleDuplicate,
+            Invalid,
+            Conflict
+        };
+
+        TangentAssignmentResult AssignTangent(MikkMeshData& data,
+                                              uint32 index,
+                                              const Vec3& tangent,
+                                              float signValue)
+        {
+            const float lengthSquared = glm::dot(tangent, tangent);
+            if (!IsFiniteVec3(tangent) || !std::isfinite(signValue) ||
+                !std::isfinite(lengthSquared) ||
+                lengthSquared <= RVX_TANGENT_EPSILON)
+            {
+                return TangentAssignmentResult::Invalid;
+            }
+
+            const Vec3 normalized = tangent * glm::inversesqrt(lengthSquared);
+            if (!IsFiniteVec3(normalized))
+            {
+                return TangentAssignmentResult::Invalid;
+            }
+
+            const float sign = signValue < 0.0f ? -1.0f : 1.0f;
+            if ((*data.assigned)[index])
+            {
+                const Vec4& existing = (*data.tangents)[index];
+                if (glm::dot(Vec3(existing), normalized) < 0.999f ||
+                    existing.w != sign)
+                {
+                    return TangentAssignmentResult::Conflict;
+                }
+                return TangentAssignmentResult::CompatibleDuplicate;
+            }
+
+            (*data.tangents)[index] = Vec4(normalized, sign);
+            (*data.assigned)[index] = true;
+            return TangentAssignmentResult::Assigned;
+        }
 
         MikkMeshData& GetMikkMeshData(const SMikkTSpaceContext* context)
         {
@@ -128,33 +463,95 @@ namespace RVX
             const Vec3 tangent(
                 tangentValue[0], tangentValue[1], tangentValue[2]);
             const float lengthSquared = glm::dot(tangent, tangent);
-            if (!IsFiniteVec3(tangent) || !std::isfinite(signValue) ||
-                !std::isfinite(lengthSquared) ||
-                lengthSquared <= RVX_TANGENT_EPSILON)
+            if (IsFiniteVec3(tangent) && std::isfinite(signValue) &&
+                std::isfinite(lengthSquared) &&
+                lengthSquared > RVX_TANGENT_EPSILON &&
+                data.cornerTangents != nullptr &&
+                data.cornerAssigned != nullptr &&
+                data.originalFaceIndices != nullptr && face >= 0 &&
+                vertex >= 0 && vertex < 3 &&
+                static_cast<size_t>(face) < data.originalFaceIndices->size())
             {
-                data.invalidOutput = true;
-                return;
-            }
-
-            const Vec3 normalized = tangent * glm::inversesqrt(lengthSquared);
-            const float sign = signValue < 0.0f ? -1.0f : 1.0f;
-            if ((*data.assigned)[index])
-            {
-                const Vec4& existing = (*data.tangents)[index];
-                if (glm::dot(Vec3(existing), normalized) < 0.999f ||
-                    existing.w != sign)
+                const uint32 originalFace = (*data.originalFaceIndices)[
+                    static_cast<size_t>(face)];
+                const size_t cornerIndex =
+                    static_cast<size_t>(originalFace) * 3u +
+                    static_cast<size_t>(vertex);
+                if (cornerIndex < data.cornerTangents->size() &&
+                    cornerIndex < data.cornerAssigned->size())
                 {
+                    const Vec3 normalized = tangent *
+                        glm::inversesqrt(lengthSquared);
+                    if (IsFiniteVec3(normalized))
+                    {
+                        (*data.cornerTangents)[cornerIndex] = Vec4(
+                            normalized,
+                            signValue < 0.0f ? -1.0f : 1.0f);
+                        (*data.cornerAssigned)[cornerIndex] = true;
+                    }
+                }
+            }
+            switch (AssignTangent(data, index, tangent, signValue))
+            {
+                case TangentAssignmentResult::Invalid:
+                    data.invalidOutput = true;
+                    if (data.invalidOutputFaces != nullptr &&
+                        data.originalFaceIndices != nullptr &&
+                        face >= 0 &&
+                        static_cast<size_t>(face) <
+                            data.originalFaceIndices->size())
+                    {
+                        data.invalidOutputFaces->push_back(
+                            (*data.originalFaceIndices)[
+                                static_cast<size_t>(face)]);
+                    }
+                    break;
+                case TangentAssignmentResult::Conflict:
                     // One indexed vertex cannot represent distinct per-corner
                     // tangent frames. The source must split its UV/normal seam.
                     data.conflictingCornerBasis = true;
-                }
-                return;
+                    break;
+                case TangentAssignmentResult::Assigned:
+                case TangentAssignmentResult::CompatibleDuplicate:
+                    break;
             }
-
-            (*data.tangents)[index] = Vec4(normalized, sign);
-            (*data.assigned)[index] = true;
         }
     } // namespace
+
+    const char* GetTangentGenerationFailureName(
+        TangentGenerationFailure failure)
+    {
+        switch (failure)
+        {
+            case TangentGenerationFailure::None:
+                return "none";
+            case TangentGenerationFailure::InvalidUVSet:
+                return "invalid-uv-set";
+            case TangentGenerationFailure::InvalidMeshLayout:
+                return "invalid-mesh-layout";
+            case TangentGenerationFailure::InvalidIndex:
+                return "invalid-index";
+            case TangentGenerationFailure::InvalidVertexData:
+                return "invalid-vertex-data";
+            case TangentGenerationFailure::MikkGenerationFailed:
+                return "mikk-generation-failed";
+            case TangentGenerationFailure::MikkInvalidOutput:
+                return "mikk-invalid-output";
+            case TangentGenerationFailure::ConflictingCornerBasis:
+                return "conflicting-corner-basis";
+            case TangentGenerationFailure::TopologySplitLimitExceeded:
+                return "topology-split-limit-exceeded";
+            case TangentGenerationFailure::TopologySplitByteBudgetExceeded:
+                return "topology-split-byte-budget-exceeded";
+            case TangentGenerationFailure::TopologySplitBaseVertexUnsupported:
+                return "topology-split-base-vertex-unsupported";
+            case TangentGenerationFailure::TopologySplitCopyFailed:
+                return "topology-split-copy-failed";
+            case TangentGenerationFailure::UnrecoverableDegenerateBasis:
+                return "unrecoverable-degenerate-basis";
+        }
+        return "unknown";
+    }
 
     // =========================================================================
     // Mesh Implementation
@@ -480,9 +877,25 @@ namespace RVX
 
     bool Mesh::GenerateTangents(uint32 uvSet)
     {
+        return GenerateTangentsDetailed(uvSet).success;
+    }
+
+    TangentGenerationResult Mesh::GenerateTangentsDetailed(
+        uint32 uvSet,
+        bool allowTopologySplit,
+        uint32 topologySplitVertexLimit,
+        size_t topologySplitByteLimit)
+    {
+        TangentGenerationResult result;
+        const auto fail = [&result](TangentGenerationFailure failure)
+        {
+            result.failure = failure;
+            return result;
+        };
+
         if (uvSet > 1u)
         {
-            return false;
+            return fail(TangentGenerationFailure::InvalidUVSet);
         }
         const std::string uvAttributeName = uvSet == 1u
             ? VertexBufferNames::UV1
@@ -503,10 +916,16 @@ namespace RVX
             normAttr->GetVertexCount() != posAttr->GetVertexCount() ||
             uvAttr->GetVertexCount() != posAttr->GetVertexCount())
         {
-            return false;
+            return fail(TangentGenerationFailure::InvalidMeshLayout);
         }
 
         const size_t vertexCount = posAttr->GetVertexCount();
+        if (vertexCount > static_cast<size_t>(std::numeric_limits<uint32>::max()))
+        {
+            return fail(TangentGenerationFailure::InvalidMeshLayout);
+        }
+        result.originalVertexCount = static_cast<uint32>(vertexCount);
+        result.publishedVertexCount = static_cast<uint32>(vertexCount);
         const float* positions = static_cast<const float*>(posAttr->GetData());
         const float* normals = static_cast<const float*>(normAttr->GetData());
         const float* uvs = static_cast<const float*>(uvAttr->GetData());
@@ -515,15 +934,18 @@ namespace RVX
             indices.size() % 3u != 0u ||
             indices.size() / 3u > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
-            return false;
+            return fail(TangentGenerationFailure::InvalidMeshLayout);
         }
+
+        result.triangleCount =
+            static_cast<uint32>(indices.size() / 3u);
 
         std::vector<bool> referenced(vertexCount, false);
         for (uint32 index : indices)
         {
             if (index >= vertexCount)
             {
-                return false;
+                return fail(TangentGenerationFailure::InvalidIndex);
             }
             referenced[index] = true;
             const Vec3 position(
@@ -539,9 +961,16 @@ namespace RVX
                 !std::isfinite(uv.x) || !std::isfinite(uv.y) ||
                 glm::dot(normal, normal) <= RVX_TANGENT_EPSILON)
             {
-                return false;
+                return fail(TangentGenerationFailure::InvalidVertexData);
             }
         }
+
+        std::vector<bool> fallbackFace(result.triangleCount, false);
+        std::vector<bool> mikkRejectedFace(result.triangleCount, false);
+        std::vector<uint32> mikkIndices;
+        std::vector<uint32> mikkOriginalFaces;
+        mikkIndices.reserve(indices.size());
+        mikkOriginalFaces.reserve(result.triangleCount);
         for (size_t triangle = 0; triangle < indices.size(); triangle += 3u)
         {
             const uint32 index0 = indices[triangle];
@@ -562,56 +991,270 @@ namespace RVX
             const Vec2 uv0(uvs[index0 * 2u], uvs[index0 * 2u + 1u]);
             const Vec2 uv1(uvs[index1 * 2u], uvs[index1 * 2u + 1u]);
             const Vec2 uv2(uvs[index2 * 2u], uvs[index2 * 2u + 1u]);
-            const Vec3 geometricNormal =
-                cross(position1 - position0, position2 - position0);
             const Vec2 uvEdge1 = uv1 - uv0;
             const Vec2 uvEdge2 = uv2 - uv0;
             const float uvDeterminant =
                 uvEdge1.x * uvEdge2.y - uvEdge1.y * uvEdge2.x;
-            const float geometricAreaSquared =
-                dot(geometricNormal, geometricNormal);
-            if (!std::isfinite(geometricAreaSquared) ||
-                !std::isfinite(uvDeterminant) ||
-                geometricAreaSquared <=
-                    RVX_TANGENT_EPSILON ||
-                std::abs(uvDeterminant) <=
-                    RVX_UV_DETERMINANT_EPSILON)
+            if (!std::isfinite(uvDeterminant))
             {
-                return false;
+                return fail(TangentGenerationFailure::InvalidVertexData);
             }
+
+            const bool geometricDegenerate = IsGeometricallyDegenerate(
+                position0, position1, position2);
+            const bool uvDegenerate =
+                std::abs(uvDeterminant) <= RVX_UV_DETERMINANT_EPSILON;
+            if (geometricDegenerate || uvDegenerate)
+            {
+                const size_t face = triangle / 3u;
+                fallbackFace[face] = true;
+                ++result.fallbackTriangleCount;
+                if (geometricDegenerate)
+                {
+                    ++result.degenerateGeometryTriangleCount;
+                }
+                if (uvDegenerate)
+                {
+                    ++result.degenerateUVTriangleCount;
+                }
+                continue;
+            }
+
+            mikkIndices.push_back(index0);
+            mikkIndices.push_back(index1);
+            mikkIndices.push_back(index2);
+            mikkOriginalFaces.push_back(
+                static_cast<uint32>(triangle / 3u));
+            ++result.mikkTriangleCount;
         }
 
         std::vector<Vec4> finalTangents(vertexCount, Vec4(0.0f));
         std::vector<bool> assigned(vertexCount, false);
-        MikkMeshData data{
-            positions,
-            normals,
-            uvs,
-            &indices,
-            &finalTangents,
-            &assigned};
-        SMikkTSpaceInterface interface{
-            MikkGetNumFaces,
-            MikkGetNumVerticesOfFace,
-            MikkGetPosition,
-            MikkGetNormal,
-            MikkGetTexCoord,
-            MikkSetTSpaceBasic,
-            nullptr};
-        const SMikkTSpaceContext context{&interface, &data};
-        if (genTangSpaceDefault(&context) == 0 || data.invalidOutput ||
-            data.conflictingCornerBasis)
+        std::vector<Vec4> cornerTangents(indices.size(), Vec4(0.0f));
+        std::vector<bool> cornerAssigned(indices.size(), false);
+        MikkMeshData data;
+        std::vector<uint32> invalidOutputFaces;
+        data.positions = positions;
+        data.normals = normals;
+        data.uvs = uvs;
+        data.indices = &mikkIndices;
+        data.originalFaceIndices = &mikkOriginalFaces;
+        data.tangents = &finalTangents;
+        data.assigned = &assigned;
+        data.cornerTangents = &cornerTangents;
+        data.cornerAssigned = &cornerAssigned;
+        data.invalidOutputFaces = &invalidOutputFaces;
+        if (!mikkIndices.empty())
         {
-            return false;
+            SMikkTSpaceInterface interface{
+                MikkGetNumFaces,
+                MikkGetNumVerticesOfFace,
+                MikkGetPosition,
+                MikkGetNormal,
+                MikkGetTexCoord,
+                MikkSetTSpaceBasic,
+                nullptr};
+            const SMikkTSpaceContext context{&interface, &data};
+            const int mikkGenerated = genTangSpaceDefault(&context);
+            const TangentGenerationFailure mikkGenerationFailure =
+                ClassifyMikkGenerationResult(mikkGenerated != 0);
+            if (mikkGenerationFailure != TangentGenerationFailure::None)
+            {
+                return fail(mikkGenerationFailure);
+            }
+            const auto recordMikkRejectedFaces = [&]()
+            {
+                bool markedFallbackFace = false;
+                for (uint32 face : invalidOutputFaces)
+                {
+                    if (face >= fallbackFace.size())
+                    {
+                        return false;
+                    }
+                    if (!fallbackFace[face])
+                    {
+                        fallbackFace[face] = true;
+                        mikkRejectedFace[face] = true;
+                        ++result.fallbackTriangleCount;
+                        ++result.mikkRejectedTriangleCount;
+                        if (result.firstMikkRejectedTriangle ==
+                            RVX_INVALID_INDEX)
+                        {
+                            result.firstMikkRejectedTriangle = face;
+                        }
+                        markedFallbackFace = true;
+                    }
+                }
+                return markedFallbackFace;
+            };
+            if (data.conflictingCornerBasis)
+            {
+                if (allowTopologySplit)
+                {
+                    if (data.invalidOutput && !recordMikkRejectedFaces())
+                    {
+                        return fail(
+                            TangentGenerationFailure::MikkInvalidOutput);
+                    }
+
+                    Mesh splitMesh;
+                    const TangentCornerSplitBuildResult splitBuild =
+                        TryBuildTangentCornerSplitMesh(
+                            *this,
+                            indices,
+                            topologySplitVertexLimit,
+                            topologySplitByteLimit,
+                            splitMesh);
+                    switch (splitBuild)
+                    {
+                        case TangentCornerSplitBuildResult::VertexLimitExceeded:
+                            return fail(
+                                TangentGenerationFailure::TopologySplitLimitExceeded);
+                        case TangentCornerSplitBuildResult::ByteBudgetExceeded:
+                            return fail(
+                                TangentGenerationFailure::TopologySplitByteBudgetExceeded);
+                        case TangentCornerSplitBuildResult::BaseVertexUnsupported:
+                            return fail(
+                                TangentGenerationFailure::TopologySplitBaseVertexUnsupported);
+                        case TangentCornerSplitBuildResult::CopyFailed:
+                            return fail(
+                                TangentGenerationFailure::TopologySplitCopyFailed);
+                        case TangentCornerSplitBuildResult::Success:
+                            break;
+                    }
+
+                    std::vector<Vec4> splitTangents(indices.size(), Vec4(0.0f));
+                    for (size_t face = 0; face < fallbackFace.size(); ++face)
+                    {
+                        const size_t triangle = face * 3u;
+                        const uint32 index0 = indices[triangle];
+                        const uint32 index1 = indices[triangle + 1u];
+                        const uint32 index2 = indices[triangle + 2u];
+                        const std::array<uint32, 3> cornerIndices{
+                            index0, index1, index2};
+                        const std::array<Vec3, 3> positionsByCorner{
+                            Vec3(positions[index0 * 3u], positions[index0 * 3u + 1u],
+                                 positions[index0 * 3u + 2u]),
+                            Vec3(positions[index1 * 3u], positions[index1 * 3u + 1u],
+                                 positions[index1 * 3u + 2u]),
+                            Vec3(positions[index2 * 3u], positions[index2 * 3u + 1u],
+                                 positions[index2 * 3u + 2u])};
+                        for (size_t corner = 0; corner < cornerIndices.size(); ++corner)
+                        {
+                            const size_t cornerOffset = triangle + corner;
+                            if (cornerAssigned[cornerOffset])
+                            {
+                                splitTangents[cornerOffset] =
+                                    cornerTangents[cornerOffset];
+                                continue;
+                            }
+                            if (!fallbackFace[face] &&
+                                !mikkRejectedFace[face])
+                            {
+                                return fail(
+                                    TangentGenerationFailure::MikkInvalidOutput);
+                            }
+                            const uint32 index = cornerIndices[corner];
+                            const Vec3 normal(
+                                normals[index * 3u], normals[index * 3u + 1u],
+                                normals[index * 3u + 2u]);
+                            if (!TryBuildDegenerateFallbackTangent(
+                                    normal,
+                                    positionsByCorner[corner],
+                                    positionsByCorner[(corner + 1u) % 3u],
+                                    positionsByCorner[(corner + 2u) % 3u],
+                                    splitTangents[cornerOffset]))
+                            {
+                                return fail(
+                                    TangentGenerationFailure::UnrecoverableDegenerateBasis);
+                            }
+                            ++result.fallbackCornerCount;
+                        }
+                    }
+
+                    splitMesh.SetTangents(splitTangents);
+                    *this = std::move(splitMesh);
+                    result.topologySplit = true;
+                    result.originalVertexCount =
+                        static_cast<uint32>(vertexCount);
+                    result.publishedVertexCount =
+                        static_cast<uint32>(GetVertexCount());
+                    result.splitVertexCount =
+                        result.publishedVertexCount -
+                        result.originalVertexCount;
+                    result.success = true;
+                    return result;
+                }
+                return fail(TangentGenerationFailure::ConflictingCornerBasis);
+            }
+            if (data.invalidOutput)
+            {
+                return fail(TangentGenerationFailure::MikkInvalidOutput);
+            }
+        }
+
+        for (size_t face = 0; face < fallbackFace.size(); ++face)
+        {
+            if (!fallbackFace[face])
+            {
+                continue;
+            }
+
+            const size_t triangle = face * 3u;
+            const uint32 index0 = indices[triangle];
+            const uint32 index1 = indices[triangle + 1u];
+            const uint32 index2 = indices[triangle + 2u];
+            const std::array<uint32, 3> cornerIndices{
+                index0, index1, index2};
+            const std::array<Vec3, 3> positionsByCorner{
+                Vec3(positions[index0 * 3u], positions[index0 * 3u + 1u],
+                     positions[index0 * 3u + 2u]),
+                Vec3(positions[index1 * 3u], positions[index1 * 3u + 1u],
+                     positions[index1 * 3u + 2u]),
+                Vec3(positions[index2 * 3u], positions[index2 * 3u + 1u],
+                     positions[index2 * 3u + 2u])};
+            for (size_t corner = 0; corner < cornerIndices.size(); ++corner)
+            {
+                const uint32 index = cornerIndices[corner];
+                if (mikkRejectedFace[face] && assigned[index])
+                {
+                    continue;
+                }
+                const Vec3 normal(
+                    normals[index * 3u], normals[index * 3u + 1u],
+                    normals[index * 3u + 2u]);
+                Vec4 fallbackTangent;
+                if (!TryBuildDegenerateFallbackTangent(
+                        normal,
+                        positionsByCorner[corner],
+                        positionsByCorner[(corner + 1u) % 3u],
+                        positionsByCorner[(corner + 2u) % 3u],
+                        fallbackTangent))
+                {
+                    return fail(
+                        TangentGenerationFailure::UnrecoverableDegenerateBasis);
+                }
+
+                const TangentAssignmentResult assignment = AssignTangent(
+                    data, index, Vec3(fallbackTangent), fallbackTangent.w);
+                if (assignment == TangentAssignmentResult::Invalid)
+                {
+                    return fail(
+                        TangentGenerationFailure::UnrecoverableDegenerateBasis);
+                }
+                if (assignment == TangentAssignmentResult::Conflict)
+                {
+                    return fail(TangentGenerationFailure::ConflictingCornerBasis);
+                }
+                ++result.fallbackCornerCount;
+            }
         }
 
         for (size_t index = 0; index < vertexCount; ++index)
         {
             if (referenced[index] && !assigned[index])
             {
-                // Degenerate UV triangles do not silently become a fabricated
-                // tangent-space normal basis.
-                return false;
+                return fail(TangentGenerationFailure::MikkGenerationFailed);
             }
             if (!referenced[index])
             {
@@ -619,12 +1262,20 @@ namespace RVX
                     normals[index * 3u],
                     normals[index * 3u + 1u],
                     normals[index * 3u + 2u]);
-                finalTangents[index] = Vec4(
-                    BuildFallbackTangent(normal), 1.0f);
+                Vec4 fallbackTangent;
+                if (!TryBuildDegenerateFallbackTangent(
+                        normal, Vec3(0.0f), Vec3(0.0f), Vec3(0.0f),
+                        fallbackTangent))
+                {
+                    return fail(
+                        TangentGenerationFailure::UnrecoverableDegenerateBasis);
+                }
+                finalTangents[index] = fallbackTangent;
             }
         }
         SetTangents(finalTangents);
-        return true;
+        result.success = true;
+        return result;
     }
 
     Mesh::Ptr Mesh::Clone() const

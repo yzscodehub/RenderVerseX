@@ -48,6 +48,11 @@ namespace RVX
         HasToonRamp         = 0x20,
         HasTransmission     = 0x40,
         HasThickness        = 0x80,
+        HasSpecular         = 0x100,
+        HasSpecularColor    = 0x200,
+        HasClearcoat        = 0x400,
+        HasClearcoatRoughness = 0x800,
+        HasClearcoatNormal  = 0x1000,
     };
 
     enum class MaterialGPUAlphaMode : uint32
@@ -89,7 +94,12 @@ namespace RVX
         Additive = 4,
     };
 
-    inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 8;
+    /**
+     * V2's descriptor ABI keeps one declared texture/sampler pair for every
+     * MaterialUploadTextureSlot. These slots are deliberately fixed rather
+     * than bindless so a material cannot silently lose an extension texture.
+     */
+    inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 13;
 
     /** @brief Packed affine UV transform for one fixed material texture slot. */
     struct MaterialGPUUVTransform
@@ -126,6 +136,11 @@ namespace RVX
         Vec3 emissiveColor = {0.0f, 0.0f, 0.0f};
         float emissiveStrength = 1.0f;
 
+        /** xyz = KHR_materials_specular color, w = scalar factor. */
+        Vec4 specularColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
+        /** x = factor, y = perceptual roughness, z = normal scale. */
+        Vec4 clearcoatParams = {0.0f, 0.0f, 1.0f, 0.0f};
+
         // Material state
         uint32 textureFlags = 0;
         uint32 alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
@@ -156,7 +171,7 @@ namespace RVX
                    RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> uvTransforms{};
     };
 
-    static_assert(sizeof(MaterialGPUConstants) == 400,
+    static_assert(sizeof(MaterialGPUConstants) == 592,
                   "MaterialGPUConstants must match the HLSL cbuffer layout");
     static_assert(offsetof(MaterialGPUConstants, baseColorFactor) == 0);
     static_assert(offsetof(MaterialGPUConstants, metallicFactor) == 16);
@@ -165,22 +180,24 @@ namespace RVX
     static_assert(offsetof(MaterialGPUConstants, occlusionStrength) == 28);
     static_assert(offsetof(MaterialGPUConstants, emissiveColor) == 32);
     static_assert(offsetof(MaterialGPUConstants, emissiveStrength) == 44);
-    static_assert(offsetof(MaterialGPUConstants, textureFlags) == 48);
-    static_assert(offsetof(MaterialGPUConstants, alphaMode) == 52);
-    static_assert(offsetof(MaterialGPUConstants, alphaCutoff) == 56);
-    static_assert(offsetof(MaterialGPUConstants, workflow) == 60);
-    static_assert(offsetof(MaterialGPUConstants, doubleSided) == 64);
-    static_assert(offsetof(MaterialGPUConstants, shadingModel) == 68);
-    static_assert(offsetof(MaterialGPUConstants, materialTableIndex) == 72);
-    static_assert(offsetof(MaterialGPUConstants, toonBands) == 76);
-    static_assert(offsetof(MaterialGPUConstants, toonSpecularThreshold) == 80);
-    static_assert(offsetof(MaterialGPUConstants, toonRimStrength) == 84);
-    static_assert(offsetof(MaterialGPUConstants, toonOutlineWidth) == 88);
-    static_assert(offsetof(MaterialGPUConstants, blendMode) == 92);
-    static_assert(offsetof(MaterialGPUConstants, toonShadowTint) == 96);
-    static_assert(offsetof(MaterialGPUConstants, thinTransmissionParams) == 112);
-    static_assert(offsetof(MaterialGPUConstants, attenuationColor) == 128);
-    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 144);
+    static_assert(offsetof(MaterialGPUConstants, specularColorFactor) == 48);
+    static_assert(offsetof(MaterialGPUConstants, clearcoatParams) == 64);
+    static_assert(offsetof(MaterialGPUConstants, textureFlags) == 80);
+    static_assert(offsetof(MaterialGPUConstants, alphaMode) == 84);
+    static_assert(offsetof(MaterialGPUConstants, alphaCutoff) == 88);
+    static_assert(offsetof(MaterialGPUConstants, workflow) == 92);
+    static_assert(offsetof(MaterialGPUConstants, doubleSided) == 96);
+    static_assert(offsetof(MaterialGPUConstants, shadingModel) == 100);
+    static_assert(offsetof(MaterialGPUConstants, materialTableIndex) == 104);
+    static_assert(offsetof(MaterialGPUConstants, toonBands) == 108);
+    static_assert(offsetof(MaterialGPUConstants, toonSpecularThreshold) == 112);
+    static_assert(offsetof(MaterialGPUConstants, toonRimStrength) == 116);
+    static_assert(offsetof(MaterialGPUConstants, toonOutlineWidth) == 120);
+    static_assert(offsetof(MaterialGPUConstants, blendMode) == 124);
+    static_assert(offsetof(MaterialGPUConstants, toonShadowTint) == 128);
+    static_assert(offsetof(MaterialGPUConstants, thinTransmissionParams) == 144);
+    static_assert(offsetof(MaterialGPUConstants, attenuationColor) == 160);
+    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 176);
     static_assert(
         offsetof(MaterialGPUConstants, uvTransforms) +
             sizeof(MaterialGPUUVTransform) *

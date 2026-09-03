@@ -2853,7 +2853,12 @@ void SceneRenderer::FreezePresentedMaterialBindingsForPresentedFrame()
                  receipt.textureEntries,
                  receipt.fallbackUsed,
                  m_activeRenderPassIdentity.frameSequence,
-                 presentationSequence});
+                 presentationSequence,
+                 receipt.parameterLayoutHash,
+                 receipt.featureMask,
+                 receipt.shadingModel,
+                 receipt.blendMode,
+                 receipt.surfacePathEligibility});
         }
         m_completedPresentedMaterialBindingsAvailable = valid;
     }
@@ -8251,13 +8256,6 @@ void SceneRenderer::Render()
     // observable, so start with a fresh recording object.
     m_renderGraph = std::make_unique<RenderGraph>();
 
-    // Freeze one-shot evidence intent before BuildRenderGraph consumes the
-    // request. The capture bridge transitions from Armed to Recorded while
-    // adding its copy passes, so querying only after graph construction would
-    // lose the exact-Graphics requirement for the carrying frame.
-    const bool qualificationTimingRequested =
-        m_qualificationCaptureBridge.IsAwaitingGraphRecord();
-
     // Build the render graph (creates depth buffer if needed, imports resources)
     const auto graphBuildStart = std::chrono::steady_clock::now();
     BuildRenderGraph();
@@ -8295,13 +8293,13 @@ void SceneRenderer::Render()
     const bool performanceTimingRequested =
         m_qualityPerformanceSession.RequiresExactGraphicsFrame();
     RenderGraphCompileOptions compileOptions;
-    // A quality capture has to bind one exact Graphics completion point to
-    // both attachment mapping and pass timestamps. MultiQueue would make
-    // that ownership ambiguous, so force the graph policy before compile.
+    // Performance timing requires one Graphics-only timestamp span. A visual
+    // attachment bundle instead follows the renderer's normal queue policy:
+    // the terminal Graphics join still owns its exact copy completion, while
+    // optional per-pass timestamps remain unavailable for MultiQueue plans.
     compileOptions.queuePolicy =
-        (qualificationTimingRequested || performanceTimingRequested)
-        ? RGQueuePolicy::GraphicsOnly
-        : RGQueuePolicy::PreferMultiQueue;
+        performanceTimingRequested ? RGQueuePolicy::GraphicsOnly
+                                   : RGQueuePolicy::PreferMultiQueue;
     compileOptions.canonicalizeTransientPoolAccess =
         m_transientResourcePool != nullptr &&
         m_transientResourcePool->IsInitialized();
@@ -8364,6 +8362,13 @@ void SceneRenderer::Render()
                 // because a later visual bundle was requested.
                 RVX_RENDER_WARN(
                     "SceneRenderer: RenderQuality pass timing is still completion-owned; this visual bundle has no performance sample");
+            }
+            else if (m_renderGraph->GetQueueExecutionMode() ==
+                     RenderGraph::QueueExecutionMode::MultiQueue)
+            {
+                m_qualificationPassTiming->Shutdown(false);
+                RVX_RENDER_DEBUG(
+                    "SceneRenderer: visual qualification uses the normal MultiQueue plan; optional per-pass timing is unavailable");
             }
             else if (!m_qualificationPassTiming->Initialize(
                          executionEnvironment.device, activePassCount))
@@ -8554,6 +8559,9 @@ void SceneRenderer::Render()
                 m_gpuDrivenCullingStats.opaqueDirectDrawCount = opaqueStats.directDrawCount;
                 m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectBatchCount =
                     opaqueStats.gpuDrivenIndirectBatchCount;
+                m_gpuDrivenCullingStats
+                    .opaqueGpuDrivenSubmittedSourcePacketCount =
+                    opaqueStats.gpuDrivenSubmittedSourcePacketCount;
                 m_gpuDrivenCullingStats
                     .opaqueGpuDrivenIndirectSubmittedDrawUpperBound =
                     opaqueStats.gpuDrivenIndirectSubmittedDrawUpperBound;
@@ -12471,6 +12479,8 @@ void SceneRenderer::BuildRenderGraph()
         m_reflectionFramePlan != nullptr &&
         (m_reflectionFramePlan->GetSSRIdentity().requested ||
          !m_reflectionFramePlan->GetSelectedProbes().empty());
+    passRecordContext.requiresQualificationSurfaceData =
+        m_qualificationCaptureBridge.IsAwaitingGraphRecord();
     passRecordContext.localShadowAtlasPlan = m_localShadowAtlasPlan;
     m_activeLocalShadowPass = std::make_shared<LocalShadowPass>();
     passRecordContext.localShadowPass = m_activeLocalShadowPass;

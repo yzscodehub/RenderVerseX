@@ -24191,6 +24191,56 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
 }
 
+TEST(SceneRendererSubmissionValidation,
+     MaterialV2ReceiptIdentityRejectsLegacyLayoutAndUnsupportedRoute)
+{
+    RenderRecordedMaterialBindingReceipt recorded;
+    recorded.material = {71, 3};
+    recorded.contentRevision = 9;
+    recorded.descriptorContentKey = 0xA1u;
+    recorded.descriptorRevision = 2;
+    recorded.parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+    recorded.featureMask = RVX_MATERIAL_FEATURE_SPECULAR |
+        RVX_MATERIAL_FEATURE_CLEARCOAT;
+    recorded.shadingModel = MaterialShadingModel::StandardLit;
+    recorded.surfacePathEligibility = SurfacePathEligibility::DeferredOpaque;
+    EXPECT_TRUE(recorded.IsValid());
+
+    RenderRecordedMaterialBindingReceipt oldLayout = recorded;
+    oldLayout.parameterLayoutHash =
+        GetMaterialParameterLayoutHashV2() ^ 0x1ull;
+    EXPECT_FALSE(oldLayout.IsValid());
+
+    RenderRecordedMaterialBindingReceipt unsupportedRoute = recorded;
+    unsupportedRoute.surfacePathEligibility = SurfacePathEligibility::Unsupported;
+    EXPECT_FALSE(unsupportedRoute.IsValid());
+
+    RenderRecordedMaterialBindingReceipt unknownFeature = recorded;
+    unknownFeature.featureMask = 1ull << 63u;
+    EXPECT_FALSE(unknownFeature.IsValid());
+
+    RenderRecordedMaterialBindingReceipt invalidRoute = recorded;
+    invalidRoute.blendMode = MaterialBlendMode::AlphaBlend;
+    invalidRoute.surfacePathEligibility = SurfacePathEligibility::DeferredOpaque;
+    EXPECT_FALSE(invalidRoute.IsValid());
+
+    RenderPresentedMaterialBindingReceipt presented;
+    presented.material = recorded.material;
+    presented.contentRevision = recorded.contentRevision;
+    presented.descriptorContentKey = recorded.descriptorContentKey;
+    presented.descriptorRevision = recorded.descriptorRevision;
+    presented.frameSequence = 41;
+    presented.presentationSequence = 41;
+    presented.parameterLayoutHash = recorded.parameterLayoutHash;
+    presented.featureMask = recorded.featureMask;
+    presented.shadingModel = recorded.shadingModel;
+    presented.surfacePathEligibility = SurfacePathEligibility::ForwardSpecialOpaque;
+    EXPECT_TRUE(presented.IsValid());
+
+    presented.surfacePathEligibility = SurfacePathEligibility::Unsupported;
+    EXPECT_FALSE(presented.IsValid());
+}
+
 TEST_F(RenderPassValidationFixture,
        OpaquePassDeferredGBufferRecordsExactFourTargetRenderPass)
 {

@@ -3858,7 +3858,11 @@ namespace
                      receipt.textureEntries,
                      receipt.fallbackUsed,
                      receipt.frameSequence,
-                     receipt.presentationSequence});
+                     receipt.presentationSequence,
+                     receipt.parameterLayoutHash,
+                     receipt.featureMask,
+                     receipt.shadingModel,
+                     receipt.surfacePathEligibility});
             }
             result.presentedSkinningPalettesAvailable =
                 diagnostics.skinning.presentedReceiptsAvailable;
@@ -4186,6 +4190,8 @@ namespace
                 gpuDriven.opaqueDirectDrawCount;
             result.gpuDrivenOpaqueIndirectBatchCount =
                 gpuDriven.opaqueGpuDrivenIndirectBatchCount;
+            result.gpuDrivenOpaqueSubmittedSourcePacketCount =
+                gpuDriven.opaqueGpuDrivenSubmittedSourcePacketCount;
             result.gpuDrivenOpaqueIndirectDrawUpperBound =
                 gpuDriven.opaqueGpuDrivenIndirectSubmittedDrawUpperBound;
             result.gpuDrivenOpaqueFallbackReason =
@@ -8272,10 +8278,14 @@ namespace
 
                         if (resizePending &&
                             diagnostics.surfaceWidth == pendingResizeWidth &&
-                            diagnostics.surfaceHeight == pendingResizeHeight &&
-                            notifiedViewportWidth == pendingResizeWidth &&
-                            notifiedViewportHeight == pendingResizeHeight)
+                            diagnostics.surfaceHeight == pendingResizeHeight)
                         {
+                            // The post-wait diagnostics already contain the
+                            // renderer-accepted extent, while the ordinary
+                            // sample viewport callback runs at the start of
+                            // the next outer tick. Begin lifetime settling
+                            // now so this first resized frame is never checked
+                            // against the prior extent's allocation plateau.
                             lifetimeQualification->NotifyResize();
                             resizePending = false;
                         }

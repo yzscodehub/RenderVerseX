@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the RenderVerseSamples schema-v3 catalog from pinned local assets."""
+"""Generate the RenderVerseSamples schema-v4 catalog from pinned local assets.
+
+The V4 contract is intentionally the only emitted catalog schema.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +13,12 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "Samples" / "RenderVerseSamples" / "Assets"
+
+USAGE_POLICIES = {
+    "required-qualification",
+    "development-only",
+    "optional-nightly",
+}
 
 
 def sha256(path: Path) -> str:
@@ -109,10 +118,21 @@ def entry(
     derived_from: list[str] | None = None,
     generation: dict | None = None,
     cook: dict | None = None,
+    usage_policy: str = "development-only",
+    qualification_eligible: bool = False,
 ) -> dict:
+    if usage_policy not in USAGE_POLICIES:
+        raise RuntimeError(f"unknown usage policy for {asset_id}: {usage_policy}")
+    if qualification_eligible != (usage_policy == "required-qualification"):
+        raise RuntimeError(
+            "qualification eligibility must exactly match the required-qualification "
+            f"usage policy for {asset_id}"
+        )
     value = {
         "id": asset_id,
         "kind": kind,
+        "usagePolicy": usage_policy,
+        "qualificationEligible": qualification_eligible,
         "path": path,
         "license": {
             "spdxId": license_spdx,
@@ -180,6 +200,8 @@ def generated_fixture(
         modification="Generated deterministically from repository source; no upstream bytes modified.",
         files=records,
         content_identity=self_identity(records[0]),
+        usage_policy="required-qualification",
+        qualification_eligible=True,
     )
 
 
@@ -215,7 +237,7 @@ def main() -> int:
     assets.append(generated_fixture("interior-rendering-p0a", "models/interior-rendering-p0a/scene.gltf", "RenderVerseX deterministic interior fixture", "repo://Samples/Common/Tools/SampleInteriorFixtureWriter.cpp"))
 
     env_record = file_record("environments/pbr-reference/environment.hdr", "runtime-root")
-    assets.append(entry(asset_id="pbr-reference-environment", kind="environment", path=env_record["path"], license_spdx="LicenseRef-RenderVerseX-Generated-Fixture", license_file="LICENSE.generated-fixtures.txt", source_name="RenderVerseX hermetic PBR reference environment", source_uri="repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp", author="RenderVerseX contributors", version="1", attribution="Deterministically generated HDR fixture; no third-party source asset.", modification="Generated deterministically from repository source.", files=[env_record], content_identity=self_identity(env_record)))
+    assets.append(entry(asset_id="pbr-reference-environment", kind="environment", path=env_record["path"], license_spdx="LicenseRef-RenderVerseX-Generated-Fixture", license_file="LICENSE.generated-fixtures.txt", source_name="RenderVerseX hermetic PBR reference environment", source_uri="repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp", author="RenderVerseX contributors", version="1", attribution="Deterministically generated HDR fixture; no third-party source asset.", modification="Generated deterministically from repository source.", files=[env_record], content_identity=self_identity(env_record), usage_policy="required-qualification", qualification_eligible=True))
 
     for asset_id, relative, name, expected_digest in (
         ("water-bottle", "models/water-bottle/WaterBottle.glb", "Khronos Water Bottle", "b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b"),
@@ -261,12 +283,12 @@ def main() -> int:
     ]
     expected_casual_female_cooked_files = {
         "cooked/casual-female/CookManifest.rvxmanifest": (
-            4_642,
-            "ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949",
+            4_998,
+            "b003138d5c8ca4f216c1aede8628d64bb17d94549d328b2de6f4ef3075895a2a",
         ),
         "cooked/casual-female/models/casual-female/Casual_Female.rva": (
             13_183,
-            "a389f29eb345f80df8e8231ff36e4bb39a4c1a05fe54270735885a6827e2c416",
+            "71f83ed202f3efa35552d111008bf92bfbb3fa9e9ab70a37620265eddc2196c4",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/animation.rvxanim": (
@@ -275,33 +297,33 @@ def main() -> int:
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_0.rvmat": (
-            365,
-            "d3c42cf7ce8629f7a1e6c7e4a977cb09c61f52fa06c5a726ef1341e3b14dc580",
+            393,
+            "0083436851caeb46964c010bf8012973e108300a4f4b7d88e856a3cc81e11988",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_1.rvmat": (
-            365,
-            "89d89a562576e9d1e5e44a4e8d5121bd808712d9fc5ef46d8cf30ad7ca2d859b",
+            393,
+            "04b3751567943b8daf2a60b03f453c83267302a214cfdc938680ca3a1bb609bb",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_2.rvmat": (
-            365,
-            "ac7106bad8face93755cfc2688fba28fbad597b8ebad697c9cd3b062b6b9596a",
+            393,
+            "afbf34bc574b05647496dfdb2be73772cbb3bfff1fd83fc81ae2581dcade2487",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_3.rvmat": (
-            365,
-            "84c78973be6d63cc5902edfa7f019d3a62e0ba7a4b54d0ad5826ae187f170513",
+            393,
+            "9f88e0768fedfb042899e6200067eccb52dcb98f41fd1d2f1ecb743bf8425f12",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_4.rvmat": (
-            365,
-            "7fc705e485b0eaf09c03e1d5f340bd749ed1967957cb7fca654339119a785cc6",
+            393,
+            "92d697adf9371fdaffada154d29c24c496e7d1c1552e12463c3f505cece51493",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/material_5.rvmat": (
-            365,
-            "3a841e152a7e058e0c3e89073e5cf1f26a4ddb523dae69ec57d293df6a7c3f9b",
+            393,
+            "fc12f851846b8d540f66ede776bd1f7f77ae98d4e05e6eeed547ebe4acfb01b1",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/meshes.rva": (
@@ -334,22 +356,22 @@ def main() -> int:
         "cookedContentIdentity": content_identity(
             "cooked-artifact",
             "dependency-closure",
-            "28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f",
-            1_534_321,
+            "e9da09c36544ffae0834156cd6878cfdab25f4fd0ab5d58c667349fa19496b7d",
+            1_534_489,
             9,
         ),
         "manifestContentIdentity": content_identity(
             "cook-manifest",
             "self-contained-artifact",
-            "ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949",
-            4_642,
+            "b003138d5c8ca4f216c1aede8628d64bb17d94549d328b2de6f4ef3075895a2a",
+            4_998,
             1,
         ),
         "cookSettingsHash": (
-            "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa"
+            "10cfaf4149306c1992cd93a0448e877c360ab41cd3551a7586ad74060ce62fa3"
         ),
         "recipeHash": (
-            "28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676"
+            "2f98a9441e3e96806c084147666253bf3c310f7274539a719055dd0809c7015a"
         ),
         "tool": {"name": "RVXCook", "version": "2.0.0"},
     }
@@ -402,11 +424,11 @@ def main() -> int:
     expected_root_motion_files = {
         root_motion_artifact_relative: (
             54_464,
-            "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f",
+            "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca",
         ),
         root_motion_manifest_relative: (
             1_695,
-            "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c",
+            "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289",
         ),
     }
     root_motion_files = sorted(
@@ -434,7 +456,7 @@ def main() -> int:
     root_motion_identity = content_identity(
         "cooked-artifact",
         "self-contained-artifact",
-        "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f",
+        "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca",
         54_464,
         1,
     )
@@ -457,7 +479,7 @@ def main() -> int:
             generation={
                 "recipe": "rvx-animation-root-motion-derive-v1",
                 "toolVersion": "1.0.0",
-                "recipeHash": "0e473d3e0511827cff7dd51e786c7d41f6bcbaadbe3f1dee4b0659900261ee7e",
+                "recipeHash": "f7572d945849c7b9ddca2bb40501dfcd59f2a3e8855bda2096d01a9676befd76",
             },
             cook={
                 "manifestPath": root_motion_manifest_relative,
@@ -471,19 +493,19 @@ def main() -> int:
                 "cookedContentIdentity": content_identity(
                     "cooked-artifact",
                     "self-contained-artifact",
-                    "3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97",
+                    "da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e",
                     54_464,
                     1,
                 ),
                 "manifestContentIdentity": content_identity(
                     "cook-manifest",
                     "self-contained-artifact",
-                    "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c",
+                    "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289",
                     1_695,
                     1,
                 ),
-                "cookSettingsHash": "37d257abb1762b56436a0b3a1de267860f0507fbf0ff169ce395039ae2053232",
-                "recipeHash": "5d814e26fdad96238fa707f11537e7ac66f9aa335252fafe525ef59338c478a7",
+                "cookSettingsHash": "8eb7720e13e68209be75e55b81ab4ee0d731dda72389f53cffe2391e77da3a27",
+                "recipeHash": "bc445631a2989716a9c08158b45dc7ee73293e0eb9afe43156e003beab5e6070",
                 "tool": {"name": "RVXCook", "version": "2.0.0"},
             },
         )
@@ -506,7 +528,7 @@ def main() -> int:
     assets.append(entry(asset_id="kloofendal-48d-partly-cloudy-pure-sky", kind="environment", path=sky_record["path"], license_spdx="CC0-1.0", license_file="LICENSE.polyhaven-cc0.txt", source_name="Kloofendal 48d Partly Cloudy (Pure Sky) 2K HDR", source_uri="https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr", author="Greg Zaal; pure-sky edit by Jarod Guest", version="polyhaven-2k-hdr-2026-08-12", attribution="Poly Haven Kloofendal 48d Partly Cloudy Pure Sky, CC0.", modification="Vendored HDR bytes are unmodified; IBL derivatives are produced by the Resource environment loader/cook contract.", files=[sky_record], content_identity=self_identity(sky_record)))
 
     assets.sort(key=lambda item: item["id"])
-    document = {"schemaId":"RVX.SampleAssetCatalog","schemaVersion":3,"assets":assets}
+    document = {"schemaId":"RVX.SampleAssetCatalog","schemaVersion":4,"assets":assets}
     output = ASSETS / "catalog.json"
     output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(output)

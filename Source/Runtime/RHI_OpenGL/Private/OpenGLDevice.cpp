@@ -10,6 +10,7 @@
 #include "OpenGLQuery.h"
 #include "OpenGLUpload.h"
 #include "RHI/RHIPipelineValidation.h"
+#include "ShaderContracts/GLSLBindingABI.h"
 
 #include <limits>
 
@@ -363,7 +364,13 @@ namespace RVX
             m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsComputePipeline = m_capabilities.opengl.hasComputeShader;
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
-        m_capabilities.supportsDescriptorSets = true;           // Implemented through binding point remapping
+        // The Material V2 Forward+ ABI may bind thirteen material images and
+        // nine frame images in one fragment program. Devices below this exact
+        // limit must not advertise a descriptor path that can only partially
+        // bind the shader; recipe resolution fails closed instead.
+        m_capabilities.supportsDescriptorSets =
+            m_capabilities.opengl.maxTextureUnits >=
+            GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT;
         m_capabilities.supportsDynamicDescriptorOffsets = true; // Dynamic buffer offsets are applied during bind
         m_capabilities.maxDescriptorSets = 4;
         m_capabilities.supportsExplicitResourceBarriers = true; // glMemoryBarrier is used for explicit memory ordering

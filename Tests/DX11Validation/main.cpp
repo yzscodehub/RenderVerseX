@@ -181,18 +181,18 @@ TEST(DX11Validation, SamplerABIRemapperIsLosslessAndFailClosed)
                   physicalSlot);
     }
 
-    for (uint32 logicalBinding = 9u; logicalBinding <= 16u; ++logicalBinding)
+    for (uint32 logicalBinding = 14u; logicalBinding <= 21u; ++logicalBinding)
     {
         EXPECT_EQ(remapper.GetSamplerSlot(2u, logicalBinding),
-                  8u + logicalBinding - 9u);
+                  8u + logicalBinding - 14u);
     }
 
     for (uint32 frameLogicalBinding : frameLogicalBindings)
     {
         const uint32 framePhysical = remapper.GetSamplerSlot(
             0u, frameLogicalBinding);
-        for (uint32 materialLogicalBinding = 9u;
-             materialLogicalBinding <= 16u;
+        for (uint32 materialLogicalBinding = 14u;
+             materialLogicalBinding <= 21u;
              ++materialLogicalBinding)
         {
             EXPECT_NE(framePhysical,
@@ -203,8 +203,8 @@ TEST(DX11Validation, SamplerABIRemapperIsLosslessAndFailClosed)
     EXPECT_EQ(remapper.GetSamplerSlot(0u, 6u), UINT32_MAX);
     EXPECT_EQ(remapper.GetSamplerSlot(0u, 8u), UINT32_MAX);
     EXPECT_EQ(remapper.GetSamplerSlot(1u, 9u), UINT32_MAX);
-    EXPECT_EQ(remapper.GetSamplerSlot(2u, 8u), UINT32_MAX);
-    EXPECT_EQ(remapper.GetSamplerSlot(2u, 17u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 13u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 22u), UINT32_MAX);
     EXPECT_EQ(remapper.GetSamplerSlot(3u, 9u), UINT32_MAX);
 }
 

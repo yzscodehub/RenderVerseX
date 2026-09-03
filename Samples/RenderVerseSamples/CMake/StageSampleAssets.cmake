@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Build-time source inputs remain transactional; published product packages are cooked-only.
+
 foreach(_rvx_required SOURCE_ROOT BUILD_ROOT DESTINATION_ROOT STAMP_PATH
                       HDR_FIXTURE_WRITER INTERIOR_FIXTURE_WRITER
                       TRANSPARENT_MATERIALS_FIXTURE_WRITER PARTICLE_VFX_FIXTURE_WRITER
@@ -110,6 +112,8 @@ execute_process(
         --cooked-root-relative "cooked/${_rvx_reflection_interior_id}"
         --asset-id "${_rvx_reflection_interior_id}"
         --asset-kind model
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/${_rvx_reflection_interior_id}/scene.rva"
         --source-path "scene.gltf"
         --source-name "RenderVerseX deterministic reflection interior fixture"
@@ -166,6 +170,8 @@ execute_process(
         --cooked-root-relative "cooked/${_rvx_reflection_environment_id}"
         --asset-id "${_rvx_reflection_environment_id}"
         --asset-kind environment
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/${_rvx_reflection_environment_id}/environment.rva"
         --source-path "environment.hdr"
         --source-name "RenderVerseX cooked PBR reference environment"
@@ -185,6 +191,87 @@ if(EXISTS "${_rvx_reflection_environment_source_root}")
     message(FATAL_ERROR
         "GFX19 reference environment source input remains after staging; cooked-only runtime admission is unsafe")
 endif()
+
+function(rvx_stage_gfx25_model _rvx_id _rvx_source_directory
+         _rvx_source_filename _rvx_cooked_artifact _rvx_source_name
+         _rvx_source_uri _rvx_source_version _rvx_attribution
+         _rvx_modification_notice _rvx_derived_from _rvx_generation_recipe)
+    set(_rvx_source_root "${_rvx_staging}/cook-inputs/${_rvx_id}")
+    set(_rvx_cooked_root "${_rvx_staging}/cooked/${_rvx_id}")
+    set(_rvx_manifest "${_rvx_cooked_root}/CookManifest.rvxmanifest")
+    file(MAKE_DIRECTORY "${_rvx_source_root}")
+    file(COPY_FILE
+        "${SOURCE_ROOT}/Assets/models/${_rvx_source_directory}/${_rvx_source_filename}"
+        "${_rvx_source_root}/${_rvx_source_filename}"
+        ONLY_IF_DIFFERENT)
+    execute_process(
+        COMMAND "${COOK_EXECUTABLE}"
+            --source "${_rvx_source_root}"
+            --output "${_rvx_cooked_root}"
+            --manifest "${_rvx_manifest}"
+            --model-only
+            --fail-on-errors
+        RESULT_VARIABLE _rvx_cook_result)
+    if(NOT _rvx_cook_result EQUAL 0)
+        message(FATAL_ERROR "${_rvx_id} GFX25 model cook failed")
+    endif()
+    execute_process(
+        COMMAND "${COOKED_CATALOG_WRITER}"
+            --input-catalog "${_rvx_staging}/catalog.json"
+            --output-catalog "${_rvx_staging}/catalog.json"
+            --asset-root "${_rvx_staging}"
+            --source-root "${_rvx_source_root}"
+            --manifest "${_rvx_manifest}"
+            --cooked-root "${_rvx_cooked_root}"
+            --cooked-root-relative "cooked/${_rvx_id}"
+            --asset-id "${_rvx_id}"
+            --asset-kind model
+            --usage-policy required-qualification
+            --qualification-eligible true
+            --asset-path-relative "cooked/${_rvx_id}/${_rvx_cooked_artifact}"
+            --source-path "${_rvx_source_filename}"
+            --source-name "${_rvx_source_name}"
+            --source-uri "${_rvx_source_uri}"
+            --source-version "${_rvx_source_version}"
+            --attribution "${_rvx_attribution}"
+            --modification-notice "${_rvx_modification_notice}"
+            --derived-from "${_rvx_derived_from}"
+            --generation-recipe "${_rvx_generation_recipe}"
+        RESULT_VARIABLE _rvx_catalog_result)
+    if(NOT _rvx_catalog_result EQUAL 0)
+        message(FATAL_ERROR "${_rvx_id} cooked catalog publication failed")
+    endif()
+    file(REMOVE_RECURSE "${_rvx_source_root}")
+    if(EXISTS "${_rvx_source_root}")
+        message(FATAL_ERROR
+            "${_rvx_id} source inputs remain after staging; cooked-only runtime admission is unsafe")
+    endif()
+endfunction()
+
+rvx_stage_gfx25_model(
+    "water-bottle-cooked-v1"
+    "water-bottle"
+    "WaterBottle.glb"
+    "WaterBottle.rva"
+    "Khronos Water Bottle"
+    "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf/Models/WaterBottle/glTF-Binary/WaterBottle.glb"
+    "2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf"
+    "Khronos Water Bottle, CC0 1.0 Universal."
+    "Cooked from the pinned vendored WaterBottle.glb; source bytes are not staged in this package."
+    "water-bottle"
+    "rvx-gfx25-water-bottle-model-v3-cook-v1")
+rvx_stage_gfx25_model(
+    "pbr-material-grid-cooked-v1"
+    "pbr-material-grid"
+    "scene.gltf"
+    "scene.rva"
+    "RenderVerseX PBR 5x5x5 factor cube"
+    "repo://Tests/Fixtures/Samples/PBRMaterialGrid.gltf"
+    "1"
+    "Generated test geometry; no third-party source asset."
+    "Cooked from the deterministic repository fixture; source bytes are not staged in this package."
+    "pbr-material-grid"
+    "rvx-gfx25-pbr-material-grid-model-v3-cook-v1")
 
 # GFX14 uses one real, hermetic cook.  The source copy lives only in the
 # transaction staging directory while RVXCook and the catalog writer verify
@@ -220,6 +307,8 @@ execute_process(
         --cooked-root "${_rvx_toon_cooked_root}"
         --cooked-root-relative "cooked/stylized-materials-toon"
         --asset-id "stylized-materials-toon"
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/stylized-materials-toon/scene.rva"
         --source-path "scene.gltf"
         --source-name "RenderVerseX stylized material grid fixture"
@@ -274,6 +363,8 @@ execute_process(
         --cooked-root "${_rvx_transparent_cooked_root}"
         --cooked-root-relative "cooked/transparent-materials-v1"
         --asset-id "transparent-materials-v1"
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/transparent-materials-v1/scene.rva"
         --source-path "scene.gltf"
         --source-name "RenderVerseX transparent-material fixture"
@@ -331,6 +422,8 @@ execute_process(
         --cooked-root-relative "cooked/${_rvx_particle_ground_id}"
         --asset-id "${_rvx_particle_ground_id}"
         --asset-kind model
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/${_rvx_particle_ground_id}/scene.rva"
         --source-path "scene.gltf"
         --source-name "RenderVerseX particle VFX opaque ground/caster fixture"
@@ -389,6 +482,8 @@ execute_process(
         --cooked-root-relative "cooked/${_rvx_water_reference_id}"
         --asset-id "${_rvx_water_reference_id}"
         --asset-kind model
+        --usage-policy required-qualification
+        --qualification-eligible true
         --asset-path-relative "cooked/${_rvx_water_reference_id}/scene.rva"
         --source-path "scene.gltf"
         --source-name "RenderVerseX deterministic water surface reference fixture"
@@ -454,6 +549,8 @@ function(rvx_stage_particle_vfx _rvx_id _rvx_kind _rvx_effect_directory)
             --cooked-root-relative "cooked/${_rvx_id}"
             --asset-id "${_rvx_id}"
             --asset-kind effect
+            --usage-policy required-qualification
+            --qualification-eligible true
             --asset-path-relative "cooked/${_rvx_id}/${_rvx_effect_relative}"
             --source-path "Effects/${_rvx_effect_directory}/effect.rvxparticle"
             --source-name "RenderVerseX deterministic ${_rvx_kind} particle fixture"

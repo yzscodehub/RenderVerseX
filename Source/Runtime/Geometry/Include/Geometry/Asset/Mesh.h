@@ -48,6 +48,70 @@ namespace RVX
     };
 
     /**
+     * @brief Reason a generated tangent basis could not be published.
+     *
+     * A caller that only needs the historical boolean contract can continue to
+     * call Mesh::GenerateTangents().  Importers should prefer the detailed
+     * result so malformed assets retain a useful, deterministic diagnostic.
+     */
+    enum class TangentGenerationFailure : uint8
+    {
+        None = 0,
+        InvalidUVSet,
+        InvalidMeshLayout,
+        InvalidIndex,
+        InvalidVertexData,
+        MikkGenerationFailed,
+        MikkInvalidOutput,
+        ConflictingCornerBasis,
+        TopologySplitLimitExceeded,
+        TopologySplitByteBudgetExceeded,
+        TopologySplitBaseVertexUnsupported,
+        TopologySplitCopyFailed,
+        UnrecoverableDegenerateBasis
+    };
+
+    constexpr uint32 RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_VERTEX_LIMIT =
+        4u * 1024u * 1024u;
+    constexpr size_t RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_BYTE_LIMIT =
+        512u * 1024u * 1024u;
+
+    /**
+     * @brief Outcome and evidence from one tangent-generation attempt.
+     *
+     * Valid triangles are generated through MikkTSpace.  Triangles with a
+     * collapsed geometric or UV parameterization receive a deterministic
+     * per-corner fallback only when a finite orthogonal basis can be built.
+     */
+    struct TangentGenerationResult
+    {
+        bool success = false;
+        TangentGenerationFailure failure = TangentGenerationFailure::None;
+        uint32 triangleCount = 0;
+        uint32 mikkTriangleCount = 0;
+        uint32 fallbackTriangleCount = 0;
+        uint32 degenerateGeometryTriangleCount = 0;
+        uint32 degenerateUVTriangleCount = 0;
+        uint32 mikkRejectedTriangleCount = 0;
+        uint32 firstMikkRejectedTriangle = RVX_INVALID_INDEX;
+        uint32 fallbackCornerCount = 0;
+        bool topologySplit = false;
+        uint32 originalVertexCount = 0;
+        uint32 publishedVertexCount = 0;
+        uint32 splitVertexCount = 0;
+    };
+
+    const char* GetTangentGenerationFailureName(
+        TangentGenerationFailure failure);
+
+    [[nodiscard]] constexpr TangentGenerationFailure
+    ClassifyMikkGenerationResult(bool generated) noexcept
+    {
+        return generated ? TangentGenerationFailure::None
+                         : TangentGenerationFailure::MikkGenerationFailed;
+    }
+
+    /**
      * @brief SubMesh definition - a portion of the mesh with a specific material
      */
     struct SubMesh
@@ -257,6 +321,20 @@ namespace RVX
          * associated with the normal texture.
          */
         bool GenerateTangents(uint32 uvSet = 0);
+
+        /**
+         * @brief Generate tangents and retain the reason/counters on failure.
+         *
+         * This is the diagnostic form of GenerateTangents(); it does not
+         * publish a partial tangent attribute when generation fails.
+         */
+        TangentGenerationResult GenerateTangentsDetailed(
+            uint32 uvSet = 0,
+            bool allowTopologySplit = false,
+            uint32 topologySplitVertexLimit =
+                RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_VERTEX_LIMIT,
+            size_t topologySplitByteLimit =
+                RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_BYTE_LIMIT);
         Ptr Clone() const;
 
         /**

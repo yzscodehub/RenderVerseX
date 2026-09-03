@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -206,6 +207,71 @@ namespace
         ExpectRejected(
             MakeManifest(MakeSample("same") + "," + MakeSample("same")),
             "duplicate sample id");
+    }
+
+    TEST(SampleManifestValidation,
+         Gfx25QualificationContractsUseBoundsSafeCameras)
+    {
+        const std::filesystem::path manifestPath =
+            std::filesystem::path(RVX_SOURCE_DIR) /
+            "Samples/RenderVerseSamples/Manifests/renderverse-samples.json";
+        RVX::SampleManifestCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(
+            RVX::SampleManifestParser::LoadFile(manifestPath, catalog, &error))
+            << error;
+
+        const RVX::SampleScenarioManifest* modelViewer =
+            catalog.Find("model-viewer");
+        const RVX::SampleScenarioManifest* pbrMaterials =
+            catalog.Find("pbr-materials");
+        ASSERT_NE(modelViewer, nullptr);
+        ASSERT_NE(pbrMaterials, nullptr);
+        const std::vector<RVX::uint32> expectedTicks = {120u, 360u, 361u};
+        EXPECT_TRUE(modelViewer->deterministicQualification);
+        EXPECT_EQ(modelViewer->captureTicks, expectedTicks);
+        EXPECT_EQ(modelViewer->cameraBookmarks.size(), 3u);
+        EXPECT_EQ(modelViewer->roiMetricPolicy.regionsOfInterest.size(), 2u);
+        ASSERT_EQ(modelViewer->requiredCapabilities.size(), 1u);
+        EXPECT_EQ(modelViewer->requiredCapabilities.front().GetValue(),
+                  "RENDER.CAPABILITY.COOKED_MODEL_RASTER");
+
+        // Water Bottle source bounds are [-0.05446, 0.05446] on X/Z and
+        // [-0.13023, 0.13023] on Y before its symmetric 180 degree node turn.
+        for (const RVX::SampleCameraBookmark& bookmark :
+             modelViewer->cameraBookmarks)
+        {
+            const auto& position = bookmark.position;
+            EXPECT_TRUE(position[0] < -0.05446f || position[0] > 0.05446f ||
+                        position[1] < -0.13023f || position[1] > 0.13023f ||
+                        position[2] < -0.05446f || position[2] > 0.05446f);
+            EXPECT_GT(bookmark.nearPlane, 0.0f);
+            EXPECT_GT(bookmark.farPlane, bookmark.nearPlane);
+        }
+
+        EXPECT_TRUE(pbrMaterials->deterministicQualification);
+        EXPECT_EQ(pbrMaterials->captureTicks, expectedTicks);
+        EXPECT_EQ(pbrMaterials->cameraBookmarks.size(), 3u);
+        EXPECT_EQ(pbrMaterials->roiMetricPolicy.regionsOfInterest.size(), 2u);
+        ASSERT_EQ(pbrMaterials->requiredCapabilities.size(), 3u);
+        EXPECT_EQ(pbrMaterials->requiredCapabilities[0].GetValue(),
+                  "RENDER.CAPABILITY.STANDARD_LIT_PBR");
+        EXPECT_EQ(pbrMaterials->requiredCapabilities[1].GetValue(),
+                  "RENDER.CAPABILITY.MATERIAL_V2_EXTENSIONS");
+        EXPECT_EQ(pbrMaterials->requiredCapabilities[2].GetValue(),
+                  "RENDER.CAPABILITY.TEXTURE_IBL");
+
+        // The factor cube has a shared sphere extent of +/-3.45 metres.
+        for (const RVX::SampleCameraBookmark& bookmark :
+             pbrMaterials->cameraBookmarks)
+        {
+            const auto& position = bookmark.position;
+            EXPECT_TRUE(position[0] < -3.45f || position[0] > 3.45f ||
+                        position[1] < -3.45f || position[1] > 3.45f ||
+                        position[2] < -3.45f || position[2] > 3.45f);
+            EXPECT_GT(bookmark.nearPlane, 0.0f);
+            EXPECT_GT(bookmark.farPlane, bookmark.nearPlane);
+        }
     }
 
     TEST(SampleManifestValidation, RejectsSyntaxDuplicateKeysAndUnknownFields)

@@ -42,6 +42,23 @@ namespace RVX
         clone->m_emissiveColor = m_emissiveColor;
         clone->m_emissiveTexture = m_emissiveTexture;
         clone->m_emissiveStrength = m_emissiveStrength;
+        clone->m_specularFactor = m_specularFactor;
+        clone->m_specularColor = m_specularColor;
+        clone->m_specularTexture = m_specularTexture;
+        clone->m_specularColorTexture = m_specularColorTexture;
+        clone->m_clearcoatFactor = m_clearcoatFactor;
+        clone->m_clearcoatTexture = m_clearcoatTexture;
+        clone->m_clearcoatRoughness = m_clearcoatRoughness;
+        clone->m_clearcoatRoughnessTexture = m_clearcoatRoughnessTexture;
+        clone->m_clearcoatNormalScale = m_clearcoatNormalScale;
+        clone->m_clearcoatNormalTexture = m_clearcoatNormalTexture;
+        clone->m_transmissionFactor = m_transmissionFactor;
+        clone->m_transmissionTexture = m_transmissionTexture;
+        clone->m_indexOfRefraction = m_indexOfRefraction;
+        clone->m_thicknessFactor = m_thicknessFactor;
+        clone->m_thicknessTexture = m_thicknessTexture;
+        clone->m_attenuationColor = m_attenuationColor;
+        clone->m_attenuationDistance = m_attenuationDistance;
 
         return clone;
     }

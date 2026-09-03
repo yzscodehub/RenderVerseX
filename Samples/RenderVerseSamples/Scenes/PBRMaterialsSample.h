@@ -24,6 +24,8 @@ namespace RVX
     {
     public:
         [[nodiscard]] const SampleInfo& GetInfo() const noexcept override;
+        [[nodiscard]] SampleAssessmentContract
+            GetAssessmentContract() const override;
         bool Setup(SampleContext& context, std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
@@ -31,6 +33,8 @@ namespace RVX
                               uint32 width,
                               uint32 height) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
+        void ObserveDiagnostics(const SampleRenderDiagnostics& diagnostics,
+                                SampleAssessmentChannel& assessment) override;
         SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
@@ -69,5 +73,11 @@ namespace RVX
         bool m_modelActivated = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
+        bool m_standardLitExecutionObserved = false;
+        bool m_materialV2ExtensionsObserved = false;
+        bool m_textureIBLExecutionObserved = false;
+        bool m_standardLitCapabilityPublished = false;
+        bool m_materialV2ExtensionsCapabilityPublished = false;
+        bool m_textureIBLCapabilityPublished = false;
     };
 } // namespace RVX

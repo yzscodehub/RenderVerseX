@@ -558,6 +558,10 @@ namespace RVX
             {
                 preamble += "#define " + def.name + " " + def.value + "\n";
             }
+            if (options.targetBackend == RHIBackendType::Metal)
+            {
+                preamble += "#define RVX_COMPACT_MATERIAL_SAMPLERS 1\n";
+            }
             if (!preamble.empty())
             {
                 shader.setPreamble(preamble.c_str());

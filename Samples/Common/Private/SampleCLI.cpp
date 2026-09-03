@@ -4263,6 +4263,57 @@ namespace RVX
                << Diagnostics::JsonBool(renderDiagnostics.materialDescriptorSetAvailable) << ",\n";
         stream << "    \"materialTextureFlags\": "
                << renderDiagnostics.materialTextureFlags << ",\n";
+        if (report.schemaVersion >=
+            RVX_SAMPLE_REPORT_SCHEMA_VERSION)
+        {
+            stream << "    \"presentedMaterialBindingsAvailable\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.presentedMaterialBindingsAvailable)
+                   << ",\n";
+            stream << "    \"presentedMaterialBindingsOverflow\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.presentedMaterialBindingsOverflow)
+                   << ",\n";
+            stream << "    \"presentedMaterialBindings\": [";
+            for (size_t index = 0;
+                 index < renderDiagnostics.presentedMaterialBindings.size();
+                 ++index)
+            {
+                const SamplePresentedMaterialBindingReceipt& receipt =
+                    renderDiagnostics.presentedMaterialBindings[index];
+                if (index != 0)
+                {
+                    stream << ", ";
+                }
+                stream << "{\"materialSlot\":" << receipt.material.slot
+                       << ",\"materialGeneration\":"
+                       << receipt.material.generation
+                       << ",\"contentRevision\":"
+                       << receipt.contentRevision
+                       << ",\"descriptorContentKey\":"
+                       << receipt.descriptorContentKey
+                       << ",\"descriptorRevision\":"
+                       << receipt.descriptorRevision
+                       << ",\"parameterLayoutHash\":"
+                       << receipt.parameterLayoutHash
+                       << ",\"featureMask\":" << receipt.featureMask
+                       << ",\"shadingModel\":"
+                       << static_cast<uint32>(receipt.shadingModel)
+                       << ",\"surfacePathEligibility\":"
+                       << Diagnostics::JsonString(
+                              GetSurfacePathEligibilityName(
+                                  receipt.surfacePathEligibility))
+                       << ",\"textureEntryCount\":"
+                       << receipt.textureEntries.size()
+                       << ",\"fallbackUsed\":"
+                       << Diagnostics::JsonBool(receipt.fallbackUsed)
+                       << ",\"frameSequence\":"
+                       << receipt.frameSequence
+                       << ",\"presentationSequence\":"
+                       << receipt.presentationSequence << "}";
+            }
+            stream << "],\n";
+        }
         if (report.schemaVersion >= RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION)
         {
             stream << "    \"presentedSkinningPalettesAvailable\": "
@@ -4436,6 +4487,9 @@ namespace RVX
                << renderDiagnostics.gpuDrivenOpaqueDirectDrawCount << ",\n";
         stream << "    \"gpuDrivenOpaqueIndirectBatchCount\": "
                << renderDiagnostics.gpuDrivenOpaqueIndirectBatchCount
+               << ",\n";
+        stream << "    \"gpuDrivenOpaqueSubmittedSourcePacketCount\": "
+               << renderDiagnostics.gpuDrivenOpaqueSubmittedSourcePacketCount
                << ",\n";
         stream << "    \"gpuDrivenOpaqueIndirectDrawUpperBound\": "
                << renderDiagnostics.gpuDrivenOpaqueIndirectDrawUpperBound

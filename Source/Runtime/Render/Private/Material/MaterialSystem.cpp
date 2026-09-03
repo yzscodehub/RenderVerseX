@@ -110,20 +110,84 @@ namespace
                 return 0x46424B5F5452414Eull;
             case MaterialUploadTextureSlot::Thickness:
                 return 0x46424B5F54484943ull;
+            case MaterialUploadTextureSlot::Specular:
+                return 0x46424B5F53504543ull;
+            case MaterialUploadTextureSlot::SpecularColor:
+                return 0x46424B5F5350434Cull;
+            case MaterialUploadTextureSlot::Clearcoat:
+                return 0x46424B5F434C434Full;
+            case MaterialUploadTextureSlot::ClearcoatRoughness:
+                return 0x46424B5F434C5255ull;
+            case MaterialUploadTextureSlot::ClearcoatNormal:
+                return 0x46424B5F434C4E4Dull;
         }
         return 0;
+    }
+
+    [[nodiscard]] bool HasSameSamplerPolicy(
+        const MaterialUploadTextureBinding& left,
+        const MaterialUploadTextureBinding& right) noexcept
+    {
+        return left.wrapS == right.wrapS && left.wrapT == right.wrapT &&
+            left.minFilter == right.minFilter &&
+            left.magFilter == right.magFilter;
+    }
+
+    [[nodiscard]] const MaterialUploadTextureBinding*
+    FindMaterialTextureBinding(
+        std::span<const MaterialUploadTextureBinding> bindings,
+        MaterialUploadTextureSlot slot) noexcept
+    {
+        const auto iterator = std::find_if(
+            bindings.begin(), bindings.end(),
+            [slot](const MaterialUploadTextureBinding& binding)
+            {
+                return binding.slot == slot;
+            });
+        return iterator == bindings.end() ? nullptr : &*iterator;
+    }
+
+    [[nodiscard]] MaterialUploadTextureSlot GetDX11SamplerAliasSource(
+        MaterialUploadTextureSlot extensionSlot) noexcept
+    {
+        switch (extensionSlot)
+        {
+            case MaterialUploadTextureSlot::Specular:
+            case MaterialUploadTextureSlot::Clearcoat:
+            case MaterialUploadTextureSlot::ClearcoatRoughness:
+                return MaterialUploadTextureSlot::MetallicRoughness;
+            case MaterialUploadTextureSlot::SpecularColor:
+                return MaterialUploadTextureSlot::BaseColor;
+            case MaterialUploadTextureSlot::ClearcoatNormal:
+                return MaterialUploadTextureSlot::Normal;
+            default:
+                return MaterialUploadTextureSlot::BaseColor;
+        }
+    }
+
+    [[nodiscard]] bool IsDX11AliasedExtensionSampler(
+        MaterialUploadTextureSlot slot) noexcept
+    {
+        return slot >= MaterialUploadTextureSlot::Specular &&
+            slot <= MaterialUploadTextureSlot::ClearcoatNormal;
     }
 
     void HashRasterMaterialConstants(uint64& hash,
                                     MaterialGPUConstants constants) noexcept
     {
         const uint32 hasNormal = static_cast<uint32>(MaterialTextureFlags::HasNormal);
+        const uint32 hasClearcoatNormal =
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoatNormal);
         // A disabled/omitted/fallback normal map makes normalScale
         // unobservable to the shader. Do not create transcript drift from
         // source values that were not selected for this draw.
         if ((constants.textureFlags & hasNormal) == 0)
         {
             constants.normalScale = 0.0f;
+        }
+        if ((constants.textureFlags & hasClearcoatNormal) == 0)
+        {
+            constants.clearcoatParams.z = 0.0f;
         }
         HashBindingFloat(hash, constants.baseColorFactor.x);
         HashBindingFloat(hash, constants.baseColorFactor.y);
@@ -137,6 +201,13 @@ namespace
         HashBindingFloat(hash, constants.emissiveColor.y);
         HashBindingFloat(hash, constants.emissiveColor.z);
         HashBindingFloat(hash, constants.emissiveStrength);
+        HashBindingFloat(hash, constants.specularColorFactor.x);
+        HashBindingFloat(hash, constants.specularColorFactor.y);
+        HashBindingFloat(hash, constants.specularColorFactor.z);
+        HashBindingFloat(hash, constants.specularColorFactor.w);
+        HashBindingFloat(hash, constants.clearcoatParams.x);
+        HashBindingFloat(hash, constants.clearcoatParams.y);
+        HashBindingFloat(hash, constants.clearcoatParams.z);
         HashBindingValue(hash, constants.textureFlags);
         HashBindingValue(hash, constants.alphaMode);
         HashBindingFloat(hash, constants.alphaCutoff);
@@ -214,7 +285,7 @@ namespace
         evidence.shadingModel = MaterialShadingModel::StandardLit;
         evidence.programFamilyHash = GetMaterialProgramFamilyValueIdentity(
             GetMaterialProgramFamily(MaterialShadingModel::StandardLit));
-        evidence.parameterLayoutHash = GetMaterialParameterLayoutHashV1();
+        evidence.parameterLayoutHash = GetMaterialParameterLayoutHashV2();
         return evidence;
     }
 
@@ -353,6 +424,11 @@ bool MaterialSystem::Initialize(IRHIDevice* device,
     defaultTextures.toonRamp = m_defaultWhiteTextureView.Get();
     defaultTextures.transmission = m_defaultWhiteTextureView.Get();
     defaultTextures.thickness = m_defaultWhiteTextureView.Get();
+    defaultTextures.specular = m_defaultWhiteTextureView.Get();
+    defaultTextures.specularColor = m_defaultWhiteTextureView.Get();
+    defaultTextures.clearcoat = m_defaultWhiteTextureView.Get();
+    defaultTextures.clearcoatRoughness = m_defaultWhiteTextureView.Get();
+    defaultTextures.clearcoatNormal = m_defaultNormalTextureView.Get();
     defaultTextures.baseColorSampler = m_defaultSampler.Get();
     defaultTextures.normalSampler = m_defaultSampler.Get();
     defaultTextures.metallicRoughnessSampler = m_defaultSampler.Get();
@@ -361,6 +437,11 @@ bool MaterialSystem::Initialize(IRHIDevice* device,
     defaultTextures.toonRampSampler = m_defaultSampler.Get();
     defaultTextures.transmissionSampler = m_defaultSampler.Get();
     defaultTextures.thicknessSampler = m_defaultSampler.Get();
+    defaultTextures.specularSampler = m_defaultSampler.Get();
+    defaultTextures.specularColorSampler = m_defaultSampler.Get();
+    defaultTextures.clearcoatSampler = m_defaultSampler.Get();
+    defaultTextures.clearcoatRoughnessSampler = m_defaultSampler.Get();
+    defaultTextures.clearcoatNormalSampler = m_defaultSampler.Get();
     defaultTextures.materialParameterTable =
         m_defaultMaterialParameterTable.Get();
 
@@ -631,6 +712,13 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     {
         return false;
     }
+    std::string compactSamplerPolicyError;
+    if (!ValidateCompactMaterialSamplerPolicies(
+            materialData->textureBindings,
+            compactSamplerPolicyError))
+    {
+        return false;
+    }
 
     const MaterialStaticDescriptor& descriptor =
         materialData->staticDescriptor;
@@ -684,7 +772,7 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
           (1ull << static_cast<uint8>(MaterialTextureSlot::ToonRamp))) != 0) ||
         descriptor.programFamily !=
             GetMaterialProgramFamily(descriptor.shadingModel) ||
-        descriptor.parameterLayoutHash != GetMaterialParameterLayoutHashV1())
+        descriptor.parameterLayoutHash != GetMaterialParameterLayoutHashV2())
     {
         // GFX15 supports the explicit raster translucency matrix only:
         // StandardLit Alpha/Premultiplied, Unlit Alpha/Premultiplied/Additive,
@@ -745,10 +833,10 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
 bool MaterialSystem::CreateMaterialParameterTableSnapshot(
     std::span<const MaterialParameterTableEntryRequest> requests,
     ResourceViewCache* viewCache,
-    MaterialParameterTableSnapshot& outSnapshot) const
+    MaterialParameterTableSnapshot& outSnapshot)
 {
     outSnapshot = {};
-    if (!m_initialized || !m_device || requests.empty())
+    if (!m_initialized || !m_device || !m_resourceRegistry || requests.empty())
     {
         return false;
     }
@@ -790,6 +878,9 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
             MaterialStaticDescriptor{}, MaterialSourceData{}, {}, slot);
     }
     std::vector<uint64> rasterMaterialSemanticKeysBySlot(table.size(), 0);
+    std::vector<MaterialParameterTableBindingEvidence>
+        resolvedRasterBindingEvidence;
+    resolvedRasterBindingEvidence.reserve(unique.size());
     std::vector<MaterialParameterTableRowEvidence> rowEvidence;
     rowEvidence.reserve(table.size());
     for (uint32 slot = 0; slot < table.size(); ++slot)
@@ -822,10 +913,30 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
             request.material.slot);
         const uint64 semanticKey = BuildSemanticDescriptorContentKey(
             request.material, constants, textures.textureEntries);
+        const uint64 contentRevision =
+            m_resourceRegistry->GetContentRevision(request.material);
+        if (semanticKey == 0 || contentRevision == 0)
+        {
+            return false;
+        }
         table[slot] = constants;
         rasterMaterialSemanticKeysBySlot[slot] = semanticKey;
         rowEvidence[slot] = MakeMaterialTableRowEvidence(
             slot, materialData->staticDescriptor, materialData->sourceData);
+        MaterialParameterTableBindingEvidence evidence;
+        evidence.material = request.material;
+        evidence.contentRevision = contentRevision;
+        evidence.descriptorContentKey = semanticKey;
+        evidence.textureEntries = textures.textureEntries;
+        evidence.parameterLayoutHash =
+            materialData->staticDescriptor.parameterLayoutHash;
+        evidence.featureMask = materialData->staticDescriptor.featureMask;
+        evidence.shadingModel = materialData->staticDescriptor.shadingModel;
+        evidence.blendMode = materialData->staticDescriptor.blendMode;
+        evidence.surfacePathEligibility =
+            ClassifySurfacePathEligibility(materialData->staticDescriptor);
+        evidence.fallbackUsed = textures.usedFallback;
+        resolvedRasterBindingEvidence.emplace_back(std::move(evidence));
     }
 
     RHIBufferDesc desc;
@@ -847,6 +958,25 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         return false;
     }
 
+    std::sort(
+        resolvedRasterBindingEvidence.begin(),
+        resolvedRasterBindingEvidence.end(),
+        [](const MaterialParameterTableBindingEvidence& lhs,
+           const MaterialParameterTableBindingEvidence& rhs)
+        {
+            return lhs.material < rhs.material;
+        });
+    for (MaterialParameterTableBindingEvidence& evidence :
+         resolvedRasterBindingEvidence)
+    {
+        evidence.descriptorRevision = ResolveSemanticDescriptorRevision(
+            evidence.material, evidence.descriptorContentKey);
+        if (!evidence.IsValid())
+        {
+            return false;
+        }
+    }
+
     outSnapshot.buffer = std::move(buffer);
     outSnapshot.schemaVersion = RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION;
     outSnapshot.stride = sizeof(MaterialGPUConstants);
@@ -855,6 +985,9 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
     outSnapshot.rasterMaterialSemanticKeysBySlot =
         std::move(rasterMaterialSemanticKeysBySlot);
     outSnapshot.valueOnlyRowEvidence = std::move(rowEvidence);
+    outSnapshot.containsResolvedRasterBindingEvidence = true;
+    outSnapshot.resolvedRasterBindingEvidence =
+        std::move(resolvedRasterBindingEvidence);
     outSnapshot.contentHash = CalculateMaterialTableContentHash(
         table,
         outSnapshot.rasterMaterialSemanticKeysBySlot,
@@ -1053,13 +1186,27 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
         ? viewCache : m_resourceViewCache;
     const ResolvedMaterialTextures textures =
         ResolveMaterialTextures(material, resolvedViewCache, options);
+    if (textures.compactSamplerPolicyUnsupported)
+    {
+        MaterialBindingResult result;
+        result.status = MaterialBindingStatus::Error;
+        result.material = material;
+        result.message = textures.compactSamplerPolicyMessage;
+        SetLastBindingResult(std::move(result));
+        return false;
+    }
     if (!textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive ||
         !textures.toonRamp || !textures.transmission || !textures.thickness ||
+        !textures.specular || !textures.specularColor || !textures.clearcoat ||
+        !textures.clearcoatRoughness || !textures.clearcoatNormal ||
         !textures.baseColorSampler || !textures.normalSampler ||
         !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
         !textures.emissiveSampler || !textures.toonRampSampler ||
         !textures.transmissionSampler || !textures.thicknessSampler ||
+        !textures.specularSampler || !textures.specularColorSampler ||
+        !textures.clearcoatSampler || !textures.clearcoatRoughnessSampler ||
+        !textures.clearcoatNormalSampler ||
         !textures.materialParameterTable)
     {
         return false;
@@ -1120,6 +1267,21 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
                                    MaterialUploadTextureSlot::Thickness),
                                textures.thickness);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Specular),
+                               textures.specular);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::SpecularColor),
+                               textures.specularColor);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Clearcoat),
+                               textures.clearcoat);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::ClearcoatRoughness),
+                               textures.clearcoatRoughness);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::ClearcoatNormal),
+                               textures.clearcoatNormal);
     descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
                                    MaterialUploadTextureSlot::BaseColor),
                                textures.baseColorSampler);
@@ -1144,6 +1306,24 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
                                    MaterialUploadTextureSlot::Thickness),
                                textures.thicknessSampler);
+    if (!UsesCompactMaterialSamplerABI())
+    {
+        descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                       MaterialUploadTextureSlot::Specular),
+                                   textures.specularSampler);
+        descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                       MaterialUploadTextureSlot::SpecularColor),
+                                   textures.specularColorSampler);
+        descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                       MaterialUploadTextureSlot::Clearcoat),
+                                   textures.clearcoatSampler);
+        descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                       MaterialUploadTextureSlot::ClearcoatRoughness),
+                                   textures.clearcoatRoughnessSampler);
+        descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                       MaterialUploadTextureSlot::ClearcoatNormal),
+                                   textures.clearcoatNormalSampler);
+    }
     descriptorDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING,
                               textures.materialParameterTable);
     RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
@@ -1159,6 +1339,12 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     binding.dynamicOffsets = {0};
     binding.textureFlags = constants.textureFlags;
     binding.fallbackTextureFlags = textures.fallbackTextureFlags;
+    binding.parameterLayoutHash = staticDescriptor.parameterLayoutHash;
+    binding.featureMask = staticDescriptor.featureMask;
+    binding.shadingModel = staticDescriptor.shadingModel;
+    binding.blendMode = staticDescriptor.blendMode;
+    binding.surfacePathEligibility =
+        ClassifySurfacePathEligibility(staticDescriptor);
     binding.constantsUpdated = true;
     binding.usedFallback = textures.usedFallback;
     binding.materialName = material.IsValid()
@@ -1189,6 +1375,11 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     outSnapshot.textureViews.emplace_back(textures.toonRamp);
     outSnapshot.textureViews.emplace_back(textures.transmission);
     outSnapshot.textureViews.emplace_back(textures.thickness);
+    outSnapshot.textureViews.emplace_back(textures.specular);
+    outSnapshot.textureViews.emplace_back(textures.specularColor);
+    outSnapshot.textureViews.emplace_back(textures.clearcoat);
+    outSnapshot.textureViews.emplace_back(textures.clearcoatRoughness);
+    outSnapshot.textureViews.emplace_back(textures.clearcoatNormal);
     outSnapshot.textures.reserve(outSnapshot.textureViews.size());
     for (const RHITextureViewRef& view : outSnapshot.textureViews)
     {
@@ -1208,7 +1399,12 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
         RHISamplerRef(textures.emissiveSampler),
         RHISamplerRef(textures.toonRampSampler),
         RHISamplerRef(textures.transmissionSampler),
-        RHISamplerRef(textures.thicknessSampler)};
+        RHISamplerRef(textures.thicknessSampler),
+        RHISamplerRef(textures.specularSampler),
+        RHISamplerRef(textures.specularColorSampler),
+        RHISamplerRef(textures.clearcoatSampler),
+        RHISamplerRef(textures.clearcoatRoughnessSampler),
+        RHISamplerRef(textures.clearcoatNormalSampler)};
     outSnapshot.binding = std::move(binding);
     outSnapshot.binding.descriptorSet = outSnapshot.descriptorSet.Get();
     return outSnapshot.IsDrawable();
@@ -1222,6 +1418,14 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     const ResolvedMaterialTextures& textures,
     std::string materialName)
 {
+    if (textures.compactSamplerPolicyUnsupported)
+    {
+        MaterialBindingResult result;
+        result.status = MaterialBindingStatus::Error;
+        result.materialName = std::move(materialName);
+        result.message = textures.compactSamplerPolicyMessage;
+        return SetLastBindingResult(std::move(result));
+    }
     source.textureFlags = textures.textureFlags;
     const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
         staticDescriptor, source, textures.textureBindings, material.slot);
@@ -1270,6 +1474,12 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     result.constantsUpdated = true;
     result.textureFlags = constants.textureFlags;
     result.fallbackTextureFlags = textures.fallbackTextureFlags;
+    result.parameterLayoutHash = staticDescriptor.parameterLayoutHash;
+    result.featureMask = staticDescriptor.featureMask;
+    result.shadingModel = staticDescriptor.shadingModel;
+    result.blendMode = staticDescriptor.blendMode;
+    result.surfacePathEligibility =
+        ClassifySurfacePathEligibility(staticDescriptor);
     result.usedFallback = textures.usedFallback || setResult.usedFallback;
     result.materialName = materialName;
     if (result.status == MaterialBindingStatus::Fallback)
@@ -1314,22 +1524,33 @@ void MaterialSystem::FinalizeSemanticDescriptorEvidence(
     {
         return;
     }
-    SemanticDescriptorState& state =
-        m_semanticDescriptorStates[result.material];
+    result.descriptorRevision = ResolveSemanticDescriptorRevision(
+        result.material, result.descriptorContentKey);
+}
+
+uint64 MaterialSystem::ResolveSemanticDescriptorRevision(
+    const RenderResourceHandle material,
+    const uint64 descriptorContentKey)
+{
+    if (!material.IsValid() || descriptorContentKey == 0)
+    {
+        return 0;
+    }
+    SemanticDescriptorState& state = m_semanticDescriptorStates[material];
     if (state.revision == 0)
     {
-        state.contentKey = result.descriptorContentKey;
+        state.contentKey = descriptorContentKey;
         state.revision = 1;
     }
-    else if (state.contentKey != result.descriptorContentKey)
+    else if (state.contentKey != descriptorContentKey)
     {
-        state.contentKey = result.descriptorContentKey;
+        state.contentKey = descriptorContentKey;
         if (state.revision != std::numeric_limits<uint64>::max())
         {
             ++state.revision;
         }
     }
-    result.descriptorRevision = state.revision;
+    return state.revision;
 }
 
 uint64 MaterialSystem::BuildSemanticDescriptorContentKey(
@@ -1358,7 +1579,7 @@ uint64 MaterialSystem::BuildSemanticDescriptorContentKey(
 
     for (uint8 slotValue =
              static_cast<uint8>(MaterialUploadTextureSlot::BaseColor);
-         slotValue <= static_cast<uint8>(MaterialUploadTextureSlot::Thickness);
+         slotValue <= static_cast<uint8>(MaterialUploadTextureSlot::ClearcoatNormal);
          ++slotValue)
     {
         const MaterialUploadTextureSlot slot =
@@ -1454,6 +1675,11 @@ size_t MaterialSystem::MaterialDescriptorKeyHash::operator()(const MaterialDescr
     HashCombine(seed, std::hash<RHITextureView*>{}(key.toonRamp));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.transmission));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.thickness));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.specular));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.specularColor));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.clearcoat));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.clearcoatRoughness));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.clearcoatNormal));
     HashCombine(seed, std::hash<RHISampler*>{}(key.baseColorSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.normalSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.metallicRoughnessSampler));
@@ -1462,6 +1688,11 @@ size_t MaterialSystem::MaterialDescriptorKeyHash::operator()(const MaterialDescr
     HashCombine(seed, std::hash<RHISampler*>{}(key.toonRampSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.transmissionSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.thicknessSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.specularSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.specularColorSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.clearcoatSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.clearcoatRoughnessSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.clearcoatNormalSampler));
     HashCombine(seed, std::hash<RHIBuffer*>{}(key.materialParameterTable));
     HashCombine(seed, std::hash<uint64>{}(key.viewGeneration));
     HashCombine(seed, std::hash<uint64>{}(key.pageIdentity));
@@ -1609,6 +1840,101 @@ bool MaterialSystem::CreateDefaultResources()
     return true;
 }
 
+bool MaterialSystem::UsesCompactMaterialSamplerABI() const noexcept
+{
+    return m_device != nullptr &&
+        (m_device->GetBackendType() == RHIBackendType::DX11 ||
+         m_device->GetBackendType() == RHIBackendType::Metal);
+}
+
+bool MaterialSystem::ValidateCompactMaterialSamplerPolicies(
+    std::span<const MaterialUploadTextureBinding> bindings,
+    std::string& outError) const
+{
+    outError.clear();
+    if (!UsesCompactMaterialSamplerABI())
+    {
+        return true;
+    }
+
+    const MaterialUploadTextureBinding defaultPolicy{};
+    for (const MaterialUploadTextureBinding& extensionBinding : bindings)
+    {
+        if (!IsDX11AliasedExtensionSampler(extensionBinding.slot))
+        {
+            continue;
+        }
+        if (extensionBinding.isDefaultFallback)
+        {
+            continue;
+        }
+        const MaterialUploadTextureSlot primarySlot =
+            GetDX11SamplerAliasSource(extensionBinding.slot);
+        const MaterialUploadTextureBinding* primaryBinding =
+            FindMaterialTextureBinding(bindings, primarySlot);
+        const MaterialUploadTextureBinding& requiredPolicy =
+            primaryBinding != nullptr && !primaryBinding->isDefaultFallback
+            ? *primaryBinding
+            : defaultPolicy;
+        if (!HasSameSamplerPolicy(extensionBinding, requiredPolicy))
+        {
+            outError = "Compact material sampler alias policy mismatch: extension slot " +
+                std::to_string(static_cast<uint32>(extensionBinding.slot)) +
+                " must match primary slot " +
+                std::to_string(static_cast<uint32>(primarySlot));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MaterialSystem::ValidateResolvedCompactMaterialSamplerPolicies(
+    std::span<const MaterialBindingTextureEntry> entries,
+    std::string& outError) const
+{
+    outError.clear();
+    if (!UsesCompactMaterialSamplerABI())
+    {
+        return true;
+    }
+
+    const MaterialBindingSamplerPolicy defaultPolicy{};
+    const auto findEntry = [&entries](MaterialUploadTextureSlot slot)
+        -> const MaterialBindingTextureEntry*
+    {
+        const auto iterator = std::find_if(
+            entries.begin(), entries.end(),
+            [slot](const MaterialBindingTextureEntry& entry)
+            {
+                return entry.slot == slot;
+            });
+        return iterator == entries.end() ? nullptr : &*iterator;
+    };
+    for (const MaterialBindingTextureEntry& extensionEntry : entries)
+    {
+        if (!IsDX11AliasedExtensionSampler(extensionEntry.slot) ||
+            extensionEntry.fallbackUsed)
+        {
+            continue;
+        }
+        const MaterialBindingTextureEntry* primaryEntry = findEntry(
+            GetDX11SamplerAliasSource(extensionEntry.slot));
+        const MaterialBindingSamplerPolicy& requiredPolicy =
+            primaryEntry != nullptr && !primaryEntry->fallbackUsed
+            ? primaryEntry->sampler
+            : defaultPolicy;
+        if (!(extensionEntry.sampler == requiredPolicy))
+        {
+            outError = "Compact material sampler alias policy mismatch after "
+                "resource resolution: extension slot " +
+                std::to_string(static_cast<uint32>(extensionEntry.slot)) +
+                " does not match its resolved primary sampler";
+            return false;
+        }
+    }
+    return true;
+}
+
 MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures(
     RenderResourceHandle material,
     ResourceViewCache* viewCache,
@@ -1623,6 +1949,11 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     textures.toonRamp = m_defaultWhiteTextureView.Get();
     textures.transmission = m_defaultWhiteTextureView.Get();
     textures.thickness = m_defaultWhiteTextureView.Get();
+    textures.specular = m_defaultWhiteTextureView.Get();
+    textures.specularColor = m_defaultWhiteTextureView.Get();
+    textures.clearcoat = m_defaultWhiteTextureView.Get();
+    textures.clearcoatRoughness = m_defaultWhiteTextureView.Get();
+    textures.clearcoatNormal = m_defaultNormalTextureView.Get();
     textures.baseColorSampler = m_defaultSampler.Get();
     textures.normalSampler = m_defaultSampler.Get();
     textures.metallicRoughnessSampler = m_defaultSampler.Get();
@@ -1631,6 +1962,11 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     textures.toonRampSampler = m_defaultSampler.Get();
     textures.transmissionSampler = m_defaultSampler.Get();
     textures.thicknessSampler = m_defaultSampler.Get();
+    textures.specularSampler = m_defaultSampler.Get();
+    textures.specularColorSampler = m_defaultSampler.Get();
+    textures.clearcoatSampler = m_defaultSampler.Get();
+    textures.clearcoatRoughnessSampler = m_defaultSampler.Get();
+    textures.clearcoatNormalSampler = m_defaultSampler.Get();
     textures.materialParameterTable = options.materialParameterTable
         ? options.materialParameterTable
         : m_defaultMaterialParameterTable.Get();
@@ -1705,6 +2041,36 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                     destination = &textures.thickness;
                     samplerDestination = &textures.thicknessSampler;
                     break;
+                case MaterialUploadTextureSlot::Specular:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasSpecular);
+                    destination = &textures.specular;
+                    samplerDestination = &textures.specularSampler;
+                    break;
+                case MaterialUploadTextureSlot::SpecularColor:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasSpecularColor);
+                    destination = &textures.specularColor;
+                    samplerDestination = &textures.specularColorSampler;
+                    break;
+                case MaterialUploadTextureSlot::Clearcoat:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasClearcoat);
+                    destination = &textures.clearcoat;
+                    samplerDestination = &textures.clearcoatSampler;
+                    break;
+                case MaterialUploadTextureSlot::ClearcoatRoughness:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasClearcoatRoughness);
+                    destination = &textures.clearcoatRoughness;
+                    samplerDestination = &textures.clearcoatRoughnessSampler;
+                    break;
+                case MaterialUploadTextureSlot::ClearcoatNormal:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasClearcoatNormal);
+                    destination = &textures.clearcoatNormal;
+                    samplerDestination = &textures.clearcoatNormalSampler;
+                    break;
                 default:
                     continue;
             }
@@ -1762,6 +2128,12 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
             {
                 return lhs.slot < rhs.slot;
             });
+        if (!ValidateResolvedCompactMaterialSamplerPolicies(
+                textures.textureEntries,
+                textures.compactSamplerPolicyMessage))
+        {
+            textures.compactSamplerPolicyUnsupported = true;
+        }
     }
 
     return textures;
@@ -1789,6 +2161,11 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     key.toonRamp = textures.toonRamp;
     key.transmission = textures.transmission;
     key.thickness = textures.thickness;
+    key.specular = textures.specular;
+    key.specularColor = textures.specularColor;
+    key.clearcoat = textures.clearcoat;
+    key.clearcoatRoughness = textures.clearcoatRoughness;
+    key.clearcoatNormal = textures.clearcoatNormal;
     key.baseColorSampler = textures.baseColorSampler;
     key.normalSampler = textures.normalSampler;
     key.metallicRoughnessSampler = textures.metallicRoughnessSampler;
@@ -1797,6 +2174,11 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     key.toonRampSampler = textures.toonRampSampler;
     key.transmissionSampler = textures.transmissionSampler;
     key.thicknessSampler = textures.thicknessSampler;
+    key.specularSampler = textures.specularSampler;
+    key.specularColorSampler = textures.specularColorSampler;
+    key.clearcoatSampler = textures.clearcoatSampler;
+    key.clearcoatRoughnessSampler = textures.clearcoatRoughnessSampler;
+    key.clearcoatNormalSampler = textures.clearcoatNormalSampler;
     key.materialParameterTable = textures.materialParameterTable;
     key.viewGeneration = textures.viewGeneration;
     key.pageIdentity = textures.pageIdentity;
@@ -1849,7 +2231,12 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
         RHISamplerRef(textures.emissiveSampler),
         RHISamplerRef(textures.toonRampSampler),
         RHISamplerRef(textures.transmissionSampler),
-        RHISamplerRef(textures.thicknessSampler)};
+        RHISamplerRef(textures.thicknessSampler),
+        RHISamplerRef(textures.specularSampler),
+        RHISamplerRef(textures.specularColorSampler),
+        RHISamplerRef(textures.clearcoatSampler),
+        RHISamplerRef(textures.clearcoatRoughnessSampler),
+        RHISamplerRef(textures.clearcoatNormalSampler)};
     cacheEntry.materialParameterTable =
         RHIBufferRef(textures.materialParameterTable);
     m_materialDescriptorCache.emplace(key, std::move(cacheEntry));
@@ -1864,10 +2251,15 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
         !textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive ||
         !textures.toonRamp || !textures.transmission || !textures.thickness ||
+        !textures.specular || !textures.specularColor || !textures.clearcoat ||
+        !textures.clearcoatRoughness || !textures.clearcoatNormal ||
         !textures.baseColorSampler || !textures.normalSampler ||
         !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
         !textures.emissiveSampler || !textures.toonRampSampler ||
         !textures.transmissionSampler || !textures.thicknessSampler ||
+        !textures.specularSampler || !textures.specularColorSampler ||
+        !textures.clearcoatSampler || !textures.clearcoatRoughnessSampler ||
+        !textures.clearcoatNormalSampler ||
         !textures.materialParameterTable)
     {
         return {};
@@ -1902,6 +2294,21 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
     descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
                                 MaterialUploadTextureSlot::Thickness),
                             textures.thickness);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Specular),
+                            textures.specular);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::SpecularColor),
+                            textures.specularColor);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Clearcoat),
+                            textures.clearcoat);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::ClearcoatRoughness),
+                            textures.clearcoatRoughness);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::ClearcoatNormal),
+                            textures.clearcoatNormal);
     descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
                                 MaterialUploadTextureSlot::BaseColor),
                             textures.baseColorSampler);
@@ -1923,6 +2330,24 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
     descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
                                 MaterialUploadTextureSlot::Transmission),
                             textures.transmissionSampler);
+    if (!UsesCompactMaterialSamplerABI())
+    {
+        descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                    MaterialUploadTextureSlot::Specular),
+                                textures.specularSampler);
+        descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                    MaterialUploadTextureSlot::SpecularColor),
+                                textures.specularColorSampler);
+        descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                    MaterialUploadTextureSlot::Clearcoat),
+                                textures.clearcoatSampler);
+        descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                    MaterialUploadTextureSlot::ClearcoatRoughness),
+                                textures.clearcoatRoughnessSampler);
+        descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                    MaterialUploadTextureSlot::ClearcoatNormal),
+                                textures.clearcoatNormalSampler);
+    }
     descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
                                 MaterialUploadTextureSlot::Thickness),
                             textures.thicknessSampler);

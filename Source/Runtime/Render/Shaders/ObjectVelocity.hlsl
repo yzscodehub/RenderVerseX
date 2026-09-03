@@ -46,7 +46,7 @@ cbuffer MaterialConstants : register(b0, space2)
 #define EmissiveStrength EmissiveColor_Strength.w
 
 Texture2D BaseColorTexture : register(t1, space2);
-SamplerState MaterialSampler : register(s9, space2);
+SamplerState MaterialSampler : RVX_MATERIAL_BASE_COLOR_SAMPLER_REGISTER;
 
 struct VSInput
 {

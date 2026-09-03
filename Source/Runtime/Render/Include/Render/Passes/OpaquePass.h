@@ -331,6 +331,11 @@ namespace RVX
         RasterInstanceStream m_directInstanceStream;
         RHIBufferRef m_directMaterialParameterTable;
         RHIBufferRef m_gpuMaterialParameterTable;
+        /** CPU-only receipts for materials actually indexed by table draws. */
+        std::vector<MaterialParameterTableBindingEvidence>
+            m_directMaterialParameterBindingEvidence;
+        std::vector<MaterialParameterTableBindingEvidence>
+            m_gpuMaterialParameterBindingEvidence;
         /** CPU-only resolved table semantics, indexed by material slot. */
         std::vector<uint64> m_directRasterMaterialSemanticKeysBySlot;
         std::vector<uint64> m_gpuRasterMaterialSemanticKeysBySlot;

@@ -225,11 +225,12 @@ namespace RVX::Resource
 
         // Conversion helpers
         Mesh::Ptr ConvertPrimitive(const tinygltf::Model& gltf,
-                                    const tinygltf::Primitive& primitive,
-                                    const std::string& meshName,
-                                    int primitiveIndex,
-                                    const GLTFImportOptions& options,
-                                    std::string& error);
+                                   const tinygltf::Primitive& primitive,
+                                   const std::string& meshName,
+                                   int primitiveIndex,
+                                   const GLTFImportOptions& options,
+                                   std::vector<std::string>& warnings,
+                                   std::string& error);
 
         Material::Ptr ConvertMaterial(const tinygltf::Model& gltf,
                                        const tinygltf::Material& mat,

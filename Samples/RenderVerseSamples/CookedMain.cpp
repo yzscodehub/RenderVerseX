@@ -1,4 +1,4 @@
-/** @file CookedMain.cpp @brief Strict cooked-only RenderQualityLab host. */
+/** @file CookedMain.cpp @brief Strict cooked-only Sample product host. */
 
 #include "RegisterCookedSamples.h"
 
@@ -16,12 +16,20 @@
 
 namespace
 {
+    constexpr std::string_view DefaultCookedSample = "render-quality-lab";
+
+    [[nodiscard]] bool IsAllowedCookedSample(
+        std::string_view sampleId) noexcept
+    {
+        return sampleId == "render-quality-lab" || sampleId == "model-viewer" ||
+               sampleId == "pbr-materials";
+    }
+
     [[nodiscard]] bool IsProductOverride(std::string_view argument) noexcept
     {
-        return argument == "--sample" || argument == "--catalog" ||
-               argument == "--asset-root" || argument == "--model" ||
-               argument == "--asset" || argument == "--environment" ||
-               argument == "--environment-file" ||
+        return argument == "--catalog" || argument == "--asset-root" ||
+               argument == "--model" || argument == "--asset" ||
+               argument == "--environment" || argument == "--environment-file" ||
                argument == "--runtime-only-composition";
     }
 
@@ -45,15 +53,44 @@ namespace
 
 int main(int argc, char* argv[])
 {
+    std::string selectedSample(DefaultCookedSample);
+    bool sampleSelected = false;
+    std::vector<std::string> ownedArguments;
+    ownedArguments.reserve(static_cast<size_t>(argc) + 8u);
+
     for (int index = 1; index < argc; ++index)
     {
         const std::string_view argument = argv[index] != nullptr ? argv[index] : "";
+        if (argument == "--sample")
+        {
+            if (sampleSelected)
+            {
+                std::cerr << "RenderVerseSamplesCooked accepts exactly one --sample selection\n";
+                return 2;
+            }
+            if (index + 1 >= argc || argv[index + 1] == nullptr)
+            {
+                std::cerr << "RenderVerseSamplesCooked requires an id after --sample\n";
+                return 2;
+            }
+            const std::string_view candidate(argv[++index]);
+            if (!IsAllowedCookedSample(candidate))
+            {
+                std::cerr << "RenderVerseSamplesCooked does not publish cooked scenario '"
+                          << candidate << "'\n";
+                return 2;
+            }
+            selectedSample = candidate;
+            sampleSelected = true;
+            continue;
+        }
         if (IsProductOverride(argument))
         {
             std::cerr << "RenderVerseSamplesCooked fixes " << argument
                       << " at its cooked product boundary\n";
             return 2;
         }
+        ownedArguments.emplace_back(argument);
     }
 
     const std::filesystem::path executableDirectory =
@@ -66,7 +103,7 @@ int main(int argc, char* argv[])
     if (executableDirectory.empty() || !std::filesystem::is_regular_file(manifestPath) ||
         !std::filesystem::is_regular_file(catalogPath))
     {
-        std::cerr << "Cooked RenderQualityLab product assets are unavailable under '"
+        std::cerr << "Cooked Sample product assets are unavailable under '"
                   << assetRoot.string() << "'\n";
         return 1;
     }
@@ -80,20 +117,16 @@ int main(int argc, char* argv[])
     }
 
     RVX::SampleRegistry registry;
-    if (!RVX::RegisterRenderQualityLabCookedSample(manifest, registry, &error))
+    if (!RVX::RegisterCookedSampleScenarios(manifest, registry, &error))
     {
         std::cerr << error << "\n";
         return 1;
     }
 
-    std::vector<std::string> ownedArguments;
-    ownedArguments.reserve(static_cast<size_t>(argc) + 9u);
-    for (int index = 0; index < argc; ++index)
-    {
-        ownedArguments.emplace_back(argv[index] != nullptr ? argv[index] : "");
-    }
+    ownedArguments.insert(ownedArguments.begin(),
+                          argc > 0 && argv[0] != nullptr ? argv[0] : "");
     ownedArguments.emplace_back("--sample");
-    ownedArguments.emplace_back("render-quality-lab");
+    ownedArguments.emplace_back(selectedSample);
     ownedArguments.emplace_back("--catalog");
     ownedArguments.emplace_back(catalogPath.string());
     ownedArguments.emplace_back("--asset-root");

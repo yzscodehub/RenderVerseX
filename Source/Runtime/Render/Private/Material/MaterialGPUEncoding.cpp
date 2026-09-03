@@ -70,6 +70,16 @@ namespace RVX
         constants.occlusionStrength = sourceData.occlusionStrength;
         constants.emissiveColor = sourceData.emissiveColor;
         constants.emissiveStrength = sourceData.emissiveStrength;
+        constants.specularColorFactor = {
+            sourceData.specularColor.x,
+            sourceData.specularColor.y,
+            sourceData.specularColor.z,
+            sourceData.specularFactor};
+        constants.clearcoatParams = {
+            sourceData.clearcoatFactor,
+            sourceData.clearcoatRoughness,
+            sourceData.clearcoatNormalScale,
+            0.0f};
         constants.textureFlags = sourceData.textureFlags;
         constants.alphaCutoff = sourceData.alphaCutoff;
         constants.doubleSided = sourceData.doubleSided ? 1U : 0U;

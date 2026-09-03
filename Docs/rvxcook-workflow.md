@@ -88,11 +88,13 @@ Audio inputs produce `RVX_AUDIO_ARTIFACT_V2` products containing interleaved PCM
 
 Models use the single `RVX_MODEL_ARTIFACT_V3` envelope. It records the logical
 asset id, package-relative mesh dependency, an explicit optional animation
-dependency, content-bound `RVX_MATERIAL_ARTIFACT_V1` dependencies, node
+dependency, content-bound `RVX_MATERIAL_ARTIFACT_V2` dependencies, node
 hierarchy, bounds, writer ABI, flags, payload size, and content hash. A material
-artifact contains the immutable material descriptor, fixed parameter layout,
-typed values, texture-slot metadata, contained texture dependencies, and
-dependency/content hashes. The readers reject all retired model formats,
+artifact contains the immutable material descriptor, V2 parameter layout,
+typed specular, clearcoat, transmission, volume, IOR and emissive-strength
+values, texture-slot metadata, contained texture dependencies, and
+dependency/content hashes. Runtime has no Material V1 reader. The readers
+reject all retired model and material formats,
 absolute/UNC/drive-relative or parent-traversal dependencies, malformed
 hierarchies, size/count/depth limit violations, layout/hash mismatch,
 truncation, and duplicate bindings. Runtime resolves every dependency below

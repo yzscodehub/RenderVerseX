@@ -17,8 +17,8 @@ namespace RVX
         inline constexpr uint32 RVX_METAL_MAX_SAMPLER_INDEX = 15;
         inline constexpr uint32 RVX_METAL_FIRST_OBJECT_BUFFER_INDEX = 16;
         inline constexpr uint32 RVX_METAL_FIRST_MATERIAL_BUFFER_INDEX = 20;
-        inline constexpr uint32 RVX_METAL_FIRST_FRAME_TEXTURE_INDEX = 8;
-        inline constexpr uint32 RVX_METAL_FIRST_STORAGE_TEXTURE_INDEX = 32;
+        inline constexpr uint32 RVX_METAL_FIRST_FRAME_TEXTURE_INDEX = 16;
+        inline constexpr uint32 RVX_METAL_FIRST_STORAGE_TEXTURE_INDEX = 64;
 
         [[nodiscard]] inline constexpr bool IsValidBufferIndex(uint32 index)
         {
@@ -54,7 +54,7 @@ namespace RVX
                 outIndex = RVX_METAL_FIRST_MATERIAL_BUFFER_INDEX;
                 return true;
             }
-            if (set == 2 && binding == 17 && arrayElement == 0)
+            if (set == 2 && binding == 27 && arrayElement == 0)
             {
                 outIndex = RVX_METAL_FIRST_MATERIAL_BUFFER_INDEX + 1;
                 return true;
@@ -71,8 +71,8 @@ namespace RVX
                 outIndex = RVX_METAL_FIRST_FRAME_TEXTURE_INDEX + binding + arrayElement;
                 return IsValidTextureIndex(outIndex);
             }
-            if (set == 2 && binding >= 1 && binding <= 8 &&
-                arrayElement < 8 && binding - 1 <= 7 - arrayElement)
+            if (set == 2 && binding >= 1 && binding <= 13 &&
+                arrayElement < 13 && binding - 1 <= 12 - arrayElement)
             {
                 outIndex = binding - 1 + arrayElement;
                 return true;
@@ -111,10 +111,10 @@ namespace RVX
                     default: break;
                 }
             }
-            if (set == 2 && binding >= 9 && binding <= 16 &&
-                arrayElement < 8 && binding - 9 <= 7 - arrayElement)
+            if (set == 2 && binding >= 14 && binding <= 21 &&
+                arrayElement < 8 && binding - 14 <= 7 - arrayElement)
             {
-                outIndex = binding - 9 + arrayElement;
+                outIndex = binding - 14 + arrayElement;
                 return true;
             }
             outIndex = RVX_INVALID_INDEX;

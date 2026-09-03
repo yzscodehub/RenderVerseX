@@ -4,8 +4,9 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
+#include "Samples/SampleRenderPathPolicy.h"
+#include "Samples/SampleScenarioDiagnostics.h"
 #include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
@@ -83,11 +84,47 @@ namespace RVX
             true,
             SampleRenderPath::Auto,
         };
+
+        const AssessmentCapability CookedModelRasterCapability{
+            AssessmentCode("RENDER.CAPABILITY.COOKED_MODEL_RASTER"),
+            "A catalog-admitted cooked StandardLit model reaches the presented opaque raster path.",
+            true,
+            "Qualification requires Material V2 facts from a renderer-owned presented binding receipt, no fallback or overflow, and qualified Direct or GPU-driven execution."};
+
+        void PublishCookedModelRasterCapability(
+            SampleAssessmentChannel& assessment,
+            bool& published)
+        {
+            if (published)
+            {
+                return;
+            }
+
+            AssessmentCapabilityObservation observation;
+            observation.capability = CookedModelRasterCapability;
+            observation.checkpoint = AssessmentCheckpoints::ScenarioStable;
+            observation.value = DiagnosticValue<bool>::Available(true);
+            observation.reason =
+                "A present-bound Material V2 StandardLit opaque receipt proved cooked model raster execution without fallback.";
+            if (assessment.MarkCapabilityObservation(std::move(observation)))
+            {
+                published = true;
+            }
+        }
     } // namespace
 
     const SampleInfo& ModelViewerSample::GetInfo() const noexcept
     {
         return ModelViewerInfo;
+    }
+
+    SampleAssessmentContract ModelViewerSample::GetAssessmentContract() const
+    {
+        SampleAssessmentContract contract = MakeDefaultSampleAssessmentContract();
+        contract.code = AssessmentCode("SAMPLE.MODEL_VIEWER");
+        contract.revision = "2";
+        contract.capabilities = {CookedModelRasterCapability};
+        return contract;
     }
 
     bool ModelViewerSample::Setup(SampleContext& context,
@@ -159,9 +196,17 @@ namespace RVX
             context.options.quality == "low" ? 1024u : 2048u;
         context.renderSettings.shadows.cascadeCount =
             context.options.quality == "low" ? 1u : 3u;
+        const bool temporalQuality =
+            context.options.qualityTier == SampleQualityTier::High ||
+            context.options.qualityTier == SampleQualityTier::Ultra;
         context.renderSettings.postProcess.enabled = true;
+        context.renderSettings.postProcess.enableVelocityOutput =
+            temporalQuality;
         context.renderSettings.postProcess.antiAliasingMode =
-            RenderAntiAliasingMode::FXAA;
+            temporalQuality ? RenderAntiAliasingMode::TAA
+                            : RenderAntiAliasingMode::FXAA;
+        context.renderSettings.postProcess.ambientOcclusion.enabled =
+            temporalQuality;
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSR = false;
         switch (m_renderPath)
@@ -182,7 +227,18 @@ namespace RVX
                 outError = "Model Viewer received an invalid render path";
                 return false;
         }
-        return context.models.RequestByAssetId(context.options.assetId, m_model, outError);
+        if (!context.options.assetId.empty())
+        {
+            return context.models.RequestByAssetId(
+                context.options.assetId, m_model, outError);
+        }
+        if (!context.options.modelPath.empty())
+        {
+            return context.models.Request(
+                context.options.modelPath, m_model, outError);
+        }
+        outError = "Model Viewer requires a catalog asset id or an admitted model path";
+        return false;
     }
 
     bool ModelViewerSample::ActivateModel(SampleContext& context)
@@ -393,6 +449,20 @@ namespace RVX
                 "model materials=" +
                 std::to_string(m_model.status.modelMetadata.materialAssetIds.size()));
             reporter.ResourceDiagnostic(
+                "model textures=" +
+                std::to_string(m_model.status.modelMetadata.textures.size()));
+            uint64 materialExtensionFeatureMask = 0;
+            for (const auto& material :
+                 m_model.status.modelMetadata.materials)
+            {
+                materialExtensionFeatureMask |=
+                    material.featureMask &
+                    RVX_MATERIAL_EXTENSION_FEATURE_MASK_V2;
+            }
+            reporter.ResourceDiagnostic(
+                "model material extension feature mask=" +
+                std::to_string(materialExtensionFeatureMask));
+            reporter.ResourceDiagnostic(
                 "model nodes=" +
                 std::to_string(m_model.status.modelMetadata.sourceNodeCount));
             if (m_cameraFrame.valid)
@@ -460,11 +530,35 @@ namespace RVX
         {
             reporter.Enable("DirectionalLightScene");
         }
+        if (m_cookedRasterExecutionObserved)
+        {
+            reporter.Enable("CookedModelRasterActualExecutionQualified");
+        }
+    }
+
+    void ModelViewerSample::ObserveDiagnostics(
+        const SampleRenderDiagnostics& diagnostics,
+        SampleAssessmentChannel& assessment)
+    {
+        const SampleRasterScenarioDiagnostics renderEvidence =
+            ProjectSampleRasterScenarioDiagnostics(diagnostics);
+        const bool executed =
+            HasPresentedOpaqueStandardLitRasterEvidence(renderEvidence) &&
+            IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics);
+        m_cookedRasterExecutionObserved =
+            m_cookedRasterExecutionObserved || executed;
+        if (executed)
+        {
+            PublishCookedModelRasterCapability(
+                assessment, m_cookedRasterCapabilityPublished);
+        }
     }
 
     SampleReadiness ModelViewerSample::GetReadiness(
         const SampleRenderDiagnostics& diagnostics) const
     {
+        const SampleRasterScenarioDiagnostics renderEvidence =
+            ProjectSampleRasterScenarioDiagnostics(diagnostics);
         if (!m_modelActivationError.empty())
         {
             return SampleReadiness::Failed(m_modelActivationError);
@@ -488,12 +582,12 @@ namespace RVX
             return SampleReadiness::Pending(
                 "Model Viewer is waiting for the selected texture IBL");
         }
-        if (diagnostics.visibleObjectCount == 0)
+        if (renderEvidence.visibleObjectCount == 0)
         {
             return SampleReadiness::Pending(
                 "Model Viewer is waiting for at least one visible model object");
         }
-        if (m_textureEnvironment && !diagnostics.textureIBLEnabled)
+        if (m_textureEnvironment && !renderEvidence.textureIBLEnabled)
         {
             return SampleReadiness::Pending(
                 "Model Viewer is waiting for the selected texture IBL");
@@ -501,16 +595,16 @@ namespace RVX
         if (m_renderPath == SampleRenderPath::GPUDriven)
         {
             const bool gpuReady =
-                diagnostics.gpuDrivenPolicyDecisionAvailable &&
-                diagnostics.gpuDrivenRequestedMode == "ForceEnabled" &&
-                diagnostics.gpuDrivenPolicyReason == "None" &&
-                diagnostics.gpuDrivenEnabled &&
-                diagnostics.gpuDrivenGraphPassRecorded &&
-                diagnostics.gpuDrivenExecutionRecorded &&
-                diagnostics.gpuDrivenOpaqueIndirectRequested &&
-                diagnostics.gpuDrivenOpaqueIndirectEligible &&
-                diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
-                diagnostics.gpuDrivenOpaqueIndirectBatchCount > 0;
+                renderEvidence.gpuDrivenPolicyDecisionAvailable &&
+                renderEvidence.gpuDrivenRequestedMode == "ForceEnabled" &&
+                renderEvidence.gpuDrivenPolicyReason == "None" &&
+                renderEvidence.gpuDrivenEnabled &&
+                renderEvidence.gpuDrivenGraphPassRecorded &&
+                renderEvidence.gpuDrivenExecutionRecorded &&
+                renderEvidence.gpuDrivenOpaqueIndirectRequested &&
+                renderEvidence.gpuDrivenOpaqueIndirectEligible &&
+                renderEvidence.gpuDrivenOpaqueIndirectSubmitted &&
+                renderEvidence.gpuDrivenOpaqueIndirectBatchCount > 0;
             if (!gpuReady)
             {
                 return SampleReadiness::Pending(
@@ -520,23 +614,33 @@ namespace RVX
         else if (m_renderPath == SampleRenderPath::Direct)
         {
             const bool directReady =
-                diagnostics.gpuDrivenPolicyDecisionAvailable &&
-                diagnostics.gpuDrivenRequestedMode == "ForceDisabled" &&
-                diagnostics.gpuDrivenPolicyReason == "ForcedDisabled" &&
-                !diagnostics.gpuDrivenEnabled &&
-                !diagnostics.gpuDrivenOpaqueIndirectRequested &&
-                !diagnostics.gpuDrivenOpaqueIndirectEligible &&
-                !diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
-                diagnostics.gpuDrivenOpaqueIndirectBatchCount == 0 &&
-                diagnostics.gpuDrivenOpaqueDirectDrawCount > 0 &&
-                diagnostics.opaqueExecutionCompleted &&
-                diagnostics.opaqueExecutedDrawCountAvailable &&
-                diagnostics.opaqueExecutedDrawCount > 0;
+                renderEvidence.gpuDrivenPolicyDecisionAvailable &&
+                renderEvidence.gpuDrivenRequestedMode == "ForceDisabled" &&
+                renderEvidence.gpuDrivenPolicyReason == "ForcedDisabled" &&
+                !renderEvidence.gpuDrivenEnabled &&
+                !renderEvidence.gpuDrivenOpaqueIndirectRequested &&
+                !renderEvidence.gpuDrivenOpaqueIndirectEligible &&
+                !renderEvidence.gpuDrivenOpaqueIndirectSubmitted &&
+                renderEvidence.gpuDrivenOpaqueIndirectBatchCount == 0 &&
+                renderEvidence.gpuDrivenOpaqueDirectDrawCount > 0 &&
+                renderEvidence.opaqueExecutionCompleted &&
+                renderEvidence.opaqueExecutedDrawCountAvailable &&
+                renderEvidence.opaqueExecutedDrawCount > 0;
             if (!directReady)
             {
                 return SampleReadiness::Pending(
                     "Model Viewer is waiting for forced Direct execution");
             }
+        }
+        if (!HasPresentedOpaqueStandardLitRasterEvidence(renderEvidence))
+        {
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for a presented Material V2 StandardLit opaque receipt without fallback");
+        }
+        if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
+        {
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for its requested render-path execution qualification");
         }
         return SampleReadiness::Ready();
     }
@@ -581,5 +685,7 @@ namespace RVX
         }
         m_skyboxCreated = false;
         m_lightCreated = false;
+        m_cookedRasterExecutionObserved = false;
+        m_cookedRasterCapabilityPublished = false;
     }
 } // namespace RVX

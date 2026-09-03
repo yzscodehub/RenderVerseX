@@ -155,9 +155,9 @@ namespace RVX
                 return false;
             }
 
-            if (space == 2 && logicalBinding >= 9u && logicalBinding <= 16u)
+            if (space == 2 && logicalBinding >= 14u && logicalBinding <= 21u)
             {
-                outPhysicalSlot = 8u + logicalBinding - 9u;
+                outPhysicalSlot = 8u + logicalBinding - 14u;
                 return true;
             }
 
@@ -178,7 +178,7 @@ namespace RVX
             if (physicalSlot >= 8u && physicalSlot <= 15u)
             {
                 outSet = 2;
-                outLogicalBinding = 9u + physicalSlot - 8u;
+                outLogicalBinding = 14u + physicalSlot - 8u;
                 return true;
             }
 
@@ -369,7 +369,7 @@ namespace RVX
                             std::to_string(space) + " logical sampler s" +
                             std::to_string(binding) +
                             "; supported set 0 bindings are "
-                            "{0,1,2,5,7,9,13,19} and set 2 bindings are {9..16}";
+                            "{0,1,2,5,7,9,13,19} and set 2 bindings are {14..21}";
                         return false;
                     }
                 }

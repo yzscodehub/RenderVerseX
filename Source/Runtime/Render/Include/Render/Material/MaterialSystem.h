@@ -26,14 +26,16 @@
 namespace RVX
 {
     /** ABI revision of MaterialGPUConstants-backed structured material tables. */
-    inline constexpr uint32 RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION = 3;
+    inline constexpr uint32 RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION = 4;
 
     /**
      * Fixed set-2 descriptor ABI shared by every DefaultLit material draw.
      *
-     * Texture and sampler bindings are deliberately derived from the upload
-     * slot ordinal: slots 0..7 map to t1..8 and s9..16 respectively.  The
-     * material parameter table remains the final SRV at t17.  Keep these
+     * Texture bindings are deliberately derived from the upload slot ordinal:
+     * slots 0..12 map to t1..13. DX12/Vulkan/OpenGL use samplers s14..26,
+     * while DX11 and Metal use the documented compact primary range s14..21
+     * and validate extension aliases before recording. The material parameter
+     * table remains the final SRV at t27. Keep these
      * names at the public MaterialSystem boundary so recording paths and
      * validation cannot silently retain the legacy five-texture layout.
      */
@@ -60,7 +62,7 @@ namespace RVX
             static_cast<uint32>(slot);
     }
 
-    static_assert(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING == 17);
+    static_assert(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING == 27);
 
     class RenderRetirementQueue;
     class FrameConstantUploadArena;
@@ -123,6 +125,13 @@ namespace RVX
         uint64 descriptorContentKey = 0;
         /** Owner-monotonic revision advanced only when that semantic key changes. */
         uint64 descriptorRevision = 0;
+        /** Frozen V2 material ABI identity consumed by this recorded draw. */
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::DeferredOpaque;
         /** Sorted by MaterialUploadTextureSlot. */
         std::vector<MaterialBindingTextureEntry> textureEntries{};
         RHIDescriptorSet* descriptorSet = nullptr;
@@ -141,6 +150,8 @@ namespace RVX
         {
             return constantsUpdated &&
                    descriptorSet &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   surfacePathEligibility != SurfacePathEligibility::Unsupported &&
                    (status == MaterialBindingStatus::Ready ||
                     status == MaterialBindingStatus::Fallback);
         }
@@ -164,6 +175,46 @@ namespace RVX
     {
         RenderResourceHandle material;
         bool allowNormalMap = true;
+    };
+
+    /**
+     * @brief CPU-only proof for one material consumed through a parameter table.
+     *
+     * Instanced and GPU-driven draws bind one descriptor set for a whole
+     * material table. This value preserves every exact material generation
+     * that the shader may index, without manufacturing per-material RHI
+     * bindings solely for diagnostics.
+     */
+    struct MaterialParameterTableBindingEvidence
+    {
+        RenderResourceHandle material{};
+        uint64 contentRevision = 0;
+        uint64 descriptorContentKey = 0;
+        uint64 descriptorRevision = 0;
+        std::vector<MaterialBindingTextureEntry> textureEntries{};
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV2();
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::DeferredOpaque;
+        bool fallbackUsed = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return material.IsValid() && contentRevision != 0 &&
+                   descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   (featureMask & ~RVX_MATERIAL_FEATURE_MASK_V2) == 0 &&
+                   shadingModel <= MaterialShadingModel::ThinTransmission &&
+                   surfacePathEligibility != SurfacePathEligibility::Unsupported &&
+                   !fallbackUsed &&
+                   std::all_of(textureEntries.begin(), textureEntries.end(),
+                       [](const MaterialBindingTextureEntry& entry)
+                       {
+                           return entry.IsValid() && !entry.fallbackUsed;
+                       });
+        }
     };
 
     /**
@@ -235,6 +286,11 @@ namespace RVX
         uint64 contentHash = 0;
         /** Value-only evidence indexed by stable shader material slot. */
         std::vector<MaterialParameterTableRowEvidence> valueOnlyRowEvidence;
+        /** True only for the texture-resolved raster parameter-table path. */
+        bool containsResolvedRasterBindingEvidence = false;
+        /** Sorted exact-generation receipts for every resolved table asset. */
+        std::vector<MaterialParameterTableBindingEvidence>
+            resolvedRasterBindingEvidence;
         /**
          * CPU-only resolved material evidence, indexed by the exact stable
          * shader material slot. Published only after the table write commits.
@@ -248,7 +304,10 @@ namespace RVX
                 stride != sizeof(MaterialGPUConstants) || slotCount == 0 ||
                 materialCount == 0 || contentHash == 0 ||
                 valueOnlyRowEvidence.size() != slotCount ||
-                rasterMaterialSemanticKeysBySlot.size() != slotCount)
+                rasterMaterialSemanticKeysBySlot.size() != slotCount ||
+                (containsResolvedRasterBindingEvidence
+                     ? resolvedRasterBindingEvidence.size() != materialCount
+                     : !resolvedRasterBindingEvidence.empty()))
             {
                 return false;
             }
@@ -271,9 +330,37 @@ namespace RVX
             if (usesDefaultClassificationSentinel)
             {
                 return slotCount == 1 && materialCount == 1 &&
+                       !containsResolvedRasterBindingEvidence &&
                        !valueOnlyRowEvidence.front().isAsset;
             }
-            return assetRowCount == materialCount;
+            if (assetRowCount != materialCount)
+            {
+                return false;
+            }
+            return !containsResolvedRasterBindingEvidence ||
+                   (std::is_sorted(
+                        resolvedRasterBindingEvidence.begin(),
+                        resolvedRasterBindingEvidence.end(),
+                        [](const MaterialParameterTableBindingEvidence& lhs,
+                           const MaterialParameterTableBindingEvidence& rhs)
+                        {
+                            return lhs.material < rhs.material;
+                        }) &&
+                    std::adjacent_find(
+                        resolvedRasterBindingEvidence.begin(),
+                        resolvedRasterBindingEvidence.end(),
+                        [](const MaterialParameterTableBindingEvidence& lhs,
+                           const MaterialParameterTableBindingEvidence& rhs)
+                        {
+                            return lhs.material == rhs.material;
+                        }) == resolvedRasterBindingEvidence.end() &&
+                    std::all_of(
+                        resolvedRasterBindingEvidence.begin(),
+                        resolvedRasterBindingEvidence.end(),
+                        [](const MaterialParameterTableBindingEvidence& value)
+                        {
+                            return value.IsValid();
+                        }));
         }
     };
 
@@ -414,7 +501,7 @@ namespace RVX
         [[nodiscard]] bool CreateMaterialParameterTableSnapshot(
             std::span<const MaterialParameterTableEntryRequest> requests,
             ResourceViewCache* viewCache,
-            MaterialParameterTableSnapshot& outSnapshot) const;
+            MaterialParameterTableSnapshot& outSnapshot);
 
         /**
          * @brief Materialize descriptor-only constants at stable handle slots.
@@ -457,6 +544,11 @@ namespace RVX
             RHITextureView* toonRamp = nullptr;
             RHITextureView* transmission = nullptr;
             RHITextureView* thickness = nullptr;
+            RHITextureView* specular = nullptr;
+            RHITextureView* specularColor = nullptr;
+            RHITextureView* clearcoat = nullptr;
+            RHITextureView* clearcoatRoughness = nullptr;
+            RHITextureView* clearcoatNormal = nullptr;
             RHISampler* baseColorSampler = nullptr;
             RHISampler* normalSampler = nullptr;
             RHISampler* metallicRoughnessSampler = nullptr;
@@ -465,6 +557,11 @@ namespace RVX
             RHISampler* toonRampSampler = nullptr;
             RHISampler* transmissionSampler = nullptr;
             RHISampler* thicknessSampler = nullptr;
+            RHISampler* specularSampler = nullptr;
+            RHISampler* specularColorSampler = nullptr;
+            RHISampler* clearcoatSampler = nullptr;
+            RHISampler* clearcoatRoughnessSampler = nullptr;
+            RHISampler* clearcoatNormalSampler = nullptr;
             RHIBuffer* materialParameterTable = nullptr;
             uint32 textureFlags = 0;
             uint32 fallbackTextureFlags = 0;
@@ -474,6 +571,8 @@ namespace RVX
             std::vector<MaterialUploadTextureBinding> textureBindings;
             bool usedFallback = false;
             bool normalMapDisabled = false;
+            bool compactSamplerPolicyUnsupported = false;
+            std::string compactSamplerPolicyMessage;
         };
 
         struct MaterialDescriptorKey
@@ -486,6 +585,11 @@ namespace RVX
             RHITextureView* toonRamp = nullptr;
             RHITextureView* transmission = nullptr;
             RHITextureView* thickness = nullptr;
+            RHITextureView* specular = nullptr;
+            RHITextureView* specularColor = nullptr;
+            RHITextureView* clearcoat = nullptr;
+            RHITextureView* clearcoatRoughness = nullptr;
+            RHITextureView* clearcoatNormal = nullptr;
             RHISampler* baseColorSampler = nullptr;
             RHISampler* normalSampler = nullptr;
             RHISampler* metallicRoughnessSampler = nullptr;
@@ -494,6 +598,11 @@ namespace RVX
             RHISampler* toonRampSampler = nullptr;
             RHISampler* transmissionSampler = nullptr;
             RHISampler* thicknessSampler = nullptr;
+            RHISampler* specularSampler = nullptr;
+            RHISampler* specularColorSampler = nullptr;
+            RHISampler* clearcoatSampler = nullptr;
+            RHISampler* clearcoatRoughnessSampler = nullptr;
+            RHISampler* clearcoatNormalSampler = nullptr;
             RHIBuffer* materialParameterTable = nullptr;
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
@@ -508,6 +617,11 @@ namespace RVX
                        toonRamp == other.toonRamp &&
                        transmission == other.transmission &&
                        thickness == other.thickness &&
+                       specular == other.specular &&
+                       specularColor == other.specularColor &&
+                       clearcoat == other.clearcoat &&
+                       clearcoatRoughness == other.clearcoatRoughness &&
+                       clearcoatNormal == other.clearcoatNormal &&
                        baseColorSampler == other.baseColorSampler &&
                        normalSampler == other.normalSampler &&
                        metallicRoughnessSampler ==
@@ -517,6 +631,12 @@ namespace RVX
                        toonRampSampler == other.toonRampSampler &&
                        transmissionSampler == other.transmissionSampler &&
                        thicknessSampler == other.thicknessSampler &&
+                       specularSampler == other.specularSampler &&
+                       specularColorSampler == other.specularColorSampler &&
+                       clearcoatSampler == other.clearcoatSampler &&
+                       clearcoatRoughnessSampler ==
+                           other.clearcoatRoughnessSampler &&
+                       clearcoatNormalSampler == other.clearcoatNormalSampler &&
                        materialParameterTable ==
                            other.materialParameterTable &&
                        viewGeneration == other.viewGeneration &&
@@ -550,6 +670,13 @@ namespace RVX
 
         bool CreateConstantBuffer();
         bool CreateDefaultResources();
+        [[nodiscard]] bool UsesCompactMaterialSamplerABI() const noexcept;
+        [[nodiscard]] bool ValidateCompactMaterialSamplerPolicies(
+            std::span<const MaterialUploadTextureBinding> bindings,
+            std::string& outError) const;
+        [[nodiscard]] bool ValidateResolvedCompactMaterialSamplerPolicies(
+            std::span<const MaterialBindingTextureEntry> entries,
+            std::string& outError) const;
         ResolvedMaterialTextures ResolveMaterialTextures(RenderResourceHandle material,
                                                         ResourceViewCache* viewCache,
                                                         MaterialBindingOptions options) const;
@@ -565,6 +692,9 @@ namespace RVX
             RenderResourceHandle requestedMaterial,
             const MaterialGPUConstants& constants,
             const ResolvedMaterialTextures& textures);
+        [[nodiscard]] uint64 ResolveSemanticDescriptorRevision(
+            RenderResourceHandle material,
+            uint64 descriptorContentKey);
         [[nodiscard]] uint64 BuildSemanticDescriptorContentKey(
             RenderResourceHandle requestedMaterial,
             const MaterialGPUConstants& constants,

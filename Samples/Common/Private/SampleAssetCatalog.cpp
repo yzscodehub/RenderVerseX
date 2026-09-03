@@ -219,6 +219,27 @@ namespace RVX
             return false;
         }
 
+        bool ParseUsagePolicy(const std::string& text,
+                              SampleAssetUsagePolicy& output)
+        {
+            if (text == "required-qualification")
+            {
+                output = SampleAssetUsagePolicy::RequiredQualification;
+                return true;
+            }
+            if (text == "development-only")
+            {
+                output = SampleAssetUsagePolicy::DevelopmentOnly;
+                return true;
+            }
+            if (text == "optional-nightly")
+            {
+                output = SampleAssetUsagePolicy::OptionalNightly;
+                return true;
+            }
+            return false;
+        }
+
         bool ParseContentIdentity(const Json& object,
                                   Resource::ResourceContentIdentity& output,
                                   std::string& outError)
@@ -853,7 +874,7 @@ namespace RVX
             const Json document = Json::parse(stream, nullptr, false);
             if (!stream || document.is_discarded() || !document.is_object())
             {
-                outError = "Schema-v3 glTF root is not valid JSON";
+                outError = "Schema-v4 glTF root is not valid JSON";
                 return false;
             }
 
@@ -924,7 +945,7 @@ namespace RVX
             return validateCollection("buffers") && validateCollection("images");
         }
 
-        bool ParseAndVerifyV3Manifest(const Json& asset,
+        bool ParseAndVerifyV4Manifest(const Json& asset,
                                       SampleAssetEntry& entry,
                                       const std::filesystem::path& assetRoot,
                                       std::string& outError)
@@ -934,7 +955,7 @@ namespace RVX
             if (assetContentId == asset.end() || files == asset.end() ||
                 !files->is_array() || files->empty())
             {
-                outError = "Schema-v3 asset requires assetContentId and non-empty files[]";
+                outError = "Schema-v4 asset requires assetContentId and non-empty files[]";
                 return false;
             }
             if (!ParseAssetContentId(*assetContentId, entry.assetContentId, outError))
@@ -953,7 +974,7 @@ namespace RVX
             {
                 if (!file.is_object())
                 {
-                    outError = "Schema-v3 asset files[] entry must be an object";
+                    outError = "Schema-v4 asset files[] entry must be an object";
                     return false;
                 }
 
@@ -963,30 +984,30 @@ namespace RVX
                     !ReadRequiredString(file, "purpose", parsedFile.purpose, outError) ||
                     !ReadRequiredString(file, "sha256", parsedFile.sha256, outError))
                 {
-                    outError = "Schema-v3 files[] " + outError;
+                    outError = "Schema-v4 files[] " + outError;
                     return false;
                 }
                 const auto byteCount = file.find("byteCount");
                 if (byteCount == file.end() || !byteCount->is_number_unsigned())
                 {
-                    outError = "Schema-v3 files[] byteCount must be an unsigned integer";
+                    outError = "Schema-v4 files[] byteCount must be an unsigned integer";
                     return false;
                 }
                 if (!IsLowerSHA256Digest(parsedFile.sha256))
                 {
-                    outError = "Schema-v3 files[] sha256 must be a lowercase SHA-256 digest";
+                    outError = "Schema-v4 files[] sha256 must be a lowercase SHA-256 digest";
                     return false;
                 }
                 if (!ParseStrictPosixRelativePath(pathText, parsedFile.path, outError))
                 {
-                    outError = "Schema-v3 files[] path is invalid: " + outError;
+                    outError = "Schema-v4 files[] path is invalid: " + outError;
                     return false;
                 }
 
                 const std::string canonicalPath = parsedFile.path.generic_string();
                 if (!previousPath.empty() && canonicalPath <= previousPath)
                 {
-                    outError = "Schema-v3 files[] paths must be strictly increasing canonical POSIX paths";
+                    outError = "Schema-v4 files[] paths must be strictly increasing canonical POSIX paths";
                     return false;
                 }
                 previousPath = canonicalPath;
@@ -1001,7 +1022,7 @@ namespace RVX
                 if (!canonicalFilePaths.emplace(
                         MakeCanonicalPathKey(parsedFile.resolvedPath)).second)
                 {
-                    outError = "Schema-v3 files[] contains duplicate canonical paths";
+                    outError = "Schema-v4 files[] contains duplicate canonical paths";
                     return false;
                 }
 
@@ -1018,14 +1039,14 @@ namespace RVX
                 if (parsedFile.byteCount != observedByteCount ||
                     parsedFile.sha256 != observedDigest)
                 {
-                    outError = "Schema-v3 asset package file hash or byte count drift: " +
+                    outError = "Schema-v4 asset package file hash or byte count drift: " +
                                canonicalPath;
                     return false;
                 }
                 if (aggregateByteCount >
                     std::numeric_limits<uint64>::max() - parsedFile.byteCount)
                 {
-                    outError = "Schema-v3 asset package byte count overflows uint64";
+                    outError = "Schema-v4 asset package byte count overflows uint64";
                     return false;
                 }
                 aggregateByteCount += parsedFile.byteCount;
@@ -1041,14 +1062,14 @@ namespace RVX
 
             if (!rootListed)
             {
-                outError = "Schema-v3 files[] must list the entry path";
+                outError = "Schema-v4 files[] must list the entry path";
                 return false;
             }
             if (entry.assetContentId.fileCount != entry.files.size() ||
                 entry.assetContentId.byteCount != aggregateByteCount ||
                 entry.assetContentId.digest != aggregateHasher.FinalizeHex())
             {
-                outError = "Schema-v3 assetContentId does not match the verified files[] package";
+                outError = "Schema-v4 assetContentId does not match the verified files[] package";
                 return false;
             }
             if (IsGltfPath(entry.path) &&
@@ -1082,6 +1103,21 @@ namespace RVX
             case SampleAssetKind::Environment: return "environment";
             case SampleAssetKind::Animation: return "animation";
             case SampleAssetKind::Effect: return "effect";
+            default: return "unknown";
+        }
+    }
+
+    const char* GetSampleAssetUsagePolicyName(
+        SampleAssetUsagePolicy policy) noexcept
+    {
+        switch (policy)
+        {
+            case SampleAssetUsagePolicy::RequiredQualification:
+                return "required-qualification";
+            case SampleAssetUsagePolicy::DevelopmentOnly:
+                return "development-only";
+            case SampleAssetUsagePolicy::OptionalNightly:
+                return "optional-nightly";
             default: return "unknown";
         }
     }
@@ -1136,9 +1172,7 @@ namespace RVX
         if (schema == document.end() || !schema->is_string() ||
             schema->get<std::string>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_ID ||
             version == document.end() || !version->is_number_unsigned() ||
-            (version->get<uint64>() != 1 &&
-             version->get<uint64>() != 2 &&
-             version->get<uint64>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION) ||
+            version->get<uint64>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION ||
             assets == document.end() || !assets->is_array() || assets->empty())
         {
             SetError(outError,
@@ -1172,6 +1206,32 @@ namespace RVX
             if (!IsValidAssetId(entry.id) || !ParseAssetKind(kind, entry.kind))
             {
                 SetError(outError, "Invalid sample asset id or kind: " + entry.id);
+                return false;
+            }
+
+            const auto usagePolicy = asset.find("usagePolicy");
+            const auto qualificationEligible =
+                asset.find("qualificationEligible");
+            if (usagePolicy == asset.end() || !usagePolicy->is_string() ||
+                qualificationEligible == asset.end() ||
+                !qualificationEligible->is_boolean() ||
+                !ParseUsagePolicy(usagePolicy->get<std::string>(),
+                                  entry.usagePolicy))
+            {
+                SetError(outError,
+                         "Sample asset requires a valid usagePolicy and "
+                         "qualificationEligible metadata: " + entry.id);
+                return false;
+            }
+            entry.qualificationEligible = qualificationEligible->get<bool>();
+            const bool requiresQualification =
+                entry.usagePolicy ==
+                SampleAssetUsagePolicy::RequiredQualification;
+            if (entry.qualificationEligible != requiresQualification)
+            {
+                SetError(outError,
+                         "Sample asset usagePolicy and qualificationEligible "
+                         "must agree: " + entry.id);
                 return false;
             }
             if (m_entries.contains(entry.id))
@@ -1217,7 +1277,7 @@ namespace RVX
                 return false;
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (!ReadRequiredString(*license,
                                         "coverage",
@@ -1249,7 +1309,7 @@ namespace RVX
 
             entry.redistributable = redistributable->get<bool>();
             const auto attribution = asset.find("attribution");
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (attribution == asset.end() || !attribution->is_string() ||
                     attribution->get<std::string>().empty())
@@ -1274,7 +1334,7 @@ namespace RVX
             }
 
             const auto modificationNotice = asset.find("modificationNotice");
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (modificationNotice == asset.end() ||
                     !modificationNotice->is_string() ||
@@ -1299,7 +1359,7 @@ namespace RVX
                 entry.modificationNotice = modificationNotice->get<std::string>();
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 const auto derivedFrom = asset.find("derivedFrom");
                 const auto generation = asset.find("generation");
@@ -1347,14 +1407,14 @@ namespace RVX
                 }
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (!ParseStrictPosixRelativePath(path, entry.path, parseError) ||
                     !ParseStrictPosixRelativePath(licenseFile,
                                                   entry.license.file,
                                                   parseError))
                 {
-                    SetError(outError, "Schema-v3 " + parseError + " for asset " + entry.id);
+                    SetError(outError, "Schema-v4 " + parseError + " for asset " + entry.id);
                     return false;
                 }
             }
@@ -1398,8 +1458,8 @@ namespace RVX
                 }
             }
 
-            if (catalogSchemaVersion >= 3 &&
-                !ParseAndVerifyV3Manifest(asset,
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION &&
+                !ParseAndVerifyV4Manifest(asset,
                                           entry,
                                           m_assetRoot,
                                           parseError))
@@ -1409,14 +1469,15 @@ namespace RVX
             }
 
             const auto cook = asset.find("cook");
-            if (cook != asset.end() && catalogSchemaVersion < 3)
+            if (cook != asset.end() &&
+                catalogSchemaVersion != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 SetError(outError,
-                         "Sample asset cook requires catalog schema v3: " +
+                         "Sample asset cook requires catalog schema v4: " +
                              entry.id);
                 return false;
             }
-            if (catalogSchemaVersion >= 3 &&
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION &&
                 !ParseCookDeclaration(asset, entry.cook, parseError))
             {
                 SetError(outError, parseError + " for asset " + entry.id);

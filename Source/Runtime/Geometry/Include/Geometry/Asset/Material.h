@@ -179,6 +179,46 @@ namespace RVX
         float GetEmissiveStrength() const { return m_emissiveStrength; }
         void SetEmissiveStrength(float strength) { m_emissiveStrength = strength; }
 
+        // KHR_materials_specular
+        float GetSpecularFactor() const { return m_specularFactor; }
+        void SetSpecularFactor(float factor) { m_specularFactor = factor; }
+        const Vec3& GetSpecularColor() const { return m_specularColor; }
+        void SetSpecularColor(const Vec3& color) { m_specularColor = color; }
+        const std::optional<TextureInfo>& GetSpecularTexture() const { return m_specularTexture; }
+        void SetSpecularTexture(const TextureInfo& texture) { m_specularTexture = texture; }
+        const std::optional<TextureInfo>& GetSpecularColorTexture() const { return m_specularColorTexture; }
+        void SetSpecularColorTexture(const TextureInfo& texture) { m_specularColorTexture = texture; }
+
+        // KHR_materials_clearcoat
+        float GetClearcoatFactor() const { return m_clearcoatFactor; }
+        void SetClearcoatFactor(float factor) { m_clearcoatFactor = factor; }
+        const std::optional<TextureInfo>& GetClearcoatTexture() const { return m_clearcoatTexture; }
+        void SetClearcoatTexture(const TextureInfo& texture) { m_clearcoatTexture = texture; }
+        float GetClearcoatRoughness() const { return m_clearcoatRoughness; }
+        void SetClearcoatRoughness(float roughness) { m_clearcoatRoughness = roughness; }
+        const std::optional<TextureInfo>& GetClearcoatRoughnessTexture() const { return m_clearcoatRoughnessTexture; }
+        void SetClearcoatRoughnessTexture(const TextureInfo& texture) { m_clearcoatRoughnessTexture = texture; }
+        float GetClearcoatNormalScale() const { return m_clearcoatNormalScale; }
+        void SetClearcoatNormalScale(float scale) { m_clearcoatNormalScale = scale; }
+        const std::optional<TextureInfo>& GetClearcoatNormalTexture() const { return m_clearcoatNormalTexture; }
+        void SetClearcoatNormalTexture(const TextureInfo& texture) { m_clearcoatNormalTexture = texture; }
+
+        // KHR_materials_transmission / volume / ior
+        float GetTransmissionFactor() const { return m_transmissionFactor; }
+        void SetTransmissionFactor(float factor) { m_transmissionFactor = factor; }
+        const std::optional<TextureInfo>& GetTransmissionTexture() const { return m_transmissionTexture; }
+        void SetTransmissionTexture(const TextureInfo& texture) { m_transmissionTexture = texture; }
+        float GetIndexOfRefraction() const { return m_indexOfRefraction; }
+        void SetIndexOfRefraction(float ior) { m_indexOfRefraction = ior; }
+        float GetThicknessFactor() const { return m_thicknessFactor; }
+        void SetThicknessFactor(float thickness) { m_thicknessFactor = thickness; }
+        const std::optional<TextureInfo>& GetThicknessTexture() const { return m_thicknessTexture; }
+        void SetThicknessTexture(const TextureInfo& texture) { m_thicknessTexture = texture; }
+        const Vec3& GetAttenuationColor() const { return m_attenuationColor; }
+        void SetAttenuationColor(const Vec3& color) { m_attenuationColor = color; }
+        float GetAttenuationDistance() const { return m_attenuationDistance; }
+        void SetAttenuationDistance(float distance) { m_attenuationDistance = distance; }
+
         // =====================================================================
         // Utility
         // =====================================================================
@@ -212,6 +252,27 @@ namespace RVX
         Vec3 m_emissiveColor{0.0f, 0.0f, 0.0f};
         std::optional<TextureInfo> m_emissiveTexture;
         float m_emissiveStrength = 1.0f;
+
+        float m_specularFactor = 1.0f;
+        Vec3 m_specularColor{1.0f, 1.0f, 1.0f};
+        std::optional<TextureInfo> m_specularTexture;
+        std::optional<TextureInfo> m_specularColorTexture;
+
+        float m_clearcoatFactor = 0.0f;
+        std::optional<TextureInfo> m_clearcoatTexture;
+        float m_clearcoatRoughness = 0.0f;
+        std::optional<TextureInfo> m_clearcoatRoughnessTexture;
+        float m_clearcoatNormalScale = 1.0f;
+        std::optional<TextureInfo> m_clearcoatNormalTexture;
+
+        float m_transmissionFactor = 0.0f;
+        std::optional<TextureInfo> m_transmissionTexture;
+        float m_indexOfRefraction = 1.5f;
+        float m_thicknessFactor = 0.0f;
+        std::optional<TextureInfo> m_thicknessTexture;
+        Vec3 m_attenuationColor{1.0f, 1.0f, 1.0f};
+        // Zero is the canonical finite representation of infinite distance.
+        float m_attenuationDistance = 0.0f;
     };
 
 } // namespace RVX

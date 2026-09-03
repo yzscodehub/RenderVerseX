@@ -25,20 +25,6 @@ namespace RVX::Resource
 {
     namespace
     {
-        uint32_t GetTextureUsageRank(TextureUsage usage)
-        {
-            switch (usage)
-            {
-                case TextureUsage::Normal:
-                    return 2;
-                case TextureUsage::Data:
-                    return 1;
-                case TextureUsage::Color:
-                default:
-                    return 0;
-            }
-        }
-
         const char* TextureUsageName(TextureUsage usage)
         {
             switch (usage)
@@ -55,6 +41,18 @@ namespace RVX::Resource
 
         constexpr std::string_view KHR_TEXTURE_TRANSFORM_EXTENSION =
             "KHR_texture_transform";
+        constexpr std::string_view KHR_MATERIALS_SPECULAR_EXTENSION =
+            "KHR_materials_specular";
+        constexpr std::string_view KHR_MATERIALS_CLEARCOAT_EXTENSION =
+            "KHR_materials_clearcoat";
+        constexpr std::string_view KHR_MATERIALS_TRANSMISSION_EXTENSION =
+            "KHR_materials_transmission";
+        constexpr std::string_view KHR_MATERIALS_VOLUME_EXTENSION =
+            "KHR_materials_volume";
+        constexpr std::string_view KHR_MATERIALS_IOR_EXTENSION =
+            "KHR_materials_ior";
+        constexpr std::string_view KHR_MATERIALS_EMISSIVE_STRENGTH_EXTENSION =
+            "KHR_materials_emissive_strength";
 
         template <typename TextureInfoType>
         bool HasTextureTransform(const TextureInfoType& textureInfo)
@@ -62,6 +60,43 @@ namespace RVX::Resource
             return textureInfo.extensions.find(
                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)) !=
                    textureInfo.extensions.end();
+        }
+
+        const tinygltf::Value* FindMaterialExtension(
+            const tinygltf::Material& material,
+            std::string_view extensionName)
+        {
+            const auto found = material.extensions.find(
+                std::string(extensionName));
+            return found == material.extensions.end() ? nullptr : &found->second;
+        }
+
+        const tinygltf::Value* FindExtensionTextureInfo(
+            const tinygltf::Material& material,
+            std::string_view extensionName,
+            std::string_view memberName)
+        {
+            const tinygltf::Value* extension =
+                FindMaterialExtension(material, extensionName);
+            if (extension == nullptr || !extension->IsObject() ||
+                !extension->Has(std::string(memberName)))
+            {
+                return nullptr;
+            }
+            return &extension->Get(std::string(memberName));
+        }
+
+        bool HasTextureTransform(const tinygltf::Value* textureInfo)
+        {
+            if (textureInfo == nullptr || !textureInfo->IsObject() ||
+                !textureInfo->Has("extensions"))
+            {
+                return false;
+            }
+            const tinygltf::Value& extensions =
+                textureInfo->Get("extensions");
+            return extensions.IsObject() &&
+                   extensions.Has(std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
         }
 
         bool UsesTextureTransform(const tinygltf::Model& model)
@@ -76,7 +111,35 @@ namespace RVX::Resource
                            HasTextureTransform(pbr.metallicRoughnessTexture) ||
                            HasTextureTransform(material.normalTexture) ||
                            HasTextureTransform(material.occlusionTexture) ||
-                           HasTextureTransform(material.emissiveTexture);
+                           HasTextureTransform(material.emissiveTexture) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_SPECULAR_EXTENSION,
+                               "specularTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_SPECULAR_EXTENSION,
+                               "specularColorTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                               "clearcoatTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                               "clearcoatRoughnessTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                               "clearcoatNormalTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_TRANSMISSION_EXTENSION,
+                               "transmissionTexture")) ||
+                           HasTextureTransform(FindExtensionTextureInfo(
+                               material,
+                               KHR_MATERIALS_VOLUME_EXTENSION,
+                               "thicknessTexture"));
                 });
         }
 
@@ -213,6 +276,33 @@ namespace RVX::Resource
             return true;
         }
 
+        bool ValidateNormalMapTextureTransform(
+            const TextureInfo& textureInfo,
+            std::string_view slotName,
+            std::string& error)
+        {
+            if (!std::isfinite(textureInfo.rotation) ||
+                textureInfo.rotation != 0.0f)
+            {
+                error = std::string(slotName) +
+                    " KHR_texture_transform.rotation must be zero for an "
+                    "authored tangent basis; bake normal-map rotation into "
+                    "the texture or mesh UVs.";
+                return false;
+            }
+            if (!std::isfinite(textureInfo.scale.x) ||
+                !std::isfinite(textureInfo.scale.y) ||
+                textureInfo.scale.x <= 0.0f ||
+                textureInfo.scale.y <= 0.0f)
+            {
+                error = std::string(slotName) +
+                    " KHR_texture_transform.scale must contain finite, "
+                    "strictly positive values for an authored tangent basis.";
+                return false;
+            }
+            return true;
+        }
+
         bool ResolvePrimitiveTangentUVSet(
             const tinygltf::Model& gltf,
             const tinygltf::Primitive& primitive,
@@ -230,26 +320,131 @@ namespace RVX::Resource
                 return false;
             }
 
+            const tinygltf::Material& material =
+                gltf.materials[primitive.material];
             const tinygltf::NormalTextureInfo& normalTexture =
-                gltf.materials[primitive.material].normalTexture;
-            if (normalTexture.index < 0)
-                return true;
-
-            outNormalTexturePresent = true;
-            const auto transform = normalTexture.extensions.find(
-                std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
-            const tinygltf::Value* transformValue =
-                transform == normalTexture.extensions.end()
-                    ? nullptr
-                    : &transform->second;
-            TextureInfo parsed;
-            if (!ParseTextureTransform(
-                    transformValue, normalTexture.texCoord, parsed, error))
+                material.normalTexture;
+            bool tangentUvSelected = false;
+            if (normalTexture.index >= 0)
             {
-                error = "normal texture: " + error;
+                outNormalTexturePresent = true;
+                const auto transform = normalTexture.extensions.find(
+                    std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
+                const tinygltf::Value* transformValue =
+                    transform == normalTexture.extensions.end()
+                        ? nullptr
+                        : &transform->second;
+                TextureInfo parsed;
+                if (!ParseTextureTransform(
+                        transformValue, normalTexture.texCoord, parsed, error))
+                {
+                    error = "normal texture: " + error;
+                    return false;
+                }
+                if (!ValidateNormalMapTextureTransform(
+                        parsed, "normal texture", error))
+                {
+                    return false;
+                }
+                outUVSet = static_cast<uint32>(parsed.uvSet);
+                tangentUvSelected = true;
+            }
+
+            const tinygltf::Value* clearcoatNormal =
+                FindExtensionTextureInfo(
+                    material,
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatNormalTexture");
+            if (clearcoatNormal == nullptr)
+                return true;
+            if (!clearcoatNormal->IsObject() ||
+                !clearcoatNormal->Has("index"))
+            {
+                error =
+                    "KHR_materials_clearcoat.clearcoatNormalTexture must be "
+                    "a normalTextureInfo object with an index.";
                 return false;
             }
-            outUVSet = static_cast<uint32>(parsed.uvSet);
+            const tinygltf::Value& sourceIndex =
+                clearcoatNormal->Get("index");
+            if (!sourceIndex.IsNumber() ||
+                !std::isfinite(sourceIndex.GetNumberAsDouble()) ||
+                std::floor(sourceIndex.GetNumberAsDouble()) !=
+                    sourceIndex.GetNumberAsDouble() ||
+                sourceIndex.GetNumberAsDouble() < 0.0 ||
+                sourceIndex.GetNumberAsDouble() >=
+                    static_cast<double>(gltf.textures.size()))
+            {
+                error =
+                    "KHR_materials_clearcoat.clearcoatNormalTexture.index "
+                    "must reference a declared texture.";
+                return false;
+            }
+
+            int sourceUvSet = 0;
+            if (clearcoatNormal->Has("texCoord"))
+            {
+                const tinygltf::Value& texCoord =
+                    clearcoatNormal->Get("texCoord");
+                if (!texCoord.IsNumber() ||
+                    !std::isfinite(texCoord.GetNumberAsDouble()) ||
+                    std::floor(texCoord.GetNumberAsDouble()) !=
+                        texCoord.GetNumberAsDouble() ||
+                    texCoord.GetNumberAsDouble() < 0.0 ||
+                    texCoord.GetNumberAsDouble() > 1.0)
+                {
+                    error =
+                        "KHR_materials_clearcoat.clearcoatNormalTexture."
+                        "texCoord must be UV set 0 or 1.";
+                    return false;
+                }
+                sourceUvSet = static_cast<int>(texCoord.GetNumberAsDouble());
+            }
+            const tinygltf::Value* transformValue = nullptr;
+            if (clearcoatNormal->Has("extensions"))
+            {
+                const tinygltf::Value& extensions =
+                    clearcoatNormal->Get("extensions");
+                if (!extensions.IsObject())
+                {
+                    error =
+                        "KHR_materials_clearcoat.clearcoatNormalTexture."
+                        "extensions must be an object.";
+                    return false;
+                }
+                if (extensions.Has(
+                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)))
+                {
+                    transformValue = &extensions.Get(
+                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
+                }
+            }
+            TextureInfo parsed;
+            if (!ParseTextureTransform(
+                    transformValue, sourceUvSet, parsed, error))
+            {
+                error =
+                    "KHR_materials_clearcoat.clearcoatNormalTexture: " +
+                    error;
+                return false;
+            }
+            if (!ValidateNormalMapTextureTransform(
+                    parsed, "KHR_materials_clearcoat.clearcoatNormalTexture",
+                    error))
+            {
+                return false;
+            }
+            const uint32 clearcoatUvSet =
+                static_cast<uint32>(parsed.uvSet);
+            if (tangentUvSelected && outUVSet != clearcoatUvSet)
+            {
+                error =
+                    "Base and clearcoat normal textures require different UV "
+                    "sets; one mesh tangent basis cannot represent both.";
+                return false;
+            }
+            outNormalTexturePresent = true;
+            outUVSet = clearcoatUvSet;
             return true;
         }
 
@@ -676,18 +871,19 @@ namespace RVX::Resource
             return TextureFallbackSemantic::White;
         }
 
-        void MarkTextureReferenceUsage(const tinygltf::Model& gltf,
+        bool MarkTextureReferenceUsage(const tinygltf::Model& gltf,
                                        int textureIndex,
                                        TextureUsage usage,
                                        bool isSRGB,
                                        const char* slotName,
                                        GLTFImportResult& result,
-                                       std::vector<bool>& assigned)
+                                       std::vector<bool>& assigned,
+                                       std::string& error)
         {
             const int imageIndex = ResolveTextureImageIndex(gltf, textureIndex);
             if (imageIndex < 0 || imageIndex >= static_cast<int>(result.textures.size()))
             {
-                return;
+                return true;
             }
 
             TextureReference& ref = result.textures[imageIndex];
@@ -697,80 +893,174 @@ namespace RVX::Resource
                 ref.isSRGB = isSRGB;
                 ref.fallbackSemantic = GetFallbackSemantic(usage, slotName);
                 assigned[static_cast<size_t>(imageIndex)] = true;
-                return;
+                return true;
             }
 
             if (ref.usage == usage && ref.isSRGB == isSRGB)
             {
-                return;
+                return true;
             }
 
-            const TextureUsage previousUsage = ref.usage;
-            const bool previousSRGB = ref.isSRGB;
-            const uint32_t previousRank = GetTextureUsageRank(previousUsage);
-            const uint32_t desiredRank = GetTextureUsageRank(usage);
-
-            if (desiredRank > previousRank)
-            {
-                ref.usage = usage;
-                ref.isSRGB = isSRGB;
-                ref.fallbackSemantic = GetFallbackSemantic(usage, slotName);
-            }
-
-            RVX_CORE_WARN(
-                "GLTFImporter: image {} is referenced by incompatible PBR texture slots; "
-                "previous usage={} sRGB={}, new slot={} usage={} sRGB={}, resolved usage={} sRGB={}",
-                imageIndex,
-                TextureUsageName(previousUsage),
-                previousSRGB ? "true" : "false",
-                slotName ? slotName : "<unknown>",
-                TextureUsageName(usage),
-                isSRGB ? "true" : "false",
-                TextureUsageName(ref.usage),
-                ref.isSRGB ? "true" : "false");
+            error =
+                "glTF image " + std::to_string(imageIndex) +
+                " is referenced by incompatible texture interpretations: "
+                "existing usage=" + TextureUsageName(ref.usage) +
+                " sRGB=" + (ref.isSRGB ? "true" : "false") +
+                ", new slot=" + (slotName ? slotName : "<unknown>") +
+                " usage=" + TextureUsageName(usage) +
+                " sRGB=" + (isSRGB ? "true" : "false") +
+                ". Split the source image or cook explicit usage variants.";
+            return false;
         }
 
-        void MarkMaterialTextureUsages(const tinygltf::Model& gltf,
+        bool MarkMaterialTextureUsages(const tinygltf::Model& gltf,
                                        const tinygltf::Material& material,
                                        GLTFImportResult& result,
-                                       std::vector<bool>& assigned)
+                                       std::vector<bool>& assigned,
+                                       std::string& error)
         {
+            const auto extensionTextureIndex =
+                [&material](std::string_view extensionName,
+                            std::string_view memberName)
+            {
+                const tinygltf::Value* textureInfo =
+                    FindExtensionTextureInfo(
+                        material, extensionName, memberName);
+                if (textureInfo == nullptr || !textureInfo->IsObject() ||
+                    !textureInfo->Has("index"))
+                {
+                    return -1;
+                }
+                const tinygltf::Value& index = textureInfo->Get("index");
+                if (!index.IsNumber())
+                    return -1;
+                const double numericIndex = index.GetNumberAsDouble();
+                if (!std::isfinite(numericIndex) ||
+                    std::floor(numericIndex) != numericIndex ||
+                    numericIndex < 0.0 ||
+                    numericIndex >
+                        static_cast<double>(std::numeric_limits<int>::max()))
+                {
+                    return -1;
+                }
+                return static_cast<int>(numericIndex);
+            };
+
             const auto& pbr = material.pbrMetallicRoughness;
-            MarkTextureReferenceUsage(gltf,
-                                      pbr.baseColorTexture.index,
-                                      TextureUsage::Color,
-                                      true,
-                                      "baseColor",
-                                      result,
-                                      assigned);
-            MarkTextureReferenceUsage(gltf,
-                                      pbr.metallicRoughnessTexture.index,
-                                      TextureUsage::Data,
-                                      false,
-                                      "metallicRoughness",
-                                      result,
-                                      assigned);
-            MarkTextureReferenceUsage(gltf,
-                                      material.normalTexture.index,
-                                      TextureUsage::Normal,
-                                      false,
-                                      "normal",
-                                      result,
-                                      assigned);
-            MarkTextureReferenceUsage(gltf,
-                                      material.occlusionTexture.index,
-                                      TextureUsage::Data,
-                                      false,
-                                      "occlusion",
-                                      result,
-                                      assigned);
-            MarkTextureReferenceUsage(gltf,
-                                      material.emissiveTexture.index,
-                                      TextureUsage::Color,
-                                      true,
-                                      "emissive",
-                                      result,
-                                      assigned);
+            return MarkTextureReferenceUsage(gltf,
+                                             pbr.baseColorTexture.index,
+                                             TextureUsage::Color,
+                                             true,
+                                             "baseColor",
+                                             result,
+                                             assigned,
+                                             error) &&
+                   MarkTextureReferenceUsage(
+                       gltf,
+                       pbr.metallicRoughnessTexture.index,
+                       TextureUsage::Data,
+                       false,
+                       "metallicRoughness",
+                       result,
+                       assigned,
+                       error) &&
+                   MarkTextureReferenceUsage(gltf,
+                                             material.normalTexture.index,
+                                             TextureUsage::Normal,
+                                             false,
+                                             "normal",
+                                             result,
+                                             assigned,
+                                             error) &&
+                   MarkTextureReferenceUsage(gltf,
+                                             material.occlusionTexture.index,
+                                             TextureUsage::Data,
+                                             false,
+                                             "occlusion",
+                                             result,
+                                             assigned,
+                                             error) &&
+                   MarkTextureReferenceUsage(gltf,
+                                             material.emissiveTexture.index,
+                                             TextureUsage::Color,
+                                             true,
+                                             "emissive",
+                                             result,
+                                             assigned,
+                                             error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_SPECULAR_EXTENSION, "specularTexture"),
+                TextureUsage::Data,
+                false,
+                "specular",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_SPECULAR_EXTENSION, "specularColorTexture"),
+                TextureUsage::Color,
+                true,
+                "specularColor",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION, "clearcoatTexture"),
+                TextureUsage::Data,
+                false,
+                "clearcoat",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatRoughnessTexture"),
+                TextureUsage::Data,
+                false,
+                "clearcoatRoughness",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatNormalTexture"),
+                TextureUsage::Normal,
+                false,
+                "clearcoatNormal",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_TRANSMISSION_EXTENSION,
+                    "transmissionTexture"),
+                TextureUsage::Data,
+                false,
+                "transmission",
+                result,
+                assigned,
+                error) &&
+                   MarkTextureReferenceUsage(
+                gltf,
+                extensionTextureIndex(
+                    KHR_MATERIALS_VOLUME_EXTENSION, "thicknessTexture"),
+                TextureUsage::Data,
+                false,
+                "thickness",
+                result,
+                assigned,
+                error);
         }
 
         struct AccessorView
@@ -1478,7 +1768,13 @@ namespace RVX::Resource
                 return false;
             }
             result.materials.push_back(std::move(converted));
-            MarkMaterialTextureUsages(gltf, material, result, textureUsageAssigned);
+            if (!MarkMaterialTextureUsages(
+                    gltf, material, result, textureUsageAssigned, error))
+            {
+                error = "glTF material " + std::to_string(i) + ": " + error;
+                result.materials.clear();
+                return false;
+            }
         }
 
         // Add a default material if none exist
@@ -1528,6 +1824,221 @@ namespace RVX::Resource
             return sourceInfo.extensions.find(
                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)) !=
                    sourceInfo.extensions.end();
+        };
+        const auto getExtension =
+            [&mat, &error](std::string_view extensionName,
+                           const tinygltf::Value*& outExtension)
+        {
+            outExtension = FindMaterialExtension(mat, extensionName);
+            if (outExtension == nullptr)
+                return true;
+            if (!outExtension->IsObject())
+            {
+                error = std::string(extensionName) + " must be an object.";
+                return false;
+            }
+            return true;
+        };
+        const auto readNumber =
+            [&error](const tinygltf::Value& object,
+                     std::string_view extensionName,
+                     std::string_view memberName,
+                     float& outValue,
+                     double minimum,
+                     double maximum,
+                     bool minimumExclusive = false)
+        {
+            if (!object.Has(std::string(memberName)))
+                return true;
+            const tinygltf::Value& value =
+                object.Get(std::string(memberName));
+            if (!value.IsNumber())
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) + " must be a number.";
+                return false;
+            }
+            const double number = value.GetNumberAsDouble();
+            const bool meetsMinimum =
+                minimumExclusive ? number > minimum : number >= minimum;
+            if (!IsFiniteFloatRepresentable(number) || !meetsMinimum ||
+                number > maximum)
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) +
+                        " is outside the supported finite range.";
+                return false;
+            }
+            outValue = static_cast<float>(number);
+            return true;
+        };
+        const auto readVector3 =
+            [&error](const tinygltf::Value& object,
+                     std::string_view extensionName,
+                     std::string_view memberName,
+                     Vec3& outValue,
+                     double minimum,
+                     double maximum)
+        {
+            if (!object.Has(std::string(memberName)))
+                return true;
+            const tinygltf::Value& value =
+                object.Get(std::string(memberName));
+            if (!value.IsArray() || value.ArrayLen() != 3u)
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) +
+                        " must contain exactly three numbers.";
+                return false;
+            }
+            const tinygltf::Value::Array& components =
+                value.Get<tinygltf::Value::Array>();
+            Vec3 parsed{};
+            for (size_t component = 0; component < 3u; ++component)
+            {
+                if (!components[component].IsNumber())
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            " must contain only numbers.";
+                    return false;
+                }
+                const double number =
+                    components[component].GetNumberAsDouble();
+                if (!IsFiniteFloatRepresentable(number) ||
+                    number < minimum || number > maximum)
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            " contains a value outside the supported finite range.";
+                    return false;
+                }
+                parsed[static_cast<Vec3::length_type>(component)] =
+                    static_cast<float>(number);
+            }
+            outValue = parsed;
+            return true;
+        };
+        const auto extractExtensionTextureInfo =
+            [this, &gltf, &error](
+                const tinygltf::Value& extension,
+                std::string_view extensionName,
+                std::string_view memberName,
+                TextureInfo& outInfo,
+                bool& outPresent,
+                float* outNormalScale = nullptr)
+        {
+            outPresent = false;
+            if (!extension.Has(std::string(memberName)))
+                return true;
+
+            const tinygltf::Value& sourceInfo =
+                extension.Get(std::string(memberName));
+            if (!sourceInfo.IsObject() || !sourceInfo.Has("index"))
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) +
+                        " must be a textureInfo object with an index.";
+                return false;
+            }
+            const tinygltf::Value& sourceIndex = sourceInfo.Get("index");
+            if (!sourceIndex.IsNumber())
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) + ".index must be an integer.";
+                return false;
+            }
+            const double numericIndex = sourceIndex.GetNumberAsDouble();
+            if (!std::isfinite(numericIndex) ||
+                std::floor(numericIndex) != numericIndex ||
+                numericIndex < 0.0 ||
+                numericIndex >
+                    static_cast<double>(std::numeric_limits<int>::max()))
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) +
+                        ".index must be a non-negative integer.";
+                return false;
+            }
+
+            int uvSet = 0;
+            if (sourceInfo.Has("texCoord"))
+            {
+                const tinygltf::Value& sourceUvSet =
+                    sourceInfo.Get("texCoord");
+                if (!sourceUvSet.IsNumber())
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            ".texCoord must be UV set 0 or 1.";
+                    return false;
+                }
+                const double numericUvSet =
+                    sourceUvSet.GetNumberAsDouble();
+                if (!std::isfinite(numericUvSet) ||
+                    std::floor(numericUvSet) != numericUvSet ||
+                    numericUvSet < 0.0 || numericUvSet > 1.0)
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            ".texCoord must be UV set 0 or 1.";
+                    return false;
+                }
+                uvSet = static_cast<int>(numericUvSet);
+            }
+
+            const tinygltf::Value* transform = nullptr;
+            if (sourceInfo.Has("extensions"))
+            {
+                const tinygltf::Value& extensions =
+                    sourceInfo.Get("extensions");
+                if (!extensions.IsObject())
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            ".extensions must be an object.";
+                    return false;
+                }
+                if (extensions.Has(
+                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)))
+                {
+                    transform = &extensions.Get(
+                        std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
+                }
+            }
+            if (!ExtractTextureInfo(
+                    gltf,
+                    static_cast<int>(numericIndex),
+                    uvSet,
+                    transform,
+                    outInfo,
+                    error))
+            {
+                error = std::string(extensionName) + "." +
+                        std::string(memberName) + ": " + error;
+                return false;
+            }
+
+            if (outNormalScale != nullptr && sourceInfo.Has("scale"))
+            {
+                const tinygltf::Value& sourceScale =
+                    sourceInfo.Get("scale");
+                if (!sourceScale.IsNumber() ||
+                    !IsFiniteFloatRepresentable(
+                        sourceScale.GetNumberAsDouble()) ||
+                    sourceScale.GetNumberAsDouble() < 0.0 ||
+                    sourceScale.GetNumberAsDouble() > 8.0)
+                {
+                    error = std::string(extensionName) + "." +
+                            std::string(memberName) +
+                            ".scale is outside the supported range [0, 8].";
+                    return false;
+                }
+                *outNormalScale =
+                    static_cast<float>(sourceScale.GetNumberAsDouble());
+            }
+            outPresent = true;
+            return true;
         };
 
         // PBR Metallic-Roughness
@@ -1602,6 +2113,275 @@ namespace RVX::Resource
             if (!extractTextureInfo(mat.emissiveTexture, textureInfo, "emissive"))
                 return nullptr;
             material->SetEmissiveTexture(textureInfo);
+        }
+
+        const bool hasAdvancedMaterialExtension =
+            FindMaterialExtension(mat, KHR_MATERIALS_SPECULAR_EXTENSION) != nullptr ||
+            FindMaterialExtension(mat, KHR_MATERIALS_CLEARCOAT_EXTENSION) != nullptr ||
+            FindMaterialExtension(mat, KHR_MATERIALS_TRANSMISSION_EXTENSION) != nullptr ||
+            FindMaterialExtension(mat, KHR_MATERIALS_VOLUME_EXTENSION) != nullptr ||
+            FindMaterialExtension(mat, KHR_MATERIALS_IOR_EXTENSION) != nullptr ||
+            FindMaterialExtension(
+                mat, KHR_MATERIALS_EMISSIVE_STRENGTH_EXTENSION) != nullptr;
+        if (hasAdvancedMaterialExtension &&
+            (FindMaterialExtension(mat, "KHR_materials_unlit") != nullptr ||
+             FindMaterialExtension(
+                 mat, "KHR_materials_pbrSpecularGlossiness") != nullptr))
+        {
+            error =
+                "Khronos PBR material extensions cannot be combined with "
+                "KHR_materials_unlit or KHR_materials_pbrSpecularGlossiness.";
+            return nullptr;
+        }
+
+        const tinygltf::Value* extension = nullptr;
+        if (!getExtension(KHR_MATERIALS_SPECULAR_EXTENSION, extension))
+            return nullptr;
+        if (extension != nullptr)
+        {
+            float specularFactor = material->GetSpecularFactor();
+            Vec3 specularColor = material->GetSpecularColor();
+            if (!readNumber(*extension,
+                            KHR_MATERIALS_SPECULAR_EXTENSION,
+                            "specularFactor",
+                            specularFactor,
+                            0.0,
+                            1.0) ||
+                !readVector3(*extension,
+                             KHR_MATERIALS_SPECULAR_EXTENSION,
+                             "specularColorFactor",
+                             specularColor,
+                             0.0,
+                             static_cast<double>(
+                                 std::numeric_limits<float>::max())))
+            {
+                return nullptr;
+            }
+            material->SetSpecularFactor(specularFactor);
+            material->SetSpecularColor(specularColor);
+
+            TextureInfo textureInfo;
+            bool present = false;
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_SPECULAR_EXTENSION,
+                    "specularTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetSpecularTexture(textureInfo);
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_SPECULAR_EXTENSION,
+                    "specularColorTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetSpecularColorTexture(textureInfo);
+        }
+
+        extension = nullptr;
+        if (!getExtension(KHR_MATERIALS_CLEARCOAT_EXTENSION, extension))
+            return nullptr;
+        if (extension != nullptr)
+        {
+            float clearcoatFactor = material->GetClearcoatFactor();
+            float clearcoatRoughness = material->GetClearcoatRoughness();
+            if (!readNumber(*extension,
+                            KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                            "clearcoatFactor",
+                            clearcoatFactor,
+                            0.0,
+                            1.0) ||
+                !readNumber(*extension,
+                            KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                            "clearcoatRoughnessFactor",
+                            clearcoatRoughness,
+                            0.0,
+                            1.0))
+            {
+                return nullptr;
+            }
+            material->SetClearcoatFactor(clearcoatFactor);
+            material->SetClearcoatRoughness(clearcoatRoughness);
+
+            TextureInfo textureInfo;
+            bool present = false;
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetClearcoatTexture(textureInfo);
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatRoughnessTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetClearcoatRoughnessTexture(textureInfo);
+            float clearcoatNormalScale =
+                material->GetClearcoatNormalScale();
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_CLEARCOAT_EXTENSION,
+                    "clearcoatNormalTexture",
+                    textureInfo,
+                    present,
+                    &clearcoatNormalScale))
+            {
+                return nullptr;
+            }
+            if (present)
+            {
+                material->SetClearcoatNormalTexture(textureInfo);
+                material->SetClearcoatNormalScale(clearcoatNormalScale);
+            }
+        }
+
+        extension = nullptr;
+        if (!getExtension(KHR_MATERIALS_TRANSMISSION_EXTENSION, extension))
+            return nullptr;
+        if (extension != nullptr)
+        {
+            float transmission = material->GetTransmissionFactor();
+            if (!readNumber(*extension,
+                            KHR_MATERIALS_TRANSMISSION_EXTENSION,
+                            "transmissionFactor",
+                            transmission,
+                            0.0,
+                            1.0))
+            {
+                return nullptr;
+            }
+            material->SetTransmissionFactor(transmission);
+            TextureInfo textureInfo;
+            bool present = false;
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_TRANSMISSION_EXTENSION,
+                    "transmissionTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetTransmissionTexture(textureInfo);
+        }
+
+        extension = nullptr;
+        if (!getExtension(KHR_MATERIALS_VOLUME_EXTENSION, extension))
+            return nullptr;
+        if (extension != nullptr)
+        {
+            float thickness = material->GetThicknessFactor();
+            Vec3 attenuationColor = material->GetAttenuationColor();
+            if (!readNumber(*extension,
+                            KHR_MATERIALS_VOLUME_EXTENSION,
+                            "thicknessFactor",
+                            thickness,
+                            0.0,
+                            static_cast<double>(
+                                std::numeric_limits<float>::max())) ||
+                !readVector3(*extension,
+                             KHR_MATERIALS_VOLUME_EXTENSION,
+                             "attenuationColor",
+                             attenuationColor,
+                             0.0,
+                             1.0))
+            {
+                return nullptr;
+            }
+            material->SetThicknessFactor(thickness);
+            material->SetAttenuationColor(attenuationColor);
+            if (extension->Has("attenuationDistance"))
+            {
+                float attenuationDistance = 0.0f;
+                if (!readNumber(*extension,
+                                KHR_MATERIALS_VOLUME_EXTENSION,
+                                "attenuationDistance",
+                                attenuationDistance,
+                                0.0,
+                                static_cast<double>(
+                                    std::numeric_limits<float>::max()),
+                                true))
+                {
+                    return nullptr;
+                }
+                material->SetAttenuationDistance(attenuationDistance);
+            }
+
+            TextureInfo textureInfo;
+            bool present = false;
+            if (!extractExtensionTextureInfo(
+                    *extension,
+                    KHR_MATERIALS_VOLUME_EXTENSION,
+                    "thicknessTexture",
+                    textureInfo,
+                    present))
+            {
+                return nullptr;
+            }
+            if (present)
+                material->SetThicknessTexture(textureInfo);
+        }
+
+        extension = nullptr;
+        if (!getExtension(KHR_MATERIALS_IOR_EXTENSION, extension))
+            return nullptr;
+        if (extension != nullptr && extension->Has("ior"))
+        {
+            const tinygltf::Value& sourceIor = extension->Get("ior");
+            if (!sourceIor.IsNumber() ||
+                !IsFiniteFloatRepresentable(sourceIor.GetNumberAsDouble()) ||
+                sourceIor.GetNumberAsDouble() < 1.0)
+            {
+                error =
+                    "KHR_materials_ior.ior must be a finite number greater "
+                    "than or equal to one; the ior=0 specular-glossiness "
+                    "compatibility mode is not a runtime workflow.";
+                return nullptr;
+            }
+            material->SetIndexOfRefraction(
+                static_cast<float>(sourceIor.GetNumberAsDouble()));
+        }
+
+        extension = nullptr;
+        if (!getExtension(
+                KHR_MATERIALS_EMISSIVE_STRENGTH_EXTENSION, extension))
+        {
+            return nullptr;
+        }
+        if (extension != nullptr)
+        {
+            float emissiveStrength = material->GetEmissiveStrength();
+            if (!readNumber(
+                    *extension,
+                    KHR_MATERIALS_EMISSIVE_STRENGTH_EXTENSION,
+                    "emissiveStrength",
+                    emissiveStrength,
+                    0.0,
+                    static_cast<double>(std::numeric_limits<float>::max())))
+            {
+                return nullptr;
+            }
+            material->SetEmissiveStrength(emissiveStrength);
         }
 
         // Alpha mode
@@ -2302,6 +3082,7 @@ namespace RVX::Resource
                                              meshName,
                                              static_cast<int>(primIdx),
                                              options,
+                                             result.warnings,
                                              error);
                 if (!mesh)
                     return false;
@@ -2316,6 +3097,7 @@ namespace RVX::Resource
                                                const std::string& meshName,
                                                int primitiveIndex,
                                                const GLTFImportOptions& options,
+                                               std::vector<std::string>& warnings,
                                                std::string& error)
     {
         if (!primitive.targets.empty())
@@ -2755,12 +3537,67 @@ namespace RVX::Resource
                 return nullptr;
             }
             if (normalTexturePresent && options.generateTangents &&
-                mesh->HasAttribute(tangentUVAttribute) &&
-                !mesh->GenerateTangents(tangentUVSet))
+                mesh->HasAttribute(tangentUVAttribute))
             {
-                error = "Failed to generate a tangent basis from " +
-                        tangentUVAttribute + ".";
-                return nullptr;
+                const TangentGenerationResult tangentResult =
+                    mesh->GenerateTangentsDetailed(
+                        tangentUVSet, true);
+                if (!tangentResult.success)
+                {
+                    error = "Failed to generate a tangent basis from " +
+                            tangentUVAttribute + " (reason=" +
+                            GetTangentGenerationFailureName(
+                                tangentResult.failure) +
+                            ", triangles=" +
+                            std::to_string(tangentResult.triangleCount) +
+                            ", mikkTriangles=" +
+                            std::to_string(tangentResult.mikkTriangleCount) +
+                            ", fallbackTriangles=" +
+                            std::to_string(tangentResult.fallbackTriangleCount) +
+                            ", degenerateGeometryTriangles=" +
+                            std::to_string(
+                                tangentResult.degenerateGeometryTriangleCount) +
+                            ", degenerateUVTriangles=" +
+                            std::to_string(
+                                tangentResult.degenerateUVTriangleCount) +
+                            ", mikkRejectedTriangles=" +
+                            std::to_string(
+                                tangentResult.mikkRejectedTriangleCount) +
+                            ", firstMikkRejectedTriangle=" +
+                            std::to_string(
+                                tangentResult.firstMikkRejectedTriangle) +
+                            ").";
+                    return nullptr;
+                }
+                if (tangentResult.fallbackTriangleCount > 0u ||
+                    tangentResult.topologySplit)
+                {
+                    warnings.push_back(
+                        "glTF tangent fallback: mesh=" + meshName +
+                        ", primitive=" + std::to_string(primitiveIndex) +
+                        ", degenerateGeometryTriangles=" +
+                        std::to_string(
+                            tangentResult.degenerateGeometryTriangleCount) +
+                        ", degenerateUVTriangles=" +
+                        std::to_string(
+                            tangentResult.degenerateUVTriangleCount) +
+                        ", mikkRejectedTriangles=" +
+                        std::to_string(
+                            tangentResult.mikkRejectedTriangleCount) +
+                        ", fallbackTriangles=" +
+                        std::to_string(tangentResult.fallbackTriangleCount) +
+                        ", fallbackCorners=" +
+                        std::to_string(tangentResult.fallbackCornerCount) +
+                        ", topologySplit=" +
+                        (tangentResult.topologySplit ? "true" : "false") +
+                        ", originalVertices=" +
+                        std::to_string(tangentResult.originalVertexCount) +
+                        ", publishedVertices=" +
+                        std::to_string(tangentResult.publishedVertexCount) +
+                        ", splitVertices=" +
+                        std::to_string(tangentResult.splitVertexCount) +
+                        ".");
+                }
             }
         }
         if (normalTexturePresent &&

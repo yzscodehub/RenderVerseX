@@ -3425,20 +3425,25 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(materialConstants->type, RVX::RHIBindingType::DynamicUniformBuffer);
     EXPECT_TRUE(materialConstants->isDynamic);
 
-    for (RVX::uint32 binding = 1; binding <= 8; ++binding)
+    for (RVX::uint32 binding = 1;
+         binding <= RVX::RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         ++binding)
     {
         const auto* texture = FindBinding(materialLayout, binding);
         ASSERT_NE(texture, nullptr);
         EXPECT_EQ(texture->type, RVX::RHIBindingType::SampledTexture);
     }
 
-    for (RVX::uint32 binding = 9; binding <= 16; ++binding)
+    for (RVX::uint32 binding = 1 + RVX::RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         binding <= RVX::RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+         ++binding)
     {
         const auto* sampler = FindBinding(materialLayout, binding);
         ASSERT_NE(sampler, nullptr);
         EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
     }
-    const auto* materialParameterTable = FindBinding(materialLayout, 17);
+    const auto* materialParameterTable = FindBinding(
+        materialLayout, 1 + RVX::RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2);
     ASSERT_NE(materialParameterTable, nullptr);
     EXPECT_EQ(materialParameterTable->type,
               RVX::RHIBindingType::ShaderResourceBuffer);
@@ -3593,6 +3598,51 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
+       DX11DefaultLitLayoutUsesCompactMaterialSamplersAndRetainsAllTextureSRVs)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX11);
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto materialLayout = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& layout)
+        {
+            return layout.debugName != nullptr &&
+                std::string_view(layout.debugName) == "DefaultMaterialSetLayout";
+        });
+    ASSERT_NE(materialLayout, device.capturedSetLayouts.end());
+    for (RVX::uint32 binding = 1;
+         binding <= RVX::RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         ++binding)
+    {
+        const auto* entry = FindBinding(*materialLayout, binding);
+        ASSERT_NE(entry, nullptr) << "missing V2 material texture binding " << binding;
+        EXPECT_EQ(entry->type, RVX::RHIBindingType::SampledTexture);
+    }
+    for (RVX::uint32 binding = 14; binding <= 21; ++binding)
+    {
+        const auto* entry = FindBinding(*materialLayout, binding);
+        ASSERT_NE(entry, nullptr) << "missing compact primary sampler " << binding;
+        EXPECT_EQ(entry->type, RVX::RHIBindingType::Sampler);
+    }
+    for (RVX::uint32 binding = 22; binding <= 26; ++binding)
+    {
+        EXPECT_EQ(FindBinding(*materialLayout, binding), nullptr)
+            << "DX11 must not bind an extension sampler independently";
+    }
+    const auto* table = FindBinding(*materialLayout, 27);
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->type, RVX::RHIBindingType::ShaderResourceBuffer);
+}
+
+TEST_F(PipelineCacheValidationFixture,
        RelativeShaderRootProducesCanonicalCookedProgramIds)
 {
     RecordingShaderProgramProvider provider;
@@ -3651,9 +3701,9 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
     EXPECT_EQ(descriptorSource.find("sampledTextureSlots.push_back"), std::string::npos);
     EXPECT_EQ(descriptorSource.find("for (uint32 slot : sampledTextureSlots)"), std::string::npos);
 
-    EXPECT_NE(bindingABISource.find("if (set == 2 && textureBinding >= 1 && textureBinding <= 8 &&"),
+    EXPECT_NE(bindingABISource.find("if (set == 2 && textureBinding >= 1 && textureBinding <= 13 &&"),
               std::string::npos);
-    EXPECT_NE(bindingABISource.find("samplerBinding == textureBinding + 8"), std::string::npos);
+    EXPECT_NE(bindingABISource.find("samplerBinding == textureBinding + 13"), std::string::npos);
     EXPECT_NE(bindingABISource.find("if (set == 0 && textureBinding == 16 && samplerBinding == 13)"),
               std::string::npos);
     EXPECT_NE(bindingABISource.find("outTextureUnit = RVX_INVALID_INDEX;"), std::string::npos);
@@ -6325,8 +6375,10 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
               std::string::npos);
     EXPECT_NE(shader.find("const uint pointLightCount = min(NumPointLights, 256u);"), std::string::npos);
     EXPECT_NE(shader.find("const uint spotLightCount = min(NumSpotLights, 128u);"), std::string::npos);
-    EXPECT_NE(shader.find("localLight += EvaluatePointLight("), std::string::npos);
-    EXPECT_NE(shader.find("localLight += EvaluateSpotLight("), std::string::npos);
+    EXPECT_NE(shader.find("localLight += EvaluatePointLightWithExtensions("),
+              std::string::npos);
+    EXPECT_NE(shader.find("localLight += EvaluateSpotLightWithExtensions("),
+              std::string::npos);
     EXPECT_NE(shader.find("directLight += EvaluateClusteredLocalLights("), std::string::npos);
 }
 
@@ -10931,6 +10983,8 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     const std::string compositionSource =
         ReadTextFile(renderRoot / "Private" / "Features" / "DefaultRenderPassBundle.cpp");
     const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "ObjectVelocity.hlsl");
+    const std::string surfaceMaterialSource = ReadTextFile(
+        FindShaderDirectory() / "Include" / "SurfaceMaterial.hlsli");
 
     EXPECT_NE(pipelineHeader.find("GetMaskedObjectVelocityPipeline()"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)"), std::string::npos);
@@ -11014,7 +11068,12 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
               std::string::npos);
     EXPECT_NE(shaderSource.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D BaseColorTexture : register(t1, space2);"), std::string::npos);
-    EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s9, space2);"), std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "SamplerState MaterialSampler : RVX_MATERIAL_BASE_COLOR_SAMPLER_REGISTER;"),
+              std::string::npos);
+    EXPECT_NE(surfaceMaterialSource.find(
+                  "#define RVX_MATERIAL_BASE_COLOR_SAMPLER_REGISTER register(s14, space2)"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("RVXResolveMaterialUV("), std::string::npos);
     EXPECT_NE(shaderSource.find("RVXResolveBaseColorAlpha("), std::string::npos);
     EXPECT_NE(shaderSource.find("RVXApplyAlphaMask("), std::string::npos);
@@ -15212,7 +15271,8 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(std::string::npos,
               source.find("RWTexture2D<float4> SpecularResponse : register(u25, space0)"));
     EXPECT_NE(std::string::npos,
-              source.find("(directional + local + ambient.total + emissive) * preExposure"));
+              source.find(
+                  "(directional + local + ambient.total + emissive * clearcoatTransmission) *"));
     EXPECT_NE(std::string::npos,
               source.find("ambient.specular * preExposure"));
     EXPECT_NE(std::string::npos,

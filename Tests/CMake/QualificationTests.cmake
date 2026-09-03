@@ -2618,6 +2618,223 @@ endif()
     )
 endfunction()
 
+# Generic same-process candidate producer for deterministic cooked Samples.
+# It validates series identity and receipt integrity only; Golden promotion
+# remains a separate reviewed action.
+option(RVX_ENABLE_GFX25_NATIVE_CANDIDATES
+    "Register opt-in cooked ModelViewer/PBR qualification-series candidates" OFF)
+function(rvx_add_renderverse_cooked_visual_series_candidate)
+    cmake_parse_arguments(ARG "" "TEST_NAME;SAMPLE_ID;BACKEND_LOWER;BACKEND_NAME;PIPELINE;RENDER_PATH;SERIES_ROOT;COOKED_SHADER_ROOT;COOKED_SHADER_TARGET;PLATFORM_TAG" "" ${ARGN})
+    foreach(_rvx_required IN ITEMS
+            TEST_NAME SAMPLE_ID BACKEND_LOWER BACKEND_NAME PIPELINE RENDER_PATH
+            SERIES_ROOT COOKED_SHADER_ROOT COOKED_SHADER_TARGET PLATFORM_TAG)
+        if("${ARG_${_rvx_required}}" STREQUAL "")
+            message(FATAL_ERROR
+                "Cooked visual-series candidate is missing ${_rvx_required}")
+        endif()
+    endforeach()
+    if(NOT TARGET RenderVerseSamplesCooked OR
+       NOT TARGET ${ARG_COOKED_SHADER_TARGET})
+        message(FATAL_ERROR
+            "Cooked visual-series candidate requires RenderVerseSamplesCooked and its cooked shader target")
+    endif()
+
+    set(_rvx_validator
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/ValidateSeries.cmake")
+    get_property(_rvx_validator_generated GLOBAL
+        PROPERTY RVX_GFX25_CANDIDATE_SERIES_VALIDATOR_GENERATED)
+    if(NOT _rvx_validator_generated)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate")
+        file(GENERATE
+            OUTPUT "${_rvx_validator}"
+            CONTENT [==[
+if(NOT DEFINED RVX_CANDIDATE_SERIES OR NOT DEFINED RVX_CANDIDATE_REPORT OR
+   NOT DEFINED RVX_CANDIDATE_BACKEND OR NOT DEFINED RVX_CANDIDATE_PYTHON OR
+   NOT DEFINED RVX_CANDIDATE_CHECKER OR NOT DEFINED RVX_CANDIDATE_MANIFEST)
+    message(FATAL_ERROR "Cooked visual-series validator received incomplete CTest arguments")
+endif()
+foreach(_rvx_required_identity IN ITEMS
+        RVX_VALIDATION_SOURCE_COMMIT
+        RVX_VALIDATION_RUN_ID
+        RVX_VALIDATION_PRESET)
+    if("$ENV{${_rvx_required_identity}}" STREQUAL "")
+        message(FATAL_ERROR
+            "Cooked visual-series validation requires ${_rvx_required_identity} from the required-suite environment")
+    endif()
+endforeach()
+file(READ "${RVX_CANDIDATE_SERIES}" _rvx_series_document)
+string(JSON _rvx_identity_backend GET
+       "${_rvx_series_document}" qualificationIdentity backend)
+string(JSON _rvx_hardware_backend GET
+       "${_rvx_series_document}" hardwareIdentity backend)
+if(NOT "${_rvx_identity_backend}" STREQUAL "${RVX_CANDIDATE_BACKEND}" OR
+   NOT "${_rvx_hardware_backend}" STREQUAL "${RVX_CANDIDATE_BACKEND}")
+    message(FATAL_ERROR
+        "Cooked visual-series candidate backend does not match ${RVX_CANDIDATE_BACKEND}")
+endif()
+execute_process(
+    COMMAND "${RVX_CANDIDATE_PYTHON}" "${RVX_CANDIDATE_CHECKER}"
+        --series "${RVX_CANDIDATE_SERIES}"
+        --sample-manifest "${RVX_CANDIDATE_MANIFEST}"
+        --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+        --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+        --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+        --report "${RVX_CANDIDATE_REPORT}"
+    RESULT_VARIABLE _rvx_result)
+if(NOT _rvx_result EQUAL 0)
+    message(FATAL_ERROR "Cooked visual-series candidate validation failed")
+endif()
+]==])
+        set_property(GLOBAL PROPERTY
+            RVX_GFX25_CANDIDATE_SERIES_VALIDATOR_GENERATED TRUE)
+    endif()
+
+    set(_rvx_producer "${ARG_TEST_NAME}Producer")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${_rvx_producer}
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_CANDIDATE_ROOT=${ARG_SERIES_ROOT}"
+            "-DRVX_CANDIDATE_ALLOWED_ROOT=${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/$<CONFIG>"
+            "-DRVX_CANDIDATE_EXECUTABLE=$<TARGET_FILE:RenderVerseSamplesCooked>"
+            "-DRVX_CANDIDATE_WORKING_DIRECTORY=$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+            "-DRVX_CANDIDATE_SAMPLE_ID=${ARG_SAMPLE_ID}"
+            "-DRVX_CANDIDATE_BACKEND=${ARG_BACKEND_LOWER}"
+            "-DRVX_CANDIDATE_COOKED_SHADER_ROOT=${ARG_COOKED_SHADER_ROOT}"
+            "-DRVX_CANDIDATE_PIPELINE=${ARG_PIPELINE}"
+            "-DRVX_CANDIDATE_RENDER_PATH=${ARG_RENDER_PATH}"
+            -P "${CMAKE_SOURCE_DIR}/Tests/CMake/RunFreshGfx25Candidate.cmake"
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${ARG_COOKED_SHADER_TARGET}
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Tests/CMake/RunFreshGfx25Candidate.cmake"
+        TAGS product.samples subsystem.render trait.visual trait.gpu
+            trait.temporal trait.candidate ${ARG_PLATFORM_TAG}
+            backend.${ARG_BACKEND_LOWER} suite.gfx25-candidate
+        SUITE gfx25-candidate
+        TIMEOUT 900
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP ${_rvx_producer}FreshSeries
+    )
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${ARG_TEST_NAME}SeriesValidation
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_CANDIDATE_SERIES=${ARG_SERIES_ROOT}/series.json"
+            "-DRVX_CANDIDATE_REPORT=${ARG_SERIES_ROOT}/series-validation.json"
+            "-DRVX_CANDIDATE_BACKEND=${ARG_BACKEND_LOWER}"
+            "-DRVX_CANDIDATE_PYTHON=${Python3_EXECUTABLE}"
+            "-DRVX_CANDIDATE_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "-DRVX_CANDIDATE_MANIFEST=${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+            -P "${_rvx_validator}"
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+        TAGS product.samples subsystem.render trait.visual trait.temporal
+            trait.candidate ${ARG_PLATFORM_TAG}
+            backend.${ARG_BACKEND_LOWER} suite.gfx25-candidate
+        SUITE gfx25-candidate
+        TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED ${_rvx_producer}FreshSeries
+    )
+endfunction()
+
+function(rvx_add_renderverse_gfx25_native_candidates)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX25 candidates require RenderVerseSamplesCooked and RVXCook")
+    endif()
+    if(WIN32)
+        set(_rvx_backend_name DX12)
+        set(_rvx_backend_lower dx12)
+        set(_rvx_platform_tag platform.windows)
+    elseif(APPLE)
+        set(_rvx_backend_name Metal)
+        set(_rvx_backend_lower metal)
+        set(_rvx_platform_tag platform.macos)
+    elseif(UNIX)
+        set(_rvx_backend_name Vulkan)
+        set(_rvx_backend_lower vulkan)
+        set(_rvx_platform_tag platform.linux)
+    else()
+        message(FATAL_ERROR
+            "GFX25 candidates support only Windows, Linux, and macOS")
+    endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_rvx_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx25CandidateShaders/${_rvx_backend_name}")
+    set(_rvx_shader_stamp
+        "${_rvx_shader_root}/.rvx-gfx25-candidate-${_rvx_backend_lower}-shaders")
+    set(_rvx_shader_target
+        "RVXGfx25CandidateCookedShaders${_rvx_backend_name}")
+    if(NOT TARGET ${_rvx_shader_target})
+        add_custom_command(
+            OUTPUT "${_rvx_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_rvx_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${_rvx_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${_rvx_backend_name}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${_rvx_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${_rvx_shader_target}
+            DEPENDS "${_rvx_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${_rvx_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(_rvx_sample_id IN ITEMS model-viewer pbr-materials)
+        if(_rvx_sample_id STREQUAL "model-viewer")
+            set(_rvx_sample_label ModelViewer)
+        else()
+            set(_rvx_sample_label PBRMaterials)
+        endif()
+        foreach(_rvx_pipeline IN ITEMS forward-plus deferred)
+            if(_rvx_pipeline STREQUAL "forward-plus")
+                set(_rvx_pipeline_label ForwardPlus)
+            else()
+                set(_rvx_pipeline_label Deferred)
+            endif()
+            foreach(_rvx_render_path IN ITEMS direct gpu-driven)
+                if(_rvx_render_path STREQUAL "direct")
+                    set(_rvx_render_path_label Direct)
+                else()
+                    set(_rvx_render_path_label GPUDriven)
+                endif()
+                set(_rvx_test_name
+                    "RenderVerseSamplesCooked${_rvx_backend_name}Gfx25${_rvx_sample_label}${_rvx_pipeline_label}${_rvx_render_path_label}")
+                set(_rvx_series_root
+                    "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/$<CONFIG>/${_rvx_backend_name}/${_rvx_sample_label}/${_rvx_pipeline_label}/${_rvx_render_path_label}")
+                foreach(_rvx_config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+                    file(MAKE_DIRECTORY
+                        "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/${_rvx_config}/${_rvx_backend_name}/${_rvx_sample_label}/${_rvx_pipeline_label}/${_rvx_render_path_label}")
+                endforeach()
+                rvx_add_renderverse_cooked_visual_series_candidate(
+                    TEST_NAME ${_rvx_test_name}
+                    SAMPLE_ID ${_rvx_sample_id}
+                    BACKEND_LOWER ${_rvx_backend_lower}
+                    BACKEND_NAME ${_rvx_backend_name}
+                    PIPELINE ${_rvx_pipeline}
+                    RENDER_PATH ${_rvx_render_path}
+                    SERIES_ROOT "${_rvx_series_root}"
+                    COOKED_SHADER_ROOT "${_rvx_shader_root}"
+                    COOKED_SHADER_TARGET ${_rvx_shader_target}
+                    PLATFORM_TAG ${_rvx_platform_tag})
+            endforeach()
+        endforeach()
+    endforeach()
+endfunction()
+
 # The platform-specific configure preset enables this function exactly once,
 # which gives the suite two same-process producers and two non-GPU validators.
 function(rvx_add_renderverse_gfx24_raster_correctness)
@@ -3018,6 +3235,8 @@ function(rvx_add_renderverse_weekly_soak BACKEND_NAME BACKEND_LABEL)
             --asset-mode source
             --expected-texture-count 0
             --expected-visible-objects 1
+            --expected-draw-packets 1
+            --expected-opaque-draws 1
             --max-first-present-ms 5000
             --require-resize
         BUILD_TARGETS SampleQualificationReportValidation
@@ -3481,22 +3700,22 @@ function(rvx_add_renderverse_animation_character_matrix BACKEND_NAME BACKEND_LAB
     # are required because CMake otherwise treats the typed receipt fields as
     # a list before it writes CTestTestfile.cmake.
     string(JOIN "$<SEMICOLON>" casual_female_cook_admission
-        "assetId=casual-female" "packageContentId=57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3/3597846/11" "required=true" "accepted=true"
+        "assetId=casual-female" "packageContentId=8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca/3598370/11" "required=true" "accepted=true"
         "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female>"
         "declaredSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1" "observedSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1"
         "declaredCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9" "observedCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9"
         "declaredManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1" "observedManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1"
         "cookSettingsHash=d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa" "recipeHash=28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676" "toolName=RVXCook" "toolVersion=2.0.0")
     string(JOIN "$<SEMICOLON>" root_motion_cook_admission
-        "assetId=casual-female-walk-root-motion" "packageContentId=8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544/56159/2" "required=true" "accepted=true"
+        "assetId=casual-female-walk-root-motion" "packageContentId=a1237867f0594b079b1e87269684cead024c7e598d94613c954b59742c9b3164/56159/2" "required=true" "accepted=true"
         "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion>"
         "declaredSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1" "observedSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1"
-        "declaredCooked=cooked-artifact/self-contained-artifact/3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97/54464/1" "observedCooked=cooked-artifact/self-contained-artifact/3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97/54464/1"
-        "declaredManifest=cook-manifest/self-contained-artifact/bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c/1695/1" "observedManifest=cook-manifest/self-contained-artifact/bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c/1695/1"
-        "cookSettingsHash=37d257abb1762b56436a0b3a1de267860f0507fbf0ff169ce395039ae2053232" "recipeHash=5d814e26fdad96238fa707f11537e7ac66f9aa335252fafe525ef59338c478a7" "toolName=RVXCook" "toolVersion=2.0.0")
+        "declaredCooked=cooked-artifact/self-contained-artifact/da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e/54464/1" "observedCooked=cooked-artifact/self-contained-artifact/da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e/54464/1"
+        "declaredManifest=cook-manifest/self-contained-artifact/6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289/1695/1" "observedManifest=cook-manifest/self-contained-artifact/6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289/1695/1"
+        "cookSettingsHash=8eb7720e13e68209be75e55b81ab4ee0d731dda72389f53cffe2391e77da3a27" "recipeHash=bc445631a2989716a9c08158b45dc7ee73293e0eb9afe43156e003beab5e6070" "toolName=RVXCook" "toolVersion=2.0.0")
     string(JOIN "$<SEMICOLON>" root_motion_asset_receipt
         "assetId=casual-female-walk-root-motion" "role=animation" "kind=animation" "packageContentId=8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544/56159/2"
-        "expected=cooked-artifact/self-contained-artifact/1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f/54464/1" "observed=cooked-artifact/self-contained-artifact/1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f/54464/1"
+        "expected=cooked-artifact/self-contained-artifact/269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca/54464/1" "observed=cooked-artifact/self-contained-artifact/269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca/54464/1"
         "verificationStatus=verified" "loaded=true" "verified=true")
 
     foreach(path_label Direct GPUDriven)
@@ -3542,7 +3761,7 @@ function(rvx_add_renderverse_animation_character_matrix BACKEND_NAME BACKEND_LAB
                 --require-asset-entry casual-female-walk-root-motion
                 --require-asset-entry water-bottle
                 --require-asset-content-id 87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a
-                --require-asset-content-id 57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3
+                --require-asset-content-id 8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca
                 --require-asset-content-id b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
                 --require-asset-content-id 4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
                 --require-cook-admission "${casual_female_cook_admission}"
@@ -3820,6 +4039,19 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
     )
 
     if(TARGET RVXCook)
+        # RVXCook publishes transactionally but intentionally requires the
+        # output parent to exist. Prepare every generated configuration here
+        # so the external fixture works from a clean multi-config build tree.
+        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts")
+        if(CMAKE_CONFIGURATION_TYPES)
+            foreach(_rvx_external_cook_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+                file(MAKE_DIRECTORY
+                    "${CMAKE_BINARY_DIR}/artifacts/${_rvx_external_cook_config}")
+            endforeach()
+        elseif(CMAKE_BUILD_TYPE)
+            file(MAKE_DIRECTORY
+                "${CMAKE_BINARY_DIR}/artifacts/${CMAKE_BUILD_TYPE}")
+        endif()
         set(cooked_output_root
             "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerCookedPorsche")
         set(cooked_model "${cooked_output_root}/scene.rva")
@@ -3938,7 +4170,14 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                     --render-path ${render_path}
                     --asset-mode ${asset_mode}
                     --expected-texture-count 27
-                    --expected-visible-objects 75
+                    --expected-visible-objects 25
+                    --expected-draw-packets 75
+                    --expected-opaque-draws 17
+                    --expected-model-meshes 75
+                    --expected-model-materials 14
+                    --expected-model-nodes 141
+                    --expected-model-material-extension-feature-mask 30064771072
+                    --required-presented-material-feature-mask 12884901888
                     --max-first-present-ms 5000
                     --require-resize
                 BUILD_TARGETS SampleQualificationReportValidation
@@ -5216,6 +5455,9 @@ if(RVX_ENABLE_GFX24_RASTER_CORRECTNESS)
     # plus its non-GPU series validator. The generated suite target is
     # RVXValidationSuiteGfx24RasterCorrectness.
     rvx_add_renderverse_gfx24_raster_correctness()
+endif()
+if(RVX_ENABLE_GFX25_NATIVE_CANDIDATES)
+    rvx_add_renderverse_gfx25_native_candidates()
 endif()
 
 if(WIN32

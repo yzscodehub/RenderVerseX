@@ -672,6 +672,8 @@ namespace
         result.gpuDrivenSubmitted = lhs.gpuDrivenSubmitted ||
             rhs.gpuDrivenSubmitted;
         result.gpuDrivenIndirectBatchCount += rhs.gpuDrivenIndirectBatchCount;
+        result.gpuDrivenSubmittedSourcePacketCount +=
+            rhs.gpuDrivenSubmittedSourcePacketCount;
         result.gpuDrivenIndirectSubmittedDrawUpperBound +=
             rhs.gpuDrivenIndirectSubmittedDrawUpperBound;
         result.gpuDrivenIndirectExecutedDrawCountAvailable =
@@ -1418,8 +1420,10 @@ void OpaquePass::OnRemove()
     m_directInstanceIndexHandle = {};
     m_directMaterialParameterHandle = {};
     m_directMaterialParameterTable.Reset();
+    m_directMaterialParameterBindingEvidence.clear();
     m_directRasterMaterialSemanticKeysBySlot.clear();
     m_gpuMaterialParameterTable.Reset();
+    m_gpuMaterialParameterBindingEvidence.clear();
     m_gpuRasterMaterialSemanticKeysBySlot.clear();
     m_directInstancingPreflightFailed = false;
     m_deformationResources.reset();
@@ -2019,9 +2023,11 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_directInstanceIndexHandle = {};
     m_directMaterialParameterHandle = {};
     m_directMaterialParameterTable.Reset();
+    m_directMaterialParameterBindingEvidence.clear();
     m_directRasterMaterialSemanticKeysBySlot.clear();
     m_gpuMaterialParameterHandle = {};
     m_gpuMaterialParameterTable.Reset();
+    m_gpuMaterialParameterBindingEvidence.clear();
     m_gpuRasterMaterialSemanticKeysBySlot.clear();
     m_directInstancingPreflightFailed = false;
 
@@ -2796,6 +2802,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             {
                 m_gpuRasterMaterialSemanticKeysBySlot =
                     std::move(table.rasterMaterialSemanticKeysBySlot);
+                m_gpuMaterialParameterBindingEvidence =
+                    std::move(table.resolvedRasterBindingEvidence);
                 m_gpuMaterialParameterTable = std::move(table.buffer);
                 m_gpuMaterialParameterHandle = builder.ImportBuffer(
                     m_gpuMaterialParameterTable,
@@ -2804,6 +2812,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
                 {
                     m_gpuMaterialTablePreflightFailed = true;
                     m_gpuMaterialParameterTable.Reset();
+                    m_gpuMaterialParameterBindingEvidence.clear();
                     m_gpuRasterMaterialSemanticKeysBySlot.clear();
                 }
                 else
@@ -2908,6 +2917,8 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
             return false;
         }
         m_directMaterialParameterTable = std::move(table.buffer);
+        m_directMaterialParameterBindingEvidence =
+            std::move(table.resolvedRasterBindingEvidence);
         m_directRasterMaterialSemanticKeysBySlot =
             std::move(table.rasterMaterialSemanticKeysBySlot);
     }
@@ -3371,6 +3382,16 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         }
         if (submission.recorded)
         {
+            const GPUCullingDrawGroup& submittedGroup =
+                m_gpuCulling->GetDrawGroups()[batch.groupIndex];
+            if (submittedGroup.maxDrawCount >
+                std::numeric_limits<uint32>::max() -
+                    m_drawStats.gpuDrivenSubmittedSourcePacketCount)
+            {
+                m_drawStats.gpuDrivenFallbackReason =
+                    GPUDrivenDrawFallbackReason::CullingOutputUnavailable;
+                return false;
+            }
             if (results != nullptr)
             {
                 static_cast<void>(results->RecordSuccessfulMaterialBinding(
@@ -3378,6 +3399,8 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
             }
             submittedAny = true;
             ++m_drawStats.gpuDrivenIndirectBatchCount;
+            m_drawStats.gpuDrivenSubmittedSourcePacketCount +=
+                submittedGroup.maxDrawCount;
             m_drawStats.gpuDrivenIndirectSubmittedDrawUpperBound +=
                 submission.submittedDrawUpperBound;
             if (submission.executedDrawCountAvailable)
@@ -3395,6 +3418,15 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 
     if (submittedAny)
     {
+        if (results != nullptr)
+        {
+            for (const MaterialParameterTableBindingEvidence& evidence :
+                 m_gpuMaterialParameterBindingEvidence)
+            {
+                static_cast<void>(
+                    results->RecordSuccessfulMaterialBinding(evidence));
+            }
+        }
         m_drawStats.gpuDrivenSubmitted = true;
         m_drawStats.gpuDrivenFallbackReason = GPUDrivenDrawFallbackReason::None;
         return true;
@@ -4166,6 +4198,15 @@ bool OpaquePass::TryDrawPlannedDirect(
                 ++m_drawStats.skinnedDrawCount;
                 ++m_drawStats.currentPaletteBoundDrawCount;
             }
+        }
+    }
+    if (results != nullptr)
+    {
+        for (const MaterialParameterTableBindingEvidence& evidence :
+             m_directMaterialParameterBindingEvidence)
+        {
+            static_cast<void>(
+                results->RecordSuccessfulMaterialBinding(evidence));
         }
     }
     m_drawStats.directPacketPathUsed = true;

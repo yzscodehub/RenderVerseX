@@ -10,6 +10,7 @@
 
 #include <string>
 #include <string_view>
+#include <span>
 #include <vector>
 
 namespace RVX
@@ -89,8 +90,39 @@ namespace RVX
         Emissive,
         ToonRamp,
         Transmission,
-        Thickness
+        Thickness,
+        Specular,
+        SpecularColor,
+        Clearcoat,
+        ClearcoatRoughness,
+        ClearcoatNormal
     };
+
+    /**
+     * @brief V2 feature bits owned by immutable material routing identity.
+     *
+     * Texture-slot bits are derived from declared bindings. Extension bits are
+     * derived from the immutable parameter block and must never be inferred by
+     * a render backend from arbitrary numeric values at draw time.
+     */
+    inline constexpr uint64 RVX_MATERIAL_TEXTURE_SLOT_FEATURE_MASK_V2 =
+        (1ull << (static_cast<uint8>(
+                      MaterialTextureSlot::ClearcoatNormal) + 1u)) -
+        1ull;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_SPECULAR = 1ull << 32u;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_CLEARCOAT = 1ull << 33u;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_TRANSMISSION = 1ull << 34u;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_VOLUME = 1ull << 35u;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_IOR = 1ull << 36u;
+    inline constexpr uint64 RVX_MATERIAL_EXTENSION_FEATURE_MASK_V2 =
+        RVX_MATERIAL_FEATURE_SPECULAR |
+        RVX_MATERIAL_FEATURE_CLEARCOAT |
+        RVX_MATERIAL_FEATURE_TRANSMISSION |
+        RVX_MATERIAL_FEATURE_VOLUME |
+        RVX_MATERIAL_FEATURE_IOR;
+    inline constexpr uint64 RVX_MATERIAL_FEATURE_MASK_V2 =
+        RVX_MATERIAL_TEXTURE_SLOT_FEATURE_MASK_V2 |
+        RVX_MATERIAL_EXTENSION_FEATURE_MASK_V2;
 
     enum class MaterialSamplerWrap : uint8
     {
@@ -110,8 +142,8 @@ namespace RVX
         LinearMipmapLinear
     };
 
-    /** @brief Stable schema hash; deliberately independent of C++ sizeof/padding. */
-    [[nodiscard]] uint64 GetMaterialParameterLayoutHashV1() noexcept;
+    /** @brief Stable V2 schema hash; deliberately independent of C++ padding. */
+    [[nodiscard]] uint64 GetMaterialParameterLayoutHashV2() noexcept;
 
     /** @brief Immutable pipeline-affecting portion of a material definition. */
     struct MaterialStaticDescriptor
@@ -125,8 +157,8 @@ namespace RVX
             MaterialTranslucencyPhase::Opaque;
         int32 sortPriority = 0;
         uint64 featureMask = 0;
-        std::string programFamily = "standard-lit-v1";
-        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV1();
+        std::string programFamily = "standard-lit-v2";
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV2();
     };
 
     /**
@@ -194,6 +226,11 @@ namespace RVX
         float occlusionStrength = 1.0f;
         Vec3 emissiveColor{0.0f, 0.0f, 0.0f};
         float emissiveStrength = 1.0f;
+        float specularFactor = 1.0f;
+        Vec3 specularColor{1.0f, 1.0f, 1.0f};
+        float clearcoatFactor = 0.0f;
+        float clearcoatRoughness = 0.0f;
+        float clearcoatNormalScale = 1.0f;
         uint32 textureFlags = 0;
         MaterialSourceAlphaMode alphaMode = MaterialSourceAlphaMode::Opaque;
         float alphaCutoff = 0.5f;
@@ -249,15 +286,25 @@ namespace RVX
     };
 
     inline constexpr std::string_view
-        RVX_MATERIAL_PARAMETER_LAYOUT_SCHEMA_V1 =
-            "RVX.MaterialParameters.V1:baseColorFactor=float4;metallicFactor=float;"
+        RVX_MATERIAL_PARAMETER_LAYOUT_SCHEMA_V2 =
+            "RVX.MaterialParameters.V2:baseColorFactor=float4;metallicFactor=float;"
             "roughnessFactor=float;normalScale=float;occlusionStrength=float;"
-            "emissiveColor=float3;emissiveStrength=float;textureFlags=uint;"
-            "alphaMode=uint;alphaCutoff=float;workflow=uint;doubleSided=bool;"
-            "toonBands=float;toonSpecularThreshold=float;toonRimStrength=float;"
+            "emissiveColor=float3;emissiveStrength=float;specularFactor=float;"
+            "specularColor=float3;clearcoatFactor=float;clearcoatRoughness=float;"
+            "clearcoatNormalScale=float;textureFlags=uint;alphaMode=uint;"
+            "alphaCutoff=float;workflow=uint;doubleSided=bool;toonBands=float;"
+            "toonSpecularThreshold=float;toonRimStrength=float;"
             "toonOutlineWidth=float;toonShadowTint=float3;transmission=float;"
             "indexOfRefraction=float;thickness=float;attenuationColor=float3;"
             "attenuationDistance=float";
+
+    /**
+     * @brief Return the exact immutable V2 feature identity for parameters and
+     *        declared slots. The result is used to reject partial artifacts.
+     */
+    [[nodiscard]] uint64 GetMaterialFeatureMaskV2(
+        const MaterialSourceData& sourceData,
+        std::span<const MaterialTextureSlotDefinition> textureSlots) noexcept;
 
     /** @brief Required program family for one fixed shading model. */
     [[nodiscard]] std::string_view GetMaterialProgramFamily(

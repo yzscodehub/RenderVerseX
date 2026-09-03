@@ -207,14 +207,18 @@ uint ResolveClusterIndex(uint2 pixel, float3 worldPos)
 
 float3 EvaluateLinearLocalLights(
     float3 normal, float3 viewDir, float3 worldPos, float3 baseColor,
-    float metallic, float roughness, bool receivesShadow)
+    float metallic, float roughness, float indexOfRefraction, float specularFactor,
+    float3 specularColor, float clearcoatFactor, float clearcoatRoughness,
+    bool receivesShadow)
 {
     float3 result = 0.0;
     [loop]
     for (uint index = 0; index < min(NumPointLights, 256u); ++index)
     {
-        result += EvaluatePointLight(
+        result += EvaluatePointLightWithExtensions(
             PointLights[index], normal, viewDir, worldPos, baseColor, metallic, roughness,
+            indexOfRefraction,
+            specularFactor, specularColor, clearcoatFactor, clearcoatRoughness, normal,
             receivesShadow
                 ? RVX_SamplePointLocalShadow(PointLights[index], worldPos, normal)
                 : 1.0);
@@ -222,8 +226,10 @@ float3 EvaluateLinearLocalLights(
     [loop]
     for (uint index = 0; index < min(NumSpotLights, 128u); ++index)
     {
-        result += EvaluateSpotLight(
+        result += EvaluateSpotLightWithExtensions(
             SpotLights[index], normal, viewDir, worldPos, baseColor, metallic, roughness,
+            indexOfRefraction,
+            specularFactor, specularColor, clearcoatFactor, clearcoatRoughness, normal,
             receivesShadow
                 ? RVX_SampleSpotLocalShadow(SpotLights[index], worldPos, normal)
                 : 1.0);
@@ -233,13 +239,18 @@ float3 EvaluateLinearLocalLights(
 
 float3 EvaluateClusteredLocalLights(
     uint2 pixel, float3 normal, float3 viewDir, float3 worldPos,
-    float3 baseColor, float metallic, float roughness, bool receivesShadow)
+    float3 baseColor, float metallic, float roughness, float indexOfRefraction,
+    float specularFactor,
+    float3 specularColor, float clearcoatFactor, float clearcoatRoughness,
+    bool receivesShadow)
 {
     const uint clusterIndex = ResolveClusterIndex(pixel, worldPos);
     if (clusterIndex == RVX_INVALID_CLUSTER_INDEX)
     {
         return EvaluateLinearLocalLights(
             normal, viewDir, worldPos, baseColor, metallic, roughness,
+            indexOfRefraction, specularFactor, specularColor, clearcoatFactor,
+            clearcoatRoughness,
             receivesShadow);
     }
 
@@ -254,9 +265,12 @@ float3 EvaluateClusteredLocalLights(
         const uint lightType = (packedIndex >> 16u) & 0xffffu;
         if (lightType == 0u && lightIndex < NumPointLights)
         {
-            result += EvaluatePointLight(
+            result += EvaluatePointLightWithExtensions(
                 PointLights[lightIndex], normal, viewDir, worldPos,
                 baseColor, metallic, roughness,
+                indexOfRefraction,
+                specularFactor, specularColor, clearcoatFactor,
+                clearcoatRoughness, normal,
                 receivesShadow
                     ? RVX_SamplePointLocalShadow(
                         PointLights[lightIndex], worldPos, normal)
@@ -264,9 +278,12 @@ float3 EvaluateClusteredLocalLights(
         }
         else if (lightType == 1u && lightIndex < NumSpotLights)
         {
-            result += EvaluateSpotLight(
+            result += EvaluateSpotLightWithExtensions(
                 SpotLights[lightIndex], normal, viewDir, worldPos,
                 baseColor, metallic, roughness,
+                indexOfRefraction,
+                specularFactor, specularColor, clearcoatFactor,
+                clearcoatRoughness, normal,
                 receivesShadow
                     ? RVX_SampleSpotLocalShadow(
                         SpotLights[lightIndex], worldPos, normal)
@@ -425,17 +442,25 @@ struct EnvironmentIBLResult
 
 EnvironmentIBLResult EvaluateEnvironmentIBL(
     float3 normal, float3 viewDir, float3 baseColor, float metallic,
-    float roughness, float materialOcclusion, float screenAmbientOcclusion)
+    float roughness, float indexOfRefraction, float specularFactor,
+    float3 specularColor,
+    float clearcoatFactor, float clearcoatRoughness,
+    float materialOcclusion, float screenAmbientOcclusion)
 {
     EnvironmentIBLResult result;
     result.total = 0.0f;
     result.specular = 0.0f;
     result.specularResponse = 0.0f;
-    const float3 f0 = ComputeF0(baseColor, metallic);
+    const float3 f0 = ComputeF0WithSpecular(
+        baseColor, metallic, indexOfRefraction, specularFactor, specularColor);
     const float nDotV = max(dot(normal, viewDir), 0.001);
-    const float3 fresnel = F_SchlickRoughness(nDotV, f0, roughness);
+    const float3 specularF90 = ComputeSpecularF90(metallic, specularFactor);
+    const float3 fresnel = F_SchlickRoughnessWithF90(
+        nDotV, f0, specularF90, roughness);
+    const float3 clearcoatFresnel = EvaluateClearcoatFresnel(
+        normal, viewDir, clearcoatFactor);
+    const float3 clearcoatTransmission = 1.0 - clearcoatFresnel;
     float3 diffuseAmbient;
-    float3 specularSource;
     if (IBLTextureParams.x > 0.5)
     {
         // Compute shaders have no implicit screen-space derivatives. Irradiance
@@ -449,29 +474,60 @@ EnvironmentIBLResult EvaluateEnvironmentIBL(
             IBLLinearClampSampler, reflectionDir, prefilteredMip).rgb * IBLTextureParams.z;
         const float2 brdf = BRDFLUTTexture.SampleLevel(
             IBLLinearClampSampler, float2(nDotV, roughness), 0.0).rg;
-        diffuseAmbient = baseColor * (1.0 - fresnel) * (1.0 - metallic) *
-            irradiance * materialOcclusion;
-        specularSource = prefiltered;
-        result.specularResponse =
-            (fresnel * brdf.x + brdf.y) * materialOcclusion;
+        diffuseAmbient = baseColor *
+            ((1.0 - max(fresnel.x, max(fresnel.y, fresnel.z))) *
+             (1.0 - metallic)) * clearcoatTransmission * irradiance *
+            materialOcclusion;
+        const float3 baseResponse = RVX_ApplyIndirectSpecularAmbientOcclusion(
+            (fresnel * brdf.x + specularF90 * brdf.y) * materialOcclusion *
+                clearcoatTransmission,
+            screenAmbientOcclusion,
+            roughness,
+            nDotV);
+        const float clearcoatRoughnessClamped =
+            clamp(clearcoatRoughness, 0.04, 1.0);
+        const float clearcoatNdotV = max(dot(normal, viewDir), 0.001);
+        const float3 clearcoatPrefiltered = PrefilteredEnvironmentTexture.SampleLevel(
+            IBLLinearClampSampler,
+            reflectionDir,
+            clearcoatRoughnessClamped * max(IBLTextureParams.y - 1.0, 0.0)).rgb *
+            IBLTextureParams.z;
+        const float2 clearcoatBrdf = BRDFLUTTexture.SampleLevel(
+            IBLLinearClampSampler,
+            float2(clearcoatNdotV, clearcoatRoughnessClamped),
+            0.0).rg;
+        const float3 clearcoatResponse = RVX_ApplyIndirectSpecularAmbientOcclusion(
+            (clearcoatFresnel * clearcoatBrdf.x +
+             saturate(clearcoatFactor) * clearcoatBrdf.y) * materialOcclusion,
+            screenAmbientOcclusion,
+            clearcoatRoughnessClamped,
+            clearcoatNdotV);
+        result.specular = prefiltered * baseResponse +
+            clearcoatPrefiltered * clearcoatResponse;
+        result.specularResponse = baseResponse + clearcoatResponse;
     }
     else
     {
         const float3 diffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
         const float3 specular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
-        diffuseAmbient = baseColor * (1.0 - fresnel) * (1.0 - metallic) *
-            materialOcclusion * diffuse;
-        specularSource = specular;
-        result.specularResponse = f0 * materialOcclusion *
-            (1.0 - roughness);
+        diffuseAmbient = baseColor *
+            ((1.0 - max(fresnel.x, max(fresnel.y, fresnel.z))) *
+             (1.0 - metallic)) * clearcoatTransmission * materialOcclusion *
+            diffuse;
+        result.specularResponse = RVX_ApplyIndirectSpecularAmbientOcclusion(
+            (f0 * clearcoatTransmission * (1.0 - roughness) +
+             clearcoatFresnel * (1.0 - clamp(clearcoatRoughness, 0.04, 1.0))) *
+                materialOcclusion,
+            screenAmbientOcclusion,
+            roughness,
+            nDotV);
+        result.specular = specular * result.specularResponse;
     }
     diffuseAmbient = RVX_ApplyIndirectDiffuseAmbientOcclusion(
         diffuseAmbient, screenAmbientOcclusion);
-    result.specularResponse = RVX_ApplyIndirectSpecularAmbientOcclusion(
-        result.specularResponse, screenAmbientOcclusion, roughness, nDotV);
-    result.specular = specularSource * result.specularResponse;
     const float3 ambientFloor = RVX_ApplyIndirectDiffuseAmbientOcclusion(
-        baseColor * max(IBLTextureParams.w, 0.0), screenAmbientOcclusion);
+        baseColor * clearcoatTransmission * max(IBLTextureParams.w, 0.0),
+        screenAmbientOcclusion);
     result.total = diffuseAmbient + result.specular + ambientFloor;
     return result;
 }
@@ -543,6 +599,11 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float3 normal = DecodeOctahedralNormal(normalRoughnessMetallic.xy);
     const float roughness = clamp(normalRoughnessMetallic.z, 0.04, 1.0);
     const float metallic = saturate(normalRoughnessMetallic.w);
+    const float specularFactor = saturate(material.SpecularColor_Factor.w);
+    const float3 specularColor = max(material.SpecularColor_Factor.xyz, 0.0);
+    const float indexOfRefraction = max(material.ThinTransmissionParams.y, 1.0f);
+    const float clearcoatFactor = saturate(material.ClearcoatParams.x);
+    const float clearcoatRoughness = clamp(material.ClearcoatParams.y, 0.04, 1.0);
     const float3 worldPos = ReconstructWorldPosition(pixel, deviceDepth);
     const float3 viewDir = SafeNormalize(CameraPosition - worldPos, float3(0.0, 0.0, 1.0));
     const float shadow = receivesShadow
@@ -569,21 +630,30 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
     else
     {
-        directional = EvaluatePBR(
+        directional = EvaluatePBRWithExtensions(
             normal, viewDir, SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0)),
             albedoAO.rgb, metallic, roughness,
+            indexOfRefraction,
+            specularFactor, specularColor, clearcoatFactor, clearcoatRoughness, normal,
             DirectionalLightColor * max(DirectionalLightIntensity, 0.0), shadow);
         local = EvaluateClusteredLocalLights(
             pixel, normal, viewDir, worldPos, albedoAO.rgb, metallic, roughness,
+            indexOfRefraction,
+            specularFactor, specularColor, clearcoatFactor, clearcoatRoughness,
             receivesShadow);
     }
     const float screenAmbientOcclusion = RVX_SaturateAmbientOcclusion(
         AmbientOcclusionTexture.Load(int3(pixel, 0)));
     const EnvironmentIBLResult ambient = EvaluateEnvironmentIBL(
-        normal, viewDir, albedoAO.rgb, metallic, roughness,
+        normal, viewDir, albedoAO.rgb, metallic, roughness, indexOfRefraction,
+        specularFactor, specularColor, clearcoatFactor, clearcoatRoughness,
         saturate(albedoAO.a), screenAmbientOcclusion);
+    const float3 clearcoatTransmission = 1.0 - EvaluateClearcoatFresnel(
+        normal, viewDir, clearcoatFactor);
     HDRSceneColor[pixel] = float4(
-        (directional + local + ambient.total + emissive) * preExposure, 1.0);
+        (directional + local + ambient.total + emissive * clearcoatTransmission) *
+            preExposure,
+        1.0);
     BaseIndirectSpecular[pixel] = float4(
         ambient.specular * preExposure, 1.0f);
     SpecularResponse[pixel] = float4(ambient.specularResponse, 1.0f);

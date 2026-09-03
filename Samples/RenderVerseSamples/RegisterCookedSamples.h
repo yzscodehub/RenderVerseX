@@ -7,8 +7,8 @@ namespace RVX
     struct SampleManifestCatalog;
     class SampleRegistry;
 
-    /** Register the only scenario compiled into the cooked GFX24 product. */
-    bool RegisterRenderQualityLabCookedSample(
+    /** Register the explicit cooked GFX24/GFX25 scenario allowlist. */
+    bool RegisterCookedSampleScenarios(
         const SampleManifestCatalog& manifest,
         SampleRegistry& registry,
         std::string* outError = nullptr);

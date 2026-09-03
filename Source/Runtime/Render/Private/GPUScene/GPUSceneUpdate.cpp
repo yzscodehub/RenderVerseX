@@ -66,6 +66,20 @@ namespace
         }
     }
 
+    [[nodiscard]] bool MatchesMeshBatchPipelineInvariants(
+        const PipelineKey& batchPipeline,
+        const PipelineKey& frozenPipeline) noexcept
+    {
+        // MeshBatch owns only topology, skinning, and its coarse material
+        // mode. Cull/shadow/blend/shading/surface-path/UV and winding policy
+        // are frozen later by MaterialSystem and the accepted RenderObject.
+        // Reconstructing and comparing those fields here would replace that
+        // authority with the conservative legacy-packet defaults.
+        return batchPipeline.materialVariant == frozenPipeline.materialVariant &&
+               batchPipeline.topology == frozenPipeline.topology &&
+               batchPipeline.skinned == frozenPipeline.skinned;
+    }
+
     struct BuildPublishedObjectResult
     {
         GPUSceneUpdate::PublishedObject object;
@@ -502,7 +516,8 @@ GPUSceneUpdate::ResolveAcceptedDraw(
             acceptedPacket.submeshIndex == packet.submeshIndex &&
             acceptedPacket.geometryKey == packet.geometryKey &&
             acceptedPacket.materialKey == packet.materialKey &&
-            acceptedPacket.pipelineKey == packet.pipelineKey &&
+            MatchesMeshBatchPipelineInvariants(
+                acceptedPacket.pipelineKey, packet.pipelineKey) &&
             acceptedPacket.arguments == packet.arguments)
         {
             matchedAcceptedBatch = true;

@@ -2125,6 +2125,7 @@ namespace RVX
                            });
             };
             bool illegalExternalOwnership = false;
+            std::string illegalExternalOwnershipDetail;
             for (uint32 passIndex : graph.executionOrder)
             {
                 if (passIndex >= graph.passes.size() ||
@@ -2140,36 +2141,87 @@ namespace RVX
                     {
                         const TextureResource& resource =
                             graph.textures[usage.index];
+                        const bool textureOwnershipIllegal =
+                            resource.imported &&
+                            !textureOwnedByGraphics(
+                                resource.initialAccessSnapshot);
                         illegalExternalOwnership =
                             illegalExternalOwnership ||
-                            (resource.imported &&
-                             !textureOwnedByGraphics(
-                                 resource.initialAccessSnapshot));
+                            textureOwnershipIllegal;
+                        if (textureOwnershipIllegal &&
+                            illegalExternalOwnershipDetail.empty())
+                        {
+                            illegalExternalOwnershipDetail =
+                                std::string("texture '") +
+                                (resource.desc.debugName
+                                     ? resource.desc.debugName
+                                     : "<unnamed>") +
+                                "' uniform owner=" +
+                                GetGPUQueueDomainName(
+                                    resource.initialAccessSnapshot
+                                        .uniformAccess.domain) +
+                                ", first consumer='" +
+                                graph.passes[passIndex].name + "'";
+                        }
                     }
                     else if (usage.type == ResourceType::Buffer &&
                              usage.index < graph.buffers.size())
                     {
                         const BufferResource& resource =
                             graph.buffers[usage.index];
+                        const bool bufferOwnershipIllegal =
+                            resource.imported &&
+                            !bufferOwnedByGraphics(
+                                resource.initialAccessSnapshot);
                         illegalExternalOwnership =
                             illegalExternalOwnership ||
-                            (resource.imported &&
-                             !bufferOwnedByGraphics(
-                                 resource.initialAccessSnapshot));
+                            bufferOwnershipIllegal;
+                        if (bufferOwnershipIllegal &&
+                            illegalExternalOwnershipDetail.empty())
+                        {
+                            illegalExternalOwnershipDetail =
+                                std::string("buffer '") +
+                                (resource.desc.debugName
+                                     ? resource.desc.debugName
+                                     : "<unnamed>") +
+                                "' uniform owner=" +
+                                GetGPUQueueDomainName(
+                                    resource.initialAccessSnapshot
+                                        .uniformAccess.domain) +
+                                ", bytes=" +
+                                std::to_string(resource.desc.size) +
+                                ", stride=" +
+                                std::to_string(resource.desc.stride) +
+                                ", first consumer='" +
+                                graph.passes[passIndex].name + "'";
+                        }
                     }
                 }
             }
             if (illegalExternalOwnership)
             {
-                graph.stats.compileValid = false;
-                ++graph.stats.validationErrorCount;
-                AddCompileError(
-                    graph,
-                    "RenderGraph GraphicsOnly plan cannot acquire an external resource owned by a non-Graphics queue");
-                return;
+                const bool canRetainOwnershipOnlyMultiQueuePlan =
+                    graph.queueExecutionMode ==
+                        RenderGraph::QueueExecutionMode::MultiQueue &&
+                    graph.hasCapabilitySnapshot &&
+                    graph.capabilitySnapshot.supportsQueueSubmissionPlan &&
+                    graph.capabilitySnapshot.queueTopology.activeDomainCount > 1;
+                if (!canRetainOwnershipOnlyMultiQueuePlan)
+                {
+                    graph.stats.compileValid = false;
+                    ++graph.stats.validationErrorCount;
+                    AddCompileError(
+                        graph,
+                        "RenderGraph GraphicsOnly plan cannot acquire an external resource owned by a non-Graphics queue: " +
+                            illegalExternalOwnershipDetail);
+                    return;
+                }
             }
-            graph.queueExecutionMode =
-                RenderGraph::QueueExecutionMode::GraphicsOnly;
+            else
+            {
+                graph.queueExecutionMode =
+                    RenderGraph::QueueExecutionMode::GraphicsOnly;
+            }
         }
 
         // Calculate resource lifetimes and memory aliases

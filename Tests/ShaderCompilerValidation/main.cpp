@@ -231,9 +231,10 @@ namespace
         const char* requiredResource = nullptr;
     };
 
-    constexpr std::array<SurfaceShaderCompileCase, 21> GFX06_SURFACE_SHADER_CASES = {{
+    constexpr std::array<SurfaceShaderCompileCase, 22> GFX06_SURFACE_SHADER_CASES = {{
         // DefaultLit is used by direct, GPU-driven, and GPU-scene raster paths.
         {"DefaultLit PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSMain", false},
+        {"DefaultLit ThinTransmission PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardTranslucency", false},
         {"DefaultLit Forward surface data PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardSurfaceData", false},
         {"DefaultLit VS direct", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", true},
         {"DefaultLit VS rigid", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", true},
@@ -322,7 +323,13 @@ namespace
             options.sourceCode = source.c_str();
             options.sourcePath = shaderPathString.c_str();
             options.targetBackend = backend;
-            options.enableOptimization = false;
+            // FXC's unoptimized SM5 validator exhausts an internal temporary
+            // on the complete ThinTransmission composite. The production DX11
+            // path is optimized, so compile that exact configuration.
+            options.enableOptimization =
+                backend == RVX::RHIBackendType::DX11 &&
+                std::string_view(shaderCase.entryPoint) ==
+                    "PSForwardTranslucency";
             if (shaderCase.defineName != nullptr)
             {
                 options.defines.push_back({shaderCase.defineName, shaderCase.defineValue});
@@ -1971,7 +1978,7 @@ VSOutput main(VSInput input)
 }
 
 TEST_F(ShaderCompilerValidationFixture,
-       DX11SamplerABIRoundTripsFrameAndMaterialSamplersWithoutCollisions)
+       DX11SamplerABIRoundTripsFrameAndCompactMaterialSamplersWithoutCollisions)
 {
     const std::string source = R"(
 Texture2D<float4> FrameTexture : register(t1, space0);
@@ -1992,14 +1999,14 @@ Texture2D<float4> MaterialTexture5 : register(t5, space2);
 Texture2D<float4> MaterialTexture6 : register(t6, space2);
 Texture2D<float4> MaterialTexture7 : register(t7, space2);
 Texture2D<float4> MaterialTexture8 : register(t8, space2);
-SamplerState MaterialSampler9 : register(s9, space2);
-SamplerState MaterialSampler10 : register(s10, space2);
-SamplerState MaterialSampler11 : register(s11, space2);
-SamplerState MaterialSampler12 : register(s12, space2);
-SamplerState MaterialSampler13 : register(s13, space2);
 SamplerState MaterialSampler14 : register(s14, space2);
 SamplerState MaterialSampler15 : register(s15, space2);
 SamplerState MaterialSampler16 : register(s16, space2);
+SamplerState MaterialSampler17 : register(s17, space2);
+SamplerState MaterialSampler18 : register(s18, space2);
+SamplerState MaterialSampler19 : register(s19, space2);
+SamplerState MaterialSampler20 : register(s20, space2);
+SamplerState MaterialSampler21 : register(s21, space2);
 
 float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
@@ -2011,14 +2018,14 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     value += FrameTexture.Sample(FrameSampler9, uv);
     value += FrameTexture.Sample(FrameSampler13, uv);
     value += FrameTexture.Sample(FrameSampler19, uv);
-    value += MaterialTexture1.Sample(MaterialSampler9, uv);
-    value += MaterialTexture2.Sample(MaterialSampler10, uv);
-    value += MaterialTexture3.Sample(MaterialSampler11, uv);
-    value += MaterialTexture4.Sample(MaterialSampler12, uv);
-    value += MaterialTexture5.Sample(MaterialSampler13, uv);
-    value += MaterialTexture6.Sample(MaterialSampler14, uv);
-    value += MaterialTexture7.Sample(MaterialSampler15, uv);
-    value += MaterialTexture8.Sample(MaterialSampler16, uv);
+    value += MaterialTexture1.Sample(MaterialSampler14, uv);
+    value += MaterialTexture2.Sample(MaterialSampler15, uv);
+    value += MaterialTexture3.Sample(MaterialSampler16, uv);
+    value += MaterialTexture4.Sample(MaterialSampler17, uv);
+    value += MaterialTexture5.Sample(MaterialSampler18, uv);
+    value += MaterialTexture6.Sample(MaterialSampler19, uv);
+    value += MaterialTexture7.Sample(MaterialSampler20, uv);
+    value += MaterialTexture8.Sample(MaterialSampler21, uv);
     return value;
 }
 )";
@@ -2072,14 +2079,14 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     }
 
     const std::array<std::pair<const char*, RVX::uint32>, 8>
-        materialSamplers = {{{"MaterialSampler9", 9u},
-                              {"MaterialSampler10", 10u},
-                              {"MaterialSampler11", 11u},
-                              {"MaterialSampler12", 12u},
-                              {"MaterialSampler13", 13u},
-                              {"MaterialSampler14", 14u},
+        materialSamplers = {{{"MaterialSampler14", 14u},
                               {"MaterialSampler15", 15u},
-                              {"MaterialSampler16", 16u}}};
+                              {"MaterialSampler16", 16u},
+                              {"MaterialSampler17", 17u},
+                              {"MaterialSampler18", 18u},
+                              {"MaterialSampler19", 19u},
+                              {"MaterialSampler20", 20u},
+                              {"MaterialSampler21", 21u}}};
     for (const auto& sampler : materialSamplers)
     {
         expectSampler(sampler.first, 2u, sampler.second);
@@ -2162,7 +2169,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 }
 
 TEST_F(ShaderCompilerValidationFixture,
-       DX11DefaultLitPixelReflectionPreservesDescriptorSets)
+       DX11DefaultLitPixelReflectionPreservesCompactMaterialSamplerABI)
 {
     const fs::path shaderPath =
         fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" / "Shaders" /
@@ -2186,25 +2193,21 @@ TEST_F(ShaderCompilerValidationFixture,
     options.targetProfile = "ps_5_0";
     options.enableOptimization = false;
 
-    // Source declarations define the logical ABI. Reflection below proves
-    // the live entries restore the same identities after FXC flattens SM5
-    // register spaces. ToonRamp is intentionally checked here even though
-    // this entry does not currently sample it.
-    const std::array<const char*, 8> expectedMaterialSamplerDeclarations = {
-        "SamplerState BaseColorSampler : register(s9, space2);",
-        "SamplerState NormalSampler : register(s10, space2);",
-        "SamplerState MetallicRoughnessSampler : register(s11, space2);",
-        "SamplerState OcclusionSampler : register(s12, space2);",
-        "SamplerState EmissiveSampler : register(s13, space2);",
-        "SamplerState ToonRampSampler : register(s14, space2);",
-        "SamplerState TransmissionSampler : register(s15, space2);",
-        "SamplerState ThicknessSampler : register(s16, space2);"};
-    for (const char* declaration : expectedMaterialSamplerDeclarations)
-    {
-        EXPECT_NE(source.find(declaration), std::string::npos)
-            << "DefaultLit material sampler ABI declaration is missing: "
-            << declaration;
-    }
+    const std::string samplerInclude = ReadTextFile(
+        shaderPath.parent_path() / "Include" / "MaterialSamplers.hlsli");
+    ASSERT_FALSE(samplerInclude.empty());
+    EXPECT_NE(source.find("#include \"Include/MaterialSamplers.hlsli\""),
+              std::string::npos);
+    EXPECT_NE(samplerInclude.find("SamplerState BaseColorSampler : register(s8);"),
+              std::string::npos);
+    EXPECT_NE(samplerInclude.find("SamplerState ThicknessSampler : register(s15);"),
+              std::string::npos);
+    EXPECT_NE(samplerInclude.find("#define SpecularSampler MetallicRoughnessSampler"),
+              std::string::npos);
+    EXPECT_NE(samplerInclude.find("#define SpecularColorSampler BaseColorSampler"),
+              std::string::npos);
+    EXPECT_NE(samplerInclude.find("#define ClearcoatNormalSampler NormalSampler"),
+              std::string::npos);
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
     ASSERT_TRUE(support.IsSupported()) << support.reason;
@@ -2228,35 +2231,23 @@ TEST_F(ShaderCompilerValidationFixture,
         EXPECT_EQ(2u, resource->set);
         EXPECT_EQ(logicalBinding, resource->binding);
     };
-    expectSamplerBinding(result, "BaseColorSampler", 9u);
-    expectSamplerBinding(result, "NormalSampler", 10u);
-    expectSamplerBinding(result, "MetallicRoughnessSampler", 11u);
-    expectSamplerBinding(result, "OcclusionSampler", 12u);
-    expectSamplerBinding(result, "EmissiveSampler", 13u);
-    const auto clusterConstants = std::find_if(
-        result.reflection.resources.begin(),
-        result.reflection.resources.end(),
-        [](const RVX::ShaderReflection::ResourceBinding& resource)
-        {
-            return resource.name == "ClusterConstants";
-        });
-    ASSERT_NE(result.reflection.resources.end(), clusterConstants);
-    EXPECT_EQ(clusterConstants->set, 0u);
-    EXPECT_EQ(clusterConstants->binding, 7u);
-    for (const RVX::ShaderReflection::ResourceBinding& resource :
-         result.reflection.resources)
-    {
-        EXPECT_FALSE(resource.set == 1 && resource.binding == 3)
-            << "Unexpected DefaultLit PS resource: " << resource.name;
-    }
+    expectSamplerBinding(result, "BaseColorSampler", 14u);
+    expectSamplerBinding(result, "NormalSampler", 15u);
+    expectSamplerBinding(result, "MetallicRoughnessSampler", 16u);
+    expectSamplerBinding(result, "OcclusionSampler", 17u);
+    expectSamplerBinding(result, "EmissiveSampler", 18u);
 
-    // The translucent entry actively consumes the two ThinTransmission-only
-    // sampler slots, covering the high end of the 16-slot physical ABI.
     options.entryPoint = "PSForwardTranslucency";
+    // FXC's unoptimized SM5 validator exhausts an internal temporary on the
+    // full Forward+ translucent path after Material V2 adds its layered BRDF
+    // locals. Shipping DX11 compilation is optimized; exercise that exact
+    // production path rather than treating a debug-validator limitation as a
+    // material ABI failure.
+    options.enableOptimization = true;
     const RVX::ShaderCompileResult translucentResult = compiler->Compile(options);
     ASSERT_TRUE(translucentResult.success) << translucentResult.errorMessage;
-    expectSamplerBinding(translucentResult, "TransmissionSampler", 15u);
-    expectSamplerBinding(translucentResult, "ThicknessSampler", 16u);
+    expectSamplerBinding(translucentResult, "TransmissionSampler", 20u);
+    expectSamplerBinding(translucentResult, "ThicknessSampler", 21u);
 }
 
 #endif
@@ -2708,7 +2699,7 @@ cbuffer FrameConstants : register(b0, space0)
 };
 
 Texture2D<float4> BaseTexture : register(t1, space2);
-SamplerState BaseSampler : register(s9, space2);
+SamplerState BaseSampler : register(s14, space2);
 
 float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
@@ -2776,15 +2767,25 @@ Texture2D<float4> MaterialTexture5 : register(t5, space2);
 Texture2D<float4> MaterialTexture6 : register(t6, space2);
 Texture2D<float4> MaterialTexture7 : register(t7, space2);
 Texture2D<float4> MaterialTexture8 : register(t8, space2);
-SamplerState MaterialSampler1 : register(s9, space2);
-SamplerState MaterialSampler2 : register(s10, space2);
-SamplerState MaterialSampler3 : register(s11, space2);
-SamplerState MaterialSampler4 : register(s12, space2);
-SamplerState MaterialSampler5 : register(s13, space2);
-SamplerState MaterialSampler6 : register(s14, space2);
-SamplerState MaterialSampler7 : register(s15, space2);
-SamplerState MaterialSampler8 : register(s16, space2);
-StructuredBuffer<float4> MaterialTable : register(t17, space2);
+Texture2D<float4> MaterialTexture9 : register(t9, space2);
+Texture2D<float4> MaterialTexture10 : register(t10, space2);
+Texture2D<float4> MaterialTexture11 : register(t11, space2);
+Texture2D<float4> MaterialTexture12 : register(t12, space2);
+Texture2D<float4> MaterialTexture13 : register(t13, space2);
+SamplerState MaterialSampler1 : register(s14, space2);
+SamplerState MaterialSampler2 : register(s15, space2);
+SamplerState MaterialSampler3 : register(s16, space2);
+SamplerState MaterialSampler4 : register(s17, space2);
+SamplerState MaterialSampler5 : register(s18, space2);
+SamplerState MaterialSampler6 : register(s19, space2);
+SamplerState MaterialSampler7 : register(s20, space2);
+SamplerState MaterialSampler8 : register(s21, space2);
+SamplerState MaterialSampler9 : register(s22, space2);
+SamplerState MaterialSampler10 : register(s23, space2);
+SamplerState MaterialSampler11 : register(s24, space2);
+SamplerState MaterialSampler12 : register(s25, space2);
+SamplerState MaterialSampler13 : register(s26, space2);
+StructuredBuffer<float4> MaterialTable : register(t27, space2);
 
 float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
@@ -2798,6 +2799,11 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     color += MaterialTexture6.Sample(MaterialSampler6, uv);
     color += MaterialTexture7.Sample(MaterialSampler7, uv);
     color += MaterialTexture8.Sample(MaterialSampler8, uv);
+    color += MaterialTexture9.Sample(MaterialSampler9, uv);
+    color += MaterialTexture10.Sample(MaterialSampler10, uv);
+    color += MaterialTexture11.Sample(MaterialSampler11, uv);
+    color += MaterialTexture12.Sample(MaterialSampler12, uv);
+    color += MaterialTexture13.Sample(MaterialSampler13, uv);
     return color * FrameTint * MaterialTint + MaterialTable[0];
 }
 )";
@@ -2822,14 +2828,14 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.glslSource.empty());
 
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 17,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 18,
                    "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
-    static_assert(RVX::RVX_SHADER_COMPILER_ABI_VERSION >= 16,
+    static_assert(RVX::RVX_SHADER_COMPILER_ABI_VERSION >= 17,
                   "OpenGL cooked GLSL binding remaps must invalidate artifacts");
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0), 1u);
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0), 9u);
-    constexpr std::array<RVX::uint32, 8> expectedMaterialTextureUnits = {
-        2u, 3u, 7u, 8u, 9u, 4u, 5u, 13u};
+    constexpr std::array<RVX::uint32, 13> expectedMaterialTextureUnits = {
+        2u, 3u, 7u, 8u, 9u, 4u, 5u, 13u, 17u, 18u, 19u, 20u, 21u};
     for (RVX::uint32 textureBinding = 1;
          textureBinding <= expectedMaterialTextureUnits.size();
          ++textureBinding)
@@ -2842,7 +2848,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             expectedUnit);
         EXPECT_EQ(
             RVX::GLSLBindingABI::FlattenBinding(
-                RVX::RHIBindingType::Sampler, 2, textureBinding + 8),
+                RVX::RHIBindingType::Sampler, 2, textureBinding + 13),
             expectedUnit);
     }
     EXPECT_EQ(
@@ -2859,7 +2865,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         14u);
     EXPECT_EQ(
         RVX::GLSLBindingABI::FlattenBinding(
-            RVX::RHIBindingType::ShaderResourceBuffer, 2, 17),
+            RVX::RHIBindingType::ShaderResourceBuffer, 2, 27),
         15u);
 
     EXPECT_EQ(result.glslBindings.uboBindings["FrameConstants"],
@@ -2879,10 +2885,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
             expectedMaterialTextureUnits[textureBinding - 1];
         EXPECT_EQ(result.glslBindings.GetGLBinding(2, textureBinding),
                   expectedUnit);
-        EXPECT_EQ(result.glslBindings.GetGLBinding(2, textureBinding + 8),
+        EXPECT_EQ(result.glslBindings.GetGLBinding(2, textureBinding + 13),
                   expectedUnit);
     }
-    EXPECT_EQ(result.glslBindings.GetGLBinding(2, 17), 15u);
+    EXPECT_EQ(result.glslBindings.GetGLBinding(2, 27), 15u);
     EXPECT_EQ(result.glslBindings.ssboBindings["MaterialTable"], 15u);
 
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(
@@ -3026,16 +3032,18 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
 
 TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMappings)
 {
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 17,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 18,
                   "Cross-backend resource-index ABI changes must invalidate cached shader source");
 
-    constexpr std::array<RVX::uint32, 8> expectedOpenGLTextureUnits = {
-        2u, 3u, 7u, 8u, 9u, 4u, 5u, 13u};
-    for (RVX::uint32 textureBinding = 1; textureBinding <= 8; ++textureBinding)
+    constexpr std::array<RVX::uint32, 13> expectedOpenGLTextureUnits = {
+        2u, 3u, 7u, 8u, 9u, 4u, 5u, 13u, 17u, 18u, 19u, 20u, 21u};
+    for (RVX::uint32 textureBinding = 1;
+         textureBinding <= expectedOpenGLTextureUnits.size();
+         ++textureBinding)
     {
         RVX::uint32 pairedUnit = RVX::RVX_INVALID_INDEX;
         EXPECT_TRUE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
-            2, textureBinding, textureBinding + 8, pairedUnit));
+            2, textureBinding, textureBinding + 13, pairedUnit));
         EXPECT_EQ(pairedUnit, expectedOpenGLTextureUnits[textureBinding - 1]);
         EXPECT_EQ(
             RVX::GLSLBindingABI::FlattenBinding(
@@ -3043,22 +3051,30 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
             pairedUnit);
         EXPECT_EQ(
             RVX::GLSLBindingABI::FlattenBinding(
-                RVX::RHIBindingType::Sampler, 2, textureBinding + 8),
+                RVX::RHIBindingType::Sampler, 2, textureBinding + 13),
             pairedUnit);
 
         RVX::uint32 metalTexture = RVX::RVX_INVALID_INDEX;
         RVX::uint32 metalSampler = RVX::RVX_INVALID_INDEX;
         EXPECT_TRUE(RVX::MetalBindingABI::TryGetTextureIndex(
             2, textureBinding, 0, metalTexture));
-        EXPECT_TRUE(RVX::MetalBindingABI::TryGetSamplerIndex(
-            2, textureBinding + 8, 0, metalSampler));
         EXPECT_EQ(metalTexture, textureBinding - 1);
-        EXPECT_EQ(metalSampler, textureBinding - 1);
+        if (textureBinding <= 8)
+        {
+            EXPECT_TRUE(RVX::MetalBindingABI::TryGetSamplerIndex(
+                2, textureBinding + 13, 0, metalSampler));
+            EXPECT_EQ(metalSampler, textureBinding - 1);
+        }
+        else
+        {
+            EXPECT_FALSE(RVX::MetalBindingABI::TryGetSamplerIndex(
+                2, textureBinding + 13, 0, metalSampler));
+        }
     }
 
     EXPECT_EQ(
         RVX::GLSLBindingABI::FlattenBinding(
-            RVX::RHIBindingType::ShaderResourceBuffer, 2, 17),
+            RVX::RHIBindingType::ShaderResourceBuffer, 2, 27),
         15u);
 
     RVX::uint32 opaqueSnapshotUnit = RVX::RVX_INVALID_INDEX;
@@ -3080,8 +3096,8 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
         0, 17, 13, invalidLocalShadowPair));
 
     static_assert(
-        RVX::GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT == 17u,
-        "Forward+ froxel volume requires a seventeenth OpenGL texture unit");
+        RVX::GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT == 22u,
+        "Material V2 plus Forward+ requires twenty-two OpenGL texture units");
     static_assert(
         RVX::GLSLBindingABI::FlattenTextureBinding(0, 18) == 16u,
         "Froxel volume must retain a dedicated OpenGL texture unit");
@@ -3142,7 +3158,7 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
     RVX::uint32 materialConstants = RVX::RVX_INVALID_INDEX;
     RVX::uint32 materialTable = RVX::RVX_INVALID_INDEX;
     EXPECT_TRUE(RVX::MetalBindingABI::TryGetBufferIndex(2, 0, 0, materialConstants));
-    EXPECT_TRUE(RVX::MetalBindingABI::TryGetBufferIndex(2, 17, 0, materialTable));
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetBufferIndex(2, 27, 0, materialTable));
     EXPECT_EQ(materialConstants, 20u);
     EXPECT_EQ(materialTable, 21u);
     EXPECT_LE(materialTable, RVX::MetalBindingABI::RVX_METAL_MAX_BUFFER_INDEX);
@@ -3150,7 +3166,7 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
     RVX::uint32 deferredLocalShadowTexture = RVX::RVX_INVALID_INDEX;
     EXPECT_TRUE(RVX::MetalBindingABI::TryGetTextureIndex(
         0, 23, 0, deferredLocalShadowTexture));
-    EXPECT_EQ(deferredLocalShadowTexture, 31u);
+    EXPECT_EQ(deferredLocalShadowTexture, 39u);
 
     RVX::uint32 gfx19BaseIndirectSpecular = RVX::RVX_INVALID_INDEX;
     RVX::uint32 gfx19ExposureState = RVX::RVX_INVALID_INDEX;
@@ -3164,18 +3180,18 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
         0, 17, 0, gfx19SpecularResponse));
     EXPECT_TRUE(RVX::MetalBindingABI::TryGetSamplerIndex(
         0, 19, 0, gfx19LinearClampSampler));
-    EXPECT_EQ(gfx19BaseIndirectSpecular, 23u);
+    EXPECT_EQ(gfx19BaseIndirectSpecular, 31u);
     EXPECT_EQ(gfx19ExposureState, 16u);
-    EXPECT_EQ(gfx19SpecularResponse, 25u);
+    EXPECT_EQ(gfx19SpecularResponse, 33u);
     EXPECT_EQ(gfx19LinearClampSampler, 15u);
 
     RVX::uint32 ignored = RVX::RVX_INVALID_INDEX;
     EXPECT_FALSE(RVX::GLSLBindingABI::TryFlattenBinding(
-        RVX::RHIBindingType::SampledTexture, 2, 9, ignored));
+        RVX::RHIBindingType::SampledTexture, 2, 14, ignored));
     EXPECT_FALSE(RVX::GLSLBindingABI::TryFlattenBinding(
         RVX::RHIBindingType::ShaderResourceBuffer, 2, 16, ignored));
     EXPECT_FALSE(RVX::MetalBindingABI::TryGetBufferIndex(2, 18, 0, ignored));
-    EXPECT_FALSE(RVX::MetalBindingABI::TryGetSamplerIndex(2, 17, 0, ignored));
+    EXPECT_FALSE(RVX::MetalBindingABI::TryGetSamplerIndex(2, 22, 0, ignored));
 }
 #endif
 

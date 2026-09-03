@@ -122,6 +122,12 @@ namespace
             case MaterialTextureSlot::ToonRamp: return "toon_ramp";
             case MaterialTextureSlot::Transmission: return "transmission";
             case MaterialTextureSlot::Thickness: return "thickness";
+            case MaterialTextureSlot::Specular: return "specular";
+            case MaterialTextureSlot::SpecularColor: return "specular_color";
+            case MaterialTextureSlot::Clearcoat: return "clearcoat";
+            case MaterialTextureSlot::ClearcoatRoughness:
+                return "clearcoat_roughness";
+            case MaterialTextureSlot::ClearcoatNormal: return "clearcoat_normal";
             default: return nullptr;
         }
     }
@@ -172,10 +178,13 @@ namespace
             }
             const bool linearDataSlot =
                 binding.definition.slot == MaterialTextureSlot::Transmission ||
-                binding.definition.slot == MaterialTextureSlot::Thickness;
+                binding.definition.slot == MaterialTextureSlot::Thickness ||
+                binding.definition.slot == MaterialTextureSlot::Specular ||
+                binding.definition.slot == MaterialTextureSlot::Clearcoat ||
+                binding.definition.slot == MaterialTextureSlot::ClearcoatRoughness;
             if (linearDataSlot && (binding.usage != TextureUsage::Data || binding.isSRGB))
             {
-                outError = "Cooked ThinTransmission texture slots require linear data textures";
+                outError = "Cooked material linear texture slots require linear data textures";
                 return false;
             }
         }

@@ -31,7 +31,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 35;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 36;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -64,6 +64,9 @@ namespace RVX
     /** Schema 34 has the legacy SSR projection without A3 trace-resolution evidence. */
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_HALF_RESOLUTION_SSR_EXECUTION_SCHEMA_VERSION = 34;
+    /** Schema 35 has presentation receipts without Material V2 routing facts. */
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_PRESENTED_MATERIAL_V2_SCHEMA_VERSION = 35;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -286,11 +289,19 @@ namespace RVX
         bool fallbackUsed = false;
         uint64 frameSequence = 0;
         uint64 presentationSequence = 0;
+        uint64 parameterLayoutHash = 0;
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::Unsupported;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return material.IsValid() && contentRevision != 0 &&
                    descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   shadingModel <= MaterialShadingModel::ThinTransmission &&
+                   surfacePathEligibility < SurfacePathEligibility::Unsupported &&
                    frameSequence != 0 && presentationSequence != 0;
         }
     };
@@ -1340,6 +1351,7 @@ namespace RVX
         bool gpuDrivenOpaqueIndirectSubmitted = false;
         uint32 gpuDrivenOpaqueDirectDrawCount = 0;
         uint32 gpuDrivenOpaqueIndirectBatchCount = 0;
+        uint32 gpuDrivenOpaqueSubmittedSourcePacketCount = 0;
         uint32 gpuDrivenOpaqueIndirectDrawUpperBound = 0;
         std::string gpuDrivenOpaqueFallbackReason;
         SampleRasterTranscript directOpaqueRasterTranscript{};
@@ -1436,7 +1448,7 @@ namespace RVX
         bool loaded = false;
         /** Legacy v11 alias for the verified package identity. */
         AssetContentId sourceContentId;
-        /** Canonical package identity declared by catalog v3. */
+        /** Canonical package identity declared by catalog v4. */
         AssetContentId packageContentId;
         /** Catalog expectation and owner-thread observed receipt are distinct. */
         Resource::ResourceContentIdentity expectedContentIdentity;

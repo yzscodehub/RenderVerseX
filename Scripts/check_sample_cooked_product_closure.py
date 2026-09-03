@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the strict cooked-only RenderQualityLab Sample product closure."""
+"""Validate the strict cooked-only GFX24/GFX25 Sample product closure."""
 
 from __future__ import annotations
 
@@ -13,7 +13,10 @@ from module_policy import Policy, add_policy_arguments, load_policy, unwrap_cmak
 PRODUCT_TARGET = "RenderVerseSamplesCooked"
 COOKED_COMPOSITION = "RVX_SampleCookedComposition"
 DEVELOPMENT_COMPOSITION = "RVX_SampleDevelopmentComposition"
-REQUIRED_SCENARIO = "RVX_Gfx24SampleScenarios"
+REQUIRED_SCENARIOS = frozenset({
+    "RVX_Gfx24SampleScenarios",
+    "RVX_Gfx25SampleScenarios",
+})
 FORBIDDEN = frozenset({
     "RVX_AssetImport",
     "RVX_ShaderCompiler",
@@ -75,6 +78,19 @@ def validate_sample_cooked_product_closure(policy: Policy) -> list[str]:
                 + " -> ".join(path)
             )
             continue
+        target = by_name.get(current)
+        if target is not None:
+            module = policy.modules.get(target.module)
+            if module is None:
+                findings.append(
+                    f"{PRODUCT_TARGET}: cooked closure reaches target {current} "
+                    f"with unknown module {target.module}"
+                )
+            elif module.domain in {"developer", "editor"}:
+                findings.append(
+                    f"{PRODUCT_TARGET}: cooked closure reaches {module.domain} "
+                    f"module target {current} via " + " -> ".join(path)
+                )
         for destination in sorted(graph.get(current, ())):
             queue.append((destination, (*path, destination)))
 
@@ -82,10 +98,11 @@ def validate_sample_cooked_product_closure(policy: Policy) -> list[str]:
         findings.append(
             f"{PRODUCT_TARGET}: must reach {COOKED_COMPOSITION} exactly through its link closure"
         )
-    if REQUIRED_SCENARIO not in reached:
-        findings.append(
-            f"{PRODUCT_TARGET}: must reach its sole {REQUIRED_SCENARIO} scenario target"
-        )
+    for scenario in sorted(REQUIRED_SCENARIOS):
+        if scenario not in reached:
+            findings.append(
+                f"{PRODUCT_TARGET}: must reach required {scenario} scenario target"
+            )
     if DEVELOPMENT_COMPOSITION in reached and COOKED_COMPOSITION in reached:
         findings.append(
             f"{PRODUCT_TARGET}: both development and cooked Sample compositions are reachable"

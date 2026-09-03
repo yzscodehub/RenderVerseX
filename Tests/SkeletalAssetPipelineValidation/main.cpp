@@ -1077,7 +1077,7 @@ TEST_F(SkeletalAssetPipelineValidation,
         materialBytes, material, error)) << error;
     EXPECT_EQ(material.material.descriptor.shadingModel,
               RVX::MaterialShadingModel::ToonLit);
-    EXPECT_EQ(material.material.descriptor.programFamily, "toon-lit-v1");
+    EXPECT_EQ(material.material.descriptor.programFamily, "toon-lit-v2");
     EXPECT_FLOAT_EQ(material.material.parameters.toonBands, options.toonBands);
     EXPECT_FLOAT_EQ(material.material.parameters.toonSpecularThreshold,
                     options.toonSpecularThreshold);

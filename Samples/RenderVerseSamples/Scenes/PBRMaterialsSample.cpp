@@ -5,15 +5,17 @@
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "Scene/ECS/RenderFragments.h"
-#include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleRenderPathPolicy.h"
+#include "Samples/SampleScenarioDiagnostics.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -42,6 +44,9 @@ namespace RVX
             Vec4{0.08f, 0.45f, 0.12f, 1.0f},
             Vec4{0.06f, 0.18f, 0.72f, 1.0f},
             Vec4{0.50f, 0.50f, 0.50f, 1.0f}};
+        constexpr std::array<std::string_view, PBRMatrixDimension>
+            BaseColorNames{
+                "terracotta", "gold", "green", "blue", "neutral"};
 
         int32 FindLevelIndex(
             const std::array<float32, PBRMatrixDimension>& levels,
@@ -73,6 +78,51 @@ namespace RVX
             return -1;
         }
 
+        [[nodiscard]] std::string MakeFactorMaterialSourceName(
+            const size_t baseColorIndex,
+            const size_t roughnessIndex,
+            const size_t metallicIndex)
+        {
+            std::ostringstream stream;
+            stream << "PBRFactor_C" << baseColorIndex << "_"
+                   << BaseColorNames[baseColorIndex] << "_M"
+                   << std::fixed << std::setprecision(2)
+                   << MetallicLevels[metallicIndex] << "_R"
+                   << RoughnessLevels[roughnessIndex];
+            return stream.str();
+        }
+
+        [[nodiscard]] size_t FindFactorMaterialOrdinal(
+            const std::string_view sourceName)
+        {
+            for (size_t baseColorIndex = 0;
+                 baseColorIndex < PBRMatrixDimension;
+                 ++baseColorIndex)
+            {
+                for (size_t roughnessIndex = 0;
+                     roughnessIndex < PBRMatrixDimension;
+                     ++roughnessIndex)
+                {
+                    for (size_t metallicIndex = 0;
+                         metallicIndex < PBRMatrixDimension;
+                         ++metallicIndex)
+                    {
+                        if (sourceName == MakeFactorMaterialSourceName(
+                                baseColorIndex, roughnessIndex,
+                                metallicIndex))
+                        {
+                            return baseColorIndex *
+                                       PBRMatrixDimension *
+                                       PBRMatrixDimension +
+                                   roughnessIndex * PBRMatrixDimension +
+                                   metallicIndex;
+                        }
+                    }
+                }
+            }
+            return PBRMatrixCombinationCount;
+        }
+
         const SampleInfo PBRMaterialsInfo{
             "pbr-materials",
             "PBR Materials",
@@ -84,6 +134,48 @@ namespace RVX
             true,
             SampleRenderPath::Auto,
         };
+
+        constexpr uint64 RequiredPbrExtensionFeatureMask =
+            RVX_MATERIAL_FEATURE_SPECULAR |
+            RVX_MATERIAL_FEATURE_CLEARCOAT |
+            RVX_MATERIAL_FEATURE_IOR;
+
+        const AssessmentCapability StandardLitPbrCapability{
+            AssessmentCode("RENDER.CAPABILITY.STANDARD_LIT_PBR"),
+            "A StandardLit PBR material set reaches the presented opaque raster route.",
+            true,
+            "Qualification requires present-bound Material V2 StandardLit opaque receipts without fallback or overflow."};
+        const AssessmentCapability MaterialV2ExtensionsCapability{
+            AssessmentCode("RENDER.CAPABILITY.MATERIAL_V2_EXTENSIONS"),
+            "Specular, clearcoat, and IOR Material V2 features occur in the presented PBR material set.",
+            true,
+            "Qualification requires the renderer-owned presented feature masks; source asset declarations are insufficient."};
+        const AssessmentCapability TextureIBLCapability{
+            AssessmentCode("RENDER.CAPABILITY.TEXTURE_IBL"),
+            "The PBR material set is lit by the selected texture environment.",
+            true,
+            "Qualification requires a resident environment and renderer-reported texture IBL on the presented raster path."};
+
+        void PublishCapability(SampleAssessmentChannel& assessment,
+                               const AssessmentCapability& capability,
+                               const char* reason,
+                               bool& published)
+        {
+            if (published)
+            {
+                return;
+            }
+
+            AssessmentCapabilityObservation observation;
+            observation.capability = capability;
+            observation.checkpoint = AssessmentCheckpoints::ScenarioStable;
+            observation.value = DiagnosticValue<bool>::Available(true);
+            observation.reason = reason;
+            if (assessment.MarkCapabilityObservation(std::move(observation)))
+            {
+                published = true;
+            }
+        }
 
         [[nodiscard]] SceneECS::Light MakeDirectionalLight()
         {
@@ -213,6 +305,18 @@ namespace RVX
         return PBRMaterialsInfo;
     }
 
+    SampleAssessmentContract PBRMaterialsSample::GetAssessmentContract() const
+    {
+        SampleAssessmentContract contract = MakeDefaultSampleAssessmentContract();
+        contract.code = AssessmentCode("SAMPLE.PBR_MATERIALS");
+        contract.revision = "2";
+        contract.capabilities = {
+            StandardLitPbrCapability,
+            MaterialV2ExtensionsCapability,
+            TextureIBLCapability};
+        return contract;
+    }
+
     bool PBRMaterialsSample::InspectMaterials(
         PBRReferenceWorkflow referenceWorkflow,
         std::string& outError)
@@ -250,7 +354,6 @@ namespace RVX
             }
 
             ++m_pbrMaterialCount;
-            const std::string& materialName = material.sourceName;
             AssetId metallicRoughnessTexture{};
             const auto textureSlot = std::find_if(
                 material.textureSlots.begin(), material.textureSlots.end(),
@@ -264,14 +367,10 @@ namespace RVX
             {
                 metallicRoughnessTexture = textureSlot->textureAssetId;
             }
-            if (materialName.rfind("PBRFactor_", 0) == 0)
+            if (referenceWorkflow == PBRReferenceWorkflow::Factor)
             {
+                const size_t sourceOrderedOrdinal = m_factorMaterialCount;
                 ++m_factorMaterialCount;
-                if (referenceWorkflow != PBRReferenceWorkflow::Factor)
-                {
-                    continue;
-                }
-
                 const int32 metallicIndex = FindLevelIndex(
                     MetallicLevels, material.metallicFactor);
                 const int32 roughnessIndex = FindLevelIndex(
@@ -283,6 +382,26 @@ namespace RVX
                 {
                     outError =
                         "PBR factor cube contains an invalid material combination";
+                    return false;
+                }
+                const size_t expectedBaseColorIndex =
+                    sourceOrderedOrdinal /
+                    (PBRMatrixDimension * PBRMatrixDimension);
+                const size_t expectedRoughnessIndex =
+                    (sourceOrderedOrdinal / PBRMatrixDimension) %
+                    PBRMatrixDimension;
+                const size_t expectedMetallicIndex =
+                    sourceOrderedOrdinal % PBRMatrixDimension;
+                if (sourceOrderedOrdinal >= PBRMatrixCombinationCount ||
+                    static_cast<size_t>(baseColorIndex) !=
+                        expectedBaseColorIndex ||
+                    static_cast<size_t>(roughnessIndex) !=
+                        expectedRoughnessIndex ||
+                    static_cast<size_t>(metallicIndex) !=
+                        expectedMetallicIndex)
+                {
+                    outError =
+                        "PBR factor cube source-order metadata does not match its C/R/M matrix";
                     return false;
                 }
                 bool& combination =
@@ -297,14 +416,9 @@ namespace RVX
                 }
                 combination = true;
             }
-            else if (materialName.rfind("PBRTexture_", 0) == 0)
+            else if (referenceWorkflow == PBRReferenceWorkflow::Texture)
             {
                 ++m_textureMaterialCount;
-                if (referenceWorkflow != PBRReferenceWorkflow::Texture)
-                {
-                    continue;
-                }
-
                 const int32 baseColorIndex =
                     FindBaseColorIndex(material.baseColor);
                 if (baseColorIndex < 0 ||
@@ -438,7 +552,12 @@ namespace RVX
             return false;
         }
 
-        std::unordered_map<std::string, AssetId> materialsByName;
+        if (metadata.materials.size() != PBRMatrixCombinationCount)
+        {
+            outError =
+                "PBR factor cube metadata must retain all 125 source-ordered materials";
+            return false;
+        }
         for (const ResourceSceneAdapters::EcsModelAssetMetadata::Material& material :
              metadata.materials)
         {
@@ -447,25 +566,10 @@ namespace RVX
                 outError = "PBR factor cube contains an unavailable material";
                 return false;
             }
-            const std::string& name = material.sourceName;
-            if (name.rfind("PBRFactor_", 0) != 0)
-            {
-                continue;
-            }
-            if (!materialsByName.emplace(name, material.materialAssetId).second)
-            {
-                outError = "PBR factor cube contains a duplicate material name";
-                return false;
-            }
-        }
-        if (materialsByName.size() != PBRMatrixCombinationCount)
-        {
-            outError = "PBR factor cube requires 125 uniquely named materials";
-            return false;
         }
 
         std::unordered_set<uint64> uniqueMeshResources;
-        std::unordered_set<std::string> assignedMaterials;
+        std::unordered_set<size_t> assignedMaterialOrdinals;
         const ECS::Registry& registry = scene.GetRegistry();
         for (const ResourceSceneAdapters::PreparedModelEntityMapping& mapping :
              m_model.status.entityMappings)
@@ -491,16 +595,18 @@ namespace RVX
                 return false;
             }
 
-            const auto materialIt = materialsByName.find(mapping.sourceName);
-            if (materialIt == materialsByName.end() ||
-                !assignedMaterials.insert(mapping.sourceName).second)
+            const size_t materialOrdinal =
+                FindFactorMaterialOrdinal(mapping.sourceName);
+            if (materialOrdinal >= metadata.materials.size() ||
+                !assignedMaterialOrdinals.insert(materialOrdinal).second)
             {
                 outError =
-                    "PBR factor cube node/material names are missing or duplicated";
+                    "PBR factor cube source-node C/R/M material ordinal is missing, duplicated, or out of range";
                 return false;
             }
             SceneECS::MaterialSlots updatedSlots = *currentSlots;
-            updatedSlots.values[0].materialAssetId = materialIt->second;
+            updatedSlots.values[0].materialAssetId =
+                metadata.materials[materialOrdinal].materialAssetId;
             if (!scene.SetFragment(mapping.entity, updatedSlots))
             {
                 outError = "PBR factor cube material override was not retained";
@@ -514,9 +620,9 @@ namespace RVX
 
         m_uniqueMeshResourceCount = uniqueMeshResources.size();
         if (m_sceneMeshInstanceCount != PBRMatrixCombinationCount ||
+            assignedMaterialOrdinals.size() != PBRMatrixCombinationCount ||
             m_uniqueMeshResourceCount != 1 ||
-            m_materialOverrideCount != PBRMatrixCombinationCount ||
-            assignedMaterials.size() != PBRMatrixCombinationCount)
+            m_materialOverrideCount != PBRMatrixCombinationCount)
         {
             outError =
                 "PBR factor cube must instantiate one shared mesh with 125 material overrides";
@@ -548,7 +654,8 @@ namespace RVX
             outError = "Failed to configure the PBR Materials ECS camera";
             return false;
         }
-        if (context.options.assetId == "pbr-material-grid")
+        if (context.options.assetId == "pbr-material-grid" ||
+            context.options.assetId == "pbr-material-grid-cooked-v1")
         {
             m_referenceWorkflow = PBRReferenceWorkflow::Factor;
         }
@@ -594,9 +701,17 @@ namespace RVX
         m_lightCreated = true;
 
         context.renderSettings.shadows.enabled = false;
+        const bool temporalQuality =
+            context.options.qualityTier == SampleQualityTier::High ||
+            context.options.qualityTier == SampleQualityTier::Ultra;
         context.renderSettings.postProcess.enabled = true;
+        context.renderSettings.postProcess.enableVelocityOutput =
+            temporalQuality;
         context.renderSettings.postProcess.antiAliasingMode =
-            RenderAntiAliasingMode::FXAA;
+            temporalQuality ? RenderAntiAliasingMode::TAA
+                            : RenderAntiAliasingMode::FXAA;
+        context.renderSettings.postProcess.ambientOcclusion.enabled =
+            temporalQuality;
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSR = false;
         return context.models.RequestByAssetId(
@@ -866,11 +981,75 @@ namespace RVX
             reporter.Enable("ControlledStudioLighting");
             reporter.Enable("PBRReferenceLighting");
         }
+        if (m_standardLitExecutionObserved)
+        {
+            reporter.Enable("StandardLitPBRActualExecutionQualified");
+        }
+        if (m_materialV2ExtensionsObserved)
+        {
+            reporter.Enable("MaterialV2ExtensionActualExecutionQualified");
+        }
+        if (m_textureIBLExecutionObserved)
+        {
+            reporter.Enable("TextureIBLActualExecutionQualified");
+        }
+    }
+
+    void PBRMaterialsSample::ObserveDiagnostics(
+        const SampleRenderDiagnostics& diagnostics,
+        SampleAssessmentChannel& assessment)
+    {
+        const SampleRasterScenarioDiagnostics renderEvidence =
+            ProjectSampleRasterScenarioDiagnostics(diagnostics);
+        const bool opaqueStandardLit =
+            HasPresentedOpaqueStandardLitRasterEvidence(renderEvidence) &&
+            IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics);
+        const bool textureIbl =
+            opaqueStandardLit && m_environment.IsValid() &&
+            renderEvidence.textureIBLEnabled;
+        const bool materialV2Extensions =
+            opaqueStandardLit &&
+            HasPresentedMaterialFeatureEvidence(
+                renderEvidence, RequiredPbrExtensionFeatureMask);
+
+        m_standardLitExecutionObserved =
+            m_standardLitExecutionObserved || opaqueStandardLit;
+        m_textureIBLExecutionObserved =
+            m_textureIBLExecutionObserved || textureIbl;
+        m_materialV2ExtensionsObserved =
+            m_materialV2ExtensionsObserved || materialV2Extensions;
+
+        if (m_standardLitExecutionObserved)
+        {
+            PublishCapability(
+                assessment,
+                StandardLitPbrCapability,
+                "A presented Material V2 StandardLit opaque receipt proved PBR raster execution without fallback.",
+                m_standardLitCapabilityPublished);
+        }
+        if (m_materialV2ExtensionsObserved)
+        {
+            PublishCapability(
+                assessment,
+                MaterialV2ExtensionsCapability,
+                "Presented Material V2 feature masks include specular, clearcoat, and IOR.",
+                m_materialV2ExtensionsCapabilityPublished);
+        }
+        if (m_textureIBLExecutionObserved)
+        {
+            PublishCapability(
+                assessment,
+                TextureIBLCapability,
+                "The presented PBR raster receipt is paired with a resident texture IBL environment.",
+                m_textureIBLCapabilityPublished);
+        }
     }
 
     SampleReadiness PBRMaterialsSample::GetReadiness(
         const SampleRenderDiagnostics& diagnostics) const
     {
+        const SampleRasterScenarioDiagnostics renderEvidence =
+            ProjectSampleRasterScenarioDiagnostics(diagnostics);
         if (!m_modelActivationError.empty())
         {
             return SampleReadiness::Failed(m_modelActivationError);
@@ -906,12 +1085,12 @@ namespace RVX
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for realized texture IBL");
         }
-        if (!diagnostics.textureIBLEnabled)
+        if (!renderEvidence.textureIBLEnabled)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for realized texture IBL");
         }
-        if (!diagnostics.opaqueExecutionCompleted)
+        if (!renderEvidence.opaqueExecutionCompleted)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for a completed opaque pass");
@@ -925,17 +1104,23 @@ namespace RVX
         // readiness must use the packet/instance accounting published by the
         // engine. Keep the legacy draw count only as a compatibility fallback
         // for diagnostics producers that predate the instancing contract.
+        const bool executedGpuDriven =
+            m_renderPath == SampleRenderPath::GPUDriven ||
+            (m_renderPath == SampleRenderPath::Auto &&
+             renderEvidence.gpuDrivenOpaqueIndirectSubmitted);
         const uint32 executedPacketCount =
-            diagnostics.opaqueInstancingExecutedPacketCount != 0
-                ? diagnostics.opaqueInstancingExecutedPacketCount
-                : diagnostics.opaqueExecutedDrawCount;
-        if (diagnostics.opaqueExecutedDrawCountAvailable &&
+            executedGpuDriven
+                ? renderEvidence.gpuDrivenOpaqueSubmittedSourcePacketCount
+                : renderEvidence.opaqueInstancingExecutedPacketCount != 0
+                    ? renderEvidence.opaqueInstancingExecutedPacketCount
+                    : renderEvidence.opaqueExecutedDrawCount;
+        if (renderEvidence.opaqueExecutedDrawCountAvailable &&
             executedPacketCount < m_expectedDrawPacketCount)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for all reference cube draw packets to be submitted");
         }
-        if (!diagnostics.opaqueMaterialBindingsAvailable)
+        if (!renderEvidence.opaqueMaterialBindingsAvailable)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for opaque material binding diagnostics");
@@ -946,31 +1131,43 @@ namespace RVX
         // diagnostics do not publish either count and retain the per-packet
         // expectation.
         const uint32 submittedMaterialBindingCount =
-            diagnostics.opaqueInstancingSubmittedDrawCount +
-            diagnostics.gpuDrivenOpaqueIndirectBatchCount;
+            renderEvidence.opaqueInstancingSubmittedDrawCount +
+            renderEvidence.gpuDrivenOpaqueIndirectBatchCount;
         const uint32 expectedMaterialBindingCount =
             submittedMaterialBindingCount != 0
                 ? submittedMaterialBindingCount
                 : m_expectedDrawPacketCount;
-        if (diagnostics.opaqueMaterialBindingCount <
+        if (renderEvidence.opaqueMaterialBindingCount <
             expectedMaterialBindingCount)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for all reference material bindings");
         }
-        if (diagnostics.opaqueMaterialFallbackBindingCount != 0 ||
-            diagnostics.opaqueMaterialFallbackTextureFlags != 0)
+        if (renderEvidence.opaqueMaterialFallbackBindingCount != 0 ||
+            renderEvidence.opaqueMaterialFallbackTextureFlags != 0)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for source material resources without fallback");
         }
         constexpr uint32 MetallicRoughnessTextureFlag = 1u << 2u;
         if (m_referenceWorkflow == PBRReferenceWorkflow::Texture &&
-            (diagnostics.opaqueMaterialTextureFlags &
+            (renderEvidence.opaqueMaterialTextureFlags &
              MetallicRoughnessTextureFlag) == 0)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for the metallic-roughness texture binding");
+        }
+        if (!HasPresentedOpaqueStandardLitRasterEvidence(renderEvidence))
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for presented Material V2 StandardLit opaque receipts without fallback");
+        }
+        if (m_referenceWorkflow == PBRReferenceWorkflow::Factor &&
+            !HasPresentedMaterialFeatureEvidence(
+                renderEvidence, RequiredPbrExtensionFeatureMask))
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for presented specular, clearcoat, and IOR Material V2 feature evidence");
         }
         if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
         {
@@ -1030,5 +1227,11 @@ namespace RVX
         m_modelActivated = false;
         m_skyboxCreated = false;
         m_lightCreated = false;
+        m_standardLitExecutionObserved = false;
+        m_materialV2ExtensionsObserved = false;
+        m_textureIBLExecutionObserved = false;
+        m_standardLitCapabilityPublished = false;
+        m_materialV2ExtensionsCapabilityPublished = false;
+        m_textureIBLCapabilityPublished = false;
     }
 } // namespace RVX

@@ -20,12 +20,19 @@ namespace
         switch (slot)
         {
             case RVX::MaterialTextureSlot::BaseColor:
-            case RVX::MaterialTextureSlot::Emissive:
             case RVX::MaterialTextureSlot::ToonRamp:
+            case RVX::MaterialTextureSlot::SpecularColor:
                 binding.usage = RVX::Resource::TextureUsage::Color;
                 binding.isSRGB = true;
                 break;
+            case RVX::MaterialTextureSlot::Emissive:
+                binding.usage = RVX::Resource::TextureUsage::Color;
+                binding.isSRGB = true;
+                binding.fallbackSemantic =
+                    RVX::Resource::TextureFallbackSemantic::Black;
+                break;
             case RVX::MaterialTextureSlot::Normal:
+            case RVX::MaterialTextureSlot::ClearcoatNormal:
                 binding.usage = RVX::Resource::TextureUsage::Normal;
                 binding.isSRGB = false;
                 binding.fallbackSemantic =
@@ -82,6 +89,8 @@ TEST(CookedMaterialArtifactValidation, RoundTripIsDeterministicAndCanonical)
         first, decoded, error)) << error;
     EXPECT_EQ(decoded.logicalMaterialId, artifact.logicalMaterialId);
     EXPECT_EQ(decoded.permutation, artifact.permutation);
+    EXPECT_EQ(decoded.permutation, RVX::Resource::GetCookedMaterialPermutation(
+        decoded.material.descriptor));
     EXPECT_EQ(decoded.dependencyHash, artifact.dependencyHash);
     EXPECT_NE(decoded.contentHash, RVX::Hash::SHA256Digest{});
     ASSERT_EQ(decoded.textureBindings.size(), 2u);
@@ -89,7 +98,62 @@ TEST(CookedMaterialArtifactValidation, RoundTripIsDeterministicAndCanonical)
     EXPECT_EQ(decoded.textureBindings[1].expectedContentHash,
               artifact.textureBindings[1].expectedContentHash);
     EXPECT_EQ(decoded.material.descriptor.parameterLayoutHash,
-              RVX::GetMaterialParameterLayoutHashV1());
+              RVX::GetMaterialParameterLayoutHashV2());
+}
+
+TEST(CookedMaterialArtifactValidation,
+     V2SpecularAndClearcoatParametersAndSlotsRoundTripDeterministically)
+{
+    auto artifact = MakeArtifact();
+    artifact.material.parameters.specularFactor = 0.75f;
+    artifact.material.parameters.specularColor = {1.25f, 0.8f, 0.6f};
+    artifact.material.parameters.clearcoatFactor = 0.9f;
+    artifact.material.parameters.clearcoatRoughness = 0.15f;
+    artifact.material.parameters.clearcoatNormalScale = 0.6f;
+    artifact.textureBindings.push_back(MakeBinding(
+        RVX::MaterialTextureSlot::Specular, "textures/specular.rva"));
+    artifact.textureBindings.push_back(MakeBinding(
+        RVX::MaterialTextureSlot::SpecularColor,
+        "textures/specular_color.rva"));
+    artifact.textureBindings.push_back(MakeBinding(
+        RVX::MaterialTextureSlot::Clearcoat, "textures/clearcoat.rva"));
+    artifact.textureBindings.push_back(MakeBinding(
+        RVX::MaterialTextureSlot::ClearcoatRoughness,
+        "textures/clearcoat_roughness.rva"));
+    artifact.textureBindings.push_back(MakeBinding(
+        RVX::MaterialTextureSlot::ClearcoatNormal,
+        "textures/clearcoat_normal.rva"));
+
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::FinalizeCookedMaterialArtifact(artifact, error))
+        << error;
+    EXPECT_NE(artifact.material.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(artifact.material.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    EXPECT_EQ(artifact.material.descriptor.parameterLayoutHash,
+              RVX::GetMaterialParameterLayoutHashV2());
+
+    std::vector<RVX::uint8> first;
+    std::vector<RVX::uint8> second;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedMaterialArtifact(
+        artifact, first, error)) << error;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedMaterialArtifact(
+        artifact, second, error)) << error;
+    EXPECT_EQ(first, second);
+
+    RVX::Resource::CookedMaterialArtifact decoded;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        first, decoded, error)) << error;
+    EXPECT_FLOAT_EQ(decoded.material.parameters.specularFactor, 0.75f);
+    EXPECT_EQ(decoded.material.parameters.specularColor,
+              (RVX::Vec3{1.25f, 0.8f, 0.6f}));
+    EXPECT_FLOAT_EQ(decoded.material.parameters.clearcoatFactor, 0.9f);
+    EXPECT_FLOAT_EQ(decoded.material.parameters.clearcoatRoughness, 0.15f);
+    EXPECT_FLOAT_EQ(decoded.material.parameters.clearcoatNormalScale, 0.6f);
+    EXPECT_EQ(decoded.textureBindings.size(), 7u);
 }
 
 TEST(CookedMaterialArtifactValidation,
@@ -118,7 +182,7 @@ TEST(CookedMaterialArtifactValidation,
         bytes, decoded, error)) << error;
     EXPECT_EQ(decoded.material.descriptor.shadingModel,
               RVX::MaterialShadingModel::ToonLit);
-    EXPECT_EQ(decoded.material.descriptor.programFamily, "toon-lit-v1");
+    EXPECT_EQ(decoded.material.descriptor.programFamily, "toon-lit-v2");
     EXPECT_FLOAT_EQ(decoded.material.parameters.toonBands, 7.0f);
     EXPECT_FLOAT_EQ(decoded.material.parameters.toonSpecularThreshold, 0.58f);
     EXPECT_FLOAT_EQ(decoded.material.parameters.toonRimStrength, 1.75f);
@@ -148,6 +212,13 @@ TEST(CookedMaterialArtifactValidation, InvalidContractFailsClosed)
     }
     {
         auto artifact = MakeArtifact();
+        artifact.permutation ^= 1u;
+        EXPECT_FALSE(RVX::Resource::SerializeCookedMaterialArtifact(
+            artifact, bytes, error));
+        EXPECT_NE(error.find("permutation"), std::string::npos);
+    }
+    {
+        auto artifact = MakeArtifact();
         artifact.material.descriptor.programFamily = "arbitrary-shader";
         EXPECT_FALSE(RVX::Resource::SerializeCookedMaterialArtifact(
             artifact, bytes, error));
@@ -158,6 +229,32 @@ TEST(CookedMaterialArtifactValidation, InvalidContractFailsClosed)
             std::numeric_limits<float>::quiet_NaN();
         EXPECT_FALSE(RVX::Resource::SerializeCookedMaterialArtifact(
             artifact, bytes, error));
+    }
+    {
+        auto artifact = MakeArtifact();
+        artifact.material.parameters.clearcoatFactor = 0.5f;
+        EXPECT_FALSE(RVX::Resource::SerializeCookedMaterialArtifact(
+            artifact, bytes, error));
+        EXPECT_NE(error.find("feature identity"), std::string::npos);
+    }
+    {
+        auto artifact = MakeArtifact();
+        artifact.textureBindings.push_back(MakeBinding(
+            RVX::MaterialTextureSlot::Clearcoat, "textures/clearcoat.rva"));
+        EXPECT_FALSE(RVX::Resource::FinalizeCookedMaterialArtifact(
+            artifact, error));
+        EXPECT_NE(error.find("inactive"), std::string::npos);
+    }
+    {
+        auto artifact = MakeArtifact();
+        auto binding = MakeBinding(
+            RVX::MaterialTextureSlot::Specular, "textures/specular.rva");
+        binding.usage = RVX::Resource::TextureUsage::Color;
+        binding.isSRGB = true;
+        artifact.textureBindings.push_back(std::move(binding));
+        EXPECT_FALSE(RVX::Resource::FinalizeCookedMaterialArtifact(
+            artifact, error));
+        EXPECT_NE(error.find("texture dependency"), std::string::npos);
     }
 }
 
@@ -227,8 +324,12 @@ TEST(CookedMaterialArtifactValidation, EnvelopeRejectsCorruptionAndOldMagic)
         bytes, decoded, error));
     EXPECT_NE(error.find("hash"), std::string::npos);
 
-    const std::string retired = "RVX_MATERIAL_ARTIFACT_V0";
-    std::vector<RVX::uint8> retiredBytes(retired.begin(), retired.end());
-    EXPECT_FALSE(RVX::Resource::DeserializeCookedMaterialArtifact(
-        retiredBytes, decoded, error));
+    for (const std::string_view retired : {
+             std::string_view("RVX_MATERIAL_ARTIFACT_V0"),
+             std::string_view("RVX_MATERIAL_ARTIFACT_V1")})
+    {
+        std::vector<RVX::uint8> retiredBytes(retired.begin(), retired.end());
+        EXPECT_FALSE(RVX::Resource::DeserializeCookedMaterialArtifact(
+            retiredBytes, decoded, error));
+    }
 }

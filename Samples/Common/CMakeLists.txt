@@ -51,6 +51,7 @@ add_library(RVX_SampleCommon STATIC
     Private/SampleOrbitCameraController.cpp
     Private/SampleRegistry.cpp
     Private/SampleRunner.cpp
+    Private/SampleScenarioDiagnostics.cpp
     Private/SampleSceneLifetimeScope.cpp
     Private/SampleScreenshotWriter.cpp
 )

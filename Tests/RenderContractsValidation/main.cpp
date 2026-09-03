@@ -1312,24 +1312,45 @@ namespace
     }
 
     TEST(RenderContractsValidation,
-         MaterialUploadV4AcceptsEveryDeclaredLogicalTextureSlot)
+         MaterialUploadV2AcceptsEveryDeclaredLogicalTextureSlotWithLegalRouting)
     {
         auto info = MakeValidMaterialRequestInfo();
         auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        payload.staticDescriptor.shadingModel =
+            MaterialShadingModel::ThinTransmission;
+        payload.staticDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ThinTransmission));
+        payload.staticDescriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        payload.staticDescriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        payload.staticDescriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        payload.sourceData.alphaMode = MaterialSourceAlphaMode::Blend;
+        payload.sourceData.transmission = 0.75f;
+        payload.sourceData.clearcoatFactor = 0.5f;
+
+        std::vector<MaterialTextureSlotDefinition> slots;
         for (uint32 slot =
                  static_cast<uint32>(MaterialUploadTextureSlot::BaseColor);
-             slot <= static_cast<uint32>(MaterialUploadTextureSlot::Thickness);
+             slot <= static_cast<uint32>(MaterialUploadTextureSlot::ClearcoatNormal);
              ++slot)
         {
+            if (slot == static_cast<uint32>(MaterialUploadTextureSlot::ToonRamp))
+                continue;
             MaterialUploadTextureBinding binding;
             binding.slot = static_cast<MaterialUploadTextureSlot>(slot);
             binding.texture = RenderResourceHandle{slot + 2u, 1u};
             binding.uvSet = static_cast<int32>(slot % 2u);
             payload.textureBindings.push_back(binding);
             payload.sourceData.textureFlags |= 1u << slot;
-            payload.staticDescriptor.featureMask |= 1ull << slot;
             info.dependencies.push_back(binding.texture);
+
+            MaterialTextureSlotDefinition definition;
+            definition.slot = static_cast<MaterialTextureSlot>(slot);
+            definition.uvSet = static_cast<uint8>(binding.uvSet);
+            slots.push_back(definition);
         }
+        payload.staticDescriptor.featureMask = GetMaterialFeatureMaskV2(
+            payload.sourceData, slots);
         info.declaredPayloadBytes =
             static_cast<uint64>(payload.textureBindings.size()) *
                 sizeof(MaterialUploadTextureBinding) +
@@ -1337,6 +1358,71 @@ namespace
                 sizeof(RenderResourceHandle);
 
         ExpectCreationCode(info, ResourceUploadRequestCreateCode::Created);
+
+        auto toonInfo = MakeValidMaterialRequestInfo();
+        auto& toon = std::get<MaterialUploadPayload>(toonInfo.payload);
+        toon.staticDescriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.staticDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        MaterialUploadTextureBinding toonBinding;
+        toonBinding.slot = MaterialUploadTextureSlot::ToonRamp;
+        toonBinding.texture = RenderResourceHandle{99u, 1u};
+        toon.textureBindings.push_back(toonBinding);
+        toon.sourceData.textureFlags =
+            1u << static_cast<uint32>(MaterialUploadTextureSlot::ToonRamp);
+        const MaterialTextureSlotDefinition toonSlot{
+            MaterialTextureSlot::ToonRamp};
+        toon.staticDescriptor.featureMask = GetMaterialFeatureMaskV2(
+            toon.sourceData, std::span{&toonSlot, 1u});
+        toonInfo.dependencies.push_back(toonBinding.texture);
+        toonInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) + sizeof(RenderResourceHandle);
+        ExpectCreationCode(toonInfo, ResourceUploadRequestCreateCode::Created);
+    }
+
+    TEST(RenderContractsValidation,
+         MaterialUploadV2RejectsExtensionFeatureAndSlotContradictions)
+    {
+        auto missingFeature = MakeValidMaterialRequestInfo();
+        auto& missingFeaturePayload =
+            std::get<MaterialUploadPayload>(missingFeature.payload);
+        missingFeaturePayload.sourceData.clearcoatFactor = 0.5f;
+        ExpectCreationCode(
+            missingFeature, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto inactiveClearcoat = MakeValidMaterialRequestInfo();
+        auto& inactiveClearcoatPayload =
+            std::get<MaterialUploadPayload>(inactiveClearcoat.payload);
+        inactiveClearcoatPayload.staticDescriptor.featureMask =
+            RVX_MATERIAL_FEATURE_CLEARCOAT;
+        ExpectCreationCode(
+            inactiveClearcoat, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto standardTransmission = MakeValidMaterialRequestInfo();
+        auto& standardTransmissionPayload =
+            std::get<MaterialUploadPayload>(standardTransmission.payload);
+        standardTransmissionPayload.sourceData.transmission = 0.5f;
+        standardTransmissionPayload.staticDescriptor.featureMask =
+            RVX_MATERIAL_FEATURE_TRANSMISSION;
+        ExpectCreationCode(
+            standardTransmission, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         MaterialDefinitionV2AcceptsGlTfIorBeyondTheRetiredLegacyCap)
+    {
+        MaterialDefinition definition;
+        definition.parameters.indexOfRefraction = 12.0f;
+        definition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+            definition.parameters, definition.textureSlots);
+
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+
+        definition.descriptor.parameterLayoutHash =
+            GetMaterialParameterLayoutHashV2() ^ 0x1ull;
+        EXPECT_FALSE(ValidateMaterialDefinition(definition, error));
+        EXPECT_NE(error.find("layout"), std::string::npos);
     }
 
     TEST(RenderContractsValidation,
@@ -2075,6 +2161,11 @@ namespace
         NormalScaleAboveBoundary,
         EmissiveStrengthUpperBoundary,
         EmissiveStrengthAboveBoundary,
+        SpecularFactorAboveRange,
+        NegativeSpecularColor,
+        ClearcoatFactorAboveRange,
+        ClearcoatRoughnessAboveRange,
+        ClearcoatNormalScaleAboveRange,
         NonFiniteBaseColor,
         MetallicBelowRange,
         RoughnessAboveRange,
@@ -2090,7 +2181,7 @@ namespace
         NonFiniteToonShadowTint,
         TransmissionAboveRange,
         IndexOfRefractionBelowRange,
-        ThicknessAboveRange,
+        LargeFiniteThickness,
         NonFiniteAttenuationColor,
         AttenuationColorAboveRange,
         ZeroAttenuationDistance
@@ -2130,6 +2221,21 @@ namespace
                 break;
             case MaterialSourceValidationCase::EmissiveStrengthAboveBoundary:
                 source.emissiveStrength = 65505.0f;
+                break;
+            case MaterialSourceValidationCase::SpecularFactorAboveRange:
+                source.specularFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::NegativeSpecularColor:
+                source.specularColor.x = -0.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatFactorAboveRange:
+                source.clearcoatFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatRoughnessAboveRange:
+                source.clearcoatRoughness = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatNormalScaleAboveRange:
+                source.clearcoatNormalScale = 8.01f;
                 break;
             case MaterialSourceValidationCase::NonFiniteBaseColor:
                 source.baseColorFactor.x = nan;
@@ -2176,7 +2282,9 @@ namespace
             case MaterialSourceValidationCase::IndexOfRefractionBelowRange:
                 source.indexOfRefraction = 0.99f;
                 break;
-            case MaterialSourceValidationCase::ThicknessAboveRange:
+            case MaterialSourceValidationCase::LargeFiniteThickness:
+                source.alphaMode = MaterialSourceAlphaMode::Blend;
+                source.transmission = 1.0f;
                 source.thickness = 100001.0f;
                 break;
             case MaterialSourceValidationCase::NonFiniteAttenuationColor:
@@ -2195,12 +2303,32 @@ namespace
 
         MaterialDefinition definition;
         definition.parameters = source;
+        definition.descriptor.featureMask =
+            GetMaterialFeatureMaskV2(
+                definition.parameters, definition.textureSlots);
+        if (parameter.testCase ==
+            MaterialSourceValidationCase::LargeFiniteThickness)
+        {
+            definition.descriptor.shadingModel =
+                MaterialShadingModel::ThinTransmission;
+            definition.descriptor.programFamily = std::string(
+                GetMaterialProgramFamily(
+                    MaterialShadingModel::ThinTransmission));
+            definition.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+            definition.descriptor.shadowPolicy =
+                MaterialShadowPolicy::Receive;
+            definition.descriptor.translucencyPhase =
+                MaterialTranslucencyPhase::Standard;
+        }
         std::string definitionError;
         const bool definitionValid =
             ValidateMaterialDefinition(definition, definitionError);
 
         auto uploadInfo = MakeValidMaterialRequestInfo();
-        std::get<MaterialUploadPayload>(uploadInfo.payload).sourceData = source;
+        MaterialUploadPayload& uploadPayload =
+            std::get<MaterialUploadPayload>(uploadInfo.payload);
+        uploadPayload.sourceData = source;
+        uploadPayload.staticDescriptor = definition.descriptor;
         const ResourceUploadRequestCreateResult uploadResult =
             ResourceUploadRequest::Create(std::move(uploadInfo));
         const bool uploadValid =
@@ -2225,6 +2353,18 @@ namespace
                 MaterialSourceValidationCase::EmissiveStrengthUpperBoundary, true},
             MaterialSourceValidationParameter{
                 MaterialSourceValidationCase::EmissiveStrengthAboveBoundary, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::SpecularFactorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NegativeSpecularColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatFactorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatRoughnessAboveRange,
+                false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatNormalScaleAboveRange,
+                false},
             MaterialSourceValidationParameter{
                 MaterialSourceValidationCase::NonFiniteBaseColor, false},
             MaterialSourceValidationParameter{
@@ -2257,7 +2397,7 @@ namespace
             MaterialSourceValidationParameter{
                 MaterialSourceValidationCase::IndexOfRefractionBelowRange, false},
             MaterialSourceValidationParameter{
-                MaterialSourceValidationCase::ThicknessAboveRange, false},
+                MaterialSourceValidationCase::LargeFiniteThickness, true},
             MaterialSourceValidationParameter{
                 MaterialSourceValidationCase::NonFiniteAttenuationColor, false},
             MaterialSourceValidationParameter{
@@ -2838,6 +2978,44 @@ namespace
                     : SurfacePathEligibility::Unsupported;
             EXPECT_EQ(ClassifySurfacePathEligibility(descriptor), expected);
         }
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityKeepsFactorOnlyExtensionsDeferredAndRoutesTexturedExtensionsForwardSpecial)
+    {
+        MaterialStaticDescriptor factorOnly = MakeSurfacePathDescriptor(
+            MaterialShadingModel::StandardLit,
+            MaterialBlendMode::Opaque,
+            MaterialTranslucencyPhase::Opaque);
+        factorOnly.featureMask = RVX_MATERIAL_FEATURE_SPECULAR |
+            RVX_MATERIAL_FEATURE_CLEARCOAT;
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialStaticDescriptor(factorOnly, error)) << error;
+        EXPECT_EQ(ClassifySurfacePathEligibility(factorOnly),
+                  SurfacePathEligibility::DeferredOpaque);
+
+        const std::array texturedExtensionSlots = {
+            MaterialTextureSlot::Specular,
+            MaterialTextureSlot::SpecularColor,
+            MaterialTextureSlot::Clearcoat,
+            MaterialTextureSlot::ClearcoatRoughness,
+            MaterialTextureSlot::ClearcoatNormal};
+        for (const MaterialTextureSlot slot : texturedExtensionSlots)
+        {
+            MaterialStaticDescriptor textured = factorOnly;
+            textured.featureMask |= 1ull << static_cast<uint8>(slot);
+            error.clear();
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(textured, error)) << error;
+            EXPECT_EQ(ClassifySurfacePathEligibility(textured),
+                      SurfacePathEligibility::ForwardSpecialOpaque)
+                << "textured extension slot " << static_cast<uint32>(slot)
+                << " must not be silently evaluated by DeferredLighting";
+        }
+
+        MaterialStaticDescriptor invalid = factorOnly;
+        invalid.featureMask |= 1ull << 63u;
+        EXPECT_EQ(ClassifySurfacePathEligibility(invalid),
+                  SurfacePathEligibility::Unsupported);
     }
 
     TEST(RenderContractsValidation,

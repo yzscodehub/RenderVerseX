@@ -14,10 +14,10 @@ namespace RVX
         inline constexpr uint32 RVX_GLSL_DUMMY_SAMPLER_BINDING = 15;
 
         // The complete Forward+ surface ABI has nine frame textures
-        // (including the integrated froxel volume) and eight material
-        // textures. Those resources can be live in the same fragment shader,
-        // so unit 16 is deliberately part of the public OpenGL contract.
-        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 17;
+        // (including the integrated froxel volume) and thirteen Material V2
+        // textures. They may be live in the same fragment shader, so the
+        // independent-sampler OpenGL path requires texture units [0, 21].
+        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 22;
         inline constexpr uint32 RVX_GLSL_REQUIRED_STORAGE_BUFFER_BINDING_COUNT = 16;
 
         [[nodiscard]] inline constexpr bool IsValidBinding(uint32 binding)
@@ -47,8 +47,8 @@ namespace RVX
             uint32 set, uint32 binding)
         {
             // DefaultLit's frame data needs t4, t5, t8, t9 and t14 while
-            // its object data uses space1 t1..3 and its material table is
-            // space2 t17. Keep that complete concurrent set below 16.
+            // its object data uses space1 t1..3 and its Material V2 table is
+            // space2 t27. Keep that complete concurrent set below 16.
             if (set == 0 && binding <= 12)
             {
                 return binding;
@@ -68,7 +68,7 @@ namespace RVX
             {
                 return 11 + binding;
             }
-            if (set == 2 && binding == 17)
+            if (set == 2 && binding == 27)
             {
                 return 15;
             }
@@ -104,8 +104,10 @@ namespace RVX
                 return 16;
             }
 
-            // The eight material textures retain their packed 0..15 units;
-            // the simultaneously live froxel Texture3D occupies unit 16.
+            // The original eight material textures retain their packed
+            // disjoint units; five V2 extension textures occupy the new
+            // 17..21 range. The simultaneously live froxel Texture3D remains
+            // on unit 16.
             if (set == 2)
             {
                 switch (binding)
@@ -118,6 +120,11 @@ namespace RVX
                     case 6: return 4;
                     case 7: return 5;
                     case 8: return 13;
+                    case 9: return 17;
+                    case 10: return 18;
+                    case 11: return 19;
+                    case 12: return 20;
+                    case 13: return 21;
                     default: break;
                 }
             }
@@ -145,9 +152,9 @@ namespace RVX
                     default: break;
                 }
             }
-            if (set == 2 && binding >= 9 && binding <= 16)
+            if (set == 2 && binding >= 14 && binding <= 26)
             {
-                return FlattenTextureBinding(set, binding - 8);
+                return FlattenTextureBinding(set, binding - 13);
             }
             return RVX_INVALID_INDEX;
         }
@@ -202,8 +209,8 @@ namespace RVX
             uint32 samplerBinding,
             uint32& outTextureUnit)
         {
-            if (set == 2 && textureBinding >= 1 && textureBinding <= 8 &&
-                samplerBinding == textureBinding + 8)
+            if (set == 2 && textureBinding >= 1 && textureBinding <= 13 &&
+                samplerBinding == textureBinding + 13)
             {
                 outTextureUnit = FlattenTextureBinding(set, textureBinding);
                 return true;

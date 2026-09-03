@@ -9,6 +9,7 @@
 #include "Render/GPUScene/GPUSceneSchema.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Renderer/RenderClipConvention.h"
 #include "Render/Renderer/ViewData.h"
@@ -436,7 +437,8 @@ namespace
             return true;
         }
 
-        return set == 2 && binding <= 17;
+        return set == 2 &&
+            binding <= 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
     }
 
     bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
@@ -450,7 +452,9 @@ namespace
                actual == RHIBindingType::UniformBuffer;
     }
 
-    void BuildDefaultLitContractLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts)
+    void BuildDefaultLitContractLayouts(
+        std::vector<RHIDescriptorSetLayoutDesc>& outLayouts,
+        bool useDX11CompactMaterialSamplers)
     {
         outLayouts.clear();
         outLayouts.resize(3);
@@ -498,23 +502,23 @@ namespace
         auto& materialLayout = outLayouts[2];
         materialLayout.debugName = "DefaultMaterialSetLayout";
         materialLayout.AddDynamicBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(7, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(8, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(9, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(10, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(11, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(12, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(14, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(15, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(16, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(17, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        for (uint32 slot = 0; slot < RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; ++slot)
+        {
+            materialLayout.AddBinding(1 + slot, RHIBindingType::SampledTexture,
+                                      RHIShaderStage::Pixel);
+        }
+        const uint32 materialSamplerSlotCount =
+            useDX11CompactMaterialSamplers ? 8u
+                                           : RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+        for (uint32 slot = 0; slot < materialSamplerSlotCount; ++slot)
+        {
+            materialLayout.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT + slot,
+                                      RHIBindingType::Sampler,
+                                      RHIShaderStage::Pixel);
+        }
+        materialLayout.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                  RHIBindingType::ShaderResourceBuffer,
+                                  RHIShaderStage::Pixel);
     }
 
     ViewConstants BuildViewConstantsSnapshot(const ViewData& view,
@@ -4381,7 +4385,7 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
         // DX11 shader reflection does not reliably preserve HLSL register spaces.
         // DefaultLit has a stable public set0/set1/set2 contract, so keep that
         // contract explicit instead of trusting a lossy reflection remap.
-        BuildDefaultLitContractLayouts(outLayouts);
+        BuildDefaultLitContractLayouts(outLayouts, true);
         return ValidateDefaultLitLayouts(outLayouts);
     }
 
@@ -4453,17 +4457,28 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
-    for (uint32 binding = 1; binding <= 8; ++binding)
+    for (uint32 binding = 1;
+         binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         ++binding)
     {
         ensureBinding(outLayouts[2], binding, RHIBindingType::SampledTexture,
                       RHIShaderStage::Pixel);
     }
-    for (uint32 binding = 9; binding <= 16; ++binding)
+    const uint32 materialSamplerSlotCount =
+        m_device && (m_device->GetBackendType() == RHIBackendType::DX11 ||
+                     m_device->GetBackendType() == RHIBackendType::Metal)
+            ? 8u
+            : RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+    for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         binding < 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT +
+                 materialSamplerSlotCount;
+         ++binding)
     {
         ensureBinding(outLayouts[2], binding, RHIBindingType::Sampler,
                       RHIShaderStage::Pixel);
     }
-    ensureBinding(outLayouts[2], 17, RHIBindingType::ShaderResourceBuffer,
+    ensureBinding(outLayouts[2], 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                  RHIBindingType::ShaderResourceBuffer,
                   RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
@@ -4594,20 +4609,54 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(2, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
 
-    for (uint32 binding = 1; binding <= 8; ++binding)
+    for (uint32 binding = 1;
+         binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         ++binding)
     {
         if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
             return false;
     }
 
-    for (uint32 binding = 9; binding <= 16; ++binding)
+    const uint32 materialSamplerSlotCount =
+        m_device && (m_device->GetBackendType() == RHIBackendType::DX11 ||
+                     m_device->GetBackendType() == RHIBackendType::Metal)
+            ? 8u
+            : RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+    for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+         binding < 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT +
+                 materialSamplerSlotCount;
+         ++binding)
     {
         if (!requireBinding(2, binding, RHIBindingType::Sampler))
             return false;
     }
 
-    if (!requireBinding(2, 17, RHIBindingType::ShaderResourceBuffer))
+    if (!requireBinding(2, 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                        RHIBindingType::ShaderResourceBuffer))
         return false;
+
+    const bool compactMaterialSamplers = m_device != nullptr &&
+        (m_device->GetBackendType() == RHIBackendType::DX11 ||
+         m_device->GetBackendType() == RHIBackendType::Metal);
+    if (compactMaterialSamplers)
+    {
+        for (const RHIBindingLayoutEntry& entry : layouts[2].entries)
+        {
+            if (entry.type != RHIBindingType::Sampler)
+            {
+                continue;
+            }
+            if (entry.binding < 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT ||
+                entry.binding >= 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT +
+                    materialSamplerSlotCount)
+            {
+                SetLastError(
+                    "Compact material sampler ABI contains an unsupported set 2 sampler binding " +
+                    std::to_string(entry.binding));
+                return false;
+            }
+        }
+    }
 
     return true;
 }
