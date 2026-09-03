@@ -1,6 +1,6 @@
 {
   "bundleId": "1",
-  "bundleSha256": "78c67bdbfc1441fe5b1670059c503aadc9bcba0074027dd4486be2664aaf0b60",
+  "bundleSha256": "d26caaa63fedf2e74ca2906a71d2a8fb69de62099aacf9f7c0203855c5a7734e",
   "captureTick": 300,
   "layout": {
     "columns": 4,
@@ -82,7 +82,7 @@
       "y": 180
     }
   ],
-  "preset": "win_x64_gfx24_performance_calibration_release_run",
+  "preset": "win_x64_gfx24_approved_golden_release_run",
   "qualificationIdentity": {
     "backend": "dx12",
     "captureTick": 300,
@@ -92,9 +92,17 @@
     "view": "hero",
     "visualContractVersion": 3
   },
-  "runId": "gfx24-b2-forward-plus-run-03-beb32666",
+  "renderConfigurationIdentity": {
+    "instancingMode": "Auto",
+    "profileHash": 16725870342094316839,
+    "renderConfigurationHash": "e7eda6dccf6c5d3899f3246864ce37d4865f1cbb45791e278caed0fe5e0e7e99",
+    "renderPath": "direct",
+    "requestedRecipe": "forward-plus",
+    "resolvedRecipe": "forward-plus"
+  },
+  "runId": "d28f5a72b9c14b7b9ff4ba2b51f6a668",
   "schema": "RVX.RenderQualityContactSheet",
-  "schemaVersion": 1,
-  "seriesSha256": "177d24e46e72bf61d0a35dee04623328b5757db32acddc0db86d20e46f4728fa",
-  "sourceCommit": "beb326665afddec3d6c9936e82883b8d0dad7a90"
+  "schemaVersion": 2,
+  "seriesSha256": "c14f1007679e9d75884992e24c04b6405311c511e4f3b8c3b0eeacb60b30b7a1",
+  "sourceCommit": "88a615a0190481afb76a7b06c99c3cfe6d896e29"
 }

@@ -1,14 +1,14 @@
 {
   "approval": {
-    "approvedAtUtc": "2026-09-02T10:25:03.398974Z",
+    "approvedAtUtc": "2026-09-03T04:45:30.266688Z",
     "approvedBy": "yinzs",
-    "reason": "User confirmed the post-ObjectVelocity-fix DX12 Forward+ Golden after five zero-tolerance same-process series"
+    "reason": "User approved the configuration-bound Forward+ V2 contact sheet"
   },
   "contactSheet": {
     "indexPath": "contact-sheet.json",
-    "indexSha256": "46354a0d003356ac0693d6e7df134e2f1ca51c0e9a0bcffb4038c8cb3a1659b2",
+    "indexSha256": "f914374afb6466e12b47fdc2d4c5c98187b6f491f4593565587b66b493a516ce",
     "ppmPath": "contact-sheet.ppm",
-    "ppmSha256": "f344a746b3d0c0b52cae754f07d7734970d39d3f6cbaab8497a821bd500eb664"
+    "ppmSha256": "25727eb0ee88c3656355ec01df14bb3d0bf9a8f72fd1812b3fcd3ed305d67f35"
   },
   "goldenId": "gfx24-dx12-forward-plus-high-v3",
   "hardwareMode": "exact-hardware",
@@ -20,23 +20,31 @@
     "view": "hero",
     "visualContractVersion": 3
   },
+  "renderConfigurationIdentity": {
+    "instancingMode": "Auto",
+    "profileHash": 16725870342094316839,
+    "renderConfigurationHash": "e7eda6dccf6c5d3899f3246864ce37d4865f1cbb45791e278caed0fe5e0e7e99",
+    "renderPath": "direct",
+    "requestedRecipe": "forward-plus",
+    "resolvedRecipe": "forward-plus"
+  },
   "runnerClass": null,
   "sampleManifest": {
     "path": "sample-manifest.json",
     "sha256": "8fedbc163951232787ea5b8b76c02e7b120854440d9d92bb846c891bf606c8f1"
   },
   "schema": "RVX.RenderQualityGoldenRecord",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "selectedBundle": {
     "bundleId": "1",
     "bundlePath": "bundle/bundle.json",
-    "bundleSha256": "78c67bdbfc1441fe5b1670059c503aadc9bcba0074027dd4486be2664aaf0b60",
+    "bundleSha256": "d26caaa63fedf2e74ca2906a71d2a8fb69de62099aacf9f7c0203855c5a7734e",
     "captureTick": 300,
-    "preset": "win_x64_gfx24_performance_calibration_release_run",
-    "receiptSha256": "3e93add0d71a78494cb612291f56e3b48715ab2d148e73ab7cf27bc07ff9c720",
-    "runId": "gfx24-b2-forward-plus-run-03-beb32666",
+    "preset": "win_x64_gfx24_approved_golden_release_run",
+    "receiptSha256": "c15414fbf8f2b7d349379e073a094bfc199b82ecc7707f91d75685ec3df91159",
+    "runId": "d28f5a72b9c14b7b9ff4ba2b51f6a668",
     "seriesOrdinal": 3,
-    "seriesSha256": "177d24e46e72bf61d0a35dee04623328b5757db32acddc0db86d20e46f4728fa"
+    "seriesSha256": "c14f1007679e9d75884992e24c04b6405311c511e4f3b8c3b0eeacb60b30b7a1"
   },
   "seriesAudit": {
     "requiredSeriesCount": 5,
@@ -50,8 +58,8 @@
           "osBuild": "Windows-10.0.19045"
         },
         "ordinal": 1,
-        "runId": "gfx24-b2-forward-plus-run-01-beb32666",
-        "seriesSha256": "7ddedce59f64df039f1c41b7b065fa4df579a59719d6471efa08dfef29e7024c"
+        "runId": "f7ea1b9704e449d0a7ff49d1965384c4",
+        "seriesSha256": "37774d2c980add0291f4a4ad2b6c1cf4e191be7e97d44c8826fb9a129869b318"
       },
       {
         "hardwareIdentity": {
@@ -62,8 +70,8 @@
           "osBuild": "Windows-10.0.19045"
         },
         "ordinal": 2,
-        "runId": "gfx24-b2-forward-plus-run-02-beb32666",
-        "seriesSha256": "56a9561aeb63efb5b200d8c346cc0452ff79812fdb4ff14f1673758c039e0dfe"
+        "runId": "d26a1b3053604f64b7c902e3f0a6d4ec",
+        "seriesSha256": "628a9e6e83dd99b3ee51d0efa044a594a1ee78018276782fe28a22b48f196760"
       },
       {
         "hardwareIdentity": {
@@ -74,8 +82,8 @@
           "osBuild": "Windows-10.0.19045"
         },
         "ordinal": 3,
-        "runId": "gfx24-b2-forward-plus-run-03-beb32666",
-        "seriesSha256": "177d24e46e72bf61d0a35dee04623328b5757db32acddc0db86d20e46f4728fa"
+        "runId": "d28f5a72b9c14b7b9ff4ba2b51f6a668",
+        "seriesSha256": "c14f1007679e9d75884992e24c04b6405311c511e4f3b8c3b0eeacb60b30b7a1"
       },
       {
         "hardwareIdentity": {
@@ -86,8 +94,8 @@
           "osBuild": "Windows-10.0.19045"
         },
         "ordinal": 4,
-        "runId": "gfx24-b2-forward-plus-run-04-beb32666",
-        "seriesSha256": "cf4d449a69bc3d47cbb6c8cd082b300d3ff6efb96b1deaf33b0603b2fcb1b571"
+        "runId": "783ee37184eb4a33b6af931828ee8364",
+        "seriesSha256": "fdad7ee56434e022720eac4cdab1d6d7ce43612186b096907c276663f244922b"
       },
       {
         "hardwareIdentity": {
@@ -98,13 +106,13 @@
           "osBuild": "Windows-10.0.19045"
         },
         "ordinal": 5,
-        "runId": "gfx24-b2-forward-plus-run-05-beb32666",
-        "seriesSha256": "40ddfab90530ca0687df8fa259ead106b11f383d5d4b157ea99b972af1bb458b"
+        "runId": "50ff514d30e648edab42634e490d0739",
+        "seriesSha256": "45271aac0cd0c4d564eece4d52b03b88e5794b3ae9a67627fa3e4bfec3f989db"
       }
     ],
     "selectedSeriesOrdinal": 3
   },
-  "sourceCommit": "beb326665afddec3d6c9936e82883b8d0dad7a90",
+  "sourceCommit": "88a615a0190481afb76a7b06c99c3cfe6d896e29",
   "status": "approved",
   "visualPolicy": {
     "path": "visual-policy.json",
