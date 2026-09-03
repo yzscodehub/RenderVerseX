@@ -7,7 +7,7 @@ before comparing any pixels: a screenshot with the right colours is not
 qualification evidence when its source commit, execution receipt, frame, or
 attachment payload cannot be proven.
 
-The container is intentionally compact and dependency-free.  Version 1 uses
+The container is intentionally compact and dependency-free. Version 2 uses
 only raw float32 payloads so HDR, depth, normals, velocity, AO, and masks keep
 their original values; PPM is emitted only as a human-readable diff heatmap.
 """
@@ -27,7 +27,7 @@ from typing import Any, Iterable
 
 
 SCHEMA = "RVX.RenderQualityAttachmentBundle"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 POLICY_SCHEMA = "RVX.RenderQualityVisualPolicy"
 POLICY_VERSION = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -59,6 +59,28 @@ SEMANTIC_FORMATS = {
     "ReactiveMask": "R32_FLOAT",
 }
 VIEW_ROLES = {"Main", "Shadow", "Reflection", "Editor"}
+CONFIGURATION_FIELDS = {
+    "renderPath",
+    "instancingMode",
+    "requestedRecipe",
+    "resolvedRecipe",
+    "profileHash",
+    "renderConfigurationHash",
+}
+RENDER_PATHS = {"auto", "direct", "gpu-driven"}
+INSTANCING_MODES = {"Disabled", "Auto"}
+PRESENTABLE_RECIPE_IDS = {
+    "forward-plus": 1,
+    "deferred": 2,
+    "hybrid-rt": 3,
+}
+QUALITY_IDS = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "ultra": 3,
+}
+BACKENDS = {"dx11", "dx12", "vulkan", "metal", "opengl"}
 
 # Qualification captures are deliberately bounded before the validator opens a
 # payload.  These limits cover the 1280x720 qualification output with ample
@@ -202,8 +224,119 @@ class Bundle:
     bundle_id: str
     source_commit: str
     qualification_identity: dict[str, str | int]
+    render_configuration_identity: dict[str, str | int]
     execution: dict[str, str | int | bool]
     attachments: dict[str, Attachment]
+
+
+def _configuration_hash(
+    configuration: dict[str, str | int],
+    identity: dict[str, str | int],
+) -> str:
+    binding = bytearray()
+    for name, item in (
+        ("schema", "RVX.RenderQualityConfigurationIdentity"),
+        ("schemaVersion", 1),
+        ("renderPath", configuration["renderPath"]),
+        ("instancingMode", configuration["instancingMode"]),
+        ("requestedRecipe", configuration["requestedRecipe"]),
+        ("resolvedRecipe", configuration["resolvedRecipe"]),
+        ("quality", identity["quality"]),
+        ("backend", identity["backend"]),
+        ("profileHash", configuration["profileHash"]),
+    ):
+        encoded = str(item).encode("utf-8")
+        binding.extend(name.encode("ascii"))
+        binding.extend(b":")
+        binding.extend(str(len(encoded)).encode("ascii"))
+        binding.extend(b":")
+        binding.extend(encoded)
+        binding.extend(b"\n")
+    return hashlib.sha256(binding).hexdigest()
+
+
+def _profile_hash(recipe: str, quality: str) -> int:
+    try:
+        values = (1, PRESENTABLE_RECIPE_IDS[recipe], QUALITY_IDS[quality])
+    except KeyError as error:
+        raise ContractError(
+            "render configuration recipe or quality is unsupported"
+        ) from error
+    result = 14695981039346656037
+    for value in values:
+        for byte in range(8):
+            result ^= (value >> (byte * 8)) & 0xFF
+            result = (result * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return result or 1
+
+
+def _render_configuration(
+    value: Any,
+    identity: dict[str, str | int],
+) -> dict[str, str | int]:
+    if not isinstance(value, dict):
+        raise ContractError("renderConfigurationIdentity must be an object")
+    _require_keys(
+        value,
+        CONFIGURATION_FIELDS,
+        "renderConfigurationIdentity",
+    )
+    result: dict[str, str | int] = {
+        key: _string(value[key], f"renderConfigurationIdentity.{key}")
+        for key in (
+            "renderPath",
+            "instancingMode",
+            "requestedRecipe",
+            "resolvedRecipe",
+        )
+    }
+    if result["renderPath"] not in RENDER_PATHS:
+        raise ContractError("renderConfigurationIdentity.renderPath is unsupported")
+    if result["instancingMode"] not in INSTANCING_MODES:
+        raise ContractError(
+            "renderConfigurationIdentity.instancingMode is unsupported"
+        )
+    if result["requestedRecipe"] not in PRESENTABLE_RECIPE_IDS:
+        raise ContractError(
+            "renderConfigurationIdentity.requestedRecipe is unsupported"
+        )
+    if result["resolvedRecipe"] not in PRESENTABLE_RECIPE_IDS:
+        raise ContractError(
+            "renderConfigurationIdentity.resolvedRecipe is unsupported"
+        )
+    if identity["pipeline"] not in PRESENTABLE_RECIPE_IDS:
+        raise ContractError("qualificationIdentity.pipeline is unsupported")
+    if identity["quality"] not in QUALITY_IDS:
+        raise ContractError("qualificationIdentity.quality is unsupported")
+    if identity["backend"] not in BACKENDS:
+        raise ContractError("qualificationIdentity.backend is unsupported")
+    if result["resolvedRecipe"] != identity["pipeline"]:
+        raise ContractError(
+            "renderConfigurationIdentity.resolvedRecipe does not match "
+            "qualificationIdentity.pipeline"
+        )
+    result["profileHash"] = _integer(
+        value["profileHash"], "renderConfigurationIdentity.profileHash", 1
+    )
+    if result["profileHash"] > (2**64 - 1):
+        raise ContractError("renderConfigurationIdentity.profileHash exceeds uint64")
+    expected_profile_hash = _profile_hash(
+        str(result["resolvedRecipe"]), str(identity["quality"])
+    )
+    if result["profileHash"] != expected_profile_hash:
+        raise ContractError(
+            "renderConfigurationIdentity.profileHash does not match "
+            "the resolved recipe and quality"
+        )
+    result["renderConfigurationHash"] = _sha256(
+        value["renderConfigurationHash"],
+        "renderConfigurationIdentity.renderConfigurationHash",
+    )
+    if result["renderConfigurationHash"] != _configuration_hash(result, identity):
+        raise ContractError(
+            "renderConfigurationIdentity.renderConfigurationHash does not bind runtime configuration"
+        )
+    return result
 
 
 def _read_attachment(
@@ -336,7 +469,7 @@ def load_bundle(path: Path) -> Bundle:
     document = _load_json(path, "attachment bundle")
     _require_keys(
         document,
-        {"schema", "schemaVersion", "bundleId", "sourceCommit", "qualificationIdentity", "execution", "attachments"},
+        {"schema", "schemaVersion", "bundleId", "sourceCommit", "qualificationIdentity", "renderConfigurationIdentity", "execution", "attachments"},
         "attachment bundle",
     )
     if document["schema"] != SCHEMA or document["schemaVersion"] != SCHEMA_VERSION:
@@ -356,6 +489,10 @@ def load_bundle(path: Path) -> Bundle:
         identity[key] = _string(qualification_identity[key], f"qualificationIdentity.{key}")
     for key in ("captureTick", "visualContractVersion"):
         identity[key] = _integer(qualification_identity[key], f"qualificationIdentity.{key}", 0)
+    render_configuration_identity = _render_configuration(
+        document["renderConfigurationIdentity"],
+        identity,
+    )
 
     execution_document = document["execution"]
     if not isinstance(execution_document, dict):
@@ -428,7 +565,15 @@ def load_bundle(path: Path) -> Bundle:
         attachments[attachment.semantic] = attachment
     if tuple(sorted(attachments)) != tuple(sorted(REQUIRED_SEMANTICS)):
         raise ContractError("attachment semantic set is incomplete")
-    return Bundle(path, bundle_id, source_commit, identity, execution, attachments)
+    return Bundle(
+        path,
+        bundle_id,
+        source_commit,
+        identity,
+        render_configuration_identity,
+        execution,
+        attachments,
+    )
 
 
 def load_policy(path: Path) -> dict[str, Any]:
@@ -714,6 +859,13 @@ def _comparison(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if actual.qualification_identity != baseline.qualification_identity:
         raise ContractError("bundle qualificationIdentity does not match baseline")
+    if (
+        actual.render_configuration_identity
+        != baseline.render_configuration_identity
+    ):
+        raise ContractError(
+            "bundle runtime configuration identity does not match baseline"
+        )
     if {
         key: value
         for key, value in actual.qualification_identity.items()
@@ -775,6 +927,7 @@ def _temporal(
     if len(current) != 2:
         raise ContractError("temporal validation requires exactly two adjacent bundles")
     identity = current[0].qualification_identity
+    configuration = current[0].render_configuration_identity
     non_temporal_identity = {
         key: value for key, value in identity.items() if key != "captureTick"
     }
@@ -792,6 +945,10 @@ def _temporal(
         }
         if bundle_non_temporal_identity != non_temporal_identity:
             raise ContractError("temporal bundles differ outside captureTick identity")
+        if bundle.render_configuration_identity != configuration:
+            raise ContractError(
+                "temporal bundles differ in runtime configuration identity"
+            )
         if bundle_non_temporal_identity != policy["qualificationIdentity"]:
             raise ContractError("temporal bundle qualificationIdentity does not match visual policy")
         if bundle.source_commit != expected_source_commit:
@@ -917,7 +1074,7 @@ def main() -> int:
     args = parse_args()
     report: dict[str, Any] = {
         "schema": "RVX.RenderQualityVisualResult",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "status": "failed",
         "failures": [],
         "metrics": [],
@@ -1006,6 +1163,7 @@ def main() -> int:
             "currentBundle": str(args.bundle), "baselineBundle": str(args.baseline),
             "bundleId": current.bundle_id, "sourceCommit": current.source_commit,
             "qualificationIdentity": current.qualification_identity,
+            "renderConfigurationIdentity": current.render_configuration_identity,
             "execution": current.execution, "metrics": metrics, "temporal": temporal,
             "failures": failures, "status": "passed" if not failures else "failed",
         })

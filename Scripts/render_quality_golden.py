@@ -24,11 +24,17 @@ from check_render_quality_bundle import (
     load_policy,
     load_sample_contract,
 )
-from check_render_quality_series import HARDWARE_FIELDS, IDENTITY_FIELDS, AttachmentSeries, load_series
+from check_render_quality_series import (
+    CONFIGURATION_FIELDS,
+    HARDWARE_FIELDS,
+    IDENTITY_FIELDS,
+    AttachmentSeries,
+    load_series,
+)
 from render_quality_performance_baseline import _assert_approval_source_is_clean
 
 SCHEMA = "RVX.RenderQualityGoldenRecord"
-VERSION = 1
+VERSION = 2
 SHEET_SCHEMA = "RVX.RenderQualityContactSheet"
 RUN_COUNT = 5
 PANEL_W, PANEL_H, COLUMNS, ROWS = 320, 180, 4, 2
@@ -143,6 +149,27 @@ def _hardware(value: Any, label: str) -> dict[str, str]:
     return result
 
 
+def _configuration(value: Any, label: str) -> dict[str, str | int]:
+    if not isinstance(value, dict):
+        raise GoldenError(f"{label} must be an object")
+    _keys(value, set(CONFIGURATION_FIELDS), label)
+    result: dict[str, str | int] = {
+        name: _str(value[name], f"{label}.{name}")
+        for name in CONFIGURATION_FIELDS
+        if name not in {"profileHash", "renderConfigurationHash"}
+    }
+    result["profileHash"] = _int(
+        value["profileHash"], f"{label}.profileHash", 1
+    )
+    if result["profileHash"] > (2**64 - 1):
+        raise GoldenError(f"{label}.profileHash exceeds uint64")
+    result["renderConfigurationHash"] = _sha(
+        value["renderConfigurationHash"],
+        f"{label}.renderConfigurationHash",
+    )
+    return result
+
+
 def _policy(path: Path) -> tuple[dict[str, Any], dict[str, str | int]]:
     try:
         value = load_policy(path)
@@ -220,6 +247,7 @@ def _contact_sheet(bundle_path: Path, series_sha: str, ppm: Path, index: Path) -
         "schema": SHEET_SCHEMA, "schemaVersion": VERSION,
         "sourceCommit": bundle.source_commit, "runId": execution["runId"],
         "preset": execution["preset"], "qualificationIdentity": bundle.qualification_identity,
+        "renderConfigurationIdentity": bundle.render_configuration_identity,
         "captureTick": bundle.qualification_identity["captureTick"],
         "bundleId": bundle.bundle_id, "bundleSha256": _hash(bundle_path),
         "seriesSha256": series_sha,
@@ -235,7 +263,7 @@ def _check_sheet(path: Path, selected: dict[str, Any], record: dict[str, Any]) -
     document = _load(path, "contact sheet index")
     _keys(document, {
         "schema", "schemaVersion", "sourceCommit", "runId", "preset",
-        "qualificationIdentity", "captureTick", "bundleId", "bundleSha256",
+        "qualificationIdentity", "renderConfigurationIdentity", "captureTick", "bundleId", "bundleSha256",
         "seriesSha256", "layout", "panels",
     }, "contact sheet index")
     if document["schema"] != SHEET_SCHEMA or document["schemaVersion"] != VERSION:
@@ -253,6 +281,10 @@ def _check_sheet(path: Path, selected: dict[str, Any], record: dict[str, Any]) -
             else document["qualificationIdentity"],
             "contact identity",
         ) != record["qualificationIdentity"]
+        or _configuration(
+            document["renderConfigurationIdentity"],
+            "contact renderConfigurationIdentity",
+        ) != record["renderConfigurationIdentity"]
         or _int(document["captureTick"], "contact captureTick", 1) != selected["captureTick"]
         or _str(document["bundleId"], "contact bundleId") != selected["bundleId"]
         or _sha(document["bundleSha256"], "contact bundleSha256") != selected["bundleSha256"]
@@ -331,7 +363,7 @@ def _record(path: Path) -> dict[str, Any]:
     document = _load(path, "Golden record")
     _keys(document, {
         "schema", "schemaVersion", "goldenId", "status", "sourceCommit",
-        "qualificationIdentity", "sampleManifest", "hardwareMode",
+        "qualificationIdentity", "renderConfigurationIdentity", "sampleManifest", "hardwareMode",
         "runnerClass", "selectedBundle", "visualPolicy", "contactSheet",
         "seriesAudit", "approval",
     }, "Golden record")
@@ -389,6 +421,10 @@ def _record(path: Path) -> dict[str, Any]:
     seen_hashes: set[str] = set()
     exact: dict[str, str] | None = None
     qualification = _identity(document["qualificationIdentity"], "qualificationIdentity")
+    configuration = _configuration(
+        document["renderConfigurationIdentity"],
+        "renderConfigurationIdentity",
+    )
     for index, value in enumerate(values):
         label = f"seriesAudit.runs[{index}]"
         if not isinstance(value, dict):
@@ -421,6 +457,7 @@ def _record(path: Path) -> dict[str, Any]:
         "goldenId": _str(document["goldenId"], "goldenId"), "status": status,
         "sourceCommit": _str(document["sourceCommit"], "sourceCommit"),
         "qualificationIdentity": qualification,
+        "renderConfigurationIdentity": configuration,
         "sampleManifest": {
             "path": _str(manifest["path"], "sampleManifest.path"),
             "sha256": _sha(manifest["sha256"], "sampleManifest.sha256"),
@@ -515,7 +552,9 @@ def verify_golden_record(
             "Sample manifest capture ticks do not match Golden VisualPolicy"
         )
     if (
-        identity != record["qualificationIdentity"] or selected["captureTick"] != tick
+        identity != record["qualificationIdentity"]
+        or bundle.render_configuration_identity != record["renderConfigurationIdentity"]
+        or selected["captureTick"] != tick
         or bundle.source_commit != record["sourceCommit"] or bundle.bundle_id != selected["bundleId"]
         or bundle.qualification_identity != {**identity, "captureTick": tick}
         or bundle.execution["runId"] != selected["runId"] or bundle.execution["preset"] != selected["preset"]
@@ -543,6 +582,7 @@ def _series_inputs(paths: list[Path], manifest: Path, policy: dict[str, Any], mo
     seen_hashes: set[str] = set()
     source: str | None = None
     preset: str | None = None
+    configuration: dict[str, str | int] | None = None
     hardware: dict[str, str] | None = None
     for ordinal, raw in enumerate(paths, 1):
         path = raw.resolve()
@@ -566,6 +606,14 @@ def _series_inputs(paths: list[Path], manifest: Path, policy: dict[str, Any], mo
         preset = series.preset if preset is None else preset
         if series.preset != preset:
             raise GoldenError("all series must use the same preset")
+        configuration = (
+            series.render_configuration_identity
+            if configuration is None else configuration
+        )
+        if series.render_configuration_identity != configuration:
+            raise GoldenError(
+                "all series must use the same runtime configuration identity"
+            )
         if mode == "exact-hardware":
             hardware = series.hardware_identity if hardware is None else hardware
             if series.hardware_identity != hardware:
@@ -683,6 +731,7 @@ def _prepare(args: argparse.Namespace) -> int:
         "schema": SCHEMA, "schemaVersion": VERSION, "goldenId": _str(args.golden_id, "goldenId"),
         "status": "candidate", "sourceCommit": selected.source_commit,
         "qualificationIdentity": identity,
+        "renderConfigurationIdentity": selected.render_configuration_identity,
         "sampleManifest": {
             "path": _reltext(output, saved_manifest),
             "sha256": _hash(saved_manifest),
@@ -795,7 +844,7 @@ def _verify(args: argparse.Namespace) -> int:
 
 
 COMPARISON_SCHEMA = "RVX.RenderQualityGoldenComparisonResult"
-COMPARISON_VERSION = 1
+COMPARISON_VERSION = 2
 
 
 def _write_comparison_report(path: Path, value: dict[str, Any]) -> None:
@@ -851,6 +900,8 @@ def _comparison_result(
         "runnerClass": args.runner_class,
         "currentHardwareIdentity": None,
         "baselineHardwareIdentity": None,
+        "currentRenderConfigurationIdentity": None,
+        "baselineRenderConfigurationIdentity": None,
         "visualMetrics": [],
         "temporalMetrics": [],
         "failureCategory": "series-validation",
@@ -889,6 +940,9 @@ def _compare_series(args: argparse.Namespace) -> int:
         result["currentHardwareIdentity"] = {
             field: series.hardware_identity[field] for field in HARDWARE_FIELDS
         }
+        result["currentRenderConfigurationIdentity"] = (
+            series.render_configuration_identity
+        )
         if series.source_commit != args.expected_source_commit:
             raise GoldenError("attachment series sourceCommit is stale")
         if series.run_id != args.expected_run_id:
@@ -906,6 +960,9 @@ def _compare_series(args: argparse.Namespace) -> int:
         )
         result["goldenId"] = record["goldenId"]
         result["goldenRecord"]["sha256"] = _hash(args.record.resolve())
+        result["baselineRenderConfigurationIdentity"] = (
+            record["renderConfigurationIdentity"]
+        )
 
         failure_category = "manifest-validation"
         source_manifest = _load(series_manifest_path, "series manifest")
@@ -953,6 +1010,15 @@ def _compare_series(args: argparse.Namespace) -> int:
                 raise GoldenError(
                     "--runner-class does not match the approved Golden record"
                 )
+
+        failure_category = "render-configuration-mismatch"
+        if (
+            series.render_configuration_identity
+            != record["renderConfigurationIdentity"]
+        ):
+            raise GoldenError(
+                "series runtime configuration does not match the approved Golden"
+            )
 
         failure_category = "comparison-contract"
         policy, identity = _policy(args.policy.resolve())

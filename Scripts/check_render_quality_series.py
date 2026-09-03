@@ -20,7 +20,7 @@ from check_render_quality_bundle import (
 
 
 SCHEMA = "RVX.RenderQualityAttachmentSeries"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 IDENTITY_FIELDS = (
     "sampleId",
@@ -36,6 +36,14 @@ HARDWARE_FIELDS = (
     "driverVersion",
     "osBuild",
     "capabilityHash",
+)
+CONFIGURATION_FIELDS = (
+    "renderPath",
+    "instancingMode",
+    "requestedRecipe",
+    "resolvedRecipe",
+    "profileHash",
+    "renderConfigurationHash",
 )
 TICK_FIELDS = (
     "captureTick",
@@ -68,6 +76,7 @@ class AttachmentSeries:
     run_id: str
     preset: str
     qualification_identity: dict[str, str | int]
+    render_configuration_identity: dict[str, str | int]
     hardware_identity: dict[str, str]
     manifest_sha256: str
     ticks: tuple[SeriesTick, ...]
@@ -124,6 +133,27 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _configuration(value: Any, context: str) -> dict[str, str | int]:
+    if not isinstance(value, dict):
+        raise ContractError(f"{context} must be an object")
+    _require_keys(value, set(CONFIGURATION_FIELDS), context)
+    result: dict[str, str | int] = {
+        name: _string(value[name], f"{context}.{name}")
+        for name in CONFIGURATION_FIELDS
+        if name not in {"profileHash", "renderConfigurationHash"}
+    }
+    result["profileHash"] = _integer(
+        value["profileHash"], f"{context}.profileHash", 1
+    )
+    if result["profileHash"] > (2**64 - 1):
+        raise ContractError(f"{context}.profileHash exceeds uint64")
+    result["renderConfigurationHash"] = _sha(
+        value["renderConfigurationHash"],
+        f"{context}.renderConfigurationHash",
+    )
+    return result
+
+
 def _resolve(root: Path, value: Any, context: str) -> Path:
     text = _string(value, context)
     if "\\" in text:
@@ -153,6 +183,7 @@ def compute_series_sha256(
     run_id: str,
     preset: str,
     identity: dict[str, str | int],
+    configuration: dict[str, str | int],
     hardware: dict[str, str],
     manifest_sha256: str,
     ticks: tuple[SeriesTick, ...],
@@ -168,6 +199,10 @@ def compute_series_sha256(
         _append_binding_field(binding, name, value)
     for name in IDENTITY_FIELDS:
         _append_binding_field(binding, f"identity.{name}", identity[name])
+    for name in CONFIGURATION_FIELDS:
+        _append_binding_field(
+            binding, f"configuration.{name}", configuration[name]
+        )
     for name in HARDWARE_FIELDS:
         _append_binding_field(binding, f"hardware.{name}", hardware[name])
     _append_binding_field(binding, "manifestSha256", manifest_sha256)
@@ -200,6 +235,7 @@ def load_series(
             "runId",
             "preset",
             "qualificationIdentity",
+            "renderConfigurationIdentity",
             "hardwareIdentity",
             "manifestSha256",
             "ticks",
@@ -228,6 +264,10 @@ def load_series(
         identity_document["visualContractVersion"],
         "identity.visualContractVersion",
         1,
+    )
+    configuration = _configuration(
+        document["renderConfigurationIdentity"],
+        "series renderConfigurationIdentity",
     )
 
     hardware_document = document["hardwareIdentity"]
@@ -317,6 +357,7 @@ def load_series(
             bundle.source_commit != source_commit
             or bundle.bundle_id != bundle_id
             or bundle_identity != identity
+            or bundle.render_configuration_identity != configuration
             or int(bundle.qualification_identity["captureTick"]) != capture_tick
             or execution["runId"] != run_id
             or execution["preset"] != preset
@@ -355,6 +396,7 @@ def load_series(
         run_id,
         preset,
         identity,
+        configuration,
         hardware,
         manifest_sha256,
         parsed_ticks,
@@ -366,6 +408,7 @@ def load_series(
         run_id,
         preset,
         identity,
+        configuration,
         hardware,
         manifest_sha256,
         parsed_ticks,
@@ -401,7 +444,7 @@ def main() -> int:
     args = parse_args()
     result: dict[str, Any] = {
         "schema": "RVX.RenderQualityAttachmentSeriesResult",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "status": "failed",
         "failures": [],
     }
@@ -429,6 +472,9 @@ def main() -> int:
                 "runId": series.run_id,
                 "preset": series.preset,
                 "qualificationIdentity": series.qualification_identity,
+                "renderConfigurationIdentity": (
+                    series.render_configuration_identity
+                ),
                 "hardwareIdentity": series.hardware_identity,
                 "manifestSha256": series.manifest_sha256,
                 "seriesSha256": series.series_sha256,

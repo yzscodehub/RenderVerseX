@@ -5972,9 +5972,13 @@ namespace
             renderQualityAttachmentSeriesTicks{};
         RenderQualityAttachmentSeriesHardwareIdentity
             renderQualityAttachmentSeriesHardware{};
+        RenderQualityAttachmentSeriesConfigurationIdentity
+            renderQualityAttachmentSeriesConfiguration{};
         std::string renderQualityAttachmentSeriesRunId{};
         std::string renderQualityAttachmentSeriesSourceCommit{};
         std::string renderQualityAttachmentSeriesPreset{};
+        std::string renderQualityBundleRenderPath{};
+        std::string renderQualityBundleInstancingMode{};
         bool renderQualityPerformanceRequestAccepted = false;
         uint32 renderQualityPerformanceHostFrames = 0;
         std::optional<std::chrono::steady_clock::time_point>
@@ -7773,6 +7777,27 @@ namespace
                             }
                             else
                             {
+                                const SampleRenderDiagnostics
+                                    completedFrameDiagnostics =
+                                        MakeSampleRenderDiagnostics(
+                                            diagnostics, engine);
+                                renderQualityBundleRenderPath =
+                                    ResolveActualRenderPath(
+                                        sceneOptions.renderPath,
+                                        completedFrameDiagnostics);
+                                renderQualityBundleInstancingMode =
+                                    GetRenderInstancingModeName(
+                                        engine.GetRenderFrameSettings()
+                                            .instancingMode);
+                                if (renderQualityBundleRenderPath ==
+                                        "unavailable" ||
+                                    renderQualityBundleInstancingMode ==
+                                        "Invalid")
+                                {
+                                    error =
+                                        "GFX24 bundle target lacks actual render-path or applied instancing evidence";
+                                    engine.RequestShutdown();
+                                }
                                 renderQualityBundleReceipt = receipt;
                                 renderQualityBundleSubmittedFrame =
                                     targetSequence;
@@ -7911,6 +7936,10 @@ namespace
                                             ? renderQualityAttachmentSeriesRunId
                                             : ReadEnvironmentString(
                                                   "RVX_VALIDATION_RUN_ID");
+                                    writeRequest.renderPath =
+                                        renderQualityBundleRenderPath;
+                                    writeRequest.instancingMode =
+                                        renderQualityBundleInstancingMode;
                                     writeRequest.captureTick =
                                         renderQualityBundleCaptureTick;
                                     writeRequest.visualContractVersion =
@@ -7980,6 +8009,10 @@ namespace
                                                         64U ||
                                                     completedReceipt.build.sourceCommit.empty() ||
                                                     completedReceipt.build.preset.empty() ||
+                                                    writeResult
+                                                            .renderConfigurationIdentity
+                                                            .renderConfigurationHash
+                                                            .size() != 64U ||
                                                     GetSampleBackendName(
                                                         completedReceipt.backend) !=
                                                         renderQualityAttachmentSeriesHardware
@@ -7989,10 +8022,16 @@ namespace
                                                      (renderQualityAttachmentSeriesSourceCommit !=
                                                           completedReceipt.build.sourceCommit ||
                                                       renderQualityAttachmentSeriesPreset !=
-                                                          completedReceipt.build.preset)))
+                                                          completedReceipt.build.preset)) ||
+                                                    (!renderQualityAttachmentSeriesConfiguration
+                                                          .renderConfigurationHash
+                                                          .empty() &&
+                                                     renderQualityAttachmentSeriesConfiguration !=
+                                                         writeResult
+                                                             .renderConfigurationIdentity))
                                                 {
                                                     error =
-                                                        "GFX24 attachment series bundle does not share frozen build or hardware identity";
+                                                        "GFX24 attachment series bundle does not share frozen build, runtime configuration, or hardware identity";
                                                     engine.RequestShutdown();
                                                 }
                                                 else
@@ -8001,6 +8040,9 @@ namespace
                                                         completedReceipt.build.sourceCommit;
                                                     renderQualityAttachmentSeriesPreset =
                                                         completedReceipt.build.preset;
+                                                    renderQualityAttachmentSeriesConfiguration =
+                                                        writeResult
+                                                            .renderConfigurationIdentity;
                                                     RenderQualityAttachmentSeriesTick seriesTick;
                                                     seriesTick.captureTick =
                                                         renderQualityBundleCaptureTick;
@@ -8058,6 +8100,9 @@ namespace
                                                                 manifest->visualContractVersion};
                                                         seriesRequest.hardwareIdentity =
                                                             renderQualityAttachmentSeriesHardware;
+                                                        seriesRequest
+                                                            .renderConfigurationIdentity =
+                                                            renderQualityAttachmentSeriesConfiguration;
                                                         seriesRequest.manifestSha256 = std::string(
                                                             m_registry.GetManifestContentSha256());
                                                         seriesRequest.ticks =

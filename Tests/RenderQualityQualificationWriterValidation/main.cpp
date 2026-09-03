@@ -124,6 +124,8 @@ namespace
         request.sampleId = "render-quality-lab";
         request.cameraBookmarkId = "hero";
         request.runId = "writer-validation-run";
+        request.renderPath = "direct";
+        request.instancingMode = "Auto";
         request.captureTick = captureTick;
         request.visualContractVersion = 1;
         request.submittedFrame = frameSequence;
@@ -131,10 +133,54 @@ namespace
         return request;
     }
 
+    [[nodiscard]] std::string ComputeTestRenderConfigurationHash(
+        const RenderQualityAttachmentSeriesConfigurationIdentity& configuration)
+    {
+        std::string binding;
+        const auto append = [&binding](const char* name,
+                                       const std::string& value)
+        {
+            binding += name;
+            binding += ":";
+            binding += std::to_string(value.size());
+            binding += ":";
+            binding += value;
+            binding += "\n";
+        };
+        const auto appendNumber = [&append](const char* name, uint64 value)
+        {
+            append(name, std::to_string(value));
+        };
+        append("schema", "RVX.RenderQualityConfigurationIdentity");
+        appendNumber("schemaVersion", 1U);
+        append("renderPath", configuration.renderPath);
+        append("instancingMode", configuration.instancingMode);
+        append("requestedRecipe", configuration.requestedRecipe);
+        append("resolvedRecipe", configuration.resolvedRecipe);
+        append("quality", "high");
+        append("backend", "dx12");
+        appendNumber("profileHash", configuration.profileHash);
+        return Hash::FormatSHA256Digest(Hash::ComputeSHA256(binding));
+    }
+
     [[nodiscard]] RenderQualityAttachmentSeriesWriteRequest MakeSeriesRequest(
         const std::filesystem::path& root,
-        std::vector<RenderQualityAttachmentSeriesTick> ticks)
+        std::vector<RenderQualityAttachmentSeriesTick> ticks,
+        RenderQualityAttachmentSeriesConfigurationIdentity configuration =
+            {})
     {
+        if (configuration.renderPath.empty())
+        {
+            configuration.renderPath = "direct";
+            configuration.instancingMode = "Auto";
+            configuration.requestedRecipe = "deferred";
+            configuration.resolvedRecipe = "deferred";
+            configuration.profileHash = ComputeRenderPipelineProfileHash(
+                RenderPipelineRecipe::DeferredQuality,
+                RenderQualityTier::High);
+            configuration.renderConfigurationHash =
+                ComputeTestRenderConfigurationHash(configuration);
+        }
         RenderQualityAttachmentSeriesWriteRequest request;
         request.outputPath = root / "series.json";
         request.sourceCommit = std::string(40, 'a');
@@ -153,6 +199,7 @@ namespace
             .driverVersion = "1.2.3",
             .osBuild = "Windows-10.0.19045",
             .capabilityHash = std::string(64, 'b')};
+        request.renderConfigurationIdentity = std::move(configuration);
         request.manifestSha256 = std::string(64, 'c');
         request.ticks = std::move(ticks);
         return request;
@@ -303,10 +350,51 @@ TEST(RenderQualityQualificationWriterValidation,
 }
 
 TEST(RenderQualityQualificationWriterValidation,
+     RejectsMissingOrForgedRuntimeConfigurationIdentity)
+{
+    TemporaryRoot temporary;
+    const RenderExecutionReceipt receipt = MakeReceipt();
+    const QualificationCaptureBundle bundle = MakeBundle(receipt);
+    RenderQualityQualificationWriteResult result;
+    std::string error;
+
+    RenderQualityQualificationWriteRequest missing =
+        MakeRequest(temporary.Get() / "missing");
+    missing.renderPath.clear();
+    EXPECT_FALSE(WriteRenderQualityQualificationBundle(
+        missing, bundle, receipt, result, &error));
+    EXPECT_NE(std::string::npos, error.find("runtime configuration"));
+
+    ASSERT_TRUE(WriteRenderQualityQualificationBundle(
+        MakeRequest(temporary.Get() / "tick-000120"), bundle, receipt,
+        result, &error)) << error;
+    RenderQualityAttachmentSeriesTick tick{
+        .captureTick = 120U,
+        .bundleId = 31U,
+        .bundlePath = "tick-000120/bundle.json",
+        .bundleSha256 = result.bundleSha256,
+        .receiptSha256 = result.renderExecutionReceiptSha256,
+        .frameSequence = receipt.frameIdentity.frameSequence,
+        .submittedFrame = receipt.frameIdentity.frameSequence,
+        .completedFrame = receipt.frameIdentity.frameSequence};
+    RenderQualityAttachmentSeriesConfigurationIdentity forged =
+        result.renderConfigurationIdentity;
+    forged.renderPath = "gpu-driven";
+    forged.renderConfigurationHash =
+        ComputeTestRenderConfigurationHash(forged);
+    RenderQualityAttachmentSeriesWriteResult seriesResult;
+    EXPECT_FALSE(WriteRenderQualityAttachmentSeries(
+        MakeSeriesRequest(temporary.Get(), {tick}, forged), seriesResult,
+        &error));
+    EXPECT_NE(std::string::npos, error.find("Bundle V2"));
+}
+
+TEST(RenderQualityQualificationWriterValidation,
      PublishesManifestLastForStrictlyIncreasingAttachmentSeries)
 {
     TemporaryRoot temporary;
     std::vector<RenderQualityAttachmentSeriesTick> ticks;
+    RenderQualityAttachmentSeriesConfigurationIdentity configuration;
     constexpr std::array<uint64, 3> CaptureTicks{120U, 360U, 361U};
     for (size_t index = 0; index < CaptureTicks.size(); ++index)
     {
@@ -325,6 +413,15 @@ TEST(RenderQualityQualificationWriterValidation,
                         receipt.frameIdentity.frameSequence),
             bundle, receipt, bundleResult, &error)) << error;
         ASSERT_TRUE(std::filesystem::exists(bundleResult.bundlePath));
+        if (index == 0U)
+        {
+            configuration = bundleResult.renderConfigurationIdentity;
+        }
+        else
+        {
+            EXPECT_EQ(configuration,
+                      bundleResult.renderConfigurationIdentity);
+        }
         ticks.push_back({.captureTick = CaptureTicks[index],
                          .bundleId = 31U + index,
                          .bundlePath = directory + "/bundle.json",
@@ -340,7 +437,8 @@ TEST(RenderQualityQualificationWriterValidation,
     RenderQualityAttachmentSeriesWriteResult seriesResult;
     std::string error;
     ASSERT_TRUE(WriteRenderQualityAttachmentSeries(
-        MakeSeriesRequest(temporary.Get(), ticks), seriesResult, &error)) << error;
+        MakeSeriesRequest(temporary.Get(), ticks, configuration), seriesResult,
+        &error)) << error;
     ASSERT_TRUE(std::filesystem::exists(seriesResult.seriesPath));
     EXPECT_EQ(64U, seriesResult.seriesSha256.size());
 
@@ -351,6 +449,8 @@ TEST(RenderQualityQualificationWriterValidation,
     EXPECT_NE(std::string::npos, text.find("tick-000120/bundle.json"));
     EXPECT_NE(std::string::npos, text.find("tick-000360/bundle.json"));
     EXPECT_NE(std::string::npos, text.find("tick-000361/bundle.json"));
+    EXPECT_NE(std::string::npos,
+              text.find("\"renderConfigurationIdentity\""));
 }
 
 TEST(RenderQualityQualificationWriterValidation,

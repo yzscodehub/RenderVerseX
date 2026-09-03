@@ -133,6 +133,22 @@ namespace
         return !value.empty() && value.size() <= 1024U;
     }
 
+    [[nodiscard]] bool IsDeclaredRenderPathName(
+        const std::string& value) noexcept
+    {
+        return value == GetSampleRenderPathName(SampleRenderPath::Auto) ||
+               value == GetSampleRenderPathName(SampleRenderPath::Direct) ||
+               value == GetSampleRenderPathName(SampleRenderPath::GPUDriven);
+    }
+
+    [[nodiscard]] bool IsDeclaredInstancingModeName(
+        const std::string& value) noexcept
+    {
+        return value ==
+                   GetRenderInstancingModeName(RenderInstancingMode::Disabled) ||
+               value == GetRenderInstancingModeName(RenderInstancingMode::Auto);
+    }
+
     void SetError(std::string* outError, std::string value)
     {
         if (outError != nullptr)
@@ -364,12 +380,15 @@ namespace
         }
         if (!IsNonEmptyText(request.sampleId) ||
             !IsNonEmptyText(request.cameraBookmarkId) ||
-            !IsNonEmptyText(request.runId) || request.visualContractVersion == 0U ||
+            !IsNonEmptyText(request.runId) ||
+            !IsDeclaredRenderPathName(request.renderPath) ||
+            !IsDeclaredInstancingModeName(request.instancingMode) ||
+            request.visualContractVersion == 0U ||
             request.submittedFrame == 0U || request.completedFrame == 0U ||
             request.completedFrame < request.submittedFrame)
         {
             SetError(outError,
-                     "RenderQuality writer request lacks required scenario or completion provenance");
+                     "RenderQuality writer request lacks required scenario, runtime configuration, or completion provenance");
             return false;
         }
         if (bundle.schemaVersion !=
@@ -630,6 +649,19 @@ namespace
         AppendSeriesBinding(binding, "identity.visualContractVersion",
                             static_cast<uint64>(
                                 request.qualificationIdentity.visualContractVersion));
+        AppendSeriesBinding(binding, "configuration.renderPath",
+                            request.renderConfigurationIdentity.renderPath);
+        AppendSeriesBinding(binding, "configuration.instancingMode",
+                            request.renderConfigurationIdentity.instancingMode);
+        AppendSeriesBinding(binding, "configuration.requestedRecipe",
+                            request.renderConfigurationIdentity.requestedRecipe);
+        AppendSeriesBinding(binding, "configuration.resolvedRecipe",
+                            request.renderConfigurationIdentity.resolvedRecipe);
+        AppendSeriesBinding(binding, "configuration.profileHash",
+                            request.renderConfigurationIdentity.profileHash);
+        AppendSeriesBinding(binding, "configuration.renderConfigurationHash",
+                            request.renderConfigurationIdentity
+                                .renderConfigurationHash);
         AppendSeriesBinding(binding, "hardware.backend",
                             request.hardwareIdentity.backend);
         AppendSeriesBinding(binding, "hardware.adapterName",
@@ -653,6 +685,51 @@ namespace
             AppendSeriesBinding(binding, "tick.submittedFrame", tick.submittedFrame);
             AppendSeriesBinding(binding, "tick.completedFrame", tick.completedFrame);
         }
+        return Hash::FormatSHA256Digest(Hash::ComputeSHA256(binding));
+    }
+
+    [[nodiscard]] std::string ComputeRenderConfigurationHash(
+        const RenderQualityQualificationWriteRequest& request,
+        const RenderExecutionReceipt& receipt)
+    {
+        std::string binding;
+        binding.reserve(512U);
+        AppendSeriesBinding(binding, "schema",
+                            "RVX.RenderQualityConfigurationIdentity");
+        AppendSeriesBinding(binding, "schemaVersion", 1U);
+        AppendSeriesBinding(binding, "renderPath", request.renderPath);
+        AppendSeriesBinding(binding, "instancingMode", request.instancingMode);
+        AppendSeriesBinding(binding, "requestedRecipe",
+                            GetRenderPipelineRecipeName(receipt.requestedRecipe));
+        AppendSeriesBinding(binding, "resolvedRecipe",
+                            GetRenderPipelineRecipeName(receipt.resolvedRecipe));
+        AppendSeriesBinding(binding, "quality",
+                            GetRenderQualityTierName(receipt.quality));
+        AppendSeriesBinding(binding, "backend",
+                            GetSampleBackendName(receipt.backend));
+        AppendSeriesBinding(binding, "profileHash", receipt.profileHash);
+        return Hash::FormatSHA256Digest(Hash::ComputeSHA256(binding));
+    }
+
+    [[nodiscard]] std::string ComputeRenderConfigurationHash(
+        const RenderQualityAttachmentSeriesConfigurationIdentity& configuration,
+        const RenderQualityAttachmentSeriesIdentity& identity)
+    {
+        std::string binding;
+        binding.reserve(512U);
+        AppendSeriesBinding(binding, "schema",
+                            "RVX.RenderQualityConfigurationIdentity");
+        AppendSeriesBinding(binding, "schemaVersion", 1U);
+        AppendSeriesBinding(binding, "renderPath", configuration.renderPath);
+        AppendSeriesBinding(
+            binding, "instancingMode", configuration.instancingMode);
+        AppendSeriesBinding(
+            binding, "requestedRecipe", configuration.requestedRecipe);
+        AppendSeriesBinding(
+            binding, "resolvedRecipe", configuration.resolvedRecipe);
+        AppendSeriesBinding(binding, "quality", identity.quality);
+        AppendSeriesBinding(binding, "backend", identity.backend);
+        AppendSeriesBinding(binding, "profileHash", configuration.profileHash);
         return Hash::FormatSHA256Digest(Hash::ComputeSHA256(binding));
     }
 
@@ -711,7 +788,7 @@ namespace
             return bundleJson.find(text) != std::string::npos;
         };
         if (!contains("\"schema\": \"RVX.RenderQualityAttachmentBundle\"") ||
-            !contains("\"schemaVersion\": 1") ||
+            !contains("\"schemaVersion\": 2") ||
             !contains("\"bundleId\": \"" +
                       std::to_string(tick.bundleId) + "\"") ||
             !contains("\"sourceCommit\": \"" + request.sourceCommit +
@@ -730,6 +807,19 @@ namespace
                       std::to_string(tick.captureTick)) ||
             !contains("\"visualContractVersion\": " + std::to_string(
                       request.qualificationIdentity.visualContractVersion)) ||
+            !contains("\"renderPath\": \"" +
+                      request.renderConfigurationIdentity.renderPath + "\"") ||
+            !contains("\"instancingMode\": \"" +
+                      request.renderConfigurationIdentity.instancingMode + "\"") ||
+            !contains("\"requestedRecipe\": \"" +
+                      request.renderConfigurationIdentity.requestedRecipe + "\"") ||
+            !contains("\"resolvedRecipe\": \"" +
+                      request.renderConfigurationIdentity.resolvedRecipe + "\"") ||
+            !contains("\"profileHash\": " + std::to_string(
+                      request.renderConfigurationIdentity.profileHash)) ||
+            !contains("\"renderConfigurationHash\": \"" +
+                      request.renderConfigurationIdentity
+                          .renderConfigurationHash + "\"") ||
             !contains("\"runId\": \"" + request.runId + "\"") ||
             !contains("\"preset\": \"" + request.preset + "\"") ||
             !contains("\"renderExecutionReceiptSha256\": \"" +
@@ -742,7 +832,7 @@ namespace
                       std::to_string(tick.completedFrame)))
         {
             SetError(outError,
-                     "RenderQuality attachment series bundle does not match the required Bundle V1 schema and identity");
+                     "RenderQuality attachment series bundle does not match the required Bundle V2 schema and identity");
             return false;
         }
         return true;
@@ -756,12 +846,41 @@ namespace
             request.qualificationIdentity;
         const RenderQualityAttachmentSeriesHardwareIdentity& hardware =
             request.hardwareIdentity;
+        const RenderQualityAttachmentSeriesConfigurationIdentity& configuration =
+            request.renderConfigurationIdentity;
+        RenderPipelineRecipe identityRecipe = RenderPipelineRecipe::Count;
+        RenderPipelineRecipe requestedRecipe = RenderPipelineRecipe::Count;
+        RenderPipelineRecipe resolvedRecipe = RenderPipelineRecipe::Count;
+        RenderQualityTier quality = RenderQualityTier::Count;
+        RHIBackendType backend = RHIBackendType::None;
+        const bool declaredConfiguration =
+            IsDeclaredRenderPathName(configuration.renderPath) &&
+            IsDeclaredInstancingModeName(configuration.instancingMode) &&
+            ParseRenderPipelineRecipe(identity.pipeline, identityRecipe) &&
+            ParseRenderPipelineRecipe(
+                configuration.requestedRecipe, requestedRecipe) &&
+            ParseRenderPipelineRecipe(
+                configuration.resolvedRecipe, resolvedRecipe) &&
+            ParseRenderQualityTier(identity.quality, quality) &&
+            ParseSampleBackend(identity.backend, backend) &&
+            identity.backend == GetSampleBackendName(backend) &&
+            backend != RHIBackendType::Auto &&
+            backend != RHIBackendType::None &&
+            IsPresentableRasterRecipe(identityRecipe) &&
+            IsPresentableRasterRecipe(requestedRecipe) &&
+            IsPresentableRasterRecipe(resolvedRecipe) &&
+            identityRecipe == resolvedRecipe &&
+            configuration.profileHash ==
+                ComputeRenderPipelineProfileHash(resolvedRecipe, quality) &&
+            configuration.renderConfigurationHash ==
+                ComputeRenderConfigurationHash(configuration, identity);
         if (request.outputPath.filename() != "series.json" ||
             !IsCommitDigest(request.sourceCommit) || !IsNonEmptyText(request.runId) ||
             !IsNonEmptyText(request.preset) || !IsNonEmptyText(identity.sampleId) ||
             !IsNonEmptyText(identity.pipeline) || !IsNonEmptyText(identity.quality) ||
             !IsNonEmptyText(identity.backend) || !IsNonEmptyText(identity.view) ||
             identity.visualContractVersion == 0U ||
+            !declaredConfiguration ||
             !IsNonEmptyText(hardware.backend) ||
             !IsNonEmptyText(hardware.adapterName) ||
             !IsNonEmptyText(hardware.driverVersion) ||
@@ -771,7 +890,7 @@ namespace
             !IsLowercaseHex(request.manifestSha256, 64U) || request.ticks.empty())
         {
             SetError(outError,
-                     "RenderQuality attachment series request lacks strict identity or hardware provenance");
+                     "RenderQuality attachment series request lacks strict identity, runtime configuration, or hardware provenance");
             return false;
         }
 
@@ -848,6 +967,23 @@ bool WriteRenderQualityQualificationBundle(
                  "RenderQuality receipt serializer did not produce a SHA-256 digest");
         return false;
     }
+    const RenderQualityAttachmentSeriesConfigurationIdentity
+        renderConfiguration{
+            .renderPath = request.renderPath,
+            .instancingMode = request.instancingMode,
+            .requestedRecipe = GetRenderPipelineRecipeName(
+                receipt.requestedRecipe),
+            .resolvedRecipe = GetRenderPipelineRecipeName(
+                receipt.resolvedRecipe),
+            .profileHash = receipt.profileHash,
+            .renderConfigurationHash = ComputeRenderConfigurationHash(
+                request, receipt)};
+    if (!IsLowercaseHex(renderConfiguration.renderConfigurationHash, 64U))
+    {
+        SetError(outError,
+                 "RenderQuality runtime configuration hash could not be computed");
+        return false;
+    }
 
     std::vector<std::filesystem::path> published;
     for (size_t index = 0; index < bundle.attachments.size(); ++index)
@@ -896,6 +1032,20 @@ bool WriteRenderQualityQualificationBundle(
     manifest << "    \"captureTick\": " << request.captureTick << ",\n";
     manifest << "    \"visualContractVersion\": "
              << request.visualContractVersion << "\n";
+    manifest << "  },\n";
+    manifest << "  \"renderConfigurationIdentity\": {\n";
+    manifest << "    \"renderPath\": "
+             << Diagnostics::JsonString(renderConfiguration.renderPath) << ",\n";
+    manifest << "    \"instancingMode\": "
+             << Diagnostics::JsonString(renderConfiguration.instancingMode) << ",\n";
+    manifest << "    \"requestedRecipe\": "
+             << Diagnostics::JsonString(renderConfiguration.requestedRecipe) << ",\n";
+    manifest << "    \"resolvedRecipe\": "
+             << Diagnostics::JsonString(renderConfiguration.resolvedRecipe) << ",\n";
+    manifest << "    \"profileHash\": " << renderConfiguration.profileHash << ",\n";
+    manifest << "    \"renderConfigurationHash\": "
+             << Diagnostics::JsonString(
+                    renderConfiguration.renderConfigurationHash) << "\n";
     manifest << "  },\n";
     manifest << "  \"execution\": {\n";
     manifest << "    \"runId\": " << Diagnostics::JsonString(request.runId)
@@ -962,6 +1112,7 @@ bool WriteRenderQualityQualificationBundle(
     outResult.bundlePath = manifestPath;
     outResult.bundleSha256 = bundleSha256;
     outResult.renderExecutionReceiptSha256 = receiptSha256;
+    outResult.renderConfigurationIdentity = renderConfiguration;
     return true;
 }
 
@@ -1040,6 +1191,26 @@ bool WriteRenderQualityAttachmentSeries(
              << ",\n";
     manifest << "    \"visualContractVersion\": "
              << request.qualificationIdentity.visualContractVersion << "\n";
+    manifest << "  },\n";
+    manifest << "  \"renderConfigurationIdentity\": {\n";
+    manifest << "    \"renderPath\": "
+             << Diagnostics::JsonString(
+                    request.renderConfigurationIdentity.renderPath) << ",\n";
+    manifest << "    \"instancingMode\": "
+             << Diagnostics::JsonString(
+                    request.renderConfigurationIdentity.instancingMode) << ",\n";
+    manifest << "    \"requestedRecipe\": "
+             << Diagnostics::JsonString(
+                    request.renderConfigurationIdentity.requestedRecipe) << ",\n";
+    manifest << "    \"resolvedRecipe\": "
+             << Diagnostics::JsonString(
+                    request.renderConfigurationIdentity.resolvedRecipe) << ",\n";
+    manifest << "    \"profileHash\": "
+             << request.renderConfigurationIdentity.profileHash << ",\n";
+    manifest << "    \"renderConfigurationHash\": "
+             << Diagnostics::JsonString(
+                    request.renderConfigurationIdentity.renderConfigurationHash)
+             << "\n";
     manifest << "  },\n";
     manifest << "  \"hardwareIdentity\": {\n";
     manifest << "    \"backend\": "

@@ -40,13 +40,14 @@ IDENTITY = {
     "sampleId": "render-quality-lab",
     "pipeline": "deferred",
     "quality": "high",
-    "backend": "DX12",
+    "backend": "dx12",
     "view": "hero",
     "captureTick": 300,
     "visualContractVersion": 1,
 }
 PERFORMANCE_IDENTITY = {
     **IDENTITY,
+    "backend": "DX12",
     "qualificationWidth": 2560,
     "qualificationHeight": 1440,
 }
@@ -59,8 +60,66 @@ HARDWARE = {
 }
 SERIES_HARDWARE = {
     **HARDWARE,
+    "backend": "dx12",
     "capabilityHash": "f" * 64,
 }
+
+
+def render_profile_hash(recipe: str, quality: str) -> int:
+    recipe_ids = {"forward-plus": 1, "deferred": 2, "hybrid-rt": 3}
+    quality_ids = {"low": 0, "medium": 1, "high": 2, "ultra": 3}
+    result = 14695981039346656037
+    for value in (1, recipe_ids[recipe], quality_ids[quality]):
+        for byte in range(8):
+            result ^= (value >> (byte * 8)) & 0xFF
+            result = (result * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return result or 1
+
+
+def render_configuration_for(
+    identity: dict[str, str | int],
+    *,
+    render_path: str = "direct",
+    instancing_mode: str = "Auto",
+    requested_recipe: str = "deferred",
+    resolved_recipe: str = "deferred",
+    profile_hash: int | None = None,
+) -> dict[str, str | int]:
+    if profile_hash is None:
+        profile_hash = render_profile_hash(
+            resolved_recipe, str(identity["quality"])
+        )
+    configuration: dict[str, str | int] = {
+        "renderPath": render_path,
+        "instancingMode": instancing_mode,
+        "requestedRecipe": requested_recipe,
+        "resolvedRecipe": resolved_recipe,
+        "profileHash": profile_hash,
+    }
+    binding = bytearray()
+    for name, value in (
+        ("schema", "RVX.RenderQualityConfigurationIdentity"),
+        ("schemaVersion", 1),
+        ("renderPath", configuration["renderPath"]),
+        ("instancingMode", configuration["instancingMode"]),
+        ("requestedRecipe", configuration["requestedRecipe"]),
+        ("resolvedRecipe", configuration["resolvedRecipe"]),
+        ("quality", identity["quality"]),
+        ("backend", identity["backend"]),
+        ("profileHash", configuration["profileHash"]),
+    ):
+        encoded = str(value).encode("utf-8")
+        binding.extend(name.encode("ascii"))
+        binding.extend(b":")
+        binding.extend(str(len(encoded)).encode("ascii"))
+        binding.extend(b":")
+        binding.extend(encoded)
+        binding.extend(b"\n")
+    configuration["renderConfigurationHash"] = hashlib.sha256(binding).hexdigest()
+    return configuration
+
+
+RENDER_CONFIGURATION = render_configuration_for(IDENTITY)
 TELEMETRY_COVERAGE = {
     "schemaVersion": 2,
     "trackedUploadCoverageMask": 7,
@@ -85,8 +144,16 @@ def write_bundle(
     receipt: str = "a" * 64,
     payload_offset: float = 0.0,
     qualification_identity: dict[str, str | int] | None = None,
+    render_configuration: dict[str, str | int] | None = None,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
+    bundle_identity = (
+        IDENTITY if qualification_identity is None else qualification_identity
+    )
+    bundle_configuration = (
+        render_configuration_for(bundle_identity)
+        if render_configuration is None else render_configuration
+    )
     attachments = []
     for ordinal, (semantic, (format_name, domain, channels)) in enumerate(SEMANTICS.items()):
         payload = struct.pack(
@@ -135,13 +202,14 @@ def write_bundle(
         })
     manifest = {
         "schema": "RVX.RenderQualityAttachmentBundle",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "bundleId": name,
         "sourceCommit": source_commit,
         "qualificationIdentity": {
-            **(IDENTITY if qualification_identity is None else qualification_identity),
+            **bundle_identity,
             "captureTick": capture_tick,
         },
+        "renderConfigurationIdentity": bundle_configuration,
         "execution": {
             "runId": run_id,
             "preset": preset,
@@ -234,6 +302,7 @@ def write_visual_golden_record(
     approved: bool = True,
     hardware_mode: str = "exact-hardware",
     runner_class: str | None = None,
+    render_configuration: dict[str, str | int] | None = None,
 ) -> Path:
     baseline_document = json.loads(baseline.read_text())
     packaged_manifest = path.parent / "golden-sample-manifest.json"
@@ -260,7 +329,7 @@ def write_visual_golden_record(
         })
     write_json(path, {
         "schema": "RVX.RenderQualityGoldenRecord",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "goldenId": "dx12-deferred-high-v3",
         "status": "approved" if approved else "candidate",
         "sourceCommit": baseline_document["sourceCommit"],
@@ -269,6 +338,10 @@ def write_visual_golden_record(
             for key, value in baseline_document["qualificationIdentity"].items()
             if key != "captureTick"
         },
+        "renderConfigurationIdentity": (
+            baseline_document["renderConfigurationIdentity"]
+            if render_configuration is None else render_configuration
+        ),
         "sampleManifest": {
             "path": packaged_manifest.name,
             "sha256": hashlib.sha256(packaged_manifest.read_bytes()).hexdigest(),
@@ -322,11 +395,16 @@ def write_attachment_series(
     hardware: dict[str, str] | None = None,
     identity: dict[str, str | int] | None = None,
     capture_ticks: tuple[int, int, int] = (300, 360, 361),
+    render_configuration: dict[str, str | int] | None = None,
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     series_identity = (
         {key: value for key, value in IDENTITY.items() if key != "captureTick"}
         if identity is None else identity
+    )
+    series_configuration = (
+        render_configuration_for(series_identity)
+        if render_configuration is None else render_configuration
     )
     if (
         len(capture_ticks) != 3
@@ -366,6 +444,7 @@ def write_attachment_series(
             run_id=run_id,
             payload_offset=offset,
             qualification_identity=series_identity,
+            render_configuration=series_configuration,
         )
         relative = Path(directory_name) / "bundle.json"
         bundle_sha = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
@@ -397,6 +476,7 @@ def write_attachment_series(
         run_id,
         "win_x64_debug_gfx24_qualification",
         series_identity,
+        series_configuration,
         SERIES_HARDWARE if hardware is None else hardware,
         manifest_sha,
         ticks,
@@ -404,11 +484,12 @@ def write_attachment_series(
     series_path = root / "series.json"
     write_json(series_path, {
         "schema": "RVX.RenderQualityAttachmentSeries",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "sourceCommit": "commit-a",
         "runId": run_id,
         "preset": "win_x64_debug_gfx24_qualification",
         "qualificationIdentity": series_identity,
+        "renderConfigurationIdentity": series_configuration,
         "hardwareIdentity": SERIES_HARDWARE if hardware is None else hardware,
         "manifestSha256": manifest_sha,
         "ticks": tick_documents,
@@ -816,6 +897,74 @@ class RenderQualityBundleTests(unittest.TestCase):
             self.assertTrue((root / "heatmaps/BeautyLDR.diff.ppm").is_file())
             self.assertEqual(json.loads((root / "result.json").read_text())["status"], "passed")
 
+    def test_bundle_v2_configuration_missing_drift_and_forgery_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            del document["renderConfigurationIdentity"]
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("renderConfigurationIdentity", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            document["renderConfigurationIdentity"]["renderPath"] = "gpu-driven"
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not bind", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            document["schemaVersion"] = 1
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("schema/version", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            document["renderConfigurationIdentity"] = render_configuration_for(
+                document["qualificationIdentity"],
+                render_path="banana",
+            )
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("renderPath is unsupported", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            document["renderConfigurationIdentity"] = render_configuration_for(
+                document["qualificationIdentity"],
+                requested_recipe="forward-plus",
+                resolved_recipe="forward-plus",
+            )
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not match qualificationIdentity.pipeline", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            current = Path(arguments[1])
+            document = json.loads(current.read_text())
+            expected = render_profile_hash("deferred", "high")
+            document["renderConfigurationIdentity"] = render_configuration_for(
+                document["qualificationIdentity"],
+                profile_hash=expected + 1,
+            )
+            write_json(current, document)
+            result = run_bundle(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("profileHash does not match", result.stderr)
+
     def test_visual_policy_v2_uses_only_adjacent_pair_and_rejects_frozen_motion(
         self,
     ) -> None:
@@ -1205,6 +1354,62 @@ class RenderQualitySeriesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("manifest hash", result.stderr)
 
+    def test_series_v2_configuration_is_required_and_frozen_across_ticks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+            document = json.loads(series_path.read_text())
+            del document["renderConfigurationIdentity"]
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("renderConfigurationIdentity", result.stderr)
+
+            arguments = self._valid_arguments(root)
+            series_path = Path(arguments[1])
+            document = json.loads(series_path.read_text())
+            identity = document["qualificationIdentity"]
+            changed_configuration = render_configuration_for(
+                identity,
+                render_path="gpu-driven",
+            )
+            tick_document = document["ticks"][2]
+            bundle_path = series_path.parent / tick_document["bundlePath"]
+            bundle = json.loads(bundle_path.read_text())
+            bundle["renderConfigurationIdentity"] = changed_configuration
+            write_json(bundle_path, bundle)
+            tick_document["bundleSha256"] = hashlib.sha256(
+                bundle_path.read_bytes()
+            ).hexdigest()
+            ticks = tuple(
+                series_contract.SeriesTick(
+                    item["captureTick"],
+                    item["bundleId"],
+                    Path(item["bundlePath"]),
+                    item["bundleSha256"],
+                    item["receiptSha256"],
+                    item["frameSequence"],
+                    item["submittedFrame"],
+                    item["completedFrame"],
+                )
+                for item in document["ticks"]
+            )
+            document["seriesSha256"] = series_contract.compute_series_sha256(
+                document["sourceCommit"],
+                document["runId"],
+                document["preset"],
+                document["qualificationIdentity"],
+                document["renderConfigurationIdentity"],
+                document["hardwareIdentity"],
+                document["manifestSha256"],
+                ticks,
+            )
+            write_json(series_path, document)
+            result = run_series(*arguments)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("metadata does not match", result.stderr)
+
 
 class RenderQualityGoldenTests(unittest.TestCase):
     def _candidate(self, root: Path) -> tuple[Path, Path, Path, Path]:
@@ -1483,6 +1688,7 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
         tick_payload_offsets: dict[int, float] | None = None,
         hardware: dict[str, str] | None = None,
         identity: dict[str, str | int] | None = None,
+        render_configuration: dict[str, str | int] | None = None,
     ) -> dict[str, Path]:
         root.mkdir(parents=True, exist_ok=True)
         manifest = write_sample_manifest(root / "sample-manifest.json")
@@ -1491,6 +1697,7 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
             root / "baseline",
             name="approved-golden",
             completed_frame=300,
+            render_configuration=render_configuration,
         )
         record = write_visual_golden_record(
             root / "golden-record.json",
@@ -1500,6 +1707,7 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
             approved=approved,
             hardware_mode=hardware_mode,
             runner_class=runner_class,
+            render_configuration=render_configuration,
         )
         series = write_attachment_series(
             root / "current-series",
@@ -1508,6 +1716,7 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
             tick_payload_offsets=tick_payload_offsets,
             hardware=hardware,
             identity=identity,
+            render_configuration=render_configuration,
         )
         return {
             "record": record,
@@ -1558,6 +1767,14 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
             self.assertTrue(document["comparisonPerformed"])
             self.assertEqual(document["currentHardwareIdentity"], SERIES_HARDWARE)
             self.assertEqual(document["baselineHardwareIdentity"], SERIES_HARDWARE)
+            self.assertEqual(
+                document["currentRenderConfigurationIdentity"],
+                RENDER_CONFIGURATION,
+            )
+            self.assertEqual(
+                document["baselineRenderConfigurationIdentity"],
+                RENDER_CONFIGURATION,
+            )
             self.assertEqual(len(document["visualMetrics"]), len(SEMANTICS))
             self.assertEqual(len(document["temporalMetrics"]), len(SEMANTICS))
 
@@ -1610,12 +1827,12 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
                 hardware = dict(SERIES_HARDWARE)
                 identity = None
                 if field == "backend":
-                    hardware[field] = "Vulkan"
+                    hardware[field] = "vulkan"
                     identity = {
                         key: value for key, value in IDENTITY.items()
                         if key != "captureTick"
                     }
-                    identity["backend"] = "Vulkan"
+                    identity["backend"] = "vulkan"
                 elif field == "capabilityHash":
                     hardware[field] = "e" * 64
                 else:
@@ -1694,6 +1911,29 @@ class RenderQualityGoldenComparisonTests(unittest.TestCase):
             self.assertTrue(document["comparisonPerformed"])
             self.assertEqual(document["failureCategory"], "temporal-metric")
             self.assertTrue(document["temporalMetrics"])
+
+    def test_runtime_configuration_drift_fails_before_pixel_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._fixture(root)
+            configuration = render_configuration_for(
+                {key: value for key, value in IDENTITY.items() if key != "captureTick"},
+                render_path="gpu-driven",
+            )
+            fixture["series"] = write_attachment_series(
+                root / "current-series-drift",
+                fixture["manifest"],
+                render_configuration=configuration,
+            )
+            report = root / "configuration-drift.json"
+            result = run_golden(*self._arguments(fixture, report))
+            self.assertEqual(result.returncode, 1)
+            document = json.loads(report.read_text())
+            self.assertFalse(document["comparisonPerformed"])
+            self.assertEqual(
+                document["failureCategory"],
+                "render-configuration-mismatch",
+            )
 
     def test_series_manifest_eol_is_ignored_but_semantic_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

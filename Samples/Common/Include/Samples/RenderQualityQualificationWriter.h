@@ -19,14 +19,15 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_QUALITY_ATTACHMENT_BUNDLE_SCHEMA_VERSION =
-        1;
+        2;
 
     /**
      * @brief Host metadata not represented by the renderer-owned bundle.
      *
-     * `pipeline`, `quality`, `backend`, source commit, and preset are derived
-     * from the supplied receipt.  The remaining values originate in the
-     * scenario manifest or validation runner and are rejected when absent.
+     * `pipeline`, `quality`, `backend`, source commit, preset, recipe, and
+     * profile hash are derived from the supplied receipt. Render path and
+     * instancing mode must be the actual settings retained by the Engine, not
+     * the command-line request; the writer rejects omitted values.
      */
     struct RenderQualityQualificationWriteRequest
     {
@@ -34,11 +35,28 @@ namespace RVX
         std::string sampleId{};
         std::string cameraBookmarkId{};
         std::string runId{};
+        std::string renderPath{};
+        std::string instancingMode{};
         uint64 captureTick = 0;
         uint32 visualContractVersion = 0;
         /** Frame counters observed by the host after exact submission/completion. */
         uint64 submittedFrame = 0;
         uint64 completedFrame = 0;
+    };
+
+    /** @brief Runtime-owned configuration frozen across every series tick. */
+    struct RenderQualityAttachmentSeriesConfigurationIdentity
+    {
+        std::string renderPath{};
+        std::string instancingMode{};
+        std::string requestedRecipe{};
+        std::string resolvedRecipe{};
+        uint64 profileHash = 0;
+        std::string renderConfigurationHash{};
+
+        friend bool operator==(
+            const RenderQualityAttachmentSeriesConfigurationIdentity&,
+            const RenderQualityAttachmentSeriesConfigurationIdentity&) = default;
     };
 
     /** @brief Immutable result of a successfully published artifact bundle. */
@@ -47,10 +65,12 @@ namespace RVX
         std::filesystem::path bundlePath{};
         std::string bundleSha256{};
         std::string renderExecutionReceiptSha256{};
+        RenderQualityAttachmentSeriesConfigurationIdentity
+            renderConfigurationIdentity{};
     };
 
     inline constexpr uint32 RVX_RENDER_QUALITY_ATTACHMENT_SERIES_SCHEMA_VERSION =
-        1;
+        2;
 
     /** @brief Capture identity shared by every bundle in one series. */
     struct RenderQualityAttachmentSeriesIdentity
@@ -96,6 +116,8 @@ namespace RVX
         std::string preset{};
         RenderQualityAttachmentSeriesIdentity qualificationIdentity{};
         RenderQualityAttachmentSeriesHardwareIdentity hardwareIdentity{};
+        RenderQualityAttachmentSeriesConfigurationIdentity
+            renderConfigurationIdentity{};
         std::string manifestSha256{};
         std::vector<RenderQualityAttachmentSeriesTick> ticks{};
     };
@@ -127,8 +149,10 @@ namespace RVX
      * `seriesSha256` is SHA-256 of the fixed length-prefixed UTF-8 binding
      * stream: `name:<byte-length>:<value>\\n`.  The field order is schema,
      * schemaVersion, sourceCommit, runId, preset; identity sampleId, pipeline,
-     * quality, backend, view, visualContractVersion; hardware backend,
-     * adapterName, driverVersion, osBuild, capabilityHash; manifestSha256;
+     * quality, backend, view, visualContractVersion; configuration renderPath,
+     * instancingMode, requestedRecipe, resolvedRecipe, profileHash,
+     * renderConfigurationHash; hardware backend, adapterName, driverVersion,
+     * osBuild, capabilityHash; manifestSha256;
      * then every tick in array order with captureTick, bundleId, bundlePath,
      * bundleSha256, receiptSha256, frameSequence,
      * submittedFrame, completedFrame. Numeric values are decimal without

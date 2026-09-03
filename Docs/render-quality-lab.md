@@ -23,10 +23,11 @@ host captures and completes all three without restarting the runtime:
     tick-000361/bundle.json  # temporal adjacent frame
     series.json              # published last
 
-`RVX.RenderQualityAttachmentSeries` v1 binds:
+`RVX.RenderQualityAttachmentSeries` v2 binds:
 
     sourceCommit, runId, preset
     qualificationIdentity (without captureTick)
+    renderConfigurationIdentity
     hardwareIdentity, manifestSha256
     ticks[captureTick, bundleId, bundlePath, bundleSha256, receiptSha256,
           frameSequence, submittedFrame, completedFrame]
@@ -73,11 +74,11 @@ submitted-frame, and completed-frame ordinals must all advance strictly. A
 stale, duplicate, undeclared, or out-of-order value is rejected.
 
 The container is UTF-8 JSON named `RVX.RenderQualityAttachmentBundle`, schema
-version `1`. It has exactly these root fields:
+version `2`. It has exactly these root fields:
 
 ```text
 schema, schemaVersion, bundleId, sourceCommit, qualificationIdentity,
-execution, attachments
+renderConfigurationIdentity, execution, attachments
 ```
 
 `qualificationIdentity` is exact and contains:
@@ -86,6 +87,21 @@ execution, attachments
 sampleId, pipeline, quality, backend, view, captureTick,
 visualContractVersion
 ```
+
+`renderConfigurationIdentity` binds the actual runtime configuration rather
+than merely the requested command line:
+
+```text
+renderPath, instancingMode, requestedRecipe, resolvedRecipe,
+profileHash, renderConfigurationHash
+```
+
+The recipe and quality must be declared renderer values, `resolvedRecipe`
+must equal `qualificationIdentity.pipeline`, and `profileHash` must equal
+the public FNV64 profile identity for that resolved recipe and quality. The
+configuration SHA-256 covers those fields together with quality and backend.
+Unknown values, a request/result mismatch, or a self-consistent hash around an
+invalid value are rejected before any pixel payload is opened.
 
 `execution` binds one same-frame submission and completion:
 
@@ -106,7 +122,7 @@ must be at least the declared simulation `captureTick`; this proves the output
 cannot precede the scenario state it claims to qualify without assuming that
 GPU submission ordinals numerically equal simulation ticks.
 
-`attachments` contains exactly one entry for each semantic output below. V1
+`attachments` contains exactly one entry for each semantic output below. V2
 uses a compact raw, little-endian float32 payload referenced by safe,
 bundle-relative `dataPath`; no absolute, drive, UNC, backslash, or `..` paths
 are accepted.
@@ -132,7 +148,7 @@ scalarType=float32le, rowPitchBytes, payloadBytes, sha256, provenance
 backend-native copy alignment and orientation are removed by the completed
 readback mapper. `payloadBytes` must equal `rowPitchBytes * height`; its
 SHA-256 must match the raw file and every decoded float must be finite.
-V1 caps an attachment at 8192×8192 pixels and 256 MiB, and caps the whole
+V2 caps an attachment at 8192×8192 pixels and 256 MiB, and caps the whole
 seven-surface bundle at 512 MiB before any raw file is opened.
 
 `provenance` repeats the exact bundle boundary:
@@ -213,7 +229,8 @@ candidates therefore gates 30 bundle comparisons and 10 temporal pairs in
 total. The standalone `contact-sheet` command also requires the VisualPolicy
 and previews its declared `goldenCaptureTick`; it never assumes the first
 Series entry is the Golden frame.
-`RVX.RenderQualityGoldenRecord` v1 binds the five run/Series hashes,
+`RVX.RenderQualityGoldenRecord` v2 binds the five run/Series hashes and the
+exact `renderConfigurationIdentity`,
 hardware policy (`exact-hardware` or `runner-class`), selected
 bundle/receipt, policy, manifest, contact sheet, source commit, and approval.
 
