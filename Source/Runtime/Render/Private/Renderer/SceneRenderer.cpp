@@ -837,13 +837,6 @@ namespace
             ? materialSystem->ResolveInstanceBindingKey(
                   packet.materialKey.material)
             : MaterialInstanceBindingKey{};
-        // Cross-material parameter-table instancing has not yet earned native
-        // backend qualification. Keep ordinary same-material instancing (the
-        // material handle remains in the batch key), but do not merge distinct
-        // materials merely because their texture/sampler bindings match. A
-        // backend may enable this only after a production-shader readback test
-        // proves the per-instance slot and set-2 table binding end to end.
-        packet.materialInstanceKey.parameterTableCompatible = false;
         if (packet.materialKey.material.IsValid())
         {
             packet.pipelineKey.materialPolicyValid = materialSystem != nullptr &&
