@@ -343,3 +343,15 @@ Keep at most the ten most useful recent entries.
   noisy for a trustworthy unchanged rerun. After explicit Golden review and an
   idle-GPU A4 rerun, wire approved records into CI and obtain required
   Windows/Linux/macOS plus Vulkan-RT remote evidence.
+
+### 2026-09-03 - GFX24 approval and GFX25 sequencing
+
+- Outcome: upgraded visual evidence to configuration-bound Bundle/Series/Golden
+  V2, approved and committed DX12 Forward+/Deferred Goldens in `6ad09dcb`,
+  and passed the isolated raster required suite 4/4.
+- Decision: the user deferred fixed-GPU A4 and cross-platform/RT remote
+  qualification until after GFX25 implementation. The existing `gfx-24`
+  coordinator feature is expanded instead of opening a second unresolved item.
+- Next: generalize cooked visual qualification for model-viewer/pbr-materials,
+  then deliver strict Material Artifact V2 and production glTF PBR extensions
+  before the combined final evidence closure.

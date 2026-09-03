@@ -2,7 +2,7 @@
     "$schema":  "./feature_list.schema.json",
     "schema":  "RVX.AgentFeatureList",
     "schemaVersion":  1,
-    "updatedAt":  "2026-08-31T05:03:01.4452721Z",
+    "updatedAt":  "2026-09-03T05:20:34.2270427Z",
     "activeFeature":  "gfx-24",
     "features":  [
                      {
@@ -576,8 +576,8 @@
                      },
                      {
                          "id":  "gfx-24",
-                         "name":  "Graphics foundation qualification",
-                         "behavior":  "RenderQualityLab composes only previously integrated cooked graphics capabilities while one completion-owned qualification pipeline captures a same-frame semantic attachment bundle, evaluates deterministic visual and temporal metrics, records bounded CPU/GPU/memory performance evidence, and fails closed for missing provenance, baselines, capabilities, or artifacts.",
+                         "name":  "Graphics qualification and production PBR showcases",
+                         "behavior":  "RenderQualityLab and deterministic model/PBR showcases consume only cooked assets while the material product advances to one strict V2 contract with production glTF extension semantics shared by Forward+ and Deferred; completion-owned visual evidence remains configuration-bound, and fixed-GPU plus remote qualification is executed after the GFX25 implementation stabilizes.",
                          "owner":  "primary-coordinator",
                          "scope":  {
                                        "include":  [
@@ -601,8 +601,12 @@
                                   "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
                                   "Source/Runtime/RHI_DX12/Private/DX12CommandContext.cpp",
                                   "Source/Developer/AssetPipeline/Private/AssetPipeline.cpp",
+                                  "Source/Developer/AssetImport/**",
+                                  "Source/Runtime/Geometry/**",
+                                  "Source/Runtime/ResourceRuntime/**",
                                   "Samples/Common/**",
-                                                       "Samples/RenderVerseSamples/**",
+                                  "Samples/RenderVerseSamples/**",
+                                  "assets/catalog.json",
                                                        "Scripts/check_render_quality_*.py",
                                                        "Scripts/run_render_quality_*.ps1",
                                                        "Scripts/run_required_suite.ps1",
@@ -646,8 +650,7 @@
                                   "Source/Runtime/RHI_Metal/**",
                                                        "Source/Runtime/RHI_OpenGL/**",
                                                        "Source/Runtime/RHI_Vulkan/**",
-                                                       "assets/**",
-                                                       "build/**"
+                                  "build/**"
                                                    ]
                                    },
                          "dependencies":  [
@@ -659,8 +662,12 @@
                                                     "Capture readback is submission-completion owned and polled without WaitIdle; missing, partial, stale, duplicate, or cross-frame attachments fail the entire bundle closed.",
                                                     "Visual qualification supports per-attachment ROI policies, mean and maximum absolute error, PSNR, SSIM, diff heatmaps, and deterministic temporal flicker after warmup.",
                                                     "Performance qualification separates warmup from at least 300 completion-owned samples and records CPU phases, the conservative Graphics qualification span, ordered per-pass GPU timing, upload bytes, memory classes, and post-warmup resource-growth invariants against exact hardware baselines.",
-                                                    "A dedicated GFX24 required suite validates the scenario, bundle, metrics, budgets, provenance, Shipping closure, and evidence schema without fabricating unsupported cross-platform results.",
-                                                    "Focused tests, Architecture, complete Windows Debug Build Truth, DX12 qualification, Shipping cooked-only closure, and diff hygiene pass; Linux Vulkan and macOS Metal remain explicit PR-CI obligations."
+                               "A dedicated GFX24 required suite validates the scenario, bundle, metrics, budgets, provenance, Shipping closure, and evidence schema without fabricating unsupported cross-platform results.",
+                               "MaterialStaticDescriptor V2 and CookedMaterialArtifact V2 carry specular, clearcoat, transmission, volume, IOR, and emissive-strength semantics through deterministic cook and strict runtime load with no V1 reader.",
+                               "Forward+ and Deferred consume one canonical material table and BRDF contract; clearcoat is a separately gated lobe and unsupported source workflows fail closed.",
+                               "model-viewer and pbr-materials are deterministic cooked-only qualification scenarios with real execution receipts, stable camera bookmarks, and no runtime importer or shader compiler closure.",
+                               "The approved GFX24 DX12 Goldens remain required; fixed-GPU A4 and Windows/Linux/macOS plus DX12/Vulkan RT qualification run after GFX25 implementation as one final evidence closure.",
+                               "Focused tests, Architecture, complete Windows Debug Build Truth, DX12 qualification, Shipping cooked-only closure, and diff hygiene pass; Linux Vulkan and macOS Metal remain explicit PR-CI obligations."
                                                 ],
                          "verification":  [
                                               {
@@ -998,8 +1005,8 @@
                                           }
                                       ],
                          "blocker":  null,
-            "nextStep":  "GFX24 closeout code is committed through a79cee88. Clean-tree Architecture passes 65/65; CI policy tests pass 39/39; DX12 hardware RT passes 3/3; the bounded Cook transaction fix passes SkeletalAssetPipelineValidation 12/12 and the full raster aggregate. Forward+ and Deferred each have five valid same-process 300/360/361 Series and candidate Golden records bound to 7b8e11b0; all 30 same-tick bundle comparisons and 10 temporal pairs pass, but explicit human approval is still required. The prior A4 five-run performance session remains rejected because two runs exceeded the 15 ms RenderGraph budget, and current interactive GPU utilization is not idle enough for a trustworthy rerun. Next: obtain explicit Golden approval, rerun all five A4 reports only after the RTX 4070 Ti is idle, approve the median baseline, wire the approved artifacts into PR comparison gates, then obtain Windows/Linux/macOS and Vulkan RT remote evidence. Do not reuse or splice the rejected calibration runs.",
-            "updatedAt":  "2026-09-02T13:48:00.2294792+08:00"
+            "nextStep":  "GFX24 configuration-bound DX12 Forward+ and Deferred V2 Goldens are approved in 6ad09dcb and the clean isolated raster required suite passes 4/4 with receipt 109843e2638c7220d7a296fbcb599cfdd87b6a322c25f14265423463b9198ad5. The user explicitly deferred the rejected A4 rerun and Windows/Linux/macOS plus DX12/Vulkan RT remote qualification until GFX25 implementation is complete. Continue under this single active coordinator feature with GFX25: first generalize deterministic cooked visual qualification for model-viewer and pbr-materials, then implement strict MaterialStaticDescriptor/CookedMaterialArtifact V2 and production glTF material extensions, then qualify required small redistributable assets and optional Porsche/HDRI evidence. Preserve protected concurrent changes and do not claim final qualification before the deferred gates run.",
+            "updatedAt":  "2026-09-03T05:20:34.2270427Z"
                      }
                  ]
 }
