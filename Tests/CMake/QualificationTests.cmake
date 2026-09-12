@@ -2662,6 +2662,10 @@ foreach(_rvx_required_identity IN ITEMS
             "Cooked visual-series validation requires ${_rvx_required_identity} from the required-suite environment")
     endif()
 endforeach()
+include("${RVX_CANDIDATE_RUN_IDENTITY_HELPER}")
+cmake_path(GET RVX_CANDIDATE_SERIES PARENT_PATH _rvx_series_root)
+set(RVX_CANDIDATE_SERIES "${_rvx_series_root}/runs/${_rvx_run_id}/series.json")
+set(RVX_CANDIDATE_REPORT "${_rvx_series_root}/runs/${_rvx_run_id}/series-validation.json")
 file(READ "${RVX_CANDIDATE_SERIES}" _rvx_series_document)
 string(JSON _rvx_identity_backend GET
        "${_rvx_series_document}" qualificationIdentity backend)
@@ -2723,6 +2727,7 @@ endif()
         NAME ${ARG_TEST_NAME}SeriesValidation
         COMMAND ${CMAKE_COMMAND}
             "-DRVX_CANDIDATE_SERIES=${ARG_SERIES_ROOT}/series.json"
+            "-DRVX_CANDIDATE_RUN_IDENTITY_HELPER=${CMAKE_SOURCE_DIR}/Tests/CMake/Gfx25CandidateRunIdentity.cmake"
             "-DRVX_CANDIDATE_REPORT=${ARG_SERIES_ROOT}/series-validation.json"
             "-DRVX_CANDIDATE_BACKEND=${ARG_BACKEND_LOWER}"
             "-DRVX_CANDIDATE_PYTHON=${Python3_EXECUTABLE}"

@@ -592,6 +592,17 @@ if(TARGET RVX_SampleCommon)
         LIBS RVX::SampleCommon
         TIMEOUT 30
     )
+    if(Python3_FOUND)
+        rvx_add_validation_test(
+            NAME Gfx25CandidateRunIsolationSelfTest
+            LANE unit
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Scripts/test_gfx25_candidate_runs.py
+            BUILD_TARGETS SampleCLIValidation
+            TAGS product.samples trait.contract
+            TIMEOUT 30
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        )
+    endif()
 endif()
 
 if(TARGET RVX_SampleCommon)

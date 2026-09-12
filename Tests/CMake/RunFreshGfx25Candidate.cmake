@@ -54,8 +54,22 @@ if(IS_SYMLINK "${_rvx_candidate_root}")
         "GFX25 candidate root must not be a symbolic link")
 endif()
 
-file(MAKE_DIRECTORY "${_rvx_allowed_root}")
-file(REMOVE_RECURSE "${_rvx_candidate_root}")
+include("${CMAKE_CURRENT_LIST_DIR}/Gfx25CandidateRunIdentity.cmake")
+set(_rvx_candidate_root "${_rvx_candidate_root}/runs/${_rvx_run_id}")
+set(_rvx_ancestor "${_rvx_candidate_root}")
+while(NOT "${_rvx_ancestor}" STREQUAL "")
+    if(IS_SYMLINK "${_rvx_ancestor}")
+        message(FATAL_ERROR "GFX25 candidate run has a symbolic-link ancestor")
+    endif()
+    cmake_path(GET _rvx_ancestor PARENT_PATH _rvx_parent)
+    if("${_rvx_parent}" STREQUAL "${_rvx_ancestor}")
+        break()
+    endif()
+    set(_rvx_ancestor "${_rvx_parent}")
+endwhile()
+if(EXISTS "${_rvx_candidate_root}")
+    message(FATAL_ERROR "GFX25 candidate run already exists; preserve evidence and use a new run id")
+endif()
 file(MAKE_DIRECTORY "${_rvx_candidate_root}")
 
 execute_process(
@@ -78,8 +92,10 @@ execute_process(
         --diagnostics
         --validation
     WORKING_DIRECTORY "${RVX_CANDIDATE_WORKING_DIRECTORY}"
+    OUTPUT_FILE "${_rvx_candidate_root}/producer.stdout.log"
+    ERROR_FILE "${_rvx_candidate_root}/producer.stderr.log"
     RESULT_VARIABLE _rvx_result)
 if(NOT _rvx_result EQUAL 0)
     message(FATAL_ERROR
-        "Fresh GFX25 candidate producer failed with exit code ${_rvx_result}")
+        "Fresh GFX25 candidate producer failed with exit code ${_rvx_result}; logs preserved at ${_rvx_candidate_root}")
 endif()

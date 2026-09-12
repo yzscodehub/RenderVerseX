@@ -784,6 +784,14 @@
   ],
   "testPresets": [
     {
+      "name": "win_x64_debug_gfx25_candidate",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": { "renderversex.com/validation/1.0": { "visibility": "internal" } },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx25-candidate$" } }
+    },
+    {
       "name": "win_x64_nightly_compatibility_debug",
       "configurePreset": "win_x64_nightly_compatibility_debug",
       "configuration": "Debug",

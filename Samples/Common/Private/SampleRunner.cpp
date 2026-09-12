@@ -26,6 +26,7 @@
 #include "Samples/SampleParticleEffectLoader.h"
 #include "Samples/SampleRegistry.h"
 #include "Samples/SampleScreenshotWriter.h"
+#include "Samples/SampleSurfaceQualification.h"
 #include "World/World.h"
 
 #include <nlohmann/json.hpp>
@@ -5874,8 +5875,8 @@ namespace
         windowConfig.title = applicationName.c_str();
         windowConfig.width = options.common.width;
         windowConfig.height = options.common.height;
-        windowConfig.resizable = options.common.frames == 0 ||
-                                 options.HasLifetimeQualification();
+        windowConfig.resizable = options.common.frames == 0 &&
+                                 !options.HasLifetimeQualification();
         windowConfig.graphicsApi =
             options.common.backend == RHIBackendType::OpenGL
                 ? WindowGraphicsApi::OpenGL
@@ -6168,6 +6169,7 @@ namespace
         std::unique_ptr<SampleLifetimeQualification> lifetimeQualification;
         std::chrono::steady_clock::time_point lifetimeReadyStart{};
         bool lifetimeReadyStarted = false;
+        SampleSurfaceQualification lifetimeSurface;
         bool lifetimeReportWritten = true;
         bool resizePending = false;
         bool resizeToAlternateExtent = true;
@@ -8274,11 +8276,26 @@ namespace
                             lifetimeReadyStart =
                                 std::chrono::steady_clock::now();
                             lifetimeReadyStarted = true;
+                            lifetimeSurface.Begin(diagnostics.surfaceWidth,
+                                                  diagnostics.surfaceHeight,
+                                                  diagnostics.surfaceGeneration);
                         }
 
-                        if (resizePending &&
-                            diagnostics.surfaceWidth == pendingResizeWidth &&
-                            diagnostics.surfaceHeight == pendingResizeHeight)
+                        const auto surfaceObservation = lifetimeSurface.Observe(
+                            diagnostics.surfaceWidth, diagnostics.surfaceHeight,
+                            diagnostics.surfaceGeneration);
+                        if (surfaceObservation == SampleSurfaceObservation::UnexpectedChange)
+                        {
+                            error = "Unexpected native surface change during lifetime qualification: expected=" +
+                                std::to_string(lifetimeSurface.GetExpectedWidth()) + "x" +
+                                std::to_string(lifetimeSurface.GetExpectedHeight()) + " actual=" +
+                                std::to_string(diagnostics.surfaceWidth) + "x" +
+                                std::to_string(diagnostics.surfaceHeight) + " generation=" +
+                                std::to_string(diagnostics.surfaceGeneration);
+                            lifetimeQualification->Fail(error);
+                            engine.RequestShutdown();
+                        }
+                        if (surfaceObservation == SampleSurfaceObservation::ResizeAccepted)
                         {
                             // The post-wait diagnostics already contain the
                             // renderer-accepted extent, while the ordinary
@@ -8315,7 +8332,8 @@ namespace
                         {
                             pendingResizeWidth = options.common.width;
                             pendingResizeHeight = options.common.height;
-                            if (!window->RequestResize(pendingResizeWidth,
+                            if (!lifetimeSurface.Request(pendingResizeWidth, pendingResizeHeight) ||
+                                !window->RequestResize(pendingResizeWidth,
                                                        pendingResizeHeight))
                             {
                                 lifetimeQualification->Fail(
@@ -8379,7 +8397,8 @@ namespace
                                                       : options.common.height;
                             resizeToAlternateExtent =
                                 !resizeToAlternateExtent;
-                            if (!window->RequestResize(pendingResizeWidth,
+                            if (!lifetimeSurface.Request(pendingResizeWidth, pendingResizeHeight) ||
+                                !window->RequestResize(pendingResizeWidth,
                                                        pendingResizeHeight))
                             {
                                 lifetimeQualification->Fail(

@@ -9,6 +9,7 @@
 #include "Samples/SampleRunner.h"
 #include "Samples/SampleScenarioDiagnostics.h"
 #include "Samples/SampleScreenshotWriter.h"
+#include "Samples/SampleSurfaceQualification.h"
 
 #include <gtest/gtest.h>
 
@@ -2550,6 +2551,33 @@ namespace
         EXPECT_TRUE(options.HasFrameworkAssessment());
         EXPECT_EQ(options.assessmentProfile,
                   RVX::SampleAssessmentProfile::Benchmark);
+    }
+
+    TEST(SampleCLIValidation, LifetimeSurfaceRejectsUnrequestedResizeAndGenerationChange)
+    {
+        RVX::SampleSurfaceQualification surface;
+        surface.Begin(320, 180, 7);
+        EXPECT_EQ(surface.Observe(320, 180, 7), RVX::SampleSurfaceObservation::Stable);
+        EXPECT_EQ(surface.Observe(3747, 2126, 8), RVX::SampleSurfaceObservation::UnexpectedChange);
+        EXPECT_EQ(surface.Observe(320, 180, 8), RVX::SampleSurfaceObservation::UnexpectedChange);
+        EXPECT_EQ(surface.Observe(320, 180, 7), RVX::SampleSurfaceObservation::Stable);
+    }
+
+    TEST(SampleCLIValidation, LifetimeSurfaceOnlyAcceptsExactAuthorizedTransition)
+    {
+        RVX::SampleSurfaceQualification surface;
+        surface.Begin(320, 180, 7);
+        EXPECT_FALSE(surface.Request(0, 180));
+        EXPECT_FALSE(surface.Request(320, 180));
+        ASSERT_TRUE(surface.Request(352, 198));
+        EXPECT_FALSE(surface.Request(640, 360));
+        EXPECT_EQ(surface.Observe(320, 180, 7), RVX::SampleSurfaceObservation::AwaitingResize);
+        EXPECT_EQ(surface.Observe(352, 198, 7), RVX::SampleSurfaceObservation::UnexpectedChange);
+        EXPECT_EQ(surface.Observe(640, 360, 8), RVX::SampleSurfaceObservation::UnexpectedChange);
+        EXPECT_EQ(surface.Observe(352, 198, 8), RVX::SampleSurfaceObservation::ResizeAccepted);
+        EXPECT_EQ(surface.Observe(352, 198, 8), RVX::SampleSurfaceObservation::Stable);
+        ASSERT_TRUE(surface.Request(320, 180));
+        EXPECT_EQ(surface.Observe(320, 180, 9), RVX::SampleSurfaceObservation::ResizeAccepted);
     }
 
     TEST(SampleCLIValidation, LifetimeQualificationAcceptsStablePlateau)
