@@ -385,6 +385,7 @@ rvx_add_gtest(
     NAME RenderContractsValidation
     LANE unit
     SOURCES RenderContractsValidation/main.cpp
+            RenderContractsValidation/TransparentTemporalPolicyTests.cpp
     LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Private
     TIMEOUT 60
