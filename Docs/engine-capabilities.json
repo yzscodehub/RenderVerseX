@@ -68,7 +68,7 @@
       },
       {
         "id": "material",
-        "magic": "RVX_MATERIAL_ARTIFACT_V1",
+        "magic": "RVX_MATERIAL_ARTIFACT_V2",
         "source": "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedMaterialArtifact.h"
       },
       {

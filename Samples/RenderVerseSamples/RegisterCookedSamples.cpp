@@ -23,7 +23,9 @@ namespace RVX
         {
             info.defaultAssetId = "water-bottle-cooked-v1";
             info.assetPolicy = SampleAssetPolicy::Fixed;
-            info.requiredCookedAssetIds = {info.defaultAssetId};
+            info.defaultEnvironmentId = "pbr-reference-environment-cooked-v1";
+            info.requiredCookedAssetIds = {
+                info.defaultAssetId, info.defaultEnvironmentId};
         }
 
         template <>

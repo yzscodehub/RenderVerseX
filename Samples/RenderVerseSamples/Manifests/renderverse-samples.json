@@ -282,7 +282,8 @@
       "allowedFallbacks": [],
       "cookedAssetIds": [
         "r7-triangle",
-        "water-bottle-cooked-v1"
+        "water-bottle-cooked-v1",
+        "pbr-reference-environment-cooked-v1"
       ],
       "fixedTime": {
         "numerator": 1,
@@ -319,7 +320,7 @@
         }
       ],
       "captureTicks": [120, 360, 361],
-      "visualContractVersion": 2,
+      "visualContractVersion": 3,
       "roiMetricPolicy": {
         "regionsOfInterest": [
           {

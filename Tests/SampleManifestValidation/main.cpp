@@ -229,6 +229,7 @@ namespace
         ASSERT_NE(pbrMaterials, nullptr);
         const std::vector<RVX::uint32> expectedTicks = {120u, 360u, 361u};
         EXPECT_TRUE(modelViewer->deterministicQualification);
+        EXPECT_EQ(modelViewer->visualContractVersion, 3u);
         EXPECT_EQ(modelViewer->captureTicks, expectedTicks);
         EXPECT_EQ(modelViewer->cameraBookmarks.size(), 3u);
         EXPECT_EQ(modelViewer->roiMetricPolicy.regionsOfInterest.size(), 2u);
