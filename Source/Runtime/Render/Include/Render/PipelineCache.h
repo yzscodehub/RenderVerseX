@@ -1096,6 +1096,13 @@ namespace RVX
         RHIPipeline* GetOpaqueSceneColorPyramidPipeline(
             RHIFormat outputFormat = RHIFormat::RGBA16_FLOAT);
 
+        /** Fixed RG16F motion + R8 reactive + R32F paired depth, prepared before execution. */
+        RHIPipeline* GetTransparentTemporalResolvePipeline(bool allowHistory = true);
+        RHIDescriptorSetLayout* GetTransparentTemporalResolveSetLayout() const
+        {
+            return m_transparentTemporalResolveSetLayout.Get();
+        }
+
         /**
          * @brief Get the fail-closed Ground Truth Ambient Occlusion pipeline family.
          *
@@ -2198,6 +2205,14 @@ namespace RVX
         RHIShaderRef m_bloomPixelShader;
         RHIShaderRef m_opaqueSceneColorPyramidVertexShader;
         RHIShaderRef m_opaqueSceneColorPyramidPixelShader;
+        RHIShaderRef m_transparentTemporalResolvePixelShader;
+        std::unique_ptr<ShaderProgramMetadata> m_transparentTemporalResolveMetadata;
+        RHIDescriptorSetLayoutRef m_transparentTemporalResolveSetLayout;
+        RHIPipelineLayoutRef m_transparentTemporalResolveLayout;
+        RHIPipelineRef m_transparentTemporalResolvePipeline;
+        RHIShaderRef m_transparentTemporalResolveNoHistoryPixelShader;
+        std::unique_ptr<ShaderProgramMetadata> m_transparentTemporalResolveNoHistoryMetadata;
+        RHIPipelineRef m_transparentTemporalResolveNoHistoryPipeline;
         RHIShaderRef m_gtaoSurfacePixelShader;
         RHIShaderRef m_gtaoHorizonPixelShader;
         RHIShaderRef m_gtaoBilateralHorizontalPixelShader;

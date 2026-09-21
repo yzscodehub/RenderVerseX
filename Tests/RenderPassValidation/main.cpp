@@ -32365,11 +32365,14 @@ TEST_F(RenderPassValidationFixture,
         identity.cameraCutRevision = 1;
         return identity;
     };
+    auto linearDepthTexture = device.CreateTexture(RHITextureDesc::Texture2D(
+        32, 32, RHIFormat::R32_FLOAT, RHITextureUsage::ShaderResource));
+    ASSERT_TRUE(linearDepthTexture);
     const auto addFrame = [&](RenderGraph& graph,
                               const RenderViewHistoryIdentity& identity,
                               uint64 frameIndex,
                               const Vec2& jitter,
-                              bool historyAvailable)
+                              bool historyAvailable, bool linearDepth = false)
         -> std::array<uint32, 5>
     {
         RenderGraphValidationAccess::SetDevice(graph, &device);
@@ -32378,6 +32381,9 @@ TEST_F(RenderPassValidationFixture,
             graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
         inputs.depth = RenderGraphValidationAccess::ImportTexture(
             graph, depthTexture.Get(), RHIResourceState::DepthRead);
+        if (linearDepth)
+            inputs.temporalLinearDepth = graph.ImportTexture(linearDepthTexture,
+                RHIResourceState::ShaderResource);
         inputs.velocity = RenderGraphValidationAccess::ImportTexture(
             graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
         inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
@@ -32524,6 +32530,32 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(stats.historySampled);
     EXPECT_TRUE(stats.historyConsumed);
     EXPECT_NE(stats.exposureStateContentHash, 0u);
+    ASSERT_TRUE(taa.CommitHistoryAfterPresent(secondIdentity));
+    const auto checkDomain = [&](uint64 sequence, bool linear, bool expectHistory, bool commit)
+    {
+        RenderGraph frameGraph;
+        const auto identity = makeIdentity(sequence);
+        addFrame(frameGraph, identity, sequence,
+            sequence % 2 ? Vec2(0.25f, 0.125f) : Vec2(-0.25f, -0.125f), true, linear);
+        RenderGraphValidationAccess::Compile(frameGraph);
+        ASSERT_TRUE(frameGraph.GetCompileStats().compileValid);
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(frameGraph, commands);
+        ASSERT_TRUE(taa.GetLastResolveStats().executed);
+        EXPECT_EQ(taa.GetLastResolveStats().historySampled, expectHistory);
+        if (!expectHistory)
+            EXPECT_TRUE(HasRenderHistoryResetReason(taa.GetLastResolveStats().historyResetReasons,
+                RenderHistoryResetReason::FormatChanged));
+        if (commit)
+            EXPECT_TRUE(taa.CommitHistoryAfterPresent(identity));
+        else
+            taa.AbandonPendingHistory();
+    };
+    checkDomain(3, true, false, false);
+    checkDomain(4, false, true, true);
+    checkDomain(5, true, false, true);
+    checkDomain(6, true, true, true);
+    checkDomain(7, false, false, true);
 }
 
 TEST_F(RenderPassValidationFixture,

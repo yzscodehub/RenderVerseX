@@ -254,6 +254,7 @@ target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/FXAA.cpp
     Private/PostProcess/SSR.cpp
     Private/PostProcess/TAA.cpp
+    Private/PostProcess/TransparentTemporalResolve.cpp
     Private/PostProcess/DOF.cpp
     Private/PostProcess/MotionBlur.cpp
     Private/PostProcess/ColorGrading.cpp

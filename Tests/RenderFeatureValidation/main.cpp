@@ -3721,6 +3721,49 @@ namespace
                   RenderGraphBlackboardCode::InvalidSemanticContract);
     }
 
+    TEST(RenderFeatureValidation, RequestedTemporalResolveCannotSilentlyBypassMissingPipeline)
+    {
+        RenderGraph graph;
+        DefaultRenderPassBundle passes;
+        auto record = MakeValidRecordContext(graph);
+        auto frozen = std::make_shared<RenderPassFrameSnapshot>();
+        frozen->identity = record.identity;
+        record.frameSnapshot = std::move(frozen);
+        record.transparentTemporalSurface = TransparentTemporalSurfaceInputs{};
+        const auto lightingIdentity = record.lightingPlan->GetIdentityHash();
+        TranslucencyFeatureAdapter adapter(&passes);
+        adapter.SetRecordContext(std::move(record));
+        auto context = MakeValidContext();
+        context.resolvedRecipe = context.pipeline.recipe;
+        context.resolvedQuality = context.pipeline.quality;
+        context.profileHash = ComputeRenderPipelineProfileHash(context.resolvedRecipe, context.resolvedQuality);
+        adapter.Prepare(context);
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), context.frameIdentity.frameSequence,
+            context.recordingViewOrdinal, context.recordEpoch};
+        RenderGraphBlackboard blackboard(provenance);
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        auto depth = MakeSceneDepthSnapshot(provenance);
+        depth.frameIdentity = context.frameIdentity;
+        depth.viewIdentity = context.viewIdentity;
+        depth.outputExtent = context.outputExtent;
+        depth.depthSnapshotMetadata.extent = context.outputExtent;
+        ASSERT_EQ(blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
+            producer.Describe(), std::move(depth)), RenderGraphBlackboardCode::Success);
+        auto inputs = MakePreTranslucencyOutputs(provenance);
+        inputs.frameIdentity = context.frameIdentity;
+        inputs.viewIdentity = context.viewIdentity;
+        inputs.lightingPlanIdentity = lightingIdentity;
+        ASSERT_EQ(blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
+            producer.Describe(), inputs), RenderGraphBlackboardCode::Success);
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        adapter.AddPasses(builder, blackboard);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(blackboard.WasPublishedBy(TranslucencyOutputsContract,
+            BuiltinRenderFeatureIds::Translucency));
+    }
+
     TEST(RenderFeatureValidation,
          TranslucencyFeatureTransformsTheExactPreBoundaryIntoPostOutputs)
     {

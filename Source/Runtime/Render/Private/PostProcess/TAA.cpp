@@ -320,7 +320,10 @@ void TAA::AddToGraph(RenderGraph& graph,
     }
     m_lastResolveStats.pipelineReady = true;
 
-    if (!frameInputs.sceneColor.IsValid() || !frameInputs.depth.IsValid() ||
+    const bool usesLinearDepth = frameInputs.temporalLinearDepth.IsValid();
+    const RGTextureHandle temporalDepth = usesLinearDepth
+        ? frameInputs.temporalLinearDepth : frameInputs.depth;
+    if (!frameInputs.sceneColor.IsValid() || !temporalDepth.IsValid() ||
         !frameInputs.velocity.IsValid() || !frameInputs.reactiveMask.IsValid() ||
         !frameInputs.exposureState.IsValid() ||
         frameInputs.exposureStateContentHash == 0 || !output.IsValid() ||
@@ -333,7 +336,7 @@ void TAA::AddToGraph(RenderGraph& graph,
 
     const RHITextureDesc* const colorDesc = graph.GetTextureDesc(frameInputs.sceneColor);
     const RHITextureDesc* const outputDesc = graph.GetTextureDesc(output);
-    const RHITextureDesc* const depthDesc = graph.GetTextureDesc(frameInputs.depth);
+    const RHITextureDesc* const depthDesc = graph.GetTextureDesc(temporalDepth);
     const RHITextureDesc* const velocityDesc = graph.GetTextureDesc(frameInputs.velocity);
     const RHITextureDesc* const reactiveDesc = graph.GetTextureDesc(frameInputs.reactiveMask);
     if (colorDesc == nullptr || outputDesc == nullptr || depthDesc == nullptr ||
@@ -358,7 +361,9 @@ void TAA::AddToGraph(RenderGraph& graph,
     };
     if (!matchesContract(*colorDesc, SceneTextures::HDRSceneColorContract) ||
         !matchesContract(*outputDesc, SceneTextures::HDRSceneColorContract) ||
-        !matchesContract(*depthDesc, SceneTextures::DeviceDepthContract) ||
+        !matchesContract(*depthDesc, usesLinearDepth
+            ? SceneTextures::FormatContract{RHIFormat::R32_FLOAT, RHISampleCount::Count1}
+            : SceneTextures::DeviceDepthContract) ||
         !matchesContract(*velocityDesc, SceneTextures::VelocityContract) ||
         !matchesContract(*reactiveDesc, SceneTextures::ReactiveMaskContract))
     {
@@ -389,7 +394,10 @@ void TAA::AddToGraph(RenderGraph& graph,
         RecordUnsupported("TAA was offered history without a committed matching resource", &frameInputs);
         return;
     }
-    if (frameInputs.HasHistory() && m_historyValid &&
+    const bool depthDomainMatches = usesLinearDepth == m_committedLinearDepth;
+    if (m_historyValid && !depthDomainMatches)
+        m_lastResolveStats.historyResetReasons |= RenderHistoryResetReason::FormatChanged;
+    if (frameInputs.HasHistory() && m_historyValid && depthDomainMatches &&
         !HasDistinctFiniteTemporalJitter(
             frameInputs.jitterOffset, m_previousJitterPixels))
     {
@@ -400,7 +408,7 @@ void TAA::AddToGraph(RenderGraph& graph,
     }
 
     AbandonPendingHistory();
-    const bool useHistory = frameInputs.HasHistory() && m_historyValid;
+    const bool useHistory = frameInputs.HasHistory() && m_historyValid && depthDomainMatches;
     const uint32 readHistoryIndex = m_committedHistoryIndex;
     const uint32 writeHistoryIndex = 1u - readHistoryIndex;
     const RHIResourceState historyInitialState =
@@ -455,6 +463,7 @@ void TAA::AddToGraph(RenderGraph& graph,
         RGTextureViewHandle historyDepthWriteView;
         RHIFormat outputFormat = RHIFormat::Unknown;
         bool useHistory = false;
+        bool linearDepth = false;
         Vec2 currentJitterPixels = Vec2(0.0f);
         RenderViewHistoryIdentity historyIdentity{};
         uint64 exposureStateContentHash = 0;
@@ -481,7 +490,8 @@ void TAA::AddToGraph(RenderGraph& graph,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.currentDepth = builder.Read(
-                frameInputs.depth,
+                frameInputs.temporalLinearDepth.IsValid()
+                    ? frameInputs.temporalLinearDepth : frameInputs.depth,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.historyDepth = builder.Read(
@@ -517,6 +527,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             const RHITextureDesc* const outputTextureDesc = builder.GetTextureDesc(output);
             data.outputFormat = outputTextureDesc ? outputTextureDesc->format : RHIFormat::Unknown;
             data.useHistory = useHistory;
+            data.linearDepth = frameInputs.temporalLinearDepth.IsValid();
             data.currentJitterPixels = frameInputs.jitterOffset;
             data.historyIdentity = frameInputs.historyIdentity;
             data.exposureStateContentHash = frameInputs.exposureStateContentHash;
@@ -647,6 +658,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             commands.EndRenderPass();
 
             m_pendingHistoryIndex = writeHistoryIndex;
+            m_pendingLinearDepth = data.linearDepth;
             m_pendingHistoryIdentity = data.historyIdentity;
             m_pendingJitterPixels = data.currentJitterPixels;
             m_hasPendingHistory = true;
@@ -679,6 +691,7 @@ bool TAA::CommitHistoryAfterPresent(
         return false;
 
     m_committedHistoryIndex = m_pendingHistoryIndex;
+    m_committedLinearDepth = m_pendingLinearDepth;
     m_previousJitterPixels = m_pendingJitterPixels;
     // Only a successfully presented candidate proves that the graph work was
     // submitted and that every persistent history ended in its exported SRV
@@ -710,6 +723,8 @@ void TAA::AbandonPendingHistory() noexcept
 
 void TAA::ResetHistory()
 {
+    m_committedLinearDepth = false;
+    m_pendingLinearDepth = false;
     m_historyValid = false;
     m_committedHistoryIndex = 0;
     m_previousJitterPixels = Vec2(0.0f);

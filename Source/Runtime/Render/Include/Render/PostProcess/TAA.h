@@ -144,6 +144,8 @@ namespace RVX
         bool m_historyResourceStatesInitialized = false;
         bool m_historyValid = false;
         bool m_hasPendingHistory = false;
+        bool m_committedLinearDepth = false;
+        bool m_pendingLinearDepth = false;
         RenderViewHistoryIdentity m_pendingHistoryIdentity{};
         Vec2 m_previousJitterPixels = Vec2(0.0f);
         Vec2 m_pendingJitterPixels = Vec2(0.0f);

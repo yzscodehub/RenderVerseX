@@ -657,7 +657,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 6;
+        static constexpr uint32 SchemaVersion = 7;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Exact frozen frame/view that produced these graph resources. */
@@ -688,6 +688,9 @@ namespace RVX
         PostProcessMaterialTableMetadata materialParameterTableMetadata{};
         RGTextureHandle velocity{};
         SceneTextures::Metadata velocityMetadata{};
+        /** Optional linear view depth paired with resolved transparent motion. */
+        RGTextureHandle temporalLinearDepth{};
+        SceneTextures::Metadata temporalLinearDepthMetadata{};
         RGTextureHandle reactiveMask{};
         SceneTextures::Metadata reactiveMaskMetadata{};
         /** Late opaque HDR pyramid retained for refraction-aware consumers. */
@@ -1132,6 +1135,7 @@ namespace RVX
                        HandleMatchesGraph(
                            entry.materialParameterTable, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
+                       HandleMatchesGraph(entry.temporalLinearDepth, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(
                            entry.opaqueSceneColorPyramid.texture, provenance) &&
@@ -1416,6 +1420,9 @@ namespace RVX
                    OptionalMetadataMatches(
                        outputs.velocity, outputs.velocityMetadata,
                        SceneTextures::VelocityContract) &&
+                   OptionalMetadataMatches(outputs.temporalLinearDepth,
+                       outputs.temporalLinearDepthMetadata,
+                       SceneTextures::FormatContract{RHIFormat::R32_FLOAT, RHISampleCount::Count1}) &&
                    OptionalMetadataMatches(
                        outputs.reactiveMask, outputs.reactiveMaskMetadata,
                        SceneTextures::ReactiveMaskContract) &&

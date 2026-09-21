@@ -39,6 +39,8 @@ namespace RVX
         PostProcessMaterialTableMetadata materialParameterTableMetadata{};
         RGTextureHandle velocity;
         PostProcessTextureMetadata velocityMetadata{};
+        /** TAA-only linear view depth; other effects retain device depth. */
+        RGTextureHandle temporalLinearDepth;
         RGTextureHandle reactiveMask;
         PostProcessTextureMetadata reactiveMaskMetadata{};
         /** Unique graph import of the prior-presented exposure state. */

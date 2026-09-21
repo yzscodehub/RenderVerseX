@@ -1473,6 +1473,14 @@ void PipelineCache::Shutdown()
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
     m_opaqueSceneColorPyramidPipeline.Reset();
+    m_transparentTemporalResolvePipeline.Reset();
+    m_transparentTemporalResolveLayout.Reset();
+    m_transparentTemporalResolveNoHistoryPipeline.Reset();
+    m_transparentTemporalResolveNoHistoryPixelShader.Reset();
+    m_transparentTemporalResolveNoHistoryMetadata.reset();
+    m_transparentTemporalResolveSetLayout.Reset();
+    m_transparentTemporalResolvePixelShader.Reset();
+    m_transparentTemporalResolveMetadata.reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
     m_rigidObjectVelocityPipeline.Reset();
@@ -1784,6 +1792,13 @@ void PipelineCache::RetireOwnerSnapshots(
 
 bool PipelineCache::CompileShaders()
 {
+    m_transparentTemporalResolveNoHistoryPipeline.Reset();
+    m_transparentTemporalResolveNoHistoryPixelShader.Reset();
+    m_transparentTemporalResolveNoHistoryMetadata.reset();
+    // Lazy temporal programs belong to this shader generation as well.
+    m_transparentTemporalResolvePipeline.Reset();
+    m_transparentTemporalResolvePixelShader.Reset();
+    m_transparentTemporalResolveMetadata.reset();
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
     std::string weightedBlendedOITCompositeShaderPath =
         m_shaderDir + "/Translucency/WeightedBlendedOITComposite.hlsl";
@@ -8377,6 +8392,101 @@ RHIPipeline* PipelineCache::GetOpaqueSceneColorPyramidPipeline(
     return m_opaqueSceneColorPyramidPipeline.Get();
 }
 
+RHIPipeline* PipelineCache::GetTransparentTemporalResolvePipeline(bool allowHistory)
+{
+    auto& requestedPipeline = allowHistory ? m_transparentTemporalResolvePipeline
+        : m_transparentTemporalResolveNoHistoryPipeline;
+    auto& requestedShader = allowHistory ? m_transparentTemporalResolvePixelShader
+        : m_transparentTemporalResolveNoHistoryPixelShader;
+    auto& requestedMetadata = allowHistory ? m_transparentTemporalResolveMetadata
+        : m_transparentTemporalResolveNoHistoryMetadata;
+    if (requestedPipeline)
+        return requestedPipeline.Get();
+    if (!m_device || !m_shaderProgramLoader || !m_toneMappingVertexShader)
+    {
+        SetLastError("Transparent temporal resolve requires initialized shader/device resources");
+        return nullptr;
+    }
+    if (!requestedShader)
+    {
+        RenderShaderLoadDesc shader;
+        shader.path = m_shaderDir + "/PostProcess/TransparentTemporalResolve.hlsl";
+        shader.entryPoint = allowHistory ? "PSMain" : "PSNoHistory";
+        shader.stage = RHIShaderStage::Pixel;
+        shader.backend = m_device->GetBackendType();
+        if (m_device->GetBackendType() == RHIBackendType::DX11)
+            shader.targetProfile = "ps_5_0";
+        auto loaded = m_shaderProgramLoader->LoadFromFile(m_device, shader);
+        if (!loaded.compileResult.success || !loaded.shader)
+        {
+            SetLastError("Transparent temporal resolve shader unavailable: " +
+                         loaded.compileResult.errorMessage);
+            return nullptr;
+        }
+        requestedShader = loaded.shader;
+        requestedMetadata =
+            std::make_unique<ShaderProgramMetadata>(std::move(loaded.compileResult));
+    }
+    if (!m_transparentTemporalResolveSetLayout)
+    {
+        RHIDescriptorSetLayoutDesc desc;
+        desc.debugName = "TransparentTemporalResolveSetLayout";
+        for (uint32 slot = 0; slot < 5; ++slot)
+            desc.AddBinding(slot, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        m_transparentTemporalResolveSetLayout = m_device->CreateDescriptorSetLayout(desc);
+        if (!m_transparentTemporalResolveSetLayout)
+        {
+            SetLastError("Transparent temporal resolve descriptor layout unavailable");
+            return nullptr;
+        }
+    }
+    if (!m_transparentTemporalResolveLayout)
+    {
+        RHIPipelineLayoutDesc desc;
+        desc.setLayouts.push_back(m_transparentTemporalResolveSetLayout.Get());
+        desc.debugName = "TransparentTemporalResolveLayout";
+        m_transparentTemporalResolveLayout = m_device->CreatePipelineLayout(desc);
+        if (!m_transparentTemporalResolveLayout)
+        {
+            SetLastError("Transparent temporal resolve pipeline layout unavailable");
+            return nullptr;
+        }
+    }
+    RHIGraphicsPipelineDesc desc;
+    desc.vertexShader = m_toneMappingVertexShader.Get();
+    desc.pixelShader = requestedShader.Get();
+    desc.pipelineLayout = m_transparentTemporalResolveLayout.Get();
+    desc.debugName = "TransparentTemporalResolve";
+    desc.rasterizerState = RHIRasterizerState::Default();
+    desc.rasterizerState.cullMode = RHICullMode::None;
+    desc.depthStencilState = RHIDepthStencilState::Disabled();
+    desc.blendState = RHIBlendState::Default();
+    desc.numRenderTargets = 3;
+    desc.renderTargetFormats[0] = RHIFormat::RG16_FLOAT;
+    desc.renderTargetFormats[1] = RHIFormat::R8_UNORM;
+    desc.renderTargetFormats[2] = RHIFormat::R32_FLOAT;
+    desc.depthStencilFormat = RHIFormat::Unknown;
+    desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    const uint64 hash = ComputePipelineStateHash(desc, MaterialPipelineVariant::Transparent);
+    const auto cached = m_pipelineCache.find(hash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        requestedPipeline = cached->second;
+        return requestedPipeline.Get();
+    }
+    ++m_stats.pipelineCacheMissCount;
+    requestedPipeline = m_device->CreateGraphicsPipeline(desc);
+    if (!requestedPipeline)
+        SetLastError("Backend rejected transparent temporal resolve pipeline");
+    else
+    {
+        ++m_stats.pipelineCreateCount;
+        m_pipelineCache[hash] = requestedPipeline;
+    }
+    return requestedPipeline.Get();
+}
+
 RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
 {
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
@@ -12785,6 +12895,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_ssrResolvePsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
+        if (shader == m_transparentTemporalResolvePixelShader.Get())
+            return ComputeShaderHash(m_transparentTemporalResolveMetadata.get());
+        if (shader == m_transparentTemporalResolveNoHistoryPixelShader.Get())
+            return ComputeShaderHash(m_transparentTemporalResolveNoHistoryMetadata.get());
         if (shader == m_objectVelocityVertexShader.Get())
             return ComputeShaderHash(m_objectVelocityVsCompileResult.get());
         if (shader == m_rigidObjectVelocityVertexShader.Get())

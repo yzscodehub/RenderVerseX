@@ -382,6 +382,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
     inputs.materialParameterTableMetadata =
         translucency->materialParameterTableMetadata;
     inputs.velocity = translucency->velocity;
+    inputs.temporalLinearDepth = translucency->temporalLinearDepth;
     inputs.velocityMetadata = MakePostProcessMetadata(
         translucency->velocityMetadata);
     inputs.reactiveMask = translucency->reactiveMask;

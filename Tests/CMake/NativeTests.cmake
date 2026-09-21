@@ -76,6 +76,7 @@ if(RVX_ENABLE_DX12)
         NAME DX12Validation
         LANE native
         SOURCES DX12Validation/main.cpp
+                DX12Validation/TransparentTemporalValidation.cpp
         LIBS
             RVX::Core
             RVX::EngineDevelopmentComposition
@@ -105,7 +106,9 @@ if(RVX_ENABLE_VULKAN)
         NAME VulkanValidation
         LANE native
         SOURCES VulkanValidation/main.cpp
+                VulkanValidation/TransparentTemporalValidation.cpp
         LIBS
+            RVX::EngineDevelopmentComposition
             RVX::Core
             RVX::Render
             RVX::RenderGraph

@@ -18,7 +18,7 @@ namespace RVX
      * @brief Value-owned presentation inputs frozen for one graph recording.
      *
      * Scene color is intentionally absent: the adapter obtains it only from
-     * TranslucencyOutputs v5 so no SceneRenderer-side post-process bypass can
+     * TranslucencyOutputs v7 so no SceneRenderer-side post-process bypass can
      * substitute a stale or untyped surface.
      */
     struct PostProcessPipelineRecordContext

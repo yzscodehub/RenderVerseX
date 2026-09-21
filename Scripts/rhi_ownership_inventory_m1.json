@@ -2,6 +2,78 @@
   "schemaVersion": 1,
   "entries": [
     {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolvePixelShader",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolveSetLayout",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolveLayout",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolvePipeline",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolveNoHistoryPixelShader",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_transparentTemporalResolveNoHistoryPipeline",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+      "normalRelease": "cache owns the shader generation; exact graph records independently retain pipeline and descriptor layout through their submission completion",
+      "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/TransparentTemporalResolve.cpp",
+      "owner": "ResolveData",
+      "symbol": "pipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue completion token for the graph recording",
+      "normalRelease": "RenderGraphPassContext retains the exact record resource in the completion-owned submission batch",
+      "deviceLostRelease": "unsubmitted graph abandonment or explicit device-lost batch teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/TransparentTemporalResolve.cpp",
+      "owner": "ResolveData",
+      "symbol": "layout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue completion token for the graph recording",
+      "normalRelease": "RenderGraphPassContext retains the exact record resource in the completion-owned submission batch",
+      "deviceLostRelease": "unsubmitted graph abandonment or explicit device-lost batch teardown"
+    },
+    {
       "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_computeContexts",

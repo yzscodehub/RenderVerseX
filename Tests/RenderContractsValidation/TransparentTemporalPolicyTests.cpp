@@ -27,6 +27,7 @@ namespace RVX
         ASSERT_TRUE(result.valid);
         EXPECT_EQ(result.source, TransparentTemporalVelocitySource::Transparent);
         EXPECT_EQ(result.motion, Vec2(0.1f, 0.2f));
+        EXPECT_FLOAT_EQ(result.viewDepth, 2.0f);
     }
 
     TEST(TransparentTemporalPolicy, RejectsHistoryFromUnsubmittedFrameOrReusedInstance)
@@ -42,6 +43,7 @@ namespace RVX
             ASSERT_TRUE(result.valid);
             EXPECT_EQ(result.source, TransparentTemporalVelocitySource::Opaque);
             EXPECT_EQ(result.reactive, 1.0f);
+            EXPECT_FLOAT_EQ(result.viewDepth, 2.0f);
         }
     }
 
@@ -59,6 +61,7 @@ namespace RVX
             EXPECT_EQ(result.source, TransparentTemporalVelocitySource::Opaque);
             EXPECT_EQ(result.motion, Vec2(0.3f, 0.4f));
             EXPECT_EQ(result.reactive, s.coverage);
+            EXPECT_FLOAT_EQ(result.viewDepth, 10.0f);
         }
     }
 

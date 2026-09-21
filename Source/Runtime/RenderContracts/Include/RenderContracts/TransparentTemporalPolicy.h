@@ -45,6 +45,7 @@ namespace RVX
         TransparentTemporalVelocitySource source = TransparentTemporalVelocitySource::Opaque;
         Vec2 motion{0.0f, 0.0f};
         float32 reactive = 0.0f;
+        float32 viewDepth = 0.0f;
         bool valid = false;
     };
 
@@ -73,17 +74,20 @@ namespace RVX
             return result;
         result.valid = true;
         result.motion = opaqueMotion;
+        result.viewDepth = opaqueViewDepth;
         if (sample.coverage == 0.0f || sample.viewDepth >= opaqueViewDepth)
             return result;
 
+        const bool dominantSurface = sample.mode == TransparentTemporalMode::SortedSurface &&
+            !sample.overlappingLayers && !sample.refractive && sample.coverage == 1.0f;
+        if (dominantSurface)
+            result.viewDepth = sample.viewDepth;
         const bool exactHistory = sample.instanceId != 0 && sample.generation != 0 &&
             sample.instanceId == sample.previousInstanceId &&
             sample.generation == sample.previousGeneration &&
             lastSubmittedFrame != 0 && sample.previousSubmittedFrame == lastSubmittedFrame &&
             sample.previousShapeAvailable && !sample.discontinuity;
-        if (sample.mode == TransparentTemporalMode::SortedSurface &&
-            !sample.overlappingLayers && !sample.refractive &&
-            sample.coverage == 1.0f && exactHistory)
+        if (dominantSurface && exactHistory)
         {
             result.source = TransparentTemporalVelocitySource::Transparent;
             result.motion = sample.motion;

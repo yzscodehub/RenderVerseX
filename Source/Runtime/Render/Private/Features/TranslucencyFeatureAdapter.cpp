@@ -1012,17 +1012,6 @@ void TranslucencyFeatureAdapter::AddPasses(
         activeSceneColor = particleDirect.hdrSceneColor;
     }
 
-    const RenderGraph::Diagnostics graphDiagnostics =
-        builder.GetGraph().GetDiagnostics();
-    for (size_t passIndex = firstFeatureGraphPass;
-         passIndex < graphDiagnostics.passes.size();
-         ++passIndex)
-    {
-        ++m_lastPassChainStats.graphPassCount;
-        m_lastPassChainStats.graphPassNames.push_back(
-            graphDiagnostics.passes[passIndex].name);
-    }
-
     if (!activeSceneColor.IsValid())
     {
         SetCompositionFailure(
@@ -1049,6 +1038,32 @@ void TranslucencyFeatureAdapter::AddPasses(
     outputs.velocityMetadata = inputs->velocityMetadata;
     outputs.reactiveMask = inputs->reactiveMask;
     outputs.reactiveMaskMetadata = inputs->reactiveMaskMetadata;
+    if (context.transparentTemporalSurface.has_value())
+    {
+        TransparentTemporalResolveOutputs temporal;
+        std::string failure;
+        auto surface = *context.transparentTemporalSurface;
+        surface.historyAvailable = surface.historyAvailable &&
+            context.view.previousViewProjectionValid != 0 && !context.view.resetTemporalHistory;
+        if (m_pipelineCache == nullptr ||
+            !BuildTransparentTemporalResolve(builder, *m_pipelineCache,
+                inputs->frameIdentity, inputs->viewIdentity,
+                inputs->velocity, inputs->reactiveMask,
+                surface, temporal, failure))
+        {
+            SetCompositionFailure(failure.empty()
+                ? "Transparent temporal resolve has no pipeline resources" : failure);
+            return;
+        }
+        outputs.velocity = temporal.velocity;
+        outputs.reactiveMask = temporal.reactive;
+        outputs.temporalLinearDepth = temporal.linearDepth;
+        outputs.temporalLinearDepthMetadata = SceneTextures::Metadata{
+            surface.extent, RHIFormat::R32_FLOAT, RHISampleCount::Count1};
+        // Motion/reactive preserve their RG16F/R8 metadata; TAA receives the
+        // paired linear depth separately without changing other depth consumers.
+        // Opaque velocity remains a separate read-only resource in this graph.
+    }
     outputs.opaqueSceneColorPyramid =
         inputs->opaqueSceneColorPyramid;
     outputs.distortionVectors = context.particleVfx.distortionVectors;
@@ -1063,13 +1078,21 @@ void TranslucencyFeatureAdapter::AddPasses(
     outputs.exposureStateMetadata = inputs->exposureStateMetadata;
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
+    const RenderGraph::Diagnostics graphDiagnostics =
+        builder.GetGraph().GetDiagnostics();
+    for (size_t passIndex = firstFeatureGraphPass;
+         passIndex < graphDiagnostics.passes.size(); ++passIndex)
+    {
+        ++m_lastPassChainStats.graphPassCount;
+        m_lastPassChainStats.graphPassNames.push_back(graphDiagnostics.passes[passIndex].name);
+    }
     if (blackboard.Publish(
             BuiltinRenderFeatureIds::Translucency,
             Describe(),
             std::move(outputs)) != RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "Translucency could not publish TranslucencyOutputs v6");
+              "Translucency could not publish TranslucencyOutputs v7");
     }
 }
 

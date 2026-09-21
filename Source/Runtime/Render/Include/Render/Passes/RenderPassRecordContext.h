@@ -14,6 +14,7 @@
 #include "Render/Lighting/VolumetricLightingFramePlan.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/PipelineCache.h"
+#include "Render/PostProcess/TransparentTemporalResolve.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPlan.h"
@@ -29,6 +30,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <vector>
 
@@ -1868,6 +1870,8 @@ namespace RVX
     struct RenderPassRecordContext
     {
         ViewData view{};
+        /** Optional producer export; absence keeps opaque velocity and existing reactive. */
+        std::optional<TransparentTemporalSurfaceInputs> transparentTemporalSurface;
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         RenderPassRecordIdentity identity{};
         /** Full accepted-frame identity paired with this recording. */

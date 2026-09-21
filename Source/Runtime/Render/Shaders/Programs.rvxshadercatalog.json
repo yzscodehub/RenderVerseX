@@ -2,6 +2,8 @@
   "schema": "RVX_SHADER_PROGRAM_CATALOG",
   "version": 2,
   "programs": [
+    {"asset":"PostProcess/TransparentTemporalResolve.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"PostProcess/TransparentTemporalResolve.hlsl","stage":"Pixel","entry":"PSNoHistory","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainRigid","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainGPUDriven","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
