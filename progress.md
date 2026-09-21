@@ -355,3 +355,18 @@ Keep at most the ten most useful recent entries.
 - Next: generalize cooked visual qualification for model-viewer/pbr-materials,
   then deliver strict Material Artifact V2 and production glTF PBR extensions
   before the combined final evidence closure.
+
+### 2026-09-21 - GFX25-C, VAL-R and temporal infrastructure
+
+- Commits: 1b7668a6 (cooked ModelViewer reference lighting and authorized Material
+  V2 magic), 14cc30a1 (authorized resize and preserved run evidence), 95b2c865
+  (CPU temporal reference), a38fbb8b (graph-owned motion/reactive/paired depth).
+- Final pre-commit Build Truth 05bddea8260242ac8542f58f942bedba passed
+  Architecture 65/65, Unit 2106/2106, Integration 765/765 and DX12 Native 64/64.
+  Exact receipt is recorded in feature_list.json; it is historical after commit.
+- DX12/Vulkan GPU readbacks plus feature/depth-domain checks passed 83/83.
+  TAA never reuses a different depth domain or commits an abandoned candidate.
+- The new optional temporal export has no fabricated glass/water/particle
+  producer. Those effect integrations remain GFX26/GFX27 work. Golden approval,
+  Shipping refresh, fixed-GPU performance and remote/Metal qualification remain
+  pending, so gfx-24 stays active. No push or master modification.

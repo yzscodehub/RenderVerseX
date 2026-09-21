@@ -2,7 +2,7 @@
     "$schema":  "./feature_list.schema.json",
     "schema":  "RVX.AgentFeatureList",
     "schemaVersion":  1,
-    "updatedAt":  "2026-09-03T05:20:34.2270427Z",
+    "updatedAt":  "2026-09-21T15:38:45.0778191Z",
     "activeFeature":  "gfx-24",
     "features":  [
                      {
@@ -576,8 +576,8 @@
                      },
                      {
                          "id":  "gfx-24",
-                         "name":  "Graphics qualification and production PBR showcases",
-                         "behavior":  "RenderQualityLab and deterministic model/PBR showcases consume only cooked assets while the material product advances to one strict V2 contract with production glTF extension semantics shared by Forward+ and Deferred; completion-owned visual evidence remains configuration-bound, and fixed-GPU plus remote qualification is executed after the GFX25 implementation stabilizes.",
+                         "name":  "Graphics qualification, GFX25-C, VAL-R and GFX-T0",
+                         "behavior":  "Close GFX25-C with current material/catalog facts and reviewable cooked captures; implement VAL-R authorized surface transitions and immutable per-run evidence; extend the existing presentation-qualified history authority for GFX-T0 transparent temporal selection without overwriting opaque velocity. Golden approval and remote/fixed-GPU qualification remain separate pending gates.",
                          "owner":  "primary-coordinator",
                          "scope":  {
                                        "include":  [
@@ -670,6 +670,46 @@
                                "Focused tests, Architecture, complete Windows Debug Build Truth, DX12 qualification, Shipping cooked-only closure, and diff hygiene pass; Linux Vulkan and macOS Metal remain explicit PR-CI obligations."
                                                 ],
                          "verification":  [
+                                          {
+                                              "id": "t0-depth-native-reference",
+                                              "layer": "native",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R '^(TransparentTemporalPolicy\\.|RenderFeatureValidation\\.|RenderPassValidationFixture.TAAUsesShaderResourceInitialStateAfterSuccessfulHistoryCommit$|DX12Validation.TransparentTemporal|VulkanValidation.TransparentTemporal)' --output-on-failure > build/win_x64_debug/t0-depth-focused.log 2>&1",
+                                              "required": true,
+                                              "expectedArtifact": "build/win_x64_debug/t0-depth-focused.log",
+                                              "expectedReceipt": null
+                                          },
+                                          {
+                                              "id": "valr-t0-reference",
+                                              "layer": "focused",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R \"^(SampleCLIValidation|RenderContractsValidation|TransparentTemporalPolicy|RenderViewHistoryValidation|Gfx25CandidateRunIsolationSelfTest)(\\.|$)\" --output-on-failure",
+                                              "required": true,
+                                              "expectedArtifact": null,
+                                              "expectedReceipt": null
+                                          },
+                                          {
+                                              "id": "gfx25c-candidate",
+                                              "layer": "native",
+                                              "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx25_candidate -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx25Candidate -RequiredLabel suite.gfx25-candidate -ExpectedTestCount 16 -BaseRef master -SkipConfigure",
+                                              "required": true,
+                                              "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                              "expectedReceipt": {
+                                                  "kind": "RequiredSuite",
+                                                  "baseRef": "master",
+                                                  "configurePreset": "win_x64_debug",
+                                                  "buildPreset": "win_x64_debug",
+                                                  "testPreset": "win_x64_debug_gfx25_candidate",
+                                                  "buildDir": "build/win_x64_debug",
+                                                  "configuration": "Debug",
+                                                  "buildTargets": [
+                                                      "RVXValidationSuiteGfx25Candidate"
+                                                  ],
+                                                  "requiredLabel": "suite.gfx25-candidate",
+                                                  "expectedTestCount": 16,
+                                                  "fresh": false,
+                                                  "skipConfigure": true,
+                                                  "requiredSemanticArtifacts": []
+                                              }
+                                          },
                                               {
                                                   "id":  "focused-build",
                                                   "layer":  "focused",
@@ -893,6 +933,43 @@
                          "status":  "active",
                          "evidence":  [
                                           {
+                                              "verificationId": "full-debug-build-truth",
+                                              "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-21T15:24:29.9248845Z",
+                                              "artifact": ".agent-harness/receipts/BuildTruth.05bddea8260242ac8542f58f942bedba.json",
+                                              "artifactSha256": "2e1392f2d1e98990737181716fb10cf8132b46bd40d6637fe72f0d5c4f9003f0",
+                                              "runId": "05bddea8260242ac8542f58f942bedba",
+                                              "sourceCommit": "95b2c8657fb0cc8cea7fd7a29accc81cb0452de8",
+                                              "sourceDigest": "cedfe100746a6baec59806a646a03179df3e6ba59fa9421b7611bcec1bf59025",
+                                              "notes": "Final paired-depth implementation passed Architecture 65, Unit 2106, Integration 765, DX12 Native 64 before commit a38fbb8b. This receipt remains bound to its pre-commit source state, not a current-HEAD release claim."
+                                          },
+                                          {
+                                              "verificationId": "t0-depth-native-reference",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R '^(TransparentTemporalPolicy\\.|RenderFeatureValidation\\.|RenderPassValidationFixture.TAAUsesShaderResourceInitialStateAfterSuccessfulHistoryCommit$|DX12Validation.TransparentTemporal|VulkanValidation.TransparentTemporal)' --output-on-failure > build/win_x64_debug/t0-depth-focused.log 2>&1",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-21T15:06:35.1239112Z",
+                                              "artifact": "build/win_x64_debug/t0-depth-focused.log",
+                                              "artifactSha256": "8d9260082f6ea55b2d5ae1e980d065f92bb338dd81389a833465c51a7cb94e7a",
+                                              "sourceCommit": "95b2c8657fb0cc8cea7fd7a29accc81cb0452de8",
+                                              "notes": "83/83: CPU/feature/depth-domain reference plus DX12 and Vulkan GPU readback, with and without history. Eight pixel cases verify selected depth and preserved opaque motion. Metal pending."
+                                          },
+                                          {
+                                              "verificationId": "gfx25c-candidate",
+                                              "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx25_candidate -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx25Candidate -RequiredLabel suite.gfx25-candidate -ExpectedTestCount 16 -BaseRef master -SkipConfigure",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-12T08:13:49.9857237Z",
+                                              "artifact": ".agent-harness/receipts/RequiredSuite.285f561f8c8848f18adbe2bb7367800e.json",
+                                              "artifactSha256": "2159e609dd0a4c0e2ecab9f48fe79d4aa5950e425312786112c6f928437dc71e",
+                                              "runId": "285f561f8c8848f18adbe2bb7367800e",
+                                              "sourceCommit": "2f83c4ee0ec6851b85f72fc2739db84377bdc709",
+                                              "sourceDigest": "66a43e39b3b7f4d9a0cc7a36561a5bbfd3cc13dab6a2027f8262e02464083859",
+                                              "notes": "16/16 passed before checkpoint commits. ModelViewer uses the cooked reference environment. This historical receipt is not a current-HEAD release claim. Previous run f7ef5d48647745da84b71a979769f5bf failed with EngineStopped and remains preserved."
+                                          },
+                                          {
                                               "verificationId":  "focused-build",
                                               "command":  "cmake --build --preset win_x64_debug --target RenderQualityCaptureValidation RenderQualityMetricsValidation RenderQualityLabSampleValidation RVXValidationSuiteGfx24Qualification --config Debug",
                                               "result":  "passed",
@@ -926,19 +1003,6 @@
                                               "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
                                               "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
                                               "notes":  "The independent Release host cooker was rebuilt before the current Shipping suite without adding a Shipping-to-Developer dependency."
-                                          },
-                                          {
-                                              "verificationId":  "full-debug-build-truth",
-                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
-                                              "result":  "passed",
-                                              "exitCode":  0,
-                                              "recordedAt":  "2026-08-31T04:43:11.3336563Z",
-                                              "artifact":  ".agent-harness/receipts/BuildTruth.4673c3cec4f54d1b85ff09741462d0a6.json",
-                                              "artifactSha256":  "5badeb799f0d046be122e17a6a856ed3e23bae257327933d77ecbc8fd5186cd7",
-                                              "runId":  "4673c3cec4f54d1b85ff09741462d0a6",
-                                              "sourceCommit":  "49ae950dd1b2f3d3903bc76fcefc7503d01a2671",
-                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
-                                              "notes":  "The final product digest passed Architecture 65/65, Unit 2072/2072, Integration 756/756, and real DX12 Native 61/61. The stage commits were created afterward without changing product content; post-commit Architecture separately binds the same digest to 0aaddeaf."
                                           },
                                           {
                                               "verificationId":  "pr-smoke-required-suite",
@@ -1005,8 +1069,8 @@
                                           }
                                       ],
                          "blocker":  null,
-            "nextStep":  "GFX24 configuration-bound DX12 Forward+ and Deferred V2 Goldens are approved in 6ad09dcb and the clean isolated raster required suite passes 4/4 with receipt 109843e2638c7220d7a296fbcb599cfdd87b6a322c25f14265423463b9198ad5. The user explicitly deferred the rejected A4 rerun and Windows/Linux/macOS plus DX12/Vulkan RT remote qualification until GFX25 implementation is complete. Continue under this single active coordinator feature with GFX25: first generalize deterministic cooked visual qualification for model-viewer and pbr-materials, then implement strict MaterialStaticDescriptor/CookedMaterialArtifact V2 and production glTF material extensions, then qualify required small redistributable assets and optional Porsche/HDRI evidence. Preserve protected concurrent changes and do not claim final qualification before the deferred gates run.",
-            "updatedAt":  "2026-09-03T05:20:34.2270427Z"
+            "nextStep": "GFX25-C lighting/magic 1b7668a6, VAL-R 14cc30a1, CPU temporal reference 95b2c865 and paired-depth GPU infrastructure a38fbb8b are committed. Final pre-commit Build Truth passed 65/2106/765/64; DX12/Vulkan temporal graph readback and depth-domain checks passed 83/83. Refresh post-commit Architecture. Finish GFX25 visual review and approved Golden, then final Shipping/fixed-GPU/remote qualification. Actual glass/water/particle temporal exports belong to later GFX26/GFX27; no current feature capability is inferred from the infrastructure. Preserve protected user modifications and do not push.",
+            "updatedAt":  "2026-09-21T15:38:45.0778191Z"
                      }
                  ]
 }
