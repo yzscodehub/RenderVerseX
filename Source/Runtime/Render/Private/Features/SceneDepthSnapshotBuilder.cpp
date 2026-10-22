@@ -1,4 +1,6 @@
 #include "Features/SceneDepthSnapshotBuilder.h"
+#include "Render/PipelineCache.h"
+#include "Render/PostProcess/TransmissionDepthPyramid.h"
 
 #include <atomic>
 #include <memory>
@@ -21,6 +23,9 @@ namespace
     {
         return description != nullptr &&
                description->format == RHIFormat::D32_FLOAT &&
+               description->dimension == RHITextureDimension::Texture2D &&
+               description->arraySize == 1 && description->mipLevels == 1 &&
+               description->depth == 1 &&
                description->width == expectedExtent.width &&
                description->height == expectedExtent.height &&
                description->sampleCount == RHISampleCount::Count1 &&
@@ -33,9 +38,16 @@ SceneDepthSnapshotDemand ResolveSceneDepthSnapshotDemand(
     bool waterExecutable,
     bool particleDepthRequested,
     bool particleDepthRequired,
-    bool particleExecutable)
+    bool particleExecutable,
+    bool transmissionRequired,
+    bool transmissionExecutable)
 {
     SceneDepthSnapshotDemand result;
+    if (transmissionRequired && !transmissionExecutable)
+    {
+        result.failureReason = "ThinTransmission requires an executable sampled-depth consumer";
+        return result;
+    }
     if (waterDepthRequired && !waterExecutable)
     {
         result.failureReason =
@@ -57,10 +69,53 @@ SceneDepthSnapshotDemand ResolveSceneDepthSnapshotDemand(
 
     result.valid = true;
     result.requested = (waterDepthRequired && waterExecutable) ||
-        (particleDepthRequested && particleExecutable);
+        (particleDepthRequested && particleExecutable) || transmissionRequired;
     result.required = waterDepthRequired ||
-        (particleDepthRequired && particleExecutable);
+        (particleDepthRequired && particleExecutable) || transmissionRequired;
     return result;
+}
+
+bool HasThinTransmissionDraws(const RenderPassRecordContext& context) noexcept
+{
+    const auto* items = context.frameSnapshot
+        ? &context.frameSnapshot->transparentDrawItems : context.transparentDrawItems;
+    if (items == nullptr) return false;
+    for (const auto& item : *items)
+    {
+        if (item.packet.pipelineKey.shadingModel == MaterialShadingModel::ThinTransmission)
+            return true;
+    }
+    return false;
+}
+
+bool BuildSceneTransmissionDepth(
+    RenderFeatureGraphBuilder& builder, PipelineCache& pipelineCache,
+    const RenderPassRecordContext& context, RenderQualityTier quality,
+    SceneDepthSnapshot& snapshot, SceneDepthSnapshotRecordInput& input,
+    std::string& outFailure)
+{
+    if (!HasThinTransmissionDraws(context)) return true;
+    if (!snapshot.available)
+    {
+        outFailure = "ThinTransmission requires the current shared depth snapshot";
+        return false;
+    }
+    TransmissionDepthPyramidOutput guard;
+    if (!BuildTransmissionDepthPyramid(
+            builder, pipelineCache, input, quality,
+            pipelineCache.GetDepthClearValue() == 0.0f, guard, outFailure))
+        return false;
+    snapshot.transmissionRequested = true;
+    snapshot.transmissionPyramid = guard.texture;
+    snapshot.transmissionMetadata = {
+        guard.baseExtent, RHIFormat::R32_FLOAT, RHISampleCount::Count1};
+    snapshot.transmissionMipCount = guard.mipCount;
+    snapshot.transmissionReceipt = guard.receipt;
+    input.transmissionPyramid = guard.texture;
+    input.transmissionBaseExtent = guard.baseExtent;
+    input.transmissionMipCount = guard.mipCount;
+    input.transmissionReceipt = guard.receipt;
+    return true;
 }
 
 bool BuildSceneDepthSnapshot(

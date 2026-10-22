@@ -369,11 +369,11 @@ execute_process(
         --source-path "scene.gltf"
         --source-name "RenderVerseX transparent-material fixture"
         --source-uri "repo://Samples/Common/Tools/SampleTransparentMaterialsFixtureWriter.cpp"
-        --source-version "gfx15-transparent-materials-cook-v1"
+        --source-version "gfx26-transparent-materials-cook-v2"
         --attribution "Generated from the RenderVerseX deterministic transparent-material fixture."
         --modification-notice "Cooked with the fixed GFX15 transparency profile; source bytes are not staged at runtime."
         --derived-from "transparent-materials-fixture"
-        --generation-recipe "rvx-gfx15-transparent-material-cook-v1"
+        --generation-recipe "rvx-gfx26-transparent-material-cook-v2"
     RESULT_VARIABLE _rvx_transparent_catalog_result)
 if(NOT _rvx_transparent_catalog_result EQUAL 0)
     message(FATAL_ERROR "Transparent-material cooked catalog publication failed")

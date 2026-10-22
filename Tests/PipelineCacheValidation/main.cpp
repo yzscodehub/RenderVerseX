@@ -2757,7 +2757,9 @@ TEST_F(PipelineCacheValidationFixture, TAAResolveUsesOneCookedThreeTargetContrac
     EXPECT_NE(shaderSource.find("axialAverageRGB"), std::string::npos);
     EXPECT_NE(shaderSource.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
     EXPECT_NE(shaderSource.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
-    EXPECT_NE(shaderSource.find("neighborhood.center = rawSample;"), std::string::npos);
+    // Pixel reconstruction, reactive rejection and history reprojection are
+    // verified by TAAStableGridNative on DX12/Vulkan against affine RGB values.
+    // This unit owns the binding/MRT and single-neighborhood contracts only.
     EXPECT_EQ(shaderSource.find("SampleCurrentNeighborhoodMin"), std::string::npos);
     EXPECT_EQ(shaderSource.find("SampleCurrentNeighborhoodMax"), std::string::npos);
     const auto countOccurrences = [&shaderSource](const std::string_view token)
@@ -2777,8 +2779,6 @@ TEST_F(PipelineCacheValidationFixture, TAAResolveUsesOneCookedThreeTargetContrac
               std::string::npos);
     EXPECT_NE(shaderSource.find("Velocity.Load(int3(pixel, 0))"),
               std::string::npos);
-    EXPECT_NE(shaderSource.find("ReactiveMask.Load(int3(pixel, 0))"),
-              std::string::npos);
     EXPECT_NE(shaderSource.find("HistoryColor.SampleLevel("),
               std::string::npos);
     EXPECT_NE(shaderSource.find("HistoryDepth.SampleLevel("),
@@ -2790,9 +2790,6 @@ TEST_F(PipelineCacheValidationFixture, TAAResolveUsesOneCookedThreeTargetContrac
               std::string::npos);
     EXPECT_NE(shaderSource.find("velocityNDC.x * 0.5, -velocityNDC.y * 0.5"),
               std::string::npos);
-    EXPECT_NE(shaderSource.find("previousUV = uv - velocityUV"),
-              std::string::npos);
-    EXPECT_EQ(shaderSource.find("jitterCorrection"), std::string::npos);
     EXPECT_NE(shaderSource.find("depthMatches"), std::string::npos);
     EXPECT_NE(shaderSource.find("SanitizeColor"), std::string::npos);
 }
@@ -4137,7 +4134,8 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeSplits), 464u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, directionalShadowCascadeFadeDistances), 480u);
     EXPECT_EQ(offsetof(RVX::ViewConstants, rayTracedShadowParams), 496u);
-    EXPECT_EQ(sizeof(RVX::ViewConstants), 512u);
+    EXPECT_EQ(offsetof(RVX::ViewConstants, opaqueSceneColorUVTransform), 512u);
+    EXPECT_EQ(sizeof(RVX::ViewConstants), 528u);
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -5564,6 +5562,23 @@ TEST_F(PipelineCacheValidationFixture,
     request.opaqueSceneColorPyramidBaseExtent = {16, 8};
     request.opaqueSceneColorPyramidMipCount = 5;
 
+    auto depthDesc = RVX::RHITextureDesc::Texture2D(
+        16, 8, RVX::RHIFormat::R32_FLOAT,
+        RVX::RHITextureUsage::ShaderResource);
+    depthDesc.mipLevels = 5;
+    depthDesc.debugName = "LightingBindingSnapshotTransmissionDepthPyramid";
+    auto depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_NE(depthTexture, nullptr);
+    RVX::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.format = RVX::RHIFormat::R32_FLOAT;
+    depthViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+    depthViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    depthViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    depthViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Color;
+    auto depthView = device.CreateTextureView(depthTexture.Get(), depthViewDesc);
+    ASSERT_NE(depthView, nullptr);
+    request.transmissionDepthPyramidView = depthView;
+
     RVX::LightingBindingSnapshot snapshot;
     ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
         MakeLightingBindingSnapshotView(), request, snapshot))
@@ -5577,6 +5592,7 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_EQ(snapshot.opaqueSceneColorPyramidBaseExtent.width, 16u);
     EXPECT_EQ(snapshot.opaqueSceneColorPyramidBaseExtent.height, 8u);
     EXPECT_EQ(snapshot.opaqueSceneColorPyramidMipCount, 5u);
+    EXPECT_EQ(snapshot.transmissionDepthPyramidView.Get(), depthView.Get());
 
     const FakeDescriptorSet* const descriptorSet =
         static_cast<const FakeDescriptorSet*>(snapshot.frameDescriptorSet.Get());
@@ -5589,6 +5605,58 @@ TEST_F(PipelineCacheValidationFixture,
             RVX::PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding);
     ASSERT_NE(pyramidBinding, nullptr);
     EXPECT_EQ(pyramidBinding->textureView, pyramidView.Get());
+    const auto* depthBinding = FindDescriptorBinding(descriptorSetDesc,
+        RVX::PipelineCache::DefaultLitTransmissionDepthPyramidBinding);
+    ASSERT_NE(depthBinding, nullptr);
+    EXPECT_EQ(depthBinding->textureView, depthView.Get());
+
+    auto d32Desc = RVX::RHITextureDesc::DepthStencil(
+        16, 8, RVX::RHIFormat::D32_FLOAT);
+    d32Desc.usage = d32Desc.usage | RVX::RHITextureUsage::ShaderResource;
+    auto d32Texture = device.CreateTexture(d32Desc);
+    ASSERT_NE(d32Texture, nullptr);
+    RVX::RHITextureViewDesc d32ViewDesc;
+    d32ViewDesc.format = RVX::RHIFormat::D32_FLOAT;
+    d32ViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+    d32ViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    d32ViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    d32ViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Depth;
+    auto d32View = device.CreateTextureView(d32Texture.Get(), d32ViewDesc);
+    ASSERT_NE(d32View, nullptr);
+    request.transmissionDepthPyramidView = d32View;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("R32 TransmissionDepthPyramid"),
+              std::string::npos);
+    EXPECT_EQ(snapshot.transmissionDepthPyramidView.Get(), depthView.Get());
+
+    RVX::RHITextureViewDesc partialDepthViewDesc = depthViewDesc;
+    partialDepthViewDesc.subresourceRange = RVX::RHISubresourceRange::Mip(0);
+    partialDepthViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Color;
+    auto partialDepthView =
+        device.CreateTextureView(depthTexture.Get(), partialDepthViewDesc);
+    ASSERT_NE(partialDepthView, nullptr);
+    request.transmissionDepthPyramidView = partialDepthView;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("all-mip"), std::string::npos);
+
+    auto wrongExtentDesc = RVX::RHITextureDesc::Texture2D(
+        15, 8, RVX::RHIFormat::R32_FLOAT,
+        RVX::RHITextureUsage::ShaderResource);
+    wrongExtentDesc.mipLevels = 5;
+    auto wrongExtentTexture = device.CreateTexture(wrongExtentDesc);
+    ASSERT_NE(wrongExtentTexture, nullptr);
+    auto wrongExtentView =
+        device.CreateTextureView(wrongExtentTexture.Get(), depthViewDesc);
+    ASSERT_NE(wrongExtentView, nullptr);
+    request.transmissionDepthPyramidView = wrongExtentView;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("TransmissionDepthPyramid"),
+              std::string::npos);
+
+    request.transmissionDepthPyramidView = depthView;
+    request.opaqueSceneColorPyramidSourceExtent = {0, 16};
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(MakeLightingBindingSnapshotView(), request, snapshot));
+    request.opaqueSceneColorPyramidSourceExtent = {32, 16};
 
     const RVX::RHIDescriptorSet* const publishedDescriptorSet =
         snapshot.frameDescriptorSet.Get();

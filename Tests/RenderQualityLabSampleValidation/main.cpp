@@ -1,6 +1,8 @@
 #include "Scenes/RenderQualityLabSample.h"
 
+#include "Samples/SampleCLI.h"
 #include "Samples/SampleInfo.h"
+#include "Samples/SampleRenderQualityDiagnostics.h"
 
 #include <gtest/gtest.h>
 
@@ -58,6 +60,54 @@ namespace
         "RENDER.CAPABILITY.SORTED_TRANSLUCENCY",
         "RENDER.CAPABILITY.CPU_PARTICLE_BILLBOARD",
         "RENDER.CAPABILITY.GERSTNER_WATER_SURFACE"};
+}
+
+TEST(RenderQualityLabSampleValidation, TemporalTranslucencyRequiresExactExecutedChain)
+{
+    using namespace RVX;
+    SampleRenderDiagnostics diagnostics;
+    diagnostics.transparentAlphaBlendDrawCount = 1;
+    diagnostics.transparentPremultipliedDrawCount = 1;
+    diagnostics.transparentAdditiveDrawCount = 1;
+    diagnostics.transparentThinTransmissionDrawCount = 1;
+    diagnostics.transparentOpaqueSceneColorPyramidReady = true;
+    diagnostics.transparentOpaqueSceneColorPyramidBuilt = true;
+    diagnostics.transparentReactiveMaskAttachmentBound = true;
+    diagnostics.transparentReactiveMaskWriteDrawCount = 1;
+    diagnostics.transparentPriorityBucketCount = 4;
+    EXPECT_TRUE(HasSampleRenderQualityTranslucencyExecution(diagnostics));
+    diagnostics.postProcessActualExecution.taaRequested = true;
+    diagnostics.postProcessActualExecution.receiptFrameSequence = 17;
+    EXPECT_FALSE(HasSampleRenderQualityTranslucencyExecution(diagnostics));
+    RenderExecutionReceipt receipt;
+    receipt.available = receipt.graphComposed = receipt.executionSucceeded = true;
+    receipt.presented = receipt.succeeded = true;
+    receipt.frameIdentity = {17, 1, 1, 1};
+    RenderFeatureExecutionReceipt feature;
+    feature.featureId = BuiltinRenderFeatureIds::Translucency;
+    feature.selected = true;
+    feature.readiness.compiled = feature.readiness.hardwareSupported = true;
+    feature.readiness.implementationSupported = feature.readiness.pipelineReady = true;
+    feature.readiness.inputsReady = feature.readiness.executed = true;
+    feature.graphPassNames = {"TransparentMeshReactiveClear", "TransparentTemporalCandidates", "TransparentTemporalResolve"};
+    feature.graphPassCount = feature.executedGraphPassCount = 3;
+    receipt.features = {feature};
+    diagnostics.transparentTemporalExecutionQualified = HasSampleTransparentTemporalExecution(receipt, 17);
+    EXPECT_TRUE(HasSampleRenderQualityTranslucencyExecution(diagnostics));
+    const auto reject = [&](auto mutate)
+    {
+        auto changed = diagnostics;
+        auto changedReceipt = receipt;
+        mutate(changedReceipt);
+        changed.transparentTemporalExecutionQualified = HasSampleTransparentTemporalExecution(changedReceipt, 17);
+        EXPECT_FALSE(HasSampleRenderQualityTranslucencyExecution(changed));
+    };
+    reject([](auto& r){++r.frameIdentity.frameSequence;});
+    reject([](auto& r){r.features[0].executedGraphPassCount = 2;});
+    reject([](auto& r){r.features[0].fallbackUsed = true;});
+    reject([](auto& r){r.features[0].graphPassNames[1] = "TransparentTemporalResolve";});
+    reject([](auto& r){r.features.push_back(r.features[0]);});
+    reject([](auto& r){r.presented = false;});
 }
 
 TEST(RenderQualityLabSampleValidation,

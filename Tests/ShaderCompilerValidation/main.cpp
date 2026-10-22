@@ -234,7 +234,7 @@ namespace
     constexpr std::array<SurfaceShaderCompileCase, 22> GFX06_SURFACE_SHADER_CASES = {{
         // DefaultLit is used by direct, GPU-driven, and GPU-scene raster paths.
         {"DefaultLit PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSMain", false},
-        {"DefaultLit ThinTransmission PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardTranslucency", false},
+        {"DefaultLit ThinTransmission PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardTranslucencyGuarded", false},
         {"DefaultLit Forward surface data PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardSurfaceData", false},
         {"DefaultLit VS direct", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", true},
         {"DefaultLit VS rigid", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", true},
@@ -329,7 +329,7 @@ namespace
             options.enableOptimization =
                 backend == RVX::RHIBackendType::DX11 &&
                 std::string_view(shaderCase.entryPoint) ==
-                    "PSForwardTranslucency";
+                    "PSForwardTranslucencyGuarded";
             if (shaderCase.defineName != nullptr)
             {
                 options.defines.push_back({shaderCase.defineName, shaderCase.defineValue});
@@ -1150,6 +1150,133 @@ TEST_F(ShaderCompilerValidationFixture, InvalidCompileOptionsReturnVisibleFailur
     RVX::ShaderCompileResult result = compiler->Compile(options);
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
+}
+
+#if RVX_ENABLE_DX11 || RVX_ENABLE_DX12 || RVX_ENABLE_VULKAN || RVX_ENABLE_OPENGL || RVX_ENABLE_METAL
+TEST_F(ShaderCompilerValidationFixture, TransmissionFootprintCompilesAcrossEnabledBackends)
+{
+    TempDirectory temp("rvx_transmission_footprint_compile");
+    const fs::path includePath = fs::path(RVX_SOURCE_DIR) /
+        "Source/Runtime/Render/Shaders/Translucency/TransmissionFootprint.hlsli";
+    ASSERT_TRUE(fs::is_regular_file(includePath));
+    const std::string source = "#include \"" + includePath.generic_string() + "\"\n" + R"(
+Texture2D<float> DepthSource : register(t1, space0);
+Texture2D<float> DepthPyramid : register(t6, space0);
+float4 main(float4 position : SV_POSITION) : SV_TARGET
+{
+    float2 uv = saturate(position.xy / float2(33.0f, 17.0f));
+    float reduced = RVXReduceTransmissionDepth(
+        DepthSource, uv, position.x < 8.0f, position.y < 4.0f, false);
+    float guarded = RVXSampleTransmissionDepthPyramid(DepthPyramid, uv, position.z + 1.25f);
+    return float4(reduced, guarded, 0.0f, 1.0f);
+}
+)";
+    const fs::path productionPath = includePath.parent_path() / "TransmissionDepthPyramid.hlsl";
+    const std::string productionSource = ReadTextFile(productionPath);
+    const std::string productionPathString = productionPath.string();
+    ASSERT_FALSE(productionSource.empty());
+    const fs::path path = temp.Path() / "Footprint.hlsl";
+    WriteTextFile(path, source);
+    const std::string pathString = path.string();
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    std::vector<RVX::RHIBackendType> backends;
+#if RVX_ENABLE_DX11
+    backends.push_back(RVX::RHIBackendType::DX11);
+#endif
+#if RVX_ENABLE_DX12
+    backends.push_back(RVX::RHIBackendType::DX12);
+#endif
+#if RVX_ENABLE_VULKAN
+    backends.push_back(RVX::RHIBackendType::Vulkan);
+#endif
+#if RVX_ENABLE_OPENGL
+    backends.push_back(RVX::RHIBackendType::OpenGL);
+#endif
+#if RVX_ENABLE_METAL
+    backends.push_back(RVX::RHIBackendType::Metal);
+#endif
+    ASSERT_FALSE(backends.empty());
+    for (const auto backend : backends)
+    {
+        RVX::ShaderCompileOptions options;
+        options.stage = RVX::RHIShaderStage::Pixel;
+        options.entryPoint = "main";
+        options.sourceCode = source.c_str();
+        options.sourcePath = pathString.c_str();
+        options.targetBackend = backend;
+        options.enableOptimization = false;
+        const auto support = compiler->QuerySupport(options);
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
+        const auto result = compiler->Compile(options);
+        EXPECT_TRUE(result.success) << static_cast<int>(backend) << ": " << result.errorMessage;
+        options.entryPoint = "PSMain";
+        options.sourceCode = productionSource.c_str();
+        options.sourcePath = productionPathString.c_str();
+        const auto productionResult = compiler->Compile(options);
+        EXPECT_TRUE(productionResult.success)
+            << static_cast<int>(backend) << ": " << productionResult.errorMessage;
+    }
+}
+#endif
+
+TEST_F(ShaderCompilerValidationFixture, TransparentTemporalRasterCompilesAcrossEnabledBackends)
+{
+    const fs::path rawPath = fs::path(RVX_SOURCE_DIR) /
+        "Source/Runtime/Render/Shaders/PostProcess/TransparentTemporalResolve.hlsl";
+    const std::string rawSource = ReadTextFile(rawPath);
+    const std::string rawPathString = rawPath.string();
+    ASSERT_FALSE(rawSource.empty());
+    const fs::path path = fs::path(RVX_SOURCE_DIR) /
+        "Source/Runtime/Render/Shaders/Translucency/TransparentTemporalRaster.hlsl";
+    const std::string source = ReadTextFile(path);
+    const std::string pathString = path.string();
+    ASSERT_FALSE(source.empty());
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    std::vector<RVX::RHIBackendType> backends;
+#if RVX_ENABLE_DX11
+    backends.push_back(RVX::RHIBackendType::DX11);
+#endif
+#if RVX_ENABLE_DX12
+    backends.push_back(RVX::RHIBackendType::DX12);
+#endif
+#if RVX_ENABLE_VULKAN
+    backends.push_back(RVX::RHIBackendType::Vulkan);
+#endif
+#if RVX_ENABLE_OPENGL
+    backends.push_back(RVX::RHIBackendType::OpenGL);
+#endif
+#if RVX_ENABLE_METAL
+    backends.push_back(RVX::RHIBackendType::Metal);
+#endif
+    ASSERT_FALSE(backends.empty());
+    for (const auto backend : backends)
+    {
+        for (const char* entry : {"VSRigid", "VSSkinned", "PSSorted", "PSWeighted"})
+        {
+            SCOPED_TRACE(static_cast<int>(backend));
+            SCOPED_TRACE(entry);
+            RVX::ShaderCompileOptions options;
+            options.stage = entry[0] == 'V' ? RVX::RHIShaderStage::Vertex : RVX::RHIShaderStage::Pixel;
+            options.entryPoint = entry;
+            options.sourceCode = source.c_str();
+            options.sourcePath = pathString.c_str();
+            options.targetBackend = backend;
+            const auto support = compiler->QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported()) << support.reason;
+            const auto result = compiler->Compile(options);
+            EXPECT_TRUE(result.success) << result.errorMessage;
+        }
+        RVX::ShaderCompileOptions rawOptions;
+        rawOptions.stage = RVX::RHIShaderStage::Pixel;
+        rawOptions.entryPoint = "PSRaw";
+        rawOptions.sourceCode = rawSource.c_str();
+        rawOptions.sourcePath = rawPathString.c_str();
+        rawOptions.targetBackend = backend;
+        const auto rawResult = compiler->Compile(rawOptions);
+        EXPECT_TRUE(rawResult.success) << static_cast<int>(backend) << ": " << rawResult.errorMessage;
+    }
 }
 
 TEST_F(ShaderCompilerValidationFixture, QuerySupportProvidesStructuredFailureForUnsupportedBackend)
@@ -2237,7 +2364,7 @@ TEST_F(ShaderCompilerValidationFixture,
     expectSamplerBinding(result, "OcclusionSampler", 17u);
     expectSamplerBinding(result, "EmissiveSampler", 18u);
 
-    options.entryPoint = "PSForwardTranslucency";
+    options.entryPoint = "PSForwardTranslucencyGuarded";
     // FXC's unoptimized SM5 validator exhausts an internal temporary on the
     // full Forward+ translucent path after Material V2 adds its layered BRDF
     // locals. Shipping DX11 compilation is optimized; exercise that exact
@@ -2529,7 +2656,7 @@ TEST_F(ShaderCompilerValidationFixture,
     const std::string shaderPathString = shaderPath.string();
     RVX::ShaderCompileOptions options;
     options.stage = RVX::RHIShaderStage::Pixel;
-    options.entryPoint = "PSForwardTranslucency";
+    options.entryPoint = "PSForwardTranslucencyGuarded";
     options.sourceCode = source.c_str();
     options.sourcePath = shaderPathString.c_str();
     options.targetBackend = RVX::RHIBackendType::OpenGL;
@@ -3096,8 +3223,10 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
         0, 17, 13, invalidLocalShadowPair));
 
     static_assert(
-        RVX::GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT == 22u,
-        "Material V2 plus Forward+ requires twenty-two OpenGL texture units");
+        RVX::GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT == 23u,
+        "Material V2 plus transmission depth requires twenty-three OpenGL texture units");
+    static_assert(RVX::GLSLBindingABI::FlattenTextureBinding(0, 19) == 22u,
+        "Transmission scene depth must not alias material or frame textures");
     static_assert(
         RVX::GLSLBindingABI::FlattenTextureBinding(0, 18) == 16u,
         "Froxel volume must retain a dedicated OpenGL texture unit");

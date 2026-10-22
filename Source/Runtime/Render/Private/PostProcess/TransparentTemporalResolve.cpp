@@ -5,6 +5,7 @@
 #include "RHI/RHIRenderPass.h"
 
 #include <array>
+#include <cstring>
 
 namespace RVX
 {
@@ -12,12 +13,13 @@ namespace RVX
     {
         struct ResolveData
         {
-            std::array<RGTextureViewHandle, 5> inputViews{};
+            std::vector<RGTextureViewHandle> inputViews;
             std::array<RGTextureViewHandle, 3> outputViews{};
             RenderOutputExtent extent{};
             IRHIDevice* device = nullptr;
             RHIPipelineRef pipeline;
             RHIDescriptorSetLayoutRef layout;
+            RHIBufferRef parameters;
             std::shared_ptr<TransparentTemporalResolveReceipt> receipt;
         };
 
@@ -45,12 +47,19 @@ namespace RVX
     {
         output = {};
         failure.clear();
-        const std::array<RGTextureHandle, 5> inputs{
+        std::vector<RGTextureHandle> inputs{
             opaqueVelocity, reactive, surface.motionCoverageDepth, surface.flags,
-            surface.opaqueLinearDepth};
-        constexpr std::array<RHIFormat, 5> formats{
+            surface.rawCandidates ? surface.opaqueDeviceDepth : surface.opaqueLinearDepth};
+        std::vector<RHIFormat> formats{
             RHIFormat::RG16_FLOAT, RHIFormat::R8_UNORM, RHIFormat::RGBA16_FLOAT,
-            RHIFormat::R32_UINT, RHIFormat::R32_FLOAT};
+            RHIFormat::R32_UINT, surface.rawCandidates ? RHIFormat::D32_FLOAT : RHIFormat::R32_FLOAT};
+        if (surface.rawCandidates)
+        {
+            inputs.push_back(surface.layerCount);
+            formats.push_back(RHIFormat::R16_FLOAT);
+            inputs.push_back(surface.meshReactive);
+            formats.push_back(RHIFormat::R8_UNORM);
+        }
         if (!builder.IsValid() || !frame.IsValid() || !view.IsValid() ||
             !surface.extent.IsValid() || surface.frameIdentity != frame ||
             surface.viewIdentity != view ||
@@ -67,12 +76,33 @@ namespace RVX
                 return false;
             }
         }
-        RHIPipelineRef pipeline(pipelines.GetTransparentTemporalResolvePipeline(surface.historyAvailable));
-        RHIDescriptorSetLayoutRef layout(pipelines.GetTransparentTemporalResolveSetLayout());
+        RHIPipelineRef pipeline(surface.rawCandidates ? pipelines.GetTransparentTemporalCandidateResolvePipeline() :
+            pipelines.GetTransparentTemporalResolvePipeline(surface.historyAvailable));
+        RHIDescriptorSetLayoutRef layout(surface.rawCandidates ? pipelines.GetTransparentTemporalCandidateResolveSetLayout() :
+            pipelines.GetTransparentTemporalResolveSetLayout());
         if (!pipeline || !layout || !pipelines.GetDevice())
         {
             failure = "Transparent temporal pipeline unavailable: " + pipelines.GetLastError();
             return false;
+        }
+        RHIBufferRef parameters;
+        if (surface.rawCandidates)
+        {
+            struct RawConstants { Mat4 inverseProjection; Vec4 policy; };
+            static_assert(sizeof(RawConstants) == 80);
+            const RawConstants constants{surface.inverseProjectionMatrix,
+                Vec4(surface.historyAvailable ? 1.0f : 0.0f, 0, 0, 0)};
+            RHIBufferDesc desc;
+            desc.size = 256;
+            desc.usage = RHIBufferUsage::Constant;
+            desc.memoryType = RHIMemoryType::Upload;
+            desc.debugName = "TransparentTemporalAdmissionParameters";
+            parameters = pipelines.GetDevice()->CreateBuffer(desc);
+            void* mapped = parameters ? parameters->Map() : nullptr;
+            if (!mapped) { failure = "Transparent temporal parameter upload unavailable"; return false; }
+            std::memset(mapped, 0, 256);
+            std::memcpy(mapped, &constants, sizeof(constants));
+            parameters->Unmap();
         }
         std::array<RGTextureHandle, 3> targets;
         constexpr std::array<RHIFormat, 3> outputFormats{
@@ -103,6 +133,8 @@ namespace RVX
                 data.pipeline = pipeline;
                 data.layout = layout;
                 data.receipt = receipt;
+                data.parameters = parameters;
+                data.inputViews.resize(inputs.size());
                 for (size_t i = 0; i < inputs.size(); ++i)
                 {
                     RHITextureViewDesc desc;
@@ -136,6 +168,12 @@ namespace RVX
                     auto* input = context.GetTextureView(data.inputViews[i]);
                     if (!input) { fail("Transparent temporal input view missing"); return; }
                     desc.BindTexture(i, input);
+                }
+                if (data.parameters)
+                {
+                    desc.BindBuffer(7, data.parameters.Get(), 0, 256);
+                    if (!context.RetainSubmissionResource(Ref<RefCounted>(data.parameters)))
+                    { fail("Transparent temporal parameter retention failed"); return; }
                 }
                 auto* velocity = context.GetTextureView(data.outputViews[0]);
                 auto* reactiveView = context.GetTextureView(data.outputViews[1]);

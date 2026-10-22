@@ -131,6 +131,15 @@ namespace RVX
             uint32 sourceOrdinal = RVX_INVALID_INDEX;
             bool skinned = false;
             bool requiresUV1 = false;
+            bool reverseWinding = false;
+            TransparentTemporalDrawIdentity temporalIdentity;
+            bool temporalHistoryQualified = false;
+            Mat4 worldMatrix = Mat4Identity();
+            Mat4 normalMatrix = Mat4Identity();
+            Mat4 previousWorldMatrix = Mat4Identity();
+            SkinningPaletteSliceBinding skinningSlice{};
+            bool previousTransformValid = false;
+            bool receivesShadow = false;
         };
 
         struct GraphPassData
@@ -147,6 +156,7 @@ namespace RVX
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
             RGTextureHandle opaqueSceneColorPyramidReadHandle{};
+            RGTextureHandle sceneDepthSnapshotReadHandle{};
             RGTextureHandle froxelVolumetricLightingReadHandle{};
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle directionalShadowReadHandle{};
@@ -164,6 +174,7 @@ namespace RVX
             RGTextureViewHandle colorViewHandle{};
             RGTextureViewHandle depthViewHandle{};
             RGTextureViewHandle opaqueSceneColorPyramidViewHandle{};
+            RGTextureViewHandle transmissionDepthPyramidViewHandle{};
             RGTextureViewHandle froxelVolumetricLightingViewHandle{};
             RGTextureViewHandle reactiveMaskViewHandle{};
             RGTextureViewHandle directionalShadowViewHandle{};
@@ -174,6 +185,7 @@ namespace RVX
             RGTextureViewHandle environmentIBLBRDFLUTViewHandle{};
             RHIFormat colorFormat = RHIFormat::Unknown;
             bool depthAvailable = false;
+            bool transmissionDepthRequired = false;
             bool requestedEnabled = false;
             bool contextValid = false;
             bool recordingPrepared = false;
@@ -349,6 +361,8 @@ namespace RVX
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.froxelVolumetricLightingView.Get())) &&
                 context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.transmissionDepthPyramidView.Get())) &&
+                context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
@@ -500,6 +514,7 @@ namespace RVX
             record.submesh = buffers.submeshes[item.submeshIndex];
             record.skinned = skinned;
             record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
+            record.reverseWinding = item.packet.pipelineKey.reverseWinding;
             record.blendMode = item.packet.pipelineKey.blendMode;
             record.shadingModel = item.packet.pipelineKey.shadingModel;
             record.cullMode = item.packet.pipelineKey.cullMode;
@@ -577,6 +592,44 @@ namespace RVX
             }
             record.objectDynamicOffsets = PipelineCache::BuildSingleDynamicOffset(
                 static_cast<uint64>(objectSlot) * data.bindings.objectConstantStride);
+            record.worldMatrix = object.worldMatrix;
+            record.normalMatrix = object.normalMatrix;
+            record.previousWorldMatrix = object.previousWorldMatrix;
+            record.skinningSlice = skinningSlice;
+            record.previousTransformValid = previousWorldViewProjectionValid;
+            record.receivesShadow = HasDrawFlag(item.packet.flags, RenderDrawFlags::ReceivesShadow);
+            auto& proof = record.temporalIdentity;
+            const auto& material = record.material.binding;
+            proof.objectId = object.entityId;
+            proof.mesh = object.mesh;
+            proof.meshRevision = object.meshContentRevision;
+            proof.submeshIndex = item.submeshIndex;
+            proof.indexOffset = record.submesh.indexOffset;
+            proof.indexCount = record.submesh.indexCount;
+            proof.baseVertex = record.submesh.baseVertex;
+            proof.material = material.material;
+            proof.materialRevision = material.contentRevision;
+            proof.descriptorKey = material.descriptorContentKey;
+            proof.descriptorRevision = material.descriptorRevision;
+            proof.layoutHash = material.parameterLayoutHash;
+            proof.textureFlags = material.textureFlags;
+            proof.policy = static_cast<uint32>(record.blendMode) |
+                (static_cast<uint32>(record.shadingModel) << 8u) |
+                (static_cast<uint32>(record.cullMode) << 16u) |
+                (record.reverseWinding ? 1u << 24u : 0u) |
+                (record.skinned ? 1u << 25u : 0u);
+            proof.valid = proof.objectId != 0 && proof.mesh.IsValid() && proof.meshRevision != 0 &&
+                proof.material.IsValid() && proof.materialRevision != 0 && proof.descriptorKey != 0 &&
+                proof.descriptorRevision != 0 && proof.layoutHash != 0 && !material.usedFallback;
+            for (const auto& texture : material.textureEntries)
+            {
+                proof.valid = proof.valid && texture.IsValid() && !texture.fallbackUsed;
+                proof.textureIdentityWords.insert(proof.textureIdentityWords.end(), {
+                    static_cast<uint64>(texture.slot), texture.texture.slot, texture.texture.generation,
+                    texture.contentRevision, static_cast<uint64>(texture.sampler.wrapS),
+                    static_cast<uint64>(texture.sampler.wrapT), static_cast<uint64>(texture.sampler.minFilter),
+                    static_cast<uint64>(texture.sampler.magFilter)});
+            }
             data.draws.push_back(std::move(record));
             return DrawPreparationResult::Prepared;
         }
@@ -1141,14 +1194,53 @@ namespace RVX
                 return false;
             }
 
-            // RenderGraph access declarations are irreversible. Establish all
-            // submission ownership first, so a sealed/rejected batch produces
-            // a genuine no-op instead of a graph-visible write without work.
+            // Preserve no-op behavior for rejected/sealed submission batches.
             if (!RetainDrawResources(builder, data))
             {
-                MarkTransparentPreflightFailure(
-                    data, RenderPolicyReason::ResourcesUnavailable);
+                MarkTransparentPreflightFailure(data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
+            }
+            data.transmissionDepthRequired = std::any_of(
+                data.frameSnapshot->transparentDrawItems.begin(),
+                data.frameSnapshot->transparentDrawItems.end(), [](const RenderDrawItem& draw)
+                { return draw.packet.pipelineKey.shadingModel == MaterialShadingModel::ThinTransmission; });
+            if (data.transmissionDepthRequired)
+            {
+                const auto& snapshot = data.execution.sceneDepthSnapshot;
+                const auto& colorPyramid = data.execution.opaqueSceneColorPyramid;
+                const auto extent = colorPyramid.baseExtent;
+                const auto* desc = builder.GetTextureDesc(snapshot.transmissionPyramid);
+                if (!snapshot.IsCompatibleWith(data.identity, colorPyramid.sourceExtent) ||
+                    !snapshot.HasTransmissionPyramid(data.identity, extent, colorPyramid.mipCount) || !desc ||
+                    snapshot.transmissionPyramid.index == snapshot.texture.index ||
+                    desc->format != RHIFormat::R32_FLOAT ||
+                    desc->dimension != RHITextureDimension::Texture2D ||
+                    desc->arraySize != 1 || desc->mipLevels != colorPyramid.mipCount || desc->depth != 1 ||
+                    desc->width != extent.width || desc->height != extent.height ||
+                    desc->sampleCount != RHISampleCount::Count1 ||
+                    !HasFlag(desc->usage, RHITextureUsage::ShaderResource))
+                {
+                    MarkTransparentPreflightFailure(data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+                data.sceneDepthSnapshotReadHandle = builder.Read(snapshot.transmissionPyramid,
+                    RHIResourceState::ShaderResource, RHIShaderStage::Pixel);
+                RHITextureViewDesc depthSnapshotView;
+                depthSnapshotView.format = RHIFormat::R32_FLOAT;
+                depthSnapshotView.type = RHITextureViewType::ShaderResource;
+                depthSnapshotView.dimension = RHITextureDimension::Texture2D;
+                depthSnapshotView.subresourceRange = RHISubresourceRange::All();
+                depthSnapshotView.debugName = "TransmissionDepthPyramidSRV";
+                data.transmissionDepthPyramidViewHandle = builder.CreateTextureView(
+                    data.sceneDepthSnapshotReadHandle, depthSnapshotView);
+                data.transmissionDepthPyramidViewHandle = builder.Read(data.transmissionDepthPyramidViewHandle,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
+                if (!data.sceneDepthSnapshotReadHandle.IsValid() ||
+                    !data.transmissionDepthPyramidViewHandle.IsValid())
+                {
+                    MarkTransparentPreflightFailure(data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
             }
 
             if (view.textureIBLEnabled != 0)
@@ -1662,6 +1754,32 @@ namespace RVX
                 data.execution.opaqueSceneColorPyramid.baseExtent;
             lightingRequest.opaqueSceneColorPyramidMipCount =
                 data.execution.opaqueSceneColorPyramid.mipCount;
+            lightingRequest.opaqueSceneColorRasterToUV =
+                data.execution.opaqueSceneColorPyramid.rasterToColorUV;
+            if (data.transmissionDepthRequired)
+            {
+                const auto& snapshot = data.execution.sceneDepthSnapshot;
+                auto* snapshotView = context.GetTextureView(data.transmissionDepthPyramidViewHandle);
+                auto* snapshotTexture = context.GetTexture(data.sceneDepthSnapshotReadHandle);
+                if (!snapshot.IsCompatibleWith(data.identity,
+                        data.execution.opaqueSceneColorPyramid.sourceExtent) ||
+                    !snapshot.HasTransmissionPyramid(data.identity,
+                        data.execution.opaqueSceneColorPyramid.baseExtent,
+                        data.execution.opaqueSceneColorPyramid.mipCount) ||
+                    !snapshotView || !snapshotTexture ||
+                    snapshotView->GetTexture() != snapshotTexture ||
+                    (depthView && depthView->GetTexture() == snapshotTexture) ||
+                    !snapshot.receipt->copied.load(std::memory_order_acquire) ||
+                    snapshot.transmissionReceipt->failed.load(std::memory_order_acquire) ||
+                    !snapshot.transmissionReceipt->completed.load(std::memory_order_acquire) ||
+                    snapshot.transmissionReceipt->completedMipCount.load(std::memory_order_acquire) !=
+                        snapshot.transmissionMipCount)
+                {
+                    RVX_CORE_WARN("ThinTransmission has no complete matched conservative depth pyramid");
+                    return false;
+                }
+                lightingRequest.transmissionDepthPyramidView = RHITextureViewRef(snapshotView);
+            }
             const VolumetricLightingRecordInput& volumetricLighting =
                 data.execution.volumetricLighting;
             if (!volumetricLighting.identityRoute)
@@ -1879,6 +1997,8 @@ namespace RVX
         bool weightedBlendedEnabled = false;
         bool weightedBlendedRecorded = false;
         bool directRecorded = false;
+        bool temporalRecorded = false;
+        RenderViewIdentity viewIdentity{};
     };
 
     TransparentPass::PreparedTranslucencyRecording::
@@ -1952,6 +2072,9 @@ namespace RVX
             }
             if (!state->lightingBindings.MatchesLightingPlan(
                     lightingPlanIdentity) ||
+                (request.transmissionDepthPyramidView &&
+                 state->lightingBindings.transmissionDepthPyramidView->GetTexture() !=
+                    request.transmissionDepthPyramidView->GetTexture()) ||
                 !RetainLightingBindingSnapshot(context, state->lightingBindings))
             {
                 return false;
@@ -2107,6 +2230,7 @@ namespace RVX
         const RenderPassRecordContext& context)
     {
         auto state = std::make_shared<TransparentStagedRecordingState>();
+        state->viewIdentity = context.featureViewIdentity;
         state->stats.planIdentityHash = plan.GetIdentityHash();
         state->stats.preparationCount = 1;
 
@@ -2201,6 +2325,10 @@ namespace RVX
                 return PreparedTranslucencyRecording(std::move(state));
             }
 
+            auto& currentDraw = prepared.draws.back();
+            currentDraw.temporalHistoryQualified = m_temporalHistory.CanReuse(
+                context.identity.frameSequence, context.featureViewIdentity, currentDraw.temporalIdentity,
+                !context.view.resetTemporalHistory && context.view.previousViewProjectionValid != 0);
             ++state->stats.plannedMeshDrawCount;
             switch (entry->route)
             {
@@ -2357,6 +2485,198 @@ namespace RVX
                 }
             });
         return true;
+    }
+
+    bool TransparentPass::RecordTemporalCandidates(
+        RenderGraph& graph,
+        PreparedTranslucencyRecording& prepared,
+        TransparentTemporalCandidates& output)
+    {
+        output = {};
+        const auto state = prepared.m_state;
+        if (!state) return false;
+        std::lock_guard lock(state->mutex);
+        if (!state->stats.prepared || state->stats.preparationFailed ||
+            state->temporalRecorded || state->prepared.draws.empty() ||
+            !state->prepared.identity.Matches(graph)) return false;
+
+        GraphPassData frozen = state->prepared;
+        const auto depth = frozen.execution.view.depthTarget;
+        const auto* depthDesc = graph.GetTextureDesc(depth);
+        if (!depthDesc || depthDesc->format != RHIFormat::D32_FLOAT ||
+            depthDesc->sampleCount != RHISampleCount::Count1 ||
+            depthDesc->width != frozen.execution.view.viewportWidth ||
+            depthDesc->height != frozen.execution.view.viewportHeight ||
+            depth.graphIdentity != graph.GetGraphIdentity() ||
+            depth.recordingGeneration != graph.GetRecordingGeneration()) return false;
+
+        RasterDrawBindingSnapshot frame;
+        if (!frozen.pipelineCache->CreateRasterDrawBindingSnapshot(
+                frozen.execution.view, 1, frame)) return false;
+        RasterObjectBindingSnapshot temporalObjects;
+        if (!frozen.pipelineCache->CreateRasterObjectBindingSnapshot(
+                static_cast<uint32>(frozen.draws.size()), frozen.bindings.skinningPalettes,
+                temporalObjects)) return false;
+        for (auto& draw : frozen.draws)
+        {
+            const auto slot = temporalObjects.objectCursor;
+            if (!frozen.pipelineCache->UpdateRasterObjectBindingSnapshotObject(
+                    temporalObjects, draw.worldMatrix, draw.normalMatrix, draw.previousWorldMatrix,
+                    frozen.execution.view.previousViewProjectionMatrix, draw.previousTransformValid,
+                    draw.receivesShadow, draw.skinningSlice, draw.temporalHistoryQualified)) return false;
+            draw.objectDynamicOffsets = PipelineCache::BuildSingleDynamicOffset(
+                static_cast<uint64>(slot) * temporalObjects.objectConstantStride);
+            draw.pipeline = RHIPipelineRef(frozen.pipelineCache->GetTransparentTemporalRasterPipeline(
+                draw.skinned ? DefaultLitDirectVertexInputMode::Skinned : DefaultLitDirectVertexInputMode::Rigid,
+                draw.cullMode, draw.reverseWinding,
+                draw.translucencyRoute == TranslucencyRoute::WeightedBlended));
+            if (!draw.pipeline) return false;
+        }
+        frozen.bindings = std::move(temporalObjects);
+        const bool skinned = std::any_of(frozen.draws.begin(), frozen.draws.end(),
+            [](const DrawRecord& draw) { return draw.skinned; });
+        const auto deformation = frozen.execution.deformationResources;
+        if (skinned && (!deformation ||
+            !deformation->MatchesIdentity(MakeRenderDeformationFrameIdentity(frozen.identity)) ||
+            !deformation->MatchesGraphProvenance(graph))) return false;
+
+        const RenderOutputExtent extent{depthDesc->width, depthDesc->height};
+        constexpr std::array<RHIFormat, 3> formats{
+            RHIFormat::RGBA16_FLOAT, RHIFormat::R32_UINT, RHIFormat::R16_FLOAT};
+        std::array<RGTextureHandle, 3> targets;
+        for (size_t i = 0; i < targets.size(); ++i)
+        {
+            auto desc = RHITextureDesc::RenderTarget(extent.width, extent.height, formats[i]);
+            desc.usage = desc.usage | RHITextureUsage::ShaderResource | RHITextureUsage::CopySrc;
+            desc.SetOptimizedClearColor(RHIClearColor{0, 0, 0, 0});
+            desc.debugName = i == 0 ? "TransparentRawMotionCoverageDepth" :
+                (i == 1 ? "TransparentRawFlags" : "TransparentRawLayerCount");
+            targets[i] = graph.CreateTexture(desc);
+            if (!targets[i].IsValid()) return false;
+        }
+        const auto receipt = std::make_shared<TransparentTemporalRasterReceipt>();
+        struct TemporalData
+        {
+            GraphPassData frozen;
+            RasterDrawBindingSnapshot frame;
+            std::array<RGTextureViewHandle, 3> colors{};
+            RGTextureViewHandle depth{};
+            RenderOutputExtent extent{};
+            std::shared_ptr<TransparentTemporalRasterReceipt> receipt;
+            bool valid = false;
+        };
+        graph.AddPass<TemporalData>("TransparentTemporalCandidates", RenderGraphPassType::Graphics,
+            [=](RenderGraphBuilder& builder, TemporalData& data)
+            {
+                data.frozen = frozen;
+                data.frame = frame;
+                data.extent = extent;
+                data.receipt = receipt;
+                if (!RetainDrawResources(builder, data.frozen)) return;
+                for (const auto& resource : frame.retainedResources)
+                    if (!builder.RetainSubmissionResource(resource)) return;
+                for (size_t i = 0; i < targets.size(); ++i)
+                {
+                    RHITextureViewDesc view;
+                    view.format = formats[i];
+                    view.type = RHITextureViewType::RenderTarget;
+                    data.colors[i] = builder.Write(builder.CreateTextureView(targets[i], view),
+                        MakeRGAccessDesc(RHIResourceState::RenderTarget, RHIShaderStage::Pixel));
+                    if (!data.colors[i].IsValid()) return;
+                }
+                RHITextureViewDesc view;
+                view.format = RHIFormat::D32_FLOAT;
+                view.type = RHITextureViewType::DepthStencil;
+                data.depth = builder.Read(builder.CreateTextureView(depth, view),
+                    MakeRGAccessDesc(RHIResourceState::DepthRead));
+                if (!data.depth.IsValid()) return;
+                if (skinned)
+                {
+                    if (!builder.Read(deformation->GetCurrentPaletteHandle(), RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Vertex).IsValid() ||
+                        !builder.Read(deformation->GetPreviousPaletteHandle(), RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Vertex).IsValid()) return;
+                }
+                data.valid = true;
+            },
+            [](const TemporalData& data, RenderGraphPassContext& context)
+            {
+                std::array<RHITextureView*, 3> colors{};
+                for (size_t i = 0; i < colors.size(); ++i)
+                    colors[i] = context.GetTextureView(data.colors[i]);
+                auto* depthView = context.GetTextureView(data.depth);
+                if (!data.valid || !depthView ||
+                    std::any_of(colors.begin(), colors.end(), [](auto* view) { return view == nullptr; }))
+                {
+                    data.receipt->failed.store(true);
+                    context.MarkExecutionFailed("Transparent temporal candidate resources unavailable");
+                    return;
+                }
+                auto& commands = context.Commands();
+                RHIRenderPassDesc pass;
+                for (auto* view : colors)
+                    pass.AddColorAttachment(view, RHILoadOp::Clear, RHIStoreOp::Store, RHIClearColor{0, 0, 0, 0});
+                pass.SetDepthStencil(depthView, RHILoadOp::Load, RHIStoreOp::Store);
+                pass.depthStencilAttachment.readOnly = true;
+                pass.SetRenderArea(0, 0, data.extent.width, data.extent.height);
+                commands.BeginRenderPass(pass);
+                RHIViewport viewport;
+                viewport.width = static_cast<float>(data.extent.width);
+                viewport.height = static_cast<float>(data.extent.height);
+                viewport.minDepth = 0; viewport.maxDepth = 1;
+                commands.SetViewport(viewport);
+                RHIRect scissor;
+                scissor.width = data.extent.width; scissor.height = data.extent.height;
+                commands.SetScissor(scissor);
+                for (const auto& draw : data.frozen.draws)
+                {
+                    commands.SetPipeline(draw.pipeline.Get());
+                    commands.SetDescriptorSet(0, data.frame.frameDescriptorSet.Get());
+                    commands.SetDescriptorSet(1, data.frozen.bindings.objectDescriptorSet.Get(), draw.objectDynamicOffsets);
+                    commands.SetDescriptorSet(2, draw.material.descriptorSet.Get(), draw.material.binding.dynamicOffsets);
+                    commands.SetVertexBuffer(0, draw.buffers.positionBuffer);
+                    commands.SetVertexBuffer(1, draw.buffers.normalBuffer);
+                    commands.SetVertexBuffer(2, draw.buffers.uvBuffer);
+                    commands.SetVertexBuffer(3, draw.buffers.tangentBuffer);
+                    commands.SetVertexBuffer(7, draw.requiresUV1 ? draw.buffers.uv1Buffer : draw.buffers.uvBuffer);
+                    if (draw.skinned)
+                    {
+                        commands.SetVertexBuffer(4, draw.buffers.boneIndicesBuffer);
+                        commands.SetVertexBuffer(5, draw.buffers.boneWeightsBuffer);
+                    }
+                    commands.SetIndexBuffer(draw.buffers.indexBuffer, RHIFormat::R32_UINT);
+                    commands.DrawIndexed(draw.submesh.indexCount, 1, draw.submesh.indexOffset, draw.submesh.baseVertex, 0);
+                }
+                commands.EndRenderPass();
+                data.receipt->drawCount.store(static_cast<uint32>(data.frozen.draws.size()));
+                data.receipt->recorded.store(true);
+            });
+        state->temporalRecorded = true;
+        output.motionCoverageDepth = targets[0];
+        output.flags = targets[1];
+        output.layerCount = targets[2];
+        output.extent = extent;
+        output.receipt = receipt;
+        m_pendingTemporalDraws.clear();
+        for (const auto& draw : frozen.draws) m_pendingTemporalDraws.push_back(draw.temporalIdentity);
+        m_pendingTemporalFrame = frozen.identity.frameSequence;
+        m_pendingTemporalView = state->viewIdentity;
+        m_pendingTemporalReceipt = receipt;
+        return true;
+    }
+
+    void TransparentPass::CommitTemporalHistoryAfterPresent(uint64 frameSequence,
+        const RenderViewIdentity& view, bool presentationQualified)
+    {
+        const bool exact = presentationQualified && frameSequence != 0 &&
+            frameSequence == m_pendingTemporalFrame && view == m_pendingTemporalView &&
+            m_pendingTemporalReceipt && m_pendingTemporalReceipt->recorded.load() &&
+            !m_pendingTemporalReceipt->failed.load() &&
+            m_pendingTemporalReceipt->drawCount.load() == m_pendingTemporalDraws.size();
+        m_temporalHistory.Commit(frameSequence, view, std::move(m_pendingTemporalDraws), exact);
+        m_pendingTemporalDraws.clear();
+        m_pendingTemporalReceipt.reset();
+        m_pendingTemporalFrame = 0;
     }
 
     TransparentPass::TransparentPass() = default;

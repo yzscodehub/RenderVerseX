@@ -21,7 +21,6 @@ add_executable(RenderVerseSamples
     Scenes/SceneLifecycleSample.cpp
     Scenes/StylizedMaterialsSample.cpp
     Scenes/TemporalAASample.cpp
-    Scenes/TransparentMaterialsSample.cpp
 )
 target_include_directories(RenderVerseSamples PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -48,6 +47,7 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::Gfx18SampleScenarios
     RVX::Gfx24SampleScenarios
     RVX::Gfx25SampleScenarios
+    RVX::Gfx26SampleScenarios
 )
 
 # A separately-linked cooked product root demonstrates that the GFX24/GFX25
@@ -69,6 +69,7 @@ target_link_libraries(RenderVerseSamplesCooked PRIVATE
     RVX::SampleCookedComposition
     RVX::Gfx24SampleScenarios
     RVX::Gfx25SampleScenarios
+    RVX::Gfx26SampleScenarios
 )
 
 # GFX17 scenarios compile against the narrow scenario contracts only. Their
@@ -225,6 +226,21 @@ rvx_register_module_target(
     MODULE Samples
     ALIASES RVX::Gfx25SampleScenarios
 )
+
+add_library(RVX_Gfx26SampleScenarios STATIC Scenes/TransparentMaterialsSample.cpp)
+target_compile_features(RVX_Gfx26SampleScenarios PRIVATE cxx_std_20)
+target_include_directories(RVX_Gfx26SampleScenarios PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+rvx_apply_scenario_contract_include_roots(
+    RVX_Gfx26SampleScenarios
+    RVX_Animation RVX_AnimationSceneAdapters RVX_AssetContracts RVX_Core RVX_ECS
+    RVX_Engine RVX_Geometry RVX_HAL Particle RVX_Physics RVX_RenderContracts
+    RVX_ResourceRuntime RVX_ResourceSceneAdapters RVX_RuntimeServices RVX_Scene
+    RVX_World)
+target_link_libraries(RVX_Gfx26SampleScenarios PRIVATE
+    RVX::SampleScenarioContracts glm::glm-header-only)
+add_library(RVX::Gfx26SampleScenarios ALIAS RVX_Gfx26SampleScenarios)
+rvx_register_module_target(TARGET RVX_Gfx26SampleScenarios MODULE Samples
+    ALIASES RVX::Gfx26SampleScenarios)
 
 # Keep the GFX17 scene target honest even while the legacy SampleCommon host
 # still has broader historical dependencies. This configure-time check walks
@@ -434,6 +450,15 @@ rvx_assert_gfx_sample_scenario_closure(
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
 
+rvx_assert_gfx_sample_scenario_closure(
+    RVX_Gfx26SampleScenarios
+    SOURCE_CONTRACT_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/TransparentMaterialsSample.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/TransparentMaterialsSample.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h")
+
 if(RVX_ENABLE_DX11)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX11)
     target_link_libraries(RenderVerseSamplesCooked PRIVATE RVX::RHI_DX11)
@@ -542,6 +567,9 @@ add_custom_command(
         -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageRenderQualityLabCookedAssets.cmake"
     DEPENDS
         RVXSampleAssets
+        # A custom target supplies ordering only; its updated output must also
+        # invalidate this cooked subset when a generator/profile is rebuilt.
+        "${RVX_SAMPLE_ASSET_RECEIPT}"
         RVXSampleCookedProductCatalogWriter
         "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageRenderQualityLabCookedAssets.cmake"
         "${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"

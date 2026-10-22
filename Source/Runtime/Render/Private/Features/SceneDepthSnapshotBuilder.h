@@ -13,7 +13,7 @@
 
 namespace RVX
 {
-    /** Resolved union of executable Water/Particle sampled-depth demand. */
+    /** Resolved union of executable Water/Particle/Transmission depth demand. */
     struct SceneDepthSnapshotDemand
     {
         bool valid = false;
@@ -31,7 +31,18 @@ namespace RVX
         bool waterExecutable,
         bool particleDepthRequested,
         bool particleDepthRequired,
-        bool particleExecutable);
+        bool particleExecutable,
+        bool transmissionRequired,
+        bool transmissionExecutable);
+
+    [[nodiscard]] bool HasThinTransmissionDraws(
+        const RenderPassRecordContext& context) noexcept;
+
+    [[nodiscard]] bool BuildSceneTransmissionDepth(
+        RenderFeatureGraphBuilder& builder, PipelineCache& pipelineCache,
+        const RenderPassRecordContext& context, RenderQualityTier quality,
+        SceneDepthSnapshot& snapshot, SceneDepthSnapshotRecordInput& input,
+        std::string& outFailure);
 
     /**
      * @brief Creates the one full-resolution D32 copy shared by Water and

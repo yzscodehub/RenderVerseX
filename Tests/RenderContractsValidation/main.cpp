@@ -10,6 +10,7 @@
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
 #include "RenderContracts/TemporalJitter.h"
+#include "RenderContracts/TransparentTemporalHistory.h"
 #include "ResourceUploadRequestInternal.h"
 
 #include <gtest/gtest.h>
@@ -3350,6 +3351,46 @@ namespace
         EXPECT_EQ(invalid.code, RenderExposureResolveCode::InvalidPreviousState);
         EXPECT_FALSE(invalid.Succeeded());
     }
+
+TEST(TransparentTemporalHistory, RequiresExactPresentedDrawAndView)
+{
+    TransparentTemporalDrawIdentity draw;
+    draw.objectId = 1; draw.mesh = {1, 2}; draw.meshRevision = 3;
+    draw.material = {4, 5}; draw.materialRevision = 6;
+    draw.descriptorKey = 7; draw.descriptorRevision = 8; draw.layoutHash = 9;
+    draw.indexCount = 3; draw.valid = true; draw.textureIdentityWords = {1, 2, 3, 4};
+    const RenderViewIdentity view{1, 1};
+    TransparentTemporalHistory history;
+    EXPECT_FALSE(history.CanReuse(11, view, draw, true));
+    history.Commit(10, view, {draw}, true);
+    EXPECT_TRUE(history.CanReuse(12, view, draw, true)); // simulation gap is valid
+    EXPECT_FALSE(history.CanReuse(10, view, draw, true));
+    EXPECT_FALSE(history.CanReuse(12, {2, 1}, draw, true));
+    EXPECT_FALSE(history.CanReuse(12, view, draw, false)); // camera/resize reset
+    const std::vector<std::function<void(TransparentTemporalDrawIdentity&)>> mutations{
+        [](auto& d){++d.mesh.generation;}, [](auto& d){++d.meshRevision;},
+        [](auto& d){++d.submeshIndex;}, [](auto& d){++d.indexOffset;},
+        [](auto& d){++d.material.generation;}, [](auto& d){++d.materialRevision;},
+        [](auto& d){++d.descriptorRevision;}, [](auto& d){++d.descriptorKey;},
+        [](auto& d){++d.textureIdentityWords[3];}, [](auto& d){++d.policy;},
+        [](auto& d){d.valid=false;}, [](auto& d){++d.layoutHash;}};
+    for (const auto& mutate : mutations)
+    {
+        auto changed = draw; mutate(changed);
+        EXPECT_FALSE(history.CanReuse(12, view, changed, true));
+    }
+    // A prepared but unpresented replacement does not alter the saved proof.
+    auto unpresented = draw; ++unpresented.materialRevision;
+    EXPECT_FALSE(history.CanReuse(13, view, unpresented, true));
+    EXPECT_TRUE(history.CanReuse(13, view, draw, true));
+    history.Commit(13, view, {draw, draw}, true);
+    EXPECT_FALSE(history.CanReuse(14, view, draw, true)); // ambiguous draw identity
+    history.Commit(14, view, {draw}, false);
+    EXPECT_FALSE(history.CanReuse(15, view, draw, true)); // failed presentation
+    history.Commit(16, view, {draw}, true);
+    history.Commit(15, view, {draw}, true);
+    EXPECT_FALSE(history.CanReuse(17, view, draw, true)); // stale commit rejected
+}
 
 } // namespace
 } // namespace RVX

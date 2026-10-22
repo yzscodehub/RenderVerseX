@@ -16,6 +16,9 @@ cbuffer TAAConstants : register(b0, space0)
     float4 RenderSize;       // xy = extent, zw = inverse extent
     float4 FeedbackParams;   // min, max, motion scale, velocity rejection
     float4 ResolveParams;    // depth reject scale, reactive scale, sharpness, history valid
+    float4 JitterPixels;     // current xy / previous xy projection perturbation
+    float4 ResolvePolicy;    // x: committed producer exposure; y: device depth
+    float4 DepthProjection;  // P22/P32/P23/P33
 };
 
 Texture2D<float4> CurrentColor : register(t1, space0);
@@ -52,7 +55,7 @@ float3 RGBToYCoCg(float3 color)
 float3 YCoCgToRGB(float3 color)
 {
     const float r = color.x + 0.5 * color.y - 0.5 * color.z;
-    const float g = color.x + color.z;
+    const float g = color.x + 0.5 * color.z;
     const float b = color.x - 0.5 * color.y - 0.5 * color.z;
     return float3(r, g, b);
 }
@@ -80,16 +83,21 @@ struct CurrentColorNeighborhood
     float3 minimumYCoCg;
     float3 maximumYCoCg;
     float3 axialAverageRGB;
+    float reactiveMaximum;
 };
 
 CurrentColorNeighborhood SampleCurrentColorNeighborhood(uint2 centerPixel,
-                                                        uint2 extent)
+                                                        uint2 extent,
+                                                        float2 rasterOffsetPixels)
 {
     CurrentColorNeighborhood neighborhood;
     neighborhood.center = float4(0.0, 0.0, 0.0, 0.0);
     neighborhood.minimumYCoCg = float3(1.0e20, 1.0e20, 1.0e20);
     neighborhood.maximumYCoCg = float3(-1.0e20, -1.0e20, -1.0e20);
     float3 axialSumRGB = float3(0.0, 0.0, 0.0);
+    float4 reconstructed = float4(0.0, 0.0, 0.0, 0.0);
+    float3 rawCenter = float3(0.0, 0.0, 0.0);
+    neighborhood.reactiveMaximum = 0.0;
 
     // Keep the traversal row-major so all resolve consumers share exactly one
     // deterministic 3x3 current-color window.
@@ -106,6 +114,18 @@ CurrentColorNeighborhood SampleCurrentColorNeighborhood(uint2 centerPixel,
                 int3(samplePixel, 0));
             const float3 sampleRGB = SanitizeColor(rawSample.rgb);
             const float3 sampleYCoCg = RGBToYCoCg(sampleRGB);
+            // Reconstruct the stable grid even if a reactive pixel rejects
+            // history. Reuse the same nine current-color texels.
+            const float2 weightXY = max(
+                1.0 - abs(float2(x, y) - rasterOffsetPixels), 0.0);
+            const float weight = weightXY.x * weightXY.y;
+            reconstructed += float4(sampleRGB, SanitizeScalar(rawSample.a)) * weight;
+            if (weight > 0.0)
+            {
+                const float mask = ReactiveMask.Load(int3(samplePixel, 0));
+                neighborhood.reactiveMaximum = max(neighborhood.reactiveMaximum,
+                    (mask == mask && abs(mask) < 1.0e20) ? saturate(mask) : 1.0);
+            }
             neighborhood.minimumYCoCg = min(
                 neighborhood.minimumYCoCg, sampleYCoCg);
             neighborhood.maximumYCoCg = max(
@@ -113,7 +133,7 @@ CurrentColorNeighborhood SampleCurrentColorNeighborhood(uint2 centerPixel,
 
             if (x == 0 && y == 0)
             {
-                neighborhood.center = rawSample;
+                rawCenter = sampleRGB;
             }
             if (abs(x) + abs(y) == 1)
             {
@@ -122,7 +142,9 @@ CurrentColorNeighborhood SampleCurrentColorNeighborhood(uint2 centerPixel,
         }
     }
 
-    neighborhood.axialAverageRGB = axialSumRGB * 0.25;
+    neighborhood.center = reconstructed;
+    neighborhood.axialAverageRGB = axialSumRGB * 0.25 +
+        reconstructed.rgb - rawCenter;
     return neighborhood;
 }
 
@@ -138,23 +160,36 @@ TAAResolveOutput PSResolve(VSOutput input)
     const uint2 extent = max(uint2(RenderSize.xy), uint2(1u, 1u));
     const uint2 pixel = min(uint2(input.Position.xy), extent - 1u);
     const float2 uv = input.TexCoord;
+    // Projection column-2 jitter moves raster NDC by -jitter (clip.w=-z).
+    // Top-left UV reverses NDC Y. The output/history grid itself is unjittered.
+    const float2 rasterOffsetPixels = float2(-JitterPixels.x, JitterPixels.y);
+    const float2 previousRasterOffsetPixels = float2(-JitterPixels.z, JitterPixels.w);
+    const bool opaqueRefraction = ResolvePolicy.x > 0.5;
     const CurrentColorNeighborhood neighborhood =
-        SampleCurrentColorNeighborhood(pixel, extent);
+        SampleCurrentColorNeighborhood(pixel, extent, rasterOffsetPixels);
     const float4 currentSample = neighborhood.center;
     const float3 current = SanitizeColor(currentSample.rgb);
-    const float currentDepth = CurrentDepth.Load(int3(pixel, 0));
+    const float rawDepth = CurrentDepth.Load(int3(pixel, 0));
+    const float depthDenominator = rawDepth * DepthProjection.z - DepthProjection.x;
+    const float currentDepth = ResolvePolicy.y > 0.5
+        ? (abs(depthDenominator) > 1.0e-8
+            ? abs((DepthProjection.y - rawDepth * DepthProjection.w) / depthDenominator)
+            : 0.0)
+        : rawDepth;
     const float reactive = saturate(
-        ReactiveMask.Load(int3(pixel, 0)) * max(ResolveParams.y, 0.0));
+        neighborhood.reactiveMaximum * max(ResolveParams.y, 0.0));
     float3 resolved = current;
     if (ResolveParams.w > 0.5)
     {
         // Engine velocity is current-NDC minus previous-NDC. Convert it to
         // top-left UV delta once: x maps directly, while UV y opposes NDC y.
-        // Current/previous velocity matrices are already jittered, so adding
-        // a second correction here would double-apply the sample offset.
+        // Velocity includes raster jitter; stored candidates now use the
+        // stable grid. Remove only jitter before applying genuine view motion.
         const float2 velocityNDC = Velocity.Load(int3(pixel, 0));
         const float2 velocityUV = float2(velocityNDC.x * 0.5, -velocityNDC.y * 0.5);
-        const float2 previousUV = uv - velocityUV * FeedbackParams.z;
+        const float2 sceneVelocityUV = velocityUV -
+            (rasterOffsetPixels - previousRasterOffsetPixels) * RenderSize.zw;
+        const float2 previousUV = uv - sceneVelocityUV * FeedbackParams.z;
         const bool previousUVInBounds =
             all(previousUV >= 0.0) && all(previousUV <= 1.0);
 
@@ -169,8 +204,9 @@ TAAResolveOutput PSResolve(VSOutput input)
 
         const RVXExposureState exposureState = ExposureState[0];
         const float historyRescale = RVXExposureStateIsValid(exposureState)
-            ? RVXExposurePreExposure(exposureState) /
-                RVXExposurePreviousPreExposure(exposureState)
+            ? (opaqueRefraction
+                ? RVXExposureProducerScale(exposureState) / RVXExposurePreExposure(exposureState)
+                : RVXExposurePreExposure(exposureState) / RVXExposurePreviousPreExposure(exposureState))
             : 1.0;
         const float3 historyPreExposed = SanitizeColor(
             HistoryColor.SampleLevel(
@@ -184,7 +220,7 @@ TAAResolveOutput PSResolve(VSOutput input)
         const float3 history = SanitizeColor(YCoCgToRGB(historyYCoCg));
 
         const float velocityRejection = saturate(
-            length(velocityUV) * max(FeedbackParams.w, 0.0));
+            length(sceneVelocityUV) * max(FeedbackParams.w, 0.0));
         float historyWeight = lerp(
             saturate(FeedbackParams.y),
             saturate(FeedbackParams.x),
@@ -203,8 +239,9 @@ TAAResolveOutput PSResolve(VSOutput input)
         0.0);
     TAAResolveOutput output;
     output.ResolvedColor = float4(
-        SanitizeColor(resolved), SanitizeScalar(currentSample.a));
-    output.HistoryColorCandidate = output.ResolvedColor;
+        SanitizeColor(resolved),
+        SanitizeScalar(currentSample.a));
+    output.HistoryColorCandidate = float4(SanitizeColor(resolved), SanitizeScalar(currentSample.a));
     output.HistoryDepthCandidate =
         (currentDepth == currentDepth && abs(currentDepth) < 1.0e20)
             ? currentDepth

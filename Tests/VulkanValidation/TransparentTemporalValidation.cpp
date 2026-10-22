@@ -1,4 +1,10 @@
 #include "Common/TransparentTemporalNative.h"
+#include "Common/TAAStableGridNative.h"
+
+TEST(VulkanValidation, TAAReconstructsStableGridWithResetReactiveAndMovingHistory)
+{
+    RVX::Test::RunTAAStableGridReference(RVX::RHIBackendType::Vulkan);
+}
 
 TEST(VulkanValidation, TransparentTemporalResolveMatchesReferenceAndPreservesOpaqueMotion)
 {

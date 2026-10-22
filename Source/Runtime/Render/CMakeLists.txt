@@ -254,6 +254,7 @@ target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/FXAA.cpp
     Private/PostProcess/SSR.cpp
     Private/PostProcess/TAA.cpp
+    Private/PostProcess/TransmissionDepthPyramid.cpp
     Private/PostProcess/TransparentTemporalResolve.cpp
     Private/PostProcess/DOF.cpp
     Private/PostProcess/MotionBlur.cpp
@@ -323,6 +324,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
     Private/Features/OpaqueSceneColorPyramidBuilder.cpp
+    Private/Features/OpaqueSceneColorHistory.cpp
     Private/Features/SceneDepthSnapshotBuilder.cpp
     Private/Features/ReflectionFeatureAdapter.cpp
     Private/Features/TranslucencyFeatureAdapter.cpp

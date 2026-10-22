@@ -19,6 +19,7 @@
 
 namespace RVX
 {
+    class OpaqueSceneColorHistory;
     class DefaultRenderPassBundle;
     class PipelineCache;
 
@@ -111,7 +112,7 @@ namespace RVX
     public:
         explicit DeferredForwardSpecialFeatureAdapter(
             DefaultRenderPassBundle* passBundle,
-            PipelineCache* pipelineCache) noexcept;
+            PipelineCache* pipelineCache, OpaqueSceneColorHistory* opaqueHistory = nullptr) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
@@ -142,5 +143,6 @@ namespace RVX
         mutable RenderFeatureExecutionReceipt m_lastReceipt{};
         RenderFeatureReadiness m_readiness{};
         bool m_hasRecordContext = false;
+        OpaqueSceneColorHistory* m_opaqueHistory = nullptr;
     };
 } // namespace RVX

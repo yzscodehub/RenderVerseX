@@ -2527,7 +2527,8 @@ namespace RVX
         copyRegion.bufferOffset = desc.bufferOffset;
         copyRegion.bufferRowLength = bufferRowLength;
         copyRegion.bufferImageHeight = bufferImageHeight;
-        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.aspectMask = format == RHIFormat::D32_FLOAT
+            ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
         copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;
@@ -2564,7 +2565,8 @@ namespace RVX
         copyRegion.bufferOffset = desc.bufferOffset;
         copyRegion.bufferRowLength = bufferRowLength;
         copyRegion.bufferImageHeight = bufferImageHeight;
-        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.aspectMask = format == RHIFormat::D32_FLOAT
+            ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         copyRegion.imageSubresource.mipLevel = subresource.mipLevel;
         copyRegion.imageSubresource.baseArrayLayer = subresource.physicalLayer;
         copyRegion.imageSubresource.layerCount = 1;

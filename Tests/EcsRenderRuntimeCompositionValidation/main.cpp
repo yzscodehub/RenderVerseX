@@ -1,5 +1,7 @@
 #include "EcsRenderRuntimeComposition.h"
 
+#include "Core/Log.h"
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -232,6 +234,23 @@ private:
     float64 m_seconds = 0.0;
 };
 } // namespace
+
+TEST(EcsRenderRuntimeCompositionValidation,
+     PublicationDiagnosticsDoNotRequireGlobalLogger)
+{
+    ASSERT_FALSE(Log::GetCoreLogger());
+    FakeServices* services = nullptr;
+    auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
+    Prepare(*composition);
+
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 1.0f / 60.0f, 1.0f));
+    services->renderReady = false;
+    const FrozenSceneSnapshot snapshot = MakeSnapshot(ECS::SceneRuntimeId{1001}, 1, 1);
+    EXPECT_FALSE(effectClock.Tick(*composition, &snapshot, 1.0f / 60.0f, 2.0f));
+    EXPECT_EQ(services->transport.publishCount, 0U);
+    EXPECT_TRUE(composition->TryShutdown());
+}
 
 TEST(EcsRenderRuntimeCompositionValidation,
      PreparesBeforeWindowButCapturesOnlyAtTheRenderInitializationHook)

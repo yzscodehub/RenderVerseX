@@ -10,6 +10,7 @@
 #include "Render/Graph/RenderGraphExecutionReceipt.h"
 #include "Render/Lighting/VolumetricLightingFramePlan.h"
 #include "Render/PostProcess/PostProcessTypes.h"
+#include "RenderContracts/TransmissionFootprint.h"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,12 @@ namespace RVX
         static constexpr uint32 SchemaVersion = 5;
         static constexpr uint32 ExposureStateSchemaVersion = 1;
         static constexpr uint32 ExposureStateStride = 48;
+        /** Shared by allocation hints and the actual deferred render-pass clear. */
+        inline static constexpr std::array<RHIClearColor, 4> GBufferClearValues{{
+            {0.0f, 0.0f, 0.0f, 1.0f},
+            {0.5f, 0.5f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 0.0f}}};
 
         /**
          * @brief Graph-independent description for one scene texture.
@@ -175,7 +182,7 @@ namespace RVX
      */
     struct OpaqueSceneColorPyramid
     {
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
         static constexpr uint32 MaxMipCount =
             RVX_OPAQUE_SCENE_COLOR_PYRAMID_MAX_MIP_COUNT;
         inline static constexpr SceneTextures::FormatContract FormatContract{
@@ -186,6 +193,8 @@ namespace RVX
         RenderViewIdentity viewIdentity{};
         RenderOutputExtent sourceExtent{};
         RenderOutputExtent baseExtent{};
+        /** Add to raster UV when sampling the stable color grid. Depth stays raster-aligned. */
+        Vec2 rasterToColorUV{0.0f};
         RenderQualityTier quality = RenderQualityTier::Medium;
         uint32 mipCount = 0;
         RGTextureHandle texture{};
@@ -205,7 +214,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::SceneDepthSnapshot;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
         inline static constexpr SceneTextures::FormatContract FormatContract{
             RHIFormat::D32_FLOAT, RHISampleCount::Count1};
 
@@ -223,6 +232,11 @@ namespace RVX
         RGTextureHandle depthSnapshot{};
         SceneTextures::Metadata depthSnapshotMetadata{};
         std::shared_ptr<SceneDepthSnapshotCopyReceipt> receipt{};
+        bool transmissionRequested = false;
+        RGTextureHandle transmissionPyramid{};
+        SceneTextures::Metadata transmissionMetadata{};
+        uint32 transmissionMipCount = 0;
+        std::shared_ptr<TransmissionDepthPyramidBuildReceipt> transmissionReceipt{};
     };
 
     enum class DeferredSceneTexturesValidationCode : uint8
@@ -1053,7 +1067,8 @@ namespace RVX
             }
             else if constexpr (std::is_same_v<Entry, SceneDepthSnapshot>)
             {
-                return HandleMatchesGraph(entry.depthSnapshot, provenance);
+                return HandleMatchesGraph(entry.depthSnapshot, provenance) &&
+                       HandleMatchesGraph(entry.transmissionPyramid, provenance);
             }
             else if constexpr (std::is_same_v<Entry, VisibilityOutputs>)
             {
@@ -1339,7 +1354,9 @@ namespace RVX
                     : RenderOutputExtent{
                         std::max(1u, (pyramid.sourceExtent.width + 1u) / 2u),
                         std::max(1u, (pyramid.sourceExtent.height + 1u) / 2u)};
-            return pyramid.baseExtent == expectedBase &&
+            return std::isfinite(pyramid.rasterToColorUV.x) &&
+                   std::isfinite(pyramid.rasterToColorUV.y) &&
+                   pyramid.baseExtent == expectedBase &&
                    pyramid.mipCount ==
                        CalculateOpaqueSceneColorPyramidMipCount(
                            pyramid.baseExtent) &&
@@ -1633,6 +1650,30 @@ namespace RVX
             const SceneDepthSnapshot& snapshot,
             const RenderGraphBlackboardProvenance& provenance) noexcept
         {
+            const bool hasGuardState = snapshot.transmissionPyramid.IsValid() ||
+                snapshot.transmissionMetadata.extent.IsValid() ||
+                snapshot.transmissionMetadata.format != RHIFormat::Unknown ||
+                snapshot.transmissionMetadata.sampleCount != RHISampleCount::Count1 ||
+                snapshot.transmissionMipCount != 0 || snapshot.transmissionReceipt != nullptr;
+            if (snapshot.transmissionRequested)
+            {
+                if (!snapshot.available || !snapshot.required ||
+                    snapshot.outputExtent.width > RVX_TRANSMISSION_FOOTPRINT_MAX_EXTENT ||
+                    snapshot.outputExtent.height > RVX_TRANSMISSION_FOOTPRINT_MAX_EXTENT ||
+                    !snapshot.transmissionPyramid.IsValid() ||
+                    snapshot.transmissionMetadata.format != RHIFormat::R32_FLOAT ||
+                    snapshot.transmissionMetadata.sampleCount != RHISampleCount::Count1 ||
+                    !snapshot.transmissionMetadata.extent.IsValid() ||
+                    snapshot.transmissionMipCount != CalculateOpaqueSceneColorPyramidMipCount(
+                        snapshot.transmissionMetadata.extent) || !snapshot.transmissionReceipt)
+                    return false;
+                const auto base = snapshot.transmissionMetadata.extent;
+                const RenderOutputExtent half{
+                    std::max(1u, (snapshot.outputExtent.width + 1u) / 2u),
+                    std::max(1u, (snapshot.outputExtent.height + 1u) / 2u)};
+                if (base != snapshot.outputExtent && base != half) return false;
+            }
+            else if (hasGuardState) return false;
             const bool hasAnyResourceState =
                 snapshot.depthSnapshot.IsValid() ||
                 snapshot.depthSnapshotMetadata.extent.IsValid() ||

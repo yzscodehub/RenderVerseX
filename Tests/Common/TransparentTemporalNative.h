@@ -16,7 +16,7 @@ using namespace RVX;
 
 namespace RVX::Test
 {
-inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHistory = true)
+inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHistory = true, bool rawCandidates = false)
 {
     RHIDeviceDesc deviceDesc;
     auto device = RVX::Test::CreateNativeValidationDevice(backend, deviceDesc);
@@ -28,47 +28,67 @@ inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHi
     ASSERT_NE(provider, nullptr);
     PipelineCache cache(*provider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
-    auto* pipeline = cache.GetTransparentTemporalResolvePipeline(allowHistory);
+    auto* pipeline = rawCandidates ? cache.GetTransparentTemporalCandidateResolvePipeline() :
+        cache.GetTransparentTemporalResolvePipeline(allowHistory);
     ASSERT_NE(pipeline, nullptr) << cache.GetLastError();
-    EXPECT_EQ(pipeline, cache.GetTransparentTemporalResolvePipeline(allowHistory));
-    auto* layout = cache.GetTransparentTemporalResolveSetLayout();
+    if (!rawCandidates)
+    {
+        EXPECT_EQ(pipeline, cache.GetTransparentTemporalResolvePipeline(allowHistory));
+        EXPECT_NE(pipeline, cache.GetTransparentTemporalResolvePipeline(!allowHistory))
+            << "Global history reset must not alias the history-enabled pixel entry";
+    }
+    auto* layout = rawCandidates ? cache.GetTransparentTemporalCandidateResolveSetLayout() :
+        cache.GetTransparentTemporalResolveSetLayout();
     ASSERT_NE(layout, nullptr);
-    ASSERT_EQ(layout->GetEntries().size(), 5u);
+    ASSERT_EQ(layout->GetEntries().size(), rawCandidates ? 8u : 5u);
 
-    constexpr uint32 width = 8;
+    constexpr uint32 width = 10;
     constexpr uint32 rowPitch = 256;
-    const std::array<RHIFormat, 5> formats{RHIFormat::RG16_FLOAT, RHIFormat::R8_UNORM,
-        RHIFormat::RGBA16_FLOAT, RHIFormat::R32_UINT, RHIFormat::R32_FLOAT};
+    std::vector<RHIFormat> formats{RHIFormat::RG16_FLOAT, RHIFormat::R8_UNORM,
+        RHIFormat::RGBA16_FLOAT, RHIFormat::R32_UINT, rawCandidates ? RHIFormat::D32_FLOAT : RHIFormat::R32_FLOAT};
     std::array<uint16, width * 2> opaque{};
     std::array<uint8, width> reactive{};
     std::array<uint16, width * 4> surface{};
-    const std::array<uint32, width> flags{0, 7, 3, 15, 5, 23, 7, 7};
+    // Raw raster candidates (128 | geometry-history 64) must not be admitted.
+    const std::array<uint32, width> flags = rawCandidates ?
+        std::array<uint32, width>{0, 227, 195, 227, 225, 243, 227, 227, 227, 163} :
+        std::array<uint32, width>{0, 7, 3, 15, 5, 23, 7, 7, 195, 0};
+    const std::array<uint16, width> layers{0, 0x3c00, 0x3c00, 0x4000, 0x3c00, 0x3c00, 0x3c00, 0x3c00, 0x3c00, 0x3c00};
+    const std::array<uint8, width> meshReactive{0,255,255,255,255,255,255,255,255,255};
     std::array<float32, width> depths{};
     for (uint32 i = 0; i < width; ++i)
     {
         opaque[i * 2] = 0x3400;      // +0.25 in binary16
         opaque[i * 2 + 1] = 0xb400;  // -0.25
-        reactive[i] = 51;
+        reactive[i] = !rawCandidates || i == 0 || i == 8 ? 51 : 0;
         surface[i * 4] = 0x3800;    // +0.5
         surface[i * 4 + 1] = 0xb800;
-        surface[i * 4 + 2] = i == 6 ? 0x3800 : 0x3c00; // contribution .5 or 1
+        surface[i * 4 + 2] = i == 6 || (rawCandidates && i == 5) ? 0x3800 : 0x3c00; // contribution .5 or 1
         surface[i * 4 + 3] = i == 7 ? 0x4a00 : 0x4000; // depth 12 or 2
-        depths[i] = 10.0f;
+        depths[i] = rawCandidates ? 0.5f : 10.0f;
     }
-    const std::array<const void*, 5> payloads{
+    std::vector<const void*> payloads{
         opaque.data(), reactive.data(), surface.data(), flags.data(), depths.data()};
-    const std::array<size_t, 5> sizes{
+    std::vector<size_t> sizes{
         sizeof(opaque), sizeof(reactive), sizeof(surface), sizeof(flags), sizeof(depths)};
-    std::array<RHITextureRef, 5> sources;
-    std::array<RHITextureViewRef, 5> views;
-    std::array<RHIBufferRef, 5> uploads;
+    if (rawCandidates)
+    {
+        formats.push_back(RHIFormat::R16_FLOAT); formats.push_back(RHIFormat::R8_UNORM);
+        payloads.push_back(layers.data()); payloads.push_back(meshReactive.data());
+        sizes.push_back(sizeof(layers)); sizes.push_back(sizeof(meshReactive));
+    }
+    std::vector<RHITextureRef> sources(formats.size());
+    std::vector<RHITextureViewRef> views(formats.size());
+    std::vector<RHIBufferRef> uploads(formats.size());
     auto commands = device->CreateCommandContext(RHICommandQueueType::Graphics);
     ASSERT_TRUE(commands);
     commands->Begin();
     for (uint32 i = 0; i < sources.size(); ++i)
     {
-        sources[i] = device->CreateTexture(RHITextureDesc::Texture2D(width, 1, formats[i],
-            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst | RHITextureUsage::CopySrc));
+        auto sourceDesc = RHITextureDesc::Texture2D(width, 1, formats[i],
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst | RHITextureUsage::CopySrc);
+        if (formats[i] == RHIFormat::D32_FLOAT) sourceDesc.usage = sourceDesc.usage | RHITextureUsage::DepthStencil;
+        sources[i] = device->CreateTexture(sourceDesc);
         ASSERT_TRUE(sources[i]);
         RHITextureViewDesc view;
         view.format = formats[i];
@@ -99,12 +119,22 @@ inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHi
     const RenderViewIdentity viewIdentity{1, 1};
     RenderFeatureGraphBuilder builder(graph, {graph.GetGraphIdentity(),
         graph.GetRecordingGeneration(), frame.frameSequence, 0, 1});
-    std::array<RGTextureHandle, 5> imported;
+    std::vector<RGTextureHandle> imported(sources.size());
     for (uint32 i = 0; i < imported.size(); ++i)
         imported[i] = graph.ImportTexture(sources[i], RHIResourceState::ShaderResource);
     TransparentTemporalSurfaceInputs surfaceInputs{
         frame, viewIdentity, {width, 1}, imported[2], imported[3], imported[4]};
     surfaceInputs.historyAvailable = allowHistory;
+    if (rawCandidates)
+    {
+        surfaceInputs.rawCandidates = true;
+        surfaceInputs.opaqueLinearDepth = {};
+        surfaceInputs.opaqueDeviceDepth = imported[4];
+        surfaceInputs.layerCount = imported[5];
+        surfaceInputs.meshReactive = imported[6];
+        surfaceInputs.inverseProjectionMatrix = Mat4Identity();
+        surfaceInputs.inverseProjectionMatrix[2][2] = 20.0f;
+    }
     TransparentTemporalResolveOutputs resolved;
     std::string failure;
     auto stale = surfaceInputs;
@@ -164,7 +194,9 @@ inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHi
     ASSERT_NE(mask, nullptr);
     ASSERT_NE(unchanged, nullptr);
     ASSERT_NE(temporalDepth, nullptr);
-    constexpr std::array<int, width> expectedReactive{51, 51, 255, 255, 255, 255, 128, 51};
+    const std::array<int, width> expectedReactive = rawCandidates ?
+        std::array<int, width>{51, 0, 255, 255, 255, 255, 128, 255, 255, 255} :
+        std::array<int, width>{51, 51, 255, 255, 255, 255, 128, 51, 255, 51};
     for (uint32 i = 0; i < width; ++i)
     {
         EXPECT_EQ(motion[i * 2], i == 1 && allowHistory ? 0x3800 : 0x3400) << i;
@@ -172,7 +204,7 @@ inline void RunTransparentTemporalReference(RHIBackendType backend, bool allowHi
         EXPECT_NEAR(static_cast<int>(mask[i]), i == 1 && !allowHistory ? 255 : expectedReactive[i], 1) << i;
         EXPECT_EQ(unchanged[i * 2], opaque[i * 2]);
         EXPECT_EQ(unchanged[i * 2 + 1], opaque[i * 2 + 1]);
-        EXPECT_FLOAT_EQ(temporalDepth[i], (i == 1 || i == 2) ? 2.0f : 10.0f) << i;
+        EXPECT_FLOAT_EQ(temporalDepth[i], (i == 1 || i == 2 || (rawCandidates && i == 9)) ? 2.0f : 10.0f) << i;
     }
     for (auto& readback : readbacks) readback->Unmap();
     const auto validation = device->GetNativeValidationDiagnostics();

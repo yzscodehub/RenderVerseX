@@ -549,7 +549,15 @@ namespace
         stream << "        \"producerIdentity\": "
                << provenance.producerIdentity << ",\n";
         stream << "        \"resourceName\": "
-               << Diagnostics::JsonString(source.resourceName) << ",\n";
+               << Diagnostics::JsonString(
+                    semantic == QualificationCaptureAttachmentSemantic::LinearDepth &&
+                    std::any_of(receipt.features.begin(), receipt.features.end(), [](const auto& feature)
+                    {
+                        return feature.featureId == BuiltinRenderFeatureIds::Translucency &&
+                            feature.readiness.executed &&
+                            std::find(feature.graphPassNames.begin(), feature.graphPassNames.end(),
+                                "TransparentTemporalResolve") != feature.graphPassNames.end();
+                    }) ? "TranslucencyOutputs.temporalLinearDepth" : source.resourceName) << ",\n";
         stream << "        \"graphPasses\": ["
                << Diagnostics::JsonString(source.graphPassName) << "]\n";
         stream << "      }\n";

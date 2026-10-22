@@ -4,6 +4,7 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/Submission/DirectRasterReadbackQualification.h"
 #include "Render/Submission/OpaqueRasterSubmission.h"
@@ -5103,11 +5104,7 @@ void OpaquePass::Execute(
         RHIRenderPassDesc rpDesc;
         if (m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer)
         {
-            constexpr std::array<RHIClearColor, 4> clearValues = {{
-                {0.0f, 0.0f, 0.0f, 1.0f},
-                {0.5f, 0.5f, 1.0f, 0.0f},
-                {0.0f, 0.0f, 0.0f, 0.0f},
-                {0.0f, 0.0f, 0.0f, 0.0f}}};
+            constexpr auto clearValues = SceneTextures::GBufferClearValues;
             for (uint32 index = 0; index < gBufferTargetViews.size(); ++index)
             {
                 rpDesc.AddColorAttachment(

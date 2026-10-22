@@ -957,6 +957,8 @@ SSROutput SSR::AddToGraph(
     RHITextureDesc rawReflectionDesc = RHITextureDesc::Texture2D(
         traceWidth, traceHeight, RHIFormat::RGBA16_FLOAT,
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    rawReflectionDesc.SetOptimizedClearColor(
+        RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
     rawReflectionDesc.debugName = "SSRRawReflection";
     const RGTextureHandle rawReflection =
         graph.CreateTexture(rawReflectionDesc);
@@ -969,6 +971,8 @@ SSROutput SSR::AddToGraph(
     RHITextureDesc confidenceDesc = RHITextureDesc::Texture2D(
         traceWidth, traceHeight, RHIFormat::R8_UNORM,
         RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    confidenceDesc.SetOptimizedClearColor(
+        RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
     confidenceDesc.debugName = "SSRConfidence";
     const RGTextureHandle confidence = graph.CreateTexture(confidenceDesc);
     RHITextureDesc routeMaskDesc = RHITextureDesc::Texture2D(

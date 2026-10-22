@@ -784,24 +784,36 @@
       "cameraBookmarks": [
         {
           "id": "hero",
-          "position": [0.0, 1.35, 5.5],
-          "target": [0.0, 1.35, 0.0],
-          "verticalFieldOfViewDegrees": 38.0,
+          "position": [
+            0,
+            1.35,
+            5.5
+          ],
+          "target": [
+            0,
+            1.35,
+            0
+          ],
+          "verticalFieldOfViewDegrees": 38,
           "nearPlane": 0.05,
-          "farPlane": 100.0,
-          "exposure": 1.0
+          "farPlane": 100,
+          "exposure": 1
         }
       ],
-      "captureTicks": [120],
-      "visualContractVersion": 3,
+      "captureTicks": [
+        120,
+        360,
+        361
+      ],
+      "visualContractVersion": 4,
       "roiMetricPolicy": {
         "regionsOfInterest": [
           {
             "id": "frame",
-            "x": 0.0,
-            "y": 0.0,
-            "width": 1.0,
-            "height": 1.0
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 1
           },
           {
             "id": "translucency-panels",
@@ -809,20 +821,62 @@
             "y": 0.18,
             "width": 0.72,
             "height": 0.62
+          },
+          {
+            "id": "alpha-interior",
+            "x": 0.125,
+            "y": 0.3888888888888889,
+            "width": 0.1015625,
+            "height": 0.16666666666666666
+          },
+          {
+            "id": "premultiplied-interior",
+            "x": 0.34375,
+            "y": 0.3888888888888889,
+            "width": 0.1015625,
+            "height": 0.16666666666666666
+          },
+          {
+            "id": "additive-interior",
+            "x": 0.5546875,
+            "y": 0.3888888888888889,
+            "width": 0.09375,
+            "height": 0.16666666666666666
+          },
+          {
+            "id": "transmission-clear",
+            "x": 0.765625,
+            "y": 0.3472222222222222,
+            "width": 0.109375,
+            "height": 0.08333333333333333
+          },
+          {
+            "id": "transmission-rough",
+            "x": 0.765625,
+            "y": 0.5555555555555556,
+            "width": 0.109375,
+            "height": 0.08333333333333333
+          },
+          {
+            "id": "smoke-visible",
+            "x": 0.453125,
+            "y": 0.75,
+            "width": 0.109375,
+            "height": 0.19444444444444445
           }
         ],
         "metrics": [
           {
             "code": "VISUAL.METRIC.LUMA_RANGE",
             "regionOfInterestId": "frame",
-            "minimum": 8.0,
+            "minimum": 8,
             "maximum": null
           },
           {
             "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
             "regionOfInterestId": "translucency-panels",
             "minimum": 0.1,
-            "maximum": 1.0
+            "maximum": 1
           }
         ]
       },

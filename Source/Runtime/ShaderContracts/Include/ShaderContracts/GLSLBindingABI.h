@@ -13,11 +13,11 @@ namespace RVX
         inline constexpr uint32 RVX_GLSL_UNIFORM_BUFFER_BINDING_BASE = 1;
         inline constexpr uint32 RVX_GLSL_DUMMY_SAMPLER_BINDING = 15;
 
-        // The complete Forward+ surface ABI has nine frame textures
+        // The complete Forward+ surface ABI has ten frame textures
         // (including the integrated froxel volume) and thirteen Material V2
         // textures. They may be live in the same fragment shader, so the
-        // independent-sampler OpenGL path requires texture units [0, 21].
-        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 22;
+        // independent-sampler OpenGL path requires texture units [0, 22].
+        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 23;
         inline constexpr uint32 RVX_GLSL_REQUIRED_STORAGE_BUFFER_BINDING_COUNT = 16;
 
         [[nodiscard]] inline constexpr bool IsValidBinding(uint32 binding)
@@ -102,6 +102,14 @@ namespace RVX
             if (set == 0 && binding == 18)
             {
                 return 16;
+            }
+            // SceneDepthSnapshot is read through Texture.Load by transmission
+            // shaders, so it does not consume a sampler pair. It still needs
+            // a unique physical image unit because it can be live with every
+            // material texture and the froxel Texture3D.
+            if (set == 0 && binding == 19)
+            {
+                return 22;
             }
 
             // The original eight material textures retain their packed

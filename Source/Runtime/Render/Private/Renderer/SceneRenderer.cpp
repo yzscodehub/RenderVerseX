@@ -5689,6 +5689,9 @@ void SceneRenderer::MarkAcceptedFramePresented(
     {
         UpdateObjectMotionHistory();
     }
+    if (auto* transparent = FindCompositionPass<TransparentPass>())
+        transparent->CommitTemporalHistoryAfterPresent(
+            presentedFrameSequence, presentedViewIdentity, presentationQualified);
     if (presentationQualified)
     {
         RenderExecutionReceipt presented =
@@ -7642,19 +7645,20 @@ void SceneRenderer::ApplyObjectMotionHistory()
         }
 
         const auto previousIt = m_previousObjectWorldMatrices.find(historyKey);
-        if (previousIt == m_previousObjectWorldMatrices.end())
+        if (previousIt == m_previousObjectWorldMatrices.end() ||
+            !previousIt->second.IsCompatible(object))
         {
             continue;
         }
 
-        object.previousWorldMatrix = previousIt->second;
+        object.previousWorldMatrix = previousIt->second.worldMatrix;
         object.previousWorldMatrixValid = 1;
     }
 }
 
 void SceneRenderer::UpdateObjectMotionHistory()
 {
-    std::unordered_map<uint64, Mat4> currentObjectWorldMatrices;
+    std::unordered_map<uint64, RenderObjectMotionHistory> currentObjectWorldMatrices;
     currentObjectWorldMatrices.reserve(m_renderScene.GetObjectCount());
 
     for (const RenderObject& object : m_renderScene.GetObjects())
@@ -7662,7 +7666,7 @@ void SceneRenderer::UpdateObjectMotionHistory()
         const uint64 historyKey = GetRenderObjectHistoryKey(object);
         if (historyKey != 0)
         {
-            currentObjectWorldMatrices[historyKey] = object.worldMatrix;
+            currentObjectWorldMatrices[historyKey] = RenderObjectMotionHistory::Capture(object);
         }
     }
 
@@ -8291,15 +8295,13 @@ void SceneRenderer::Render()
     // Finalize one immutable queue policy and allocation-free plan. Physical
     // resources are deliberately unavailable during this stage.
     const bool performanceTimingRequested =
-        m_qualityPerformanceSession.RequiresExactGraphicsFrame();
+        m_recordedGraphQueuePolicy == RGQueuePolicy::GraphicsOnly;
     RenderGraphCompileOptions compileOptions;
     // Performance timing requires one Graphics-only timestamp span. A visual
     // attachment bundle instead follows the renderer's normal queue policy:
     // the terminal Graphics join still owns its exact copy completion, while
     // optional per-pass timestamps remain unavailable for MultiQueue plans.
-    compileOptions.queuePolicy =
-        performanceTimingRequested ? RGQueuePolicy::GraphicsOnly
-                                   : RGQueuePolicy::PreferMultiQueue;
+    compileOptions.queuePolicy = m_recordedGraphQueuePolicy;
     compileOptions.canonicalizeTransientPoolAccess =
         m_transientResourcePool != nullptr &&
         m_transientResourcePool->IsInitialized();
@@ -11589,6 +11591,9 @@ void SceneRenderer::UpdateEnvironmentIBLBindingDiagnostics(
 
 void SceneRenderer::BuildRenderGraph()
 {
+    // Freeze first-use queue ownership and compilation policy together.
+    m_recordedGraphQueuePolicy = m_qualityPerformanceSession.RequiresExactGraphicsFrame()
+        ? RGQueuePolicy::GraphicsOnly : RGQueuePolicy::PreferMultiQueue;
     m_featureCompositionFailureReason.clear();
     if (!m_lightingFramePlan || !m_lightingFramePlan->IsValid())
     {
@@ -11772,7 +11777,7 @@ void SceneRenderer::BuildRenderGraph()
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->BuildRenderGraph(
-            *m_renderGraph, m_submissionBatch.get());
+            *m_renderGraph, m_submissionBatch.get(), m_recordedGraphQueuePolicy);
     }
 
     RGTextureHandle backBufferTarget;
@@ -13119,8 +13124,8 @@ void SceneRenderer::BuildRenderGraph()
                  translucency->hdrSceneColorMetadata,
                  blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
                 {QualificationCaptureAttachmentSemantic::LinearDepth,
-                 translucency->deviceDepth,
-                 translucency->deviceDepthMetadata,
+                 translucency->temporalLinearDepth.IsValid() ? translucency->temporalLinearDepth : translucency->deviceDepth,
+                 translucency->temporalLinearDepth.IsValid() ? translucency->temporalLinearDepthMetadata : translucency->deviceDepthMetadata,
                  blackboard.GetProducer(TranslucencyOutputs::ResourceId)},
                 {QualificationCaptureAttachmentSemantic::Normal,
                  translucency->worldNormal,

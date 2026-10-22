@@ -89,6 +89,8 @@ namespace RVX
         AABB bounds;
 
         RenderResourceHandle mesh;
+        /** Committed content identity frozen when this object was admitted. */
+        uint64 meshContentRevision = 0;
         RenderResourceHandle material;
         RenderResourceHandle fallbackMesh;
         RenderResourceHandle fallbackMaterial;
@@ -131,6 +133,29 @@ namespace RVX
         {
             return previousSkinningPaletteValid != 0 &&
                    previousSkinningPalette.IsValidFor(previousSkinningMatrices);
+        }
+    };
+
+    /** Presented transform and geometry identity, not full temporal qualification. */
+    struct RenderObjectMotionHistory
+    {
+        Mat4 worldMatrix = Mat4Identity();
+        RenderResourceHandle mesh{};
+        uint64 meshContentRevision = 0;
+        bool skinned = false;
+
+        [[nodiscard]] static RenderObjectMotionHistory Capture(const RenderObject& object)
+        {
+            return {object.worldMatrix, object.mesh, object.meshContentRevision,
+                    object.HasSkinningData()};
+        }
+
+        [[nodiscard]] bool IsCompatible(const RenderObject& object) const noexcept
+        {
+            return mesh.IsValid() && mesh == object.mesh &&
+                   meshContentRevision != 0 &&
+                   meshContentRevision == object.meshContentRevision &&
+                   skinned == object.HasSkinningData();
         }
     };
 
@@ -454,7 +479,7 @@ namespace RVX
 
         RenderFrameHeaderV5 m_lastRenderedHeader{};
         RenderViewSnapshot m_lastRenderedView{};
-        std::unordered_map<uint64, Mat4> m_lastRenderedObjectTransforms;
+        std::unordered_map<uint64, RenderObjectMotionHistory> m_lastRenderedObjectTransforms;
         std::unordered_map<uint64, RenderedSkinningPalette>
             m_lastRenderedSkinningPalettes;
         uint64 m_surfaceCompatibilityKey = 0;

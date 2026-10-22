@@ -223,7 +223,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
             "VolumetricLighting") ||
         !registerFeature(
             std::make_unique<ForwardSpecialFeatureAdapter>(
-                &passBundle, m_pipelineCache.get()),
+                &passBundle, m_pipelineCache.get(),
+                m_defaultRenderComposition->GetOpaqueSceneColorHistory()),
             "ForwardSpecial") ||
         !registerFeature(
             std::make_unique<TranslucencyFeatureAdapter>(
@@ -231,7 +232,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
             "Translucency") ||
         !registerFeature(
             std::make_unique<PostProcessPipelineFeatureAdapter>(
-                GetPostProcessStack()),
+                GetPostProcessStack(), m_defaultRenderComposition->GetOpaqueSceneColorHistory()),
             "PostProcessPipeline"))
     {
         m_defaultRenderComposition->ResetFeatures();
@@ -250,7 +251,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
                 "DeferredLighting") ||
             !registerFeature(
                 std::make_unique<DeferredForwardSpecialFeatureAdapter>(
-                    &passBundle, m_pipelineCache.get()),
+                    &passBundle, m_pipelineCache.get(),
+                    m_defaultRenderComposition->GetOpaqueSceneColorHistory()),
                 "DeferredForwardSpecial"))
         {
             m_defaultRenderComposition->ResetFeatures();

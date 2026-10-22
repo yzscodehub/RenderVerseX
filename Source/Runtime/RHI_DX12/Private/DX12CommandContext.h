@@ -8,6 +8,11 @@
 
 namespace RVX
 {
+    // Preserve sequential transitions in separate native batches whenever
+    // subresources overlap. Never drop barriers or infer replacement states.
+    uint32 GetDX12LegacyBarrierBatchSize(
+        const D3D12_RESOURCE_BARRIER* barriers, uint32 count) noexcept;
+
     class DX12AccelerationStructure;
     class DX12Buffer;
     class DX12DescriptorSetLayout;

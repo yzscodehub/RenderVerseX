@@ -14,6 +14,7 @@
 
 namespace RVX
 {
+    class OpaqueSceneColorHistory;
     /**
      * @brief Value-owned presentation inputs frozen for one graph recording.
      *
@@ -36,7 +37,7 @@ namespace RVX
     {
     public:
         explicit PostProcessPipelineFeatureAdapter(
-            PostProcessStack* stack) noexcept;
+            PostProcessStack* stack, OpaqueSceneColorHistory* opaqueHistory = nullptr) noexcept;
 
         void SetRecordContext(PostProcessPipelineRecordContext context);
         /**
@@ -119,6 +120,7 @@ namespace RVX
         void ClearExposureProbeSourceReceipt() noexcept;
 
         PostProcessStack* m_stack = nullptr;
+        OpaqueSceneColorHistory* m_opaqueHistory = nullptr;
         PostProcessPipelineRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         PostProcessStackExecuteStats m_lastPlanStats{};

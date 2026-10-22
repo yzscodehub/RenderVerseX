@@ -5,9 +5,9 @@
 #include "Core/MathTypes.h"
 #include "Particle/ECS/ParticleEcsBridge.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleRenderPathPolicy.h"
+#include "Samples/SampleRenderQualityDiagnostics.h"
 #include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
@@ -96,7 +96,9 @@ namespace RVX
             return {
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.93f, 0.84f),
-                .intensity = 15000.0f,
+                // A dim reference light keeps the colored backdrops below the
+                // tone-map shoulder alongside physical Unlit/particle radiance.
+                .intensity = 20.0f,
                 .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .castsShadows = true,
             };
@@ -105,26 +107,13 @@ namespace RVX
         [[nodiscard]] bool HasTranslucencyExecution(
             const SampleRenderDiagnostics& diagnostics)
         {
-            return diagnostics.transparentAlphaBlendDrawCount != 0 &&
-                diagnostics.transparentPremultipliedDrawCount != 0 &&
-                diagnostics.transparentAdditiveDrawCount != 0 &&
-                diagnostics.transparentThinTransmissionDrawCount != 0 &&
-                diagnostics.transparentOpaqueSceneColorPyramidReady &&
-                diagnostics.transparentOpaqueSceneColorPyramidBuilt &&
-                diagnostics.transparentReactiveMaskAttachmentBound &&
-                diagnostics.transparentReactiveMaskWriteDrawCount != 0 &&
-                diagnostics.transparentPriorityBucketCount >= 4 &&
-                diagnostics.transparentFallbackCount == 0;
+            return HasSampleRenderQualityTranslucencyExecution(diagnostics);
         }
 
         [[nodiscard]] bool HasWeightedBlendedOITExecution(
             const SampleRenderDiagnostics& diagnostics)
         {
-            const SampleWeightedBlendedOITExecutionDiagnostics& execution =
-                diagnostics.weightedBlendedOITActualExecution;
-            return execution.HasQualifiedExecution() &&
-                   execution.meshWeightedGraphPassCount >= 1u &&
-                   execution.particleWeightedGraphPassCount >= 1u;
+            return HasSampleMixedWeightedBlendedOITExecution(diagnostics);
         }
 
         [[nodiscard]] Particle::ParticleEcsConfig MakeSmokeEmitterConfig(
@@ -334,7 +323,10 @@ namespace RVX
         postProcess.enableSSR = false;
         postProcess.toneMappingOperator = RenderToneMappingOperator::ACES;
         postProcess.exposureSettings.mode = RenderExposureMode::ManualEV100;
-        postProcess.exposureSettings.manualEV100 = 9.0f;
+        // EV3 gives the authored additive radiance (strength 8) and smoke a
+        // visible range. At EV9 the red additive contribution was only 0.01465,
+        // buried beneath a 15000-lux backdrop. All producers still share EV100.
+        postProcess.exposureSettings.manualEV100 = 3.0f;
         postProcess.exposureSettings.exposureCompensationEV = 0.0f;
         postProcess.bloomThreshold = 1.35f;
         postProcess.bloomIntensity = 0.18f;

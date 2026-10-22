@@ -8,6 +8,7 @@
  * package.  RenderVerseSamples never receives this glTF at runtime.
  */
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -42,6 +43,7 @@ namespace
         uint32_t materialIndex = 0;
         std::array<float, 3> translation{};
         std::array<float, 3> scale{};
+        std::array<float, 4> rotation{0.0f, 0.0f, 0.0f, 1.0f};
     };
 
     void AppendUInt16LE(std::vector<uint8_t>& bytes, uint16_t value)
@@ -167,9 +169,9 @@ namespace
         json << '"';
     }
 
-    [[nodiscard]] const std::array<MaterialSpec, 11>& GetMaterials()
+    [[nodiscard]] const std::array<MaterialSpec, 12>& GetMaterials()
     {
-        static const std::array<MaterialSpec, 11> materials = {{
+        static const std::array<MaterialSpec, 12> materials = {{
             {"Opaque_Backdrop_Alpha", {0.08f, 0.16f, 0.32f, 1.0f},
              {0.0f, 0.0f, 0.0f}, 0.0f, 0.85f, false},
             {"Opaque_Backdrop_Premultiplied", {0.36f, 0.72f, 0.16f, 1.0f},
@@ -188,17 +190,21 @@ namespace
              {0.0f, 0.0f, 0.0f}, 0.0f, 0.22f, true},
             {"Transparent_Additive", {1.00f, 0.22f, 0.01f, 0.58f},
              {1.0f, 0.22f, 0.01f}, 0.0f, 0.16f, true},
-            {"Transparent_ThinTransmission", {0.10f, 0.82f, 0.72f, 0.46f},
+            // Full pane coverage: optical transmission controls transparency.
+            // Fractional alpha would also mix in an unrefracted backdrop.
+            {"Transparent_ThinTransmission", {0.10f, 0.82f, 0.72f, 1.0f},
              {0.0f, 0.0f, 0.0f}, 0.0f, 0.08f, true},
             {"Opaque_Backdrop_PremultipliedBright", {0.96f, 0.80f, 0.08f, 1.0f},
              {0.0f, 0.0f, 0.0f}, 0.0f, 0.72f, false},
+            {"Transparent_ThinTransmissionRough", {0.10f, 0.82f, 0.72f, 1.0f},
+             {0.0f, 0.0f, 0.0f}, 0.0f, 0.60f, true},
         }};
         return materials;
     }
 
-    [[nodiscard]] const std::array<PanelSpec, 11>& GetPanels()
+    [[nodiscard]] const std::array<PanelSpec, 12>& GetPanels()
     {
-        static const std::array<PanelSpec, 11> panels = {{
+        static const std::array<PanelSpec, 12> panels = {{
             {"Backdrop_Alpha", "opaque-alpha-backdrop", 0U,
              {-2.25f, 1.35f, -0.35f}, {1.25f, 1.75f, 1.0f}},
             {"Backdrop_Premultiplied", "opaque-premultiplied-backdrop", 1U,
@@ -218,9 +224,14 @@ namespace
             {"Additive_Panel", "additive", 8U,
              {0.75f, 1.35f, 0.22f}, {1.05f, 1.55f, 1.0f}},
             {"ThinTransmission_Panel", "thin-transmission", 9U,
-             {2.25f, 1.35f, 0.28f}, {1.55f, 1.55f, 1.0f}},
+             {2.25f, 1.77f, 0.28f}, {1.55f, 0.70f, 1.0f},
+             {0.0f, 0.207912f, 0.0f, 0.978148f}},
             {"Backdrop_PremultipliedBright", "opaque-premultiplied-bright-boundary", 10U,
              {-0.75f, 1.35f, -0.34f}, {0.36f, 1.75f, 1.0f}},
+            // Identical tilt and optical parameters isolate roughness filtering.
+            {"ThinTransmissionRough_Panel", "thin-transmission-rough", 11U,
+             {2.25f, 0.93f, 0.28f}, {1.55f, 0.70f, 1.0f},
+             {0.0f, 0.207912f, 0.0f, 0.978148f}},
         }};
         return panels;
     }
@@ -253,6 +264,8 @@ namespace
             AppendVec3(json, panel.translation);
             json << ",\"scale\": ";
             AppendVec3(json, panel.scale);
+            json << ",\"rotation\": ";
+            AppendVec4(json, panel.rotation);
             json << ",\"extras\": {\"fixtureRole\": ";
             AppendJsonString(json, panel.role);
             json << ",\"renderable\": true}}";
@@ -297,11 +310,13 @@ namespace
              << "{\"bufferView\": 2,\"componentType\": 5126,\"count\": 4,\"type\": \"VEC2\"},"
              << "{\"bufferView\": 3,\"componentType\": 5123,\"count\": 6,\"type\": \"SCALAR\",\"min\": [0],\"max\": [3]}],\n"
              << "  \"extras\": {\n"
-             << "    \"fixtureSchema\": \"RVX.TransparentMaterialsFixture.v1\",\n"
-             << "    \"fixtureSchemaVersion\": 1,\n"
+             << "    \"fixtureSchema\": \"RVX.TransparentMaterialsFixture.v2\",\n"
+             << "    \"fixtureSchemaVersion\": 2,\n"
              << "    \"fixtureKind\": \"CookOnlyTransparencyQualification\",\n"
-             << "    \"materialCount\": 11,\n"
-             << "    \"transparentMaterialCount\": 4,\n"
+             << "    \"materialCount\": " << materials.size() << ",\n"
+             << "    \"transparentMaterialCount\": "
+             << std::count_if(materials.begin(), materials.end(),
+                    [](const MaterialSpec& material) { return material.blend; }) << ",\n"
              << "    \"transparentClasses\": [\"alpha-blend\",\"premultiplied\",\"additive\",\"thin-transmission\"],\n"
              << "    \"thinTransmissionBackground\": \"high-contrast-blue-gold-magenta-stripes\",\n"
              << "    \"premultipliedBackground\": \"green-gold-contrast-boundary\",\n"

@@ -51,6 +51,8 @@ namespace RVX
         uint64 frameIndex = 0;
         float32 fixedDeltaSeconds = 0.0f;
         Vec2 jitterOffset = Vec2(0.0f);
+        /** P22/P32/P23/P33 for device-depth to positive view-depth conversion. */
+        Vec4 deviceDepthProjection = Vec4(0.0f);
         Mat4 currentViewProjection = Mat4(1.0f);
         Mat4 previousViewProjection = Mat4(1.0f);
         /**

@@ -2625,4 +2625,23 @@ class RenderQualityPerformanceBaselineTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    if sys.argv[1:] == ["--list-tests"]:
+        def names(suite):
+            for item in suite:
+                if isinstance(item, unittest.TestSuite):
+                    yield from names(item)
+                else:
+                    yield item.id().removeprefix(__name__ + ".")
+
+        discovered = sorted(names(unittest.defaultTestLoader.loadTestsFromModule(
+            sys.modules[__name__])))
+        if not discovered or len(discovered) != len(set(discovered)):
+            raise SystemExit("Unit discovery must be nonempty and unique")
+        print(json.dumps(discovered))
+    else:
+        program = unittest.main(verbosity=2, exit=False)
+        result = program.result
+        raise SystemExit(0 if (
+            result.testsRun > 0 and result.wasSuccessful()
+            and not result.skipped and not result.expectedFailures
+        ) else 1)

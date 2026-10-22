@@ -4,6 +4,7 @@
  */
 
 #include "Features/PostProcessPipelineFeatureAdapter.h"
+#include "Features/OpaqueSceneColorHistory.h"
 
 #include "Core/Diagnostics/ContentHash.h"
 #include "Render/PostProcess/Bloom.h"
@@ -201,8 +202,9 @@ namespace
 } // namespace
 
 PostProcessPipelineFeatureAdapter::PostProcessPipelineFeatureAdapter(
-    PostProcessStack* stack) noexcept
+    PostProcessStack* stack, OpaqueSceneColorHistory* opaqueHistory) noexcept
     : m_stack(stack)
+    , m_opaqueHistory(opaqueHistory)
 {
 }
 
@@ -210,6 +212,9 @@ void PostProcessPipelineFeatureAdapter::SetRecordContext(
     PostProcessPipelineRecordContext context)
 {
     m_recordContext = std::move(context);
+    if (m_opaqueHistory)
+        m_opaqueHistory->Prepare(m_recordContext.frameIdentity,
+            m_recordContext.viewIdentity, m_recordContext.frameInputs);
     m_hasRecordContext = true;
     m_preparedContext = {};
     m_lastPlanStats = {};
@@ -549,6 +554,8 @@ bool PostProcessPipelineFeatureAdapter::CommitTemporalHistoryAfterPresent(
         return false;
     }
 
+    if (m_opaqueHistory && !m_opaqueHistory->Commit(identity))
+        return false;
     RefreshExecutionReceipt();
     SnapshotExposureProbeSourceReceipt();
     return (!requiresTAA || m_lastExecutionReceipt.historyCommitted) &&
@@ -576,7 +583,8 @@ bool PostProcessPipelineFeatureAdapter::CanCommitTemporalHistoryAfterPresent(
         m_lastExecutionReceipt.exposureHistoryCandidateProduced &&
         !m_lastExecutionReceipt.exposureHistoryCommitted;
     const TAA* const taa = requiresTAA ? m_stack->GetEffect<TAA>() : nullptr;
-    return (!requiresTAA ||
+    return (m_opaqueHistory == nullptr || m_opaqueHistory->CanCommit(identity)) &&
+           (!requiresTAA ||
             (taa != nullptr &&
              taa->CanCommitHistoryAfterPresent(identity))) &&
            (!requiresExposure ||
@@ -585,6 +593,8 @@ bool PostProcessPipelineFeatureAdapter::CanCommitTemporalHistoryAfterPresent(
 
 void PostProcessPipelineFeatureAdapter::AbandonTemporalHistoryCandidate() noexcept
 {
+    if (m_opaqueHistory)
+        m_opaqueHistory->Abandon();
     if (m_stack == nullptr)
     {
         return;
@@ -626,7 +636,8 @@ bool PostProcessPipelineFeatureAdapter::RequiresTemporalHistoryCommit() const no
         m_lastExecutionReceipt.exposureExecuted &&
         m_lastExecutionReceipt.exposureHistoryCandidateProduced &&
         !m_lastExecutionReceipt.exposureHistoryCommitted;
-    return taaRequiresCommit || exposureRequiresCommit;
+    return taaRequiresCommit || exposureRequiresCommit ||
+        (m_opaqueHistory && m_opaqueHistory->RequiresCommit());
 }
 
 bool PostProcessPipelineFeatureAdapter::RequestExposureQualificationProbe()

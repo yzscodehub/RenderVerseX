@@ -11,7 +11,9 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Translucency/TranslucencyFramePlan.h"
+#include "RenderContracts/TransparentTemporalHistory.h"
 
+#include <atomic>
 #include <memory>
 
 namespace RVX
@@ -23,6 +25,24 @@ namespace RVX
     class PipelineCache;
     class RenderScene;
     struct TransparentStagedRecordingState;
+
+
+    struct TransparentTemporalRasterReceipt
+    {
+        std::atomic_bool recorded{false};
+        std::atomic_bool failed{false};
+        std::atomic_uint32_t drawCount{0};
+    };
+
+    /** Raw graph-local candidates. Never bind flags directly to temporal resolve. */
+    struct TransparentTemporalCandidates
+    {
+        RGTextureHandle motionCoverageDepth{};
+        RGTextureHandle flags{};
+        RGTextureHandle layerCount{};
+        RenderOutputExtent extent{};
+        std::shared_ptr<TransparentTemporalRasterReceipt> receipt;
+    };
 
     /**
      * @brief Execution evidence for plan-driven mesh translucency recording.
@@ -152,6 +172,19 @@ namespace RVX
             RGTextureHandle sceneHDR,
             RGTextureHandle reactiveMask);
 
+        /** Records the sealed draws once, without altering color-route receipts.
+         * Raw flags retain the unadmitted marker until material/LOD and overlap
+         * qualification. Resources and palette reads belong to this exact graph.
+         */
+        [[nodiscard]] bool RecordTemporalCandidates(
+            RenderGraph& graph,
+            PreparedTranslucencyRecording& prepared,
+            TransparentTemporalCandidates& output);
+
+        /** Presentation authority only; recording or an abandoned frame cannot advance history. */
+        void CommitTemporalHistoryAfterPresent(uint64 frameSequence,
+            const RenderViewIdentity& view, bool presentationQualified);
+
         // =========================================================================
         // Configuration
         // =========================================================================
@@ -201,6 +234,11 @@ namespace RVX
         ClusteredLighting* m_clusteredLighting = nullptr;
         TransparentPassDrawStats m_drawStats{};
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
+        TransparentTemporalHistory m_temporalHistory;
+        std::vector<TransparentTemporalDrawIdentity> m_pendingTemporalDraws;
+        RenderViewIdentity m_pendingTemporalView{};
+        uint64 m_pendingTemporalFrame = 0;
+        std::shared_ptr<TransparentTemporalRasterReceipt> m_pendingTemporalReceipt;
     };
 
 } // namespace RVX

@@ -105,12 +105,18 @@ def valid_policy() -> Policy:
             aliases=("RVX::Gfx25SampleScenarios",),
         ),
         target(
+            "RVX_Gfx26SampleScenarios",
+            "Samples",
+            aliases=("RVX::Gfx26SampleScenarios",),
+        ),
+        target(
             PRODUCT_TARGET,
             "Samples",
             links=(
                 "RVX::SampleCookedComposition",
                 "RVX::Gfx24SampleScenarios",
                 "RVX::Gfx25SampleScenarios",
+                "RVX::Gfx26SampleScenarios",
             ),
             target_type="EXECUTABLE",
         ),
@@ -198,10 +204,11 @@ class CookedSampleProductClosureTests(unittest.TestCase):
             findings,
         )
 
-    def test_declares_the_complete_gfx24_gfx25_scenario_set(self) -> None:
+    def test_declares_the_complete_gfx24_gfx26_scenario_set(self) -> None:
         self.assertEqual(
             REQUIRED_SCENARIOS,
-            frozenset({"RVX_Gfx24SampleScenarios", "RVX_Gfx25SampleScenarios"}),
+            frozenset({"RVX_Gfx24SampleScenarios", "RVX_Gfx25SampleScenarios",
+                       "RVX_Gfx26SampleScenarios"}),
         )
 
 

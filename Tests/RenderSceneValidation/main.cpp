@@ -137,6 +137,13 @@ namespace RVX
             return renderer.m_mutationEvidenceEpoch;
         }
 
+        static const RenderObject& ApplyMotionHistoryWithoutViewReset(SceneRenderer& renderer)
+        {
+            renderer.m_viewData.resetTemporalHistory = false;
+            renderer.ApplyObjectMotionHistory();
+            return renderer.m_renderScene.GetObject(0);
+        }
+
         static const Mat4* FindObjectMotionHistory(
             const SceneRenderer& renderer,
             uint64 objectId) noexcept
@@ -144,7 +151,7 @@ namespace RVX
             const auto found =
                 renderer.m_previousObjectWorldMatrices.find(objectId);
             return found != renderer.m_previousObjectWorldMatrices.end()
-                ? &found->second
+                ? &found->second.worldMatrix
                 : nullptr;
         }
     };
@@ -2865,6 +2872,127 @@ TEST(RenderSceneValidation, AcceptsQueuedRequiredMeshBeforeRegistryCreation)
     EXPECT_EQ(result.skippedDrawCount, 1U);
     EXPECT_FALSE(scene.GetObject(0).mesh.IsValid());
     EXPECT_FALSE(scene.GetObject(0).drawable);
+}
+
+TEST(RenderSceneValidation, MeshIdentityChangeRejectsHistoryWithoutAdvancingAbandonedFrames)
+{
+    RegistryFixture resources;
+    const auto a = resources.Add({9101}, RenderResourceKind::Mesh, true);
+    const auto b = resources.Add({9102}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(a, {}, {1, 0, 0})).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false,
+                      MakePrimitive(b, {}, {2, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{2, 0, 0}));
+    ASSERT_TRUE(Apply(scene, resources.registry, 3, 1, 1, false,
+                      MakePrimitive(a, {}, {3, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{1, 0, 0}));
+    ASSERT_TRUE(Apply(scene, resources.registry, 4, 1, 1, false,
+                      MakePrimitive(b, {}, {4, 0, 0})).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 5, 1, 1, false,
+                      MakePrimitive(b, {}, {5, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{4, 0, 0}));
+}
+
+TEST(RenderSceneValidation, MeshContentReplacementInvalidatesHistoryButUnrelatedChangesDoNot)
+{
+    RegistryFixture resources;
+    const auto mesh = resources.Add({9111}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, {}, {1, 0, 0})).IsApplied());
+    const uint64 firstRevision = scene.GetObject(0).meshContentRevision;
+    ASSERT_NE(firstRevision, 0u);
+    scene.MarkAcceptedFrameRendered();
+    static_cast<void>(resources.Add({9112}, RenderResourceKind::Texture, true));
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false,
+                      MakePrimitive(mesh, {}, {2, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(scene.GetObject(0).meshContentRevision, firstRevision);
+    resources.ReplaceReadyResource(mesh, RenderResourceKind::Mesh, 1);
+    ASSERT_TRUE(Apply(scene, resources.registry, 3, 1, 1, false,
+                      MakePrimitive(mesh, {}, {3, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).mesh, mesh);
+    EXPECT_NE(scene.GetObject(0).meshContentRevision, firstRevision);
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    ASSERT_TRUE(Apply(scene, resources.registry, 4, 1, 1, false,
+                      MakePrimitive(mesh, {}, {4, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 5, 1, 1, false,
+                      MakePrimitive(mesh, {}, {5, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{4, 0, 0}));
+}
+
+TEST(RenderSceneValidation, PreferredMeshReadinessDoesNotReuseFallbackShapeHistory)
+{
+    RegistryFixture resources;
+    const auto preferred = resources.Add({9121}, RenderResourceKind::Mesh, false);
+    const auto fallback = resources.Add({9122}, RenderResourceKind::Mesh, true);
+    auto primitive = MakePrimitive(preferred, {}, {1, 0, 0});
+    primitive.fallbackMesh = fallback;
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false, primitive).IsApplied());
+    ASSERT_EQ(scene.GetObject(0).mesh, fallback);
+    scene.MarkAcceptedFrameRendered();
+    MeshUploadCreateInfo info;
+    info.indexCount = 3;
+    resources.CompletePendingMesh(preferred, info,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false, primitive).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).mesh, preferred);
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+}
+
+TEST(RenderSceneValidation, MotionHistoryRequiresExactMeshGenerationRevisionAndDeformationMode)
+{
+    RenderObject object;
+    object.mesh = {1, 1};
+    object.meshContentRevision = 7;
+    const auto history = RenderObjectMotionHistory::Capture(object);
+    EXPECT_TRUE(history.IsCompatible(object));
+    object.worldMatrix[3].x = 10.0f;
+    EXPECT_TRUE(history.IsCompatible(object));
+    ++object.mesh.generation;
+    EXPECT_FALSE(history.IsCompatible(object));
+    --object.mesh.generation;
+    ++object.meshContentRevision;
+    EXPECT_FALSE(history.IsCompatible(object));
+    object.meshContentRevision = 0;
+    EXPECT_FALSE(history.IsCompatible(object));
+    object.meshContentRevision = 7;
+    object.skinningMatrices.push_back(Mat4Identity());
+    EXPECT_FALSE(history.IsCompatible(object));
+}
+
+TEST(RenderSceneValidation, RendererMotionCacheCannotRestoreAnIncompatibleMeshHistory)
+{
+    RegistryFixture resources;
+    const auto a = resources.Add({9131}, RenderResourceKind::Mesh, true);
+    const auto b = resources.Add({9132}, RenderResourceKind::Mesh, true);
+    SceneRenderer renderer;
+    auto first = MakeFrame(801, 1, 1, false, {MakePrimitive(a, {}, {1, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*first.frame, first.database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    auto abandoned = MakeFrame(802, 1, 1, false, {MakePrimitive(b, {}, {2, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*abandoned.frame, abandoned.database, resources.registry).IsApplied());
+    EXPECT_EQ(SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer).previousWorldMatrixValid, 0u);
+    auto retry = MakeFrame(803, 1, 1, false, {MakePrimitive(a, {}, {3, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*retry.frame, retry.database, resources.registry).IsApplied());
+    const auto& restored = SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer);
+    EXPECT_EQ(restored.previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(restored.previousWorldMatrix[3]), (Vec3{1, 0, 0}));
+    resources.ReplaceReadyResource(a, RenderResourceKind::Mesh, 1);
+    auto replaced = MakeFrame(804, 1, 1, false, {MakePrimitive(a, {}, {4, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*replaced.frame, replaced.database, resources.registry).IsApplied());
+    EXPECT_EQ(SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer).previousWorldMatrixValid, 0u);
 }
 
 TEST(RenderSceneValidation, SequenceGapPreservesRenderedTemporalHistory)

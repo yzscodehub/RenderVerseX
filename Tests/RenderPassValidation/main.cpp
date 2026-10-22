@@ -33,6 +33,7 @@
 #include "Features/DefaultRenderComposition.h"
 #include "Features/DefaultRenderPassBundle.h"
 #include "Features/OpaqueSceneColorPyramidBuilder.h"
+#include "Render/PostProcess/TransmissionDepthPyramid.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
@@ -2454,6 +2455,15 @@ namespace
             m_capabilities.supportsTimestampQueries = true;
             m_capabilities.timestampFrequency = 1000000ull;
         }
+
+        void EnableTransparentTemporalMrt()
+        {
+            m_capabilities.supportsIndependentColorAttachmentBlend = true;
+            for (const auto format : {RHIFormat::RGBA16_FLOAT, RHIFormat::R32_UINT, RHIFormat::R16_FLOAT})
+                m_capabilities.formatCapabilities[static_cast<size_t>(format)].colorAttachment = true;
+            m_capabilities.formatCapabilities[static_cast<size_t>(RHIFormat::R16_FLOAT)].colorAttachmentBlend = true;
+        }
+
 
         void SetComputePipelineSupported(bool supported)
         {
@@ -11116,6 +11126,9 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
         results->directionalShadowOutput.shadowMap);
     ASSERT_NE(desc, nullptr);
     EXPECT_EQ(desc->arraySize, RVX_MIN_DIRECTIONAL_SHADOW_ARRAY_LAYERS);
+    EXPECT_EQ(desc->optimizedClearValue.type, RHIOptimizedClearValueType::DepthStencil);
+    EXPECT_FLOAT_EQ(desc->optimizedClearValue.depthStencil.depth, pipelineCache.GetDepthClearValue());
+    EXPECT_EQ(desc->optimizedClearValue.depthStencil.stencil, 0u);
     ASSERT_EQ(results->directionalShadowOutput.cascadeViewProjections.size(),
               static_cast<size_t>(1));
 }
@@ -24341,6 +24354,8 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_EQ(RHIStoreOp::Store, attachment.storeOp);
         EXPECT_TRUE(AreRHIClearColorsEqual(expectedClears[index],
                                             attachment.clearColor));
+        EXPECT_TRUE(AreRHIClearColorsEqual(SceneTextures::GBufferClearValues[index],
+                                            attachment.clearColor));
     }
     EXPECT_EQ(0u, commands.drawCount);
     EXPECT_EQ(1u, commands.drawIndexedCount);
@@ -27196,6 +27211,37 @@ TEST_F(RenderPassValidationFixture,
         graph, graphView, scene, transparentItems, 2201u, 2201u);
     AttachDefaultTestLighting(context);
 
+    RHITextureDesc snapshotDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    snapshotDesc.usage = snapshotDesc.usage | RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst;
+    const auto snapshotHandle = graph.CreateTexture(snapshotDesc);
+    auto depthReceipt = std::make_shared<SceneDepthSnapshotCopyReceipt>();
+    struct TransmissionDepthCopyData { RGTextureHandle source; RGTextureHandle target; };
+    graph.AddPass<TransmissionDepthCopyData>("TestTransmissionDepthCopy", RenderGraphPassType::Graphics,
+        [source = graphView.depthTarget, snapshotHandle](RenderGraphBuilder& builder, TransmissionDepthCopyData& data)
+        {
+            data.source = builder.Read(source, RHIResourceState::CopySource);
+            data.target = builder.Write(snapshotHandle, RHIResourceState::CopyDest);
+        },
+        [depthReceipt](const TransmissionDepthCopyData& data, RenderGraphPassContext& passContext)
+        {
+            passContext.Commands().CopyTexture(passContext.GetTexture(data.source), passContext.GetTexture(data.target));
+            depthReceipt->copied.store(true, std::memory_order_release);
+        });
+    context.sceneDepthSnapshot = {context.identity, snapshotHandle, {64, 64},
+        RHIFormat::D32_FLOAT, RHISampleCount::Count1, depthReceipt};
+    RenderFeatureGraphBuilder guardBuilder(graph, {
+        context.identity.graphIdentity, context.identity.graphRecordingGeneration,
+        context.identity.frameSequence, context.identity.viewOrdinal, context.identity.recordEpoch});
+    TransmissionDepthPyramidOutput guard;
+    std::string guardFailure;
+    ASSERT_TRUE(BuildTransmissionDepthPyramid(guardBuilder, pipelineCache,
+        context.sceneDepthSnapshot, context.opaqueSceneColorPyramid.quality,
+        pipelineCache.GetDepthClearValue() == 0.0f, guard, guardFailure)) << guardFailure;
+    context.sceneDepthSnapshot.transmissionPyramid = guard.texture;
+    context.sceneDepthSnapshot.transmissionBaseExtent = guard.baseExtent;
+    context.sceneDepthSnapshot.transmissionMipCount = guard.mipCount;
+    context.sceneDepthSnapshot.transmissionReceipt = guard.receipt;
+
     const WeightedBlendedOITCapabilityReadiness enabledReadiness{
         .requested = true,
         .compiled = true,
@@ -27376,6 +27422,38 @@ TEST_F(RenderPassValidationFixture,
         graph, prepared, inPlaceCompositeHDR,
         context.view.reactiveMaskTarget));
 
+    TransparentTemporalCandidates candidates;
+    RenderGraph unrelatedGraph;
+    EXPECT_FALSE(pass.RecordTemporalCandidates(unrelatedGraph, prepared, candidates));
+    EXPECT_FALSE(candidates.motionCoverageDepth.IsValid());
+    // Unsupported capability must fail without consuming the recording token.
+    EXPECT_FALSE(pass.RecordTemporalCandidates(graph, prepared, candidates));
+    device.EnableTransparentTemporalMrt();
+    ASSERT_TRUE(pass.RecordTemporalCandidates(graph, prepared, candidates));
+    ASSERT_TRUE(candidates.receipt);
+    EXPECT_FALSE(candidates.receipt->recorded.load());
+    EXPECT_EQ(graph.GetGraphIdentity(), candidates.flags.graphIdentity);
+    EXPECT_EQ(graph.GetRecordingGeneration(), candidates.flags.recordingGeneration);
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT, graph.GetTextureDesc(candidates.motionCoverageDepth)->format);
+    EXPECT_EQ(RHIFormat::R32_UINT, graph.GetTextureDesc(candidates.flags)->format);
+    EXPECT_EQ(RHIFormat::R16_FLOAT, graph.GetTextureDesc(candidates.layerCount)->format);
+    TransparentTemporalCandidates duplicate;
+    EXPECT_FALSE(pass.RecordTemporalCandidates(graph, prepared, duplicate));
+    EXPECT_FALSE(duplicate.receipt);
+
+    // A producer with no consumer is correctly culled. Model a downstream
+    // admission consumer that reads every candidate attachment and contributes
+    // to the external output; do not disable production graph culling.
+    struct TemporalConsumerData {};
+    graph.AddPass<TemporalConsumerData>("TestTemporalCandidateConsumer", RenderGraphPassType::Graphics,
+        [candidates, inPlaceCompositeHDR](RenderGraphBuilder& builder, TemporalConsumerData&)
+        {
+            static_cast<void>(builder.Read(candidates.motionCoverageDepth, RHIResourceState::ShaderResource));
+            static_cast<void>(builder.Read(candidates.flags, RHIResourceState::ShaderResource));
+            static_cast<void>(builder.Read(candidates.layerCount, RHIResourceState::ShaderResource));
+            static_cast<void>(builder.Write(inPlaceCompositeHDR, RHIResourceState::RenderTarget));
+        }, [](const TemporalConsumerData&, RenderGraphPassContext&) {});
+
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
@@ -27447,13 +27525,43 @@ TEST_F(RenderPassValidationFixture,
               sharedOITPasses[1]->depthStencilAttachment.depthLoadOp);
     ASSERT_NE(nullptr, directPass);
 
-    ASSERT_GE(commands.pipelineSequence.size(), 2u);
-    ExpectPipelineDebugName(
-        commands.pipelineSequence[0],
+    // Independent temporal work may legally precede the depth pyramid. Prove
+    // exact work inventory and required relative order, not global positions.
+    std::vector<std::string> pipelineNames;
+    for (auto* pipeline : commands.pipelineSequence)
+    {
+        const auto* recorded = dynamic_cast<const FakePipeline*>(pipeline);
+        ASSERT_NE(nullptr, recorded);
+        pipelineNames.push_back(recorded->debugName);
+    }
+    EXPECT_EQ(guard.mipCount, std::count(pipelineNames.begin(), pipelineNames.end(),
+        "TransmissionDepthPyramidPipeline"));
+    EXPECT_EQ(1, std::count(pipelineNames.begin(), pipelineNames.end(),
+        "WeightedBlendedOITAccumulationRigidPipeline"));
+    EXPECT_EQ(1, std::count(pipelineNames.begin(), pipelineNames.end(),
+        "DefaultTransparentAlphaMrtPipeline"));
+    EXPECT_EQ(2, std::count(pipelineNames.begin(), pipelineNames.end(),
+        "TransparentTemporalRaster"));
+    const auto weightedPipeline = std::find(pipelineNames.begin(), pipelineNames.end(),
         "WeightedBlendedOITAccumulationRigidPipeline");
-    ExpectPipelineDebugName(
-        commands.pipelineSequence[1], "DefaultTransparentAlphaMrtPipeline");
-    EXPECT_EQ(2u, commands.drawIndexedCount);
+    const auto directPipeline = std::find(pipelineNames.begin(), pipelineNames.end(),
+        "DefaultTransparentAlphaMrtPipeline");
+    ASSERT_NE(pipelineNames.end(), weightedPipeline);
+    ASSERT_NE(pipelineNames.end(), directPipeline);
+    EXPECT_LT(weightedPipeline, directPipeline);
+    for (auto it = pipelineNames.begin(); it != pipelineNames.end(); ++it)
+        if (*it == "TransmissionDepthPyramidPipeline") EXPECT_LT(it, directPipeline);
+    EXPECT_EQ(guard.mipCount + 4u, pipelineNames.size());
+    EXPECT_EQ(4u, commands.drawIndexedCount);
+    EXPECT_TRUE(candidates.receipt->recorded.load());
+    EXPECT_FALSE(candidates.receipt->failed.load());
+    EXPECT_EQ(2u, candidates.receipt->drawCount.load());
+    const auto temporalPass = std::find_if(commands.renderPasses.begin(), commands.renderPasses.end(),
+        [](const RHIRenderPassDesc& pass) { return pass.colorAttachmentCount == 3u; });
+    ASSERT_NE(commands.renderPasses.end(), temporalPass);
+    EXPECT_TRUE(temporalPass->depthStencilAttachment.readOnly);
+    for (uint32 i = 0; i < 3; ++i)
+        EXPECT_EQ(RHILoadOp::Clear, temporalPass->colorAttachments[i].loadOp);
 
     const TransparentStagedRecordingStats executedStats = prepared.GetStats();
     EXPECT_EQ(1u, executedStats.preparationCount);
@@ -27465,6 +27573,16 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(1u, executedStats.weightedBlendedExecutedDrawCount);
     EXPECT_EQ(1u, executedStats.sortedRefractionExecutedDrawCount);
     EXPECT_EQ(0u, executedStats.directAdditiveExecutedDrawCount);
+    EXPECT_TRUE(depthReceipt->copied.load());
+    uint32 exactDepthBindings = 0;
+    EXPECT_TRUE(guard.receipt->completed.load());
+    auto* expectedDepth = RenderGraphValidationAccess::GetTexture(graph, guard.texture);
+    for (const auto& descriptor : device.createdDescriptorSetDescs)
+        for (const auto& binding : descriptor.bindings)
+            if (binding.binding == PipelineCache::DefaultLitTransmissionDepthPyramidBinding &&
+                binding.textureView && binding.textureView->GetTexture() == expectedDepth)
+                ++exactDepthBindings;
+    EXPECT_EQ(exactDepthBindings, 1u) << "Both stages must share the exact copied depth binding";
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -31816,7 +31934,12 @@ TEST_F(RenderPassValidationFixture,
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
-    TAA taa;
+    for (const auto purpose : {TemporalResolvePurpose::Presentation,
+                               TemporalResolvePurpose::OpaqueRefraction})
+    {
+    SCOPED_TRACE(static_cast<int>(purpose));
+    device.createdDescriptorSetDescs.clear();
+    TAA taa(purpose);
     PostProcessSettings settings;
     settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
     taa.Configure(settings);
@@ -31905,6 +32028,7 @@ TEST_F(RenderPassValidationFixture,
     // Keeping this at zero lets the next sampled frame prove that an
     // all-zero/identical pair is rejected rather than masquerading as TAA.
     inputs.jitterOffset = Vec2(0.0f);
+    inputs.deviceDepthProjection = Vec4(-1.0f, -0.5f, -1.0f, 0.0f);
     inputs.historyIdentity = historyIdentity;
     inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
     inputs.historyAvailable = false;
@@ -31934,7 +32058,8 @@ TEST_F(RenderPassValidationFixture,
         return it != graphDiagnostics.passes.end() ? &*it : nullptr;
     };
     const RenderGraph::PassDiagnostic* const resolvePass =
-        findPass("TAAResolve");
+        findPass(purpose == TemporalResolvePurpose::OpaqueRefraction
+            ? "OpaqueSceneTemporalResolve" : "TAAResolve");
     ASSERT_NE(resolvePass, nullptr);
     EXPECT_EQ(findPass("TAAHistoryStore"), nullptr);
 
@@ -32153,6 +32278,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_FALSE(taa.CanCommitHistoryAfterPresent(historyIdentity));
     EXPECT_FALSE(taa.CommitHistoryAfterPresent(historyIdentity));
     EXPECT_FALSE(taa.HasValidHistory());
+    }
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -32543,6 +32669,9 @@ TEST_F(RenderPassValidationFixture,
         RenderGraphValidationAccess::Execute(frameGraph, commands);
         ASSERT_TRUE(taa.GetLastResolveStats().executed);
         EXPECT_EQ(taa.GetLastResolveStats().historySampled, expectHistory);
+        EXPECT_EQ(taa.GetLastResolveStats().historyAvailableBefore, expectHistory);
+        EXPECT_EQ(taa.GetLastResolveStats().historyAvailableBefore,
+                  taa.GetLastResolveStats().historySampled);
         if (!expectHistory)
             EXPECT_TRUE(HasRenderHistoryResetReason(taa.GetLastResolveStats().historyResetReasons,
                 RenderHistoryResetReason::FormatChanged));

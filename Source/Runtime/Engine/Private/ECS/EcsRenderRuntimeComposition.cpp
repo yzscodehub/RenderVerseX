@@ -6,6 +6,7 @@
 #include "EcsRenderRuntimeComposition.h"
 
 #include "Core/Assert.h"
+#include "Core/Log.h"
 #include "Render/RenderDiagnostics.h"
 #include "Render/RenderSubsystem.h"
 #include "RenderContracts/RenderFrameValidation.h"
@@ -285,6 +286,11 @@ std::optional<EcsRenderFramePipelineResult> EcsRenderRuntimeComposition::Tick(
     if (!m_acceptingPublications || activeSnapshot == nullptr ||
         !m_services->IsRenderReady())
     {
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_DEBUG("ECS source publication blocked: accepting={}, snapshot={}, renderReady={}",
+                           m_acceptingPublications, activeSnapshot != nullptr, m_services->IsRenderReady());
+        }
         return std::nullopt;
     }
 
@@ -339,6 +345,12 @@ std::optional<EcsRenderFramePipelineResult> EcsRenderRuntimeComposition::Tick(
     else
     {
         ++m_stats.publicationRejected;
+        if (m_stats.publicationRejected == 1 || m_stats.publicationRejected % 100 == 0)
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_DEBUG("ECS source publication rejected: sequence={}, pipelineCode={}, extractionCode={}",
+                               input.sequence, static_cast<uint32>(result.code), static_cast<uint32>(result.extractionCode));
+            }
     }
     return result;
 }
@@ -354,6 +366,14 @@ bool EcsRenderRuntimeComposition::PollCompletedProgress()
     if (!m_pipeline->ObserveCompletedProgress(completed))
     {
         ++m_stats.completedProgressRejected;
+        if (m_stats.completedProgressRejected == 1 || m_stats.completedProgressRejected % 100 == 0)
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_DEBUG("ECS completed progress rejected: scene={}->{}, presented={}->{}, deviceLost={}",
+                               m_stats.completedProgress.appliedRenderSceneRevision, completed.appliedRenderSceneRevision,
+                               m_stats.completedProgress.presentedFrameSequence, completed.presentedFrameSequence,
+                               completed.deviceLost);
+            }
         return false;
     }
     m_stats.completedProgress = completed;
@@ -587,16 +607,29 @@ bool EcsRenderRuntimeComposition::ObserveWindowSurface()
     if (!IsNativeSurfaceValidFor(observed, ResolveBackend()) ||
         observed.generation < m_surface.generation)
     {
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_DEBUG("ECS source surface rejected: observed={}x{} generation={}, accepted={}x{} generation={}",
+                           observed.width, observed.height, observed.generation,
+                           m_surface.width, m_surface.height, m_surface.generation);
+        }
         return false;
     }
     if (observed.generation == m_surface.generation)
     {
-        return observed.width == m_surface.width &&
+        const bool matches = observed.width == m_surface.width &&
                observed.height == m_surface.height &&
                observed.nativeWindow == m_surface.nativeWindow &&
                observed.nativeDisplay == m_surface.nativeDisplay &&
                observed.nativeLayer == m_surface.nativeLayer &&
                observed.backendWindow == m_surface.backendWindow;
+        if (!matches)
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_DEBUG("ECS surface changed without a generation: observed={}x{}, accepted={}x{}, generation={}",
+                               observed.width, observed.height, m_surface.width, m_surface.height, observed.generation);
+            }
+        return matches;
     }
     const RenderResizeResult receipt = m_services->RequestResize(observed);
     m_stats.lastResizeResult = receipt;
@@ -604,6 +637,11 @@ bool EcsRenderRuntimeComposition::ObserveWindowSurface()
          receipt.code != RenderResizeCode::CoalescedOlder) ||
         receipt.generation != observed.generation)
     {
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_DEBUG("ECS resize rejected: code={}, receiptGeneration={}, observedGeneration={}",
+                           static_cast<uint32>(receipt.code), receipt.generation, observed.generation);
+        }
         return false;
     }
     m_surface = observed;

@@ -1852,6 +1852,7 @@ namespace RVX
         RenderRetirementQueue* m_retirementQueue = nullptr;
         std::unique_ptr<RenderSubmissionResourceBatch> m_submissionBatch;
         std::unique_ptr<RenderGraph> m_renderGraph;
+        RGQueuePolicy m_recordedGraphQueuePolicy = RGQueuePolicy::PreferMultiQueue;
         std::unique_ptr<IShaderProgramProvider> m_shaderProgramProvider;
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<MaterialSystem> m_materialSystem;
@@ -2152,7 +2153,7 @@ namespace RVX
         GPUDrivenPolicyDecision m_gpuDrivenPolicyDecision;
         bool m_gpuDrivenCullingEnabled = false;
         RenderPolicyDiagnostics m_renderPolicyDiagnostics;
-        std::unordered_map<uint64, Mat4> m_previousObjectWorldMatrices;
+        std::unordered_map<uint64, RenderObjectMotionHistory> m_previousObjectWorldMatrices;
         PostProcessSettings m_postProcessSettings;
         ShadowPassConfig m_shadowPassConfig;
         std::vector<uint32_t> m_visibleObjectIndices;

@@ -405,6 +405,8 @@ GroundTruthAmbientOcclusionOutput GroundTruthAmbientOcclusion::AddToGraph(
         RHITextureDesc neutralDesc = RHITextureDesc::Texture2D(
             view.viewportWidth, view.viewportHeight, RHIFormat::R8_UNORM,
             RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+        neutralDesc.SetOptimizedClearColor(
+            RHIClearColor{1.0f, 1.0f, 1.0f, 1.0f});
         neutralDesc.debugName = "GTAONeutralVisibility";
         const RGTextureHandle neutralVisibility = graph.CreateTexture(neutralDesc);
         if (!neutralVisibility.IsValid())

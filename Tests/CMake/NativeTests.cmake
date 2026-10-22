@@ -77,6 +77,11 @@ if(RVX_ENABLE_DX12)
         LANE native
         SOURCES DX12Validation/main.cpp
                 DX12Validation/TransparentTemporalValidation.cpp
+                DX12Validation/TransmissionDepthValidation.cpp
+                DX12Validation/TransmissionFootprintValidation.cpp
+                DX12Validation/TransmissionDepthPyramidValidation.cpp
+                DX12Validation/TransparentTemporalRasterValidation.cpp
+                DX12Validation/NativeDiagnosticsValidation.cpp
         LIBS
             RVX::Core
             RVX::EngineDevelopmentComposition
@@ -107,6 +112,10 @@ if(RVX_ENABLE_VULKAN)
         LANE native
         SOURCES VulkanValidation/main.cpp
                 VulkanValidation/TransparentTemporalValidation.cpp
+                VulkanValidation/TransmissionDepthValidation.cpp
+                VulkanValidation/TransmissionFootprintValidation.cpp
+                VulkanValidation/TransmissionDepthPyramidValidation.cpp
+                VulkanValidation/TransparentTemporalRasterValidation.cpp
         LIBS
             RVX::EngineDevelopmentComposition
             RVX::Core

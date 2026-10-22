@@ -14,6 +14,7 @@
 #include "Render/Passes/RayTracedReflectionPass.h"
 #include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/ShadowPass.h"
+#include "Render/Passes/TransparentPass.h"
 #include "Render/Passes/WaterFeaturePass.h"
 
 #include <algorithm>
@@ -917,6 +918,8 @@ void ForwardLightingFeatureAdapter::AddPasses(
             SceneTextures::BaseIndirectSpecularContract.format);
         baseIndirectSpecularDesc.sampleCount =
             SceneTextures::BaseIndirectSpecularContract.sampleCount;
+        baseIndirectSpecularDesc.SetOptimizedClearColor(
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
         baseIndirectSpecularDesc.debugName = "ForwardBaseIndirectSpecular";
         baseIndirectSpecular = builder.CreateTexture(baseIndirectSpecularDesc);
 
@@ -925,6 +928,8 @@ void ForwardLightingFeatureAdapter::AddPasses(
             SceneTextures::SpecularResponseContract.format);
         specularResponseDesc.sampleCount =
             SceneTextures::SpecularResponseContract.sampleCount;
+        specularResponseDesc.SetOptimizedClearColor(
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
         specularResponseDesc.debugName = "ForwardSpecularResponse";
         specularResponse = builder.CreateTexture(specularResponseDesc);
         if (!baseIndirectSpecular.IsValid() || !specularResponse.IsValid())
@@ -1072,9 +1077,10 @@ void ForwardLightingFeatureAdapter::SetCompositionFailure(
 
 ForwardSpecialFeatureAdapter::ForwardSpecialFeatureAdapter(
     DefaultRenderPassBundle* passBundle,
-    PipelineCache* pipelineCache) noexcept
+    PipelineCache* pipelineCache, OpaqueSceneColorHistory* opaqueHistory) noexcept
     : m_passBundle(passBundle)
     , m_pipelineCache(pipelineCache)
+    , m_opaqueHistory(opaqueHistory)
 {
 }
 
@@ -1321,6 +1327,9 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     const bool particleExecutable = particlePass != nullptr &&
         particleStatus.requestedEnabled && particleStatus.supported &&
         particleStatus.enabled;
+    const auto* transmissionPass = m_passBundle->FindPass<TransparentPass>();
+    const RenderPassStatus transmissionStatus = transmissionPass != nullptr
+        ? transmissionPass->GetStatus() : RenderPassStatus{};
     const SceneDepthSnapshotDemand depthDemand =
         ResolveSceneDepthSnapshotDemand(
             waterRequirements.depthSnapshotRequired,
@@ -1328,7 +1337,10 @@ void ForwardSpecialFeatureAdapter::AddPasses(
             particleRequirements.requested &&
                 particleRequirements.softDepthRequested,
             particleRequirements.softDepthRequired,
-            particleExecutable);
+            particleExecutable,
+            HasThinTransmissionDraws(m_recordContext),
+            transmissionStatus.requestedEnabled && transmissionStatus.supported &&
+                transmissionStatus.enabled);
     if (!depthDemand.valid)
     {
         SetCompositionFailure(depthDemand.failureReason);
@@ -1392,13 +1404,18 @@ void ForwardSpecialFeatureAdapter::AddPasses(
                     m_preparedContext.resolvedQuality,
                     opaqueSceneColorPyramid,
                     opaqueSceneColorPyramidInput,
-                    opaqueSceneColorPyramidFailure))
+                    opaqueSceneColorPyramidFailure, m_opaqueHistory))
             {
                 SetCompositionFailure(std::move(opaqueSceneColorPyramidFailure));
                 return;
             }
             m_lastPassChainStats.graphPassCount +=
                 opaqueSceneColorPyramid.mipCount;
+            if (passContext.view.currentTemporalJitter.IsValid())
+            {
+                ++m_lastPassChainStats.graphPassCount;
+                m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneTemporalResolve");
+            }
             m_lastPassChainStats.graphPassNames.push_back(
                 "OpaqueSceneColorPyramidBase");
             for (uint32 mipIndex = 1;
@@ -1445,6 +1462,16 @@ void ForwardSpecialFeatureAdapter::AddPasses(
                     ++m_lastPassChainStats.graphPassCount;
                     m_lastPassChainStats.graphPassNames.push_back(
                         "SceneDepthSnapshotCopy");
+                    if (!BuildSceneTransmissionDepth(builder, *m_pipelineCache, passContext,
+                            m_preparedContext.resolvedQuality, sceneDepthSnapshot,
+                            sceneDepthSnapshotInput, sceneDepthFailure))
+                    {
+                        SetCompositionFailure(std::move(sceneDepthFailure));
+                        return;
+                    }
+                    m_lastPassChainStats.graphPassCount += sceneDepthSnapshotInput.transmissionMipCount;
+                    for (uint32 mip = 0; mip < sceneDepthSnapshotInput.transmissionMipCount; ++mip)
+                        m_lastPassChainStats.graphPassNames.push_back("TransmissionDepthPyramidMip" + std::to_string(mip));
                 }
             }
             opaqueSceneColorPyramidRegistered = true;
@@ -1495,13 +1522,18 @@ void ForwardSpecialFeatureAdapter::AddPasses(
                 m_preparedContext.resolvedQuality,
                 opaqueSceneColorPyramid,
                 opaqueSceneColorPyramidInput,
-                opaqueSceneColorPyramidFailure))
+                opaqueSceneColorPyramidFailure, m_opaqueHistory))
         {
             SetCompositionFailure(std::move(opaqueSceneColorPyramidFailure));
             return;
         }
         m_lastPassChainStats.graphPassCount +=
             opaqueSceneColorPyramid.mipCount;
+        if (postLightingContext.view.currentTemporalJitter.IsValid())
+        {
+            ++m_lastPassChainStats.graphPassCount;
+            m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneTemporalResolve");
+        }
         m_lastPassChainStats.graphPassNames.push_back(
             "OpaqueSceneColorPyramidBase");
         for (uint32 mipIndex = 1;
@@ -1547,6 +1579,16 @@ void ForwardSpecialFeatureAdapter::AddPasses(
                 ++m_lastPassChainStats.graphPassCount;
                 m_lastPassChainStats.graphPassNames.push_back(
                     "SceneDepthSnapshotCopy");
+                if (!BuildSceneTransmissionDepth(builder, *m_pipelineCache, postLightingContext,
+                        m_preparedContext.resolvedQuality, sceneDepthSnapshot,
+                        sceneDepthSnapshotInput, sceneDepthFailure))
+                {
+                    SetCompositionFailure(std::move(sceneDepthFailure));
+                    return;
+                }
+                m_lastPassChainStats.graphPassCount += sceneDepthSnapshotInput.transmissionMipCount;
+                for (uint32 mip = 0; mip < sceneDepthSnapshotInput.transmissionMipCount; ++mip)
+                    m_lastPassChainStats.graphPassNames.push_back("TransmissionDepthPyramidMip" + std::to_string(mip));
             }
         }
     }

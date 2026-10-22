@@ -15,6 +15,12 @@ namespace RVX
     class IRHIDevice;
     class PipelineCache;
     class ResourceViewCache;
+    /** Fixed history grid and exposure domain; never change on a live owner. */
+    enum class TemporalResolvePurpose : uint8
+    {
+        Presentation,
+        OpaqueRefraction
+    };
     /** @brief Tunable, backend-neutral temporal resolve parameters. */
     struct TAAConfig
     {
@@ -65,7 +71,7 @@ namespace RVX
     class TAA final : public IPostProcessPass
     {
     public:
-        TAA();
+        explicit TAA(TemporalResolvePurpose purpose = TemporalResolvePurpose::Presentation);
         ~TAA() override;
 
         TAA(const TAA&) = delete;
@@ -133,6 +139,7 @@ namespace RVX
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         TAAConfig m_config{};
+        const TemporalResolvePurpose m_purpose;
         uint32 m_width = 0;
         uint32 m_height = 0;
 

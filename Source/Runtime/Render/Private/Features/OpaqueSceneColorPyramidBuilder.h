@@ -14,6 +14,7 @@
 namespace RVX
 {
     class PipelineCache;
+    class OpaqueSceneColorHistory;
 
     /**
      * @brief Builds one bounded opaque-scene mip chain after reflection/Sky.
@@ -33,5 +34,5 @@ namespace RVX
         RenderQualityTier quality,
         OpaqueSceneColorPyramid& outPyramid,
         OpaqueSceneColorPyramidRecordInput& outRecordInput,
-        std::string& outFailure);
+        std::string& outFailure, OpaqueSceneColorHistory* temporalHistory = nullptr);
 } // namespace RVX

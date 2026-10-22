@@ -30,6 +30,10 @@
 
 namespace RVX
 {
+    /** Host-only projection; scenario headers expose only the resulting diagnostic value. */
+    [[nodiscard]] bool HasSampleTransparentTemporalExecution(
+        const RenderExecutionReceipt& receipt, uint64 expectedPresentedFrame) noexcept;
+
     /** @brief Current JSON schema version written by sample report producers. */
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 36;
     inline constexpr uint32
@@ -1182,6 +1186,7 @@ namespace RVX
         bool transparentOpaqueSceneColorPyramidReady = false;
         bool transparentOpaqueSceneColorPyramidBuilt = false;
         bool transparentReactiveMaskAttachmentBound = false;
+        bool transparentTemporalExecutionQualified = false;
         uint32 transparentReactiveMaskWriteDrawCount = 0;
         uint32 transparentPriorityBucketCount = 0;
         uint32 transparentFallbackCount = 0;

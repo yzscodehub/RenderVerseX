@@ -739,6 +739,8 @@ void Engine::FinalizeDestroyRequestedWorlds(float deltaTime)
     request.sceneTick.fixedDeltaSeconds = physics.fixedTimeStep;
     if (!active->ecsRuntime->PrepareForShutdown(request))
     {
+        RVX_CORE_DEBUG("ECS World shutdown drain pending: {}",
+                       active->ecsRuntime->GetDiagnostics().lastDiagnostic);
         return;
     }
 

@@ -129,7 +129,8 @@ namespace RVX
         /** @brief Add copy passes after RenderGraph::Clear and before consumers. */
         void BuildRenderGraph(
             RenderGraph& graph,
-            RenderSubmissionResourceBatch* submissionBatch) noexcept;
+            RenderSubmissionResourceBatch* submissionBatch,
+            RGQueuePolicy queuePolicy = RGQueuePolicy::PreferMultiQueue) noexcept;
 
         /**
          * @brief Acquire one exact fully-current resident set for graph reads.

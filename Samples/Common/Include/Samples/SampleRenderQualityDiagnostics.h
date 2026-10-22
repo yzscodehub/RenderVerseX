@@ -28,6 +28,9 @@ namespace RVX
     [[nodiscard]] bool HasSampleRenderQualityCompositionExecution(
         const SampleRenderDiagnostics& diagnostics) noexcept;
 
+    [[nodiscard]] bool HasSampleMixedWeightedBlendedOITExecution(
+        const SampleRenderDiagnostics& diagnostics) noexcept;
+
     [[nodiscard]] bool HasSampleRenderQualityPresentedScene(
         const SampleRenderDiagnostics& diagnostics,
         uint32 minimumVisibleObjectCount) noexcept;

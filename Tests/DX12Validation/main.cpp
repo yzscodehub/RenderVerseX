@@ -1,4 +1,5 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/MaterialCopyProbe.h"
 #include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
 #include "DX12CommandContext.h"
@@ -1295,13 +1296,17 @@ namespace
             shaderDirectory / "NativeSurfaceMaterialSilhouetteValidation.hlsl";
         const std::filesystem::path productionShaderPath = shaderDirectory / sourceFile;
         std::ifstream productionShaderFile(productionShaderPath, std::ios::binary);
-        const std::string productionPixelSource{
+        std::string productionPixelSource{
             std::istreambuf_iterator<char>(productionShaderFile),
             std::istreambuf_iterator<char>()};
         if (productionPixelSource.empty())
         {
             ADD_FAILURE() << debugName << " could not read " << productionShaderPath.string();
             return result;
+        }
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::AppendMaterialCopyProbe(productionPixelSource, shaderDirectory);
         }
         const bool isDepthOnly = std::string_view(sourceFile) == "DepthOnly.hlsl";
         const bool isVelocity = std::string_view(sourceFile) == "ObjectVelocity.hlsl";
@@ -1348,6 +1353,8 @@ namespace
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(
             PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             RHIBindingType::SampledTexture,
@@ -1470,6 +1477,10 @@ namespace
         }
         material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
         material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::FillMaterialCopySentinels(material);
+        }
         constexpr uint32 kConstantBufferAlignment = 256u;
         constexpr uint32 kMaterialConstantBufferSize =
             (static_cast<uint32>(sizeof(MaterialGPUConstants)) +
@@ -1571,6 +1582,17 @@ namespace
         RHISamplerRef froxelSampler = device->CreateSampler(froxelSamplerDesc);
 
         std::array<uint8, 512> zeroedFrameConstants{};
+        if (isThinTransmission)
+        {
+            // The production projection guard requires a valid camera. The
+            // surface at z=1 exits at z=0 and sees canonical background depth 1.
+            const Mat4 viewProjection(1.0f);
+            const Vec4 cameraPositionAndTime = {0.0f, 0.0f, 4.0f, 0.0f};
+            std::memcpy(zeroedFrameConstants.data(),
+                        &viewProjection, sizeof(viewProjection));
+            std::memcpy(zeroedFrameConstants.data() + 64u,
+                        &cameraPositionAndTime, sizeof(cameraPositionAndTime));
+        }
         if (normalMapProbe)
         {
             const Vec4 cameraPositionAndTime = {0.0f, 0.0f, 4.0f, 0.0f};
@@ -1624,6 +1646,8 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
+        frameSetDesc.BindTexture(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                 sourceTextureView.Get());
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
             sourceTextureView.Get());
@@ -3667,6 +3691,18 @@ TEST(DX12Validation,
         << ", " << static_cast<uint32>(noCullBack.centerPixel[3]) << ")";
 }
 
+TEST(DX12Validation, NativeMaterialConstantReconstructionCopiesEveryField)
+{
+    const auto correct = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMaterialCopyProbe", false, "DX12MaterialCopy");
+    const auto missing = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMaterialCopyMissingFieldProbe", false, "DX12MaterialCopyMissing");
+    ASSERT_TRUE(correct.completed);
+    ASSERT_TRUE(missing.completed);
+    EXPECT_EQ(correct.centerPixel, (std::array<uint8, 4>{255, 255, 255, 255}));
+    EXPECT_EQ(missing.centerPixel, (std::array<uint8, 4>{0, 255, 0, 255}));
+}
+
 TEST(DX12Validation,
      NativeSurfaceMaterialAlphaSilhouetteMatchesMainDepthShadowAndVelocityConsumers)
 {
@@ -3706,7 +3742,7 @@ TEST(DX12Validation,
 {
     const NativeSurfaceAlphaMaskReadback thin = ExecuteNativeSurfaceAlphaMaskScenario(
         "DefaultLit.hlsl",
-        "PSForwardTranslucency",
+        "PSForwardTranslucencyGuarded",
         false,
         "DX12ThinTransmissionForward",
         false,
@@ -3722,7 +3758,7 @@ TEST(DX12Validation,
     EXPECT_LT(thin.centerPixel[0], 240u)
         << "Beer-Lambert attenuation must alter the white scene-color pyramid input";
     EXPECT_GT(thin.reactiveCenter, 200u)
-        << "PSForwardTranslucency must write the reactive-mask MRT";
+        << "PSForwardTranslucencyGuarded must write the reactive-mask MRT";
 }
 
 TEST(DX12Validation,

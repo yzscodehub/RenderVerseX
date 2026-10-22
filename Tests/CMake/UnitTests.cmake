@@ -1,4 +1,15 @@
 # Deterministic behavioural validation of isolated runtime modules.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+rvx_add_validation_test(
+    LANE unit
+    NAME TransparencyShowcaseReviewSelfTest
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Tests/RenderQuality/test_transparency_showcase.py -v
+    REQUIRED_FILES ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_transparency.py
+    TAGS subsystem.render trait.contract suite.transparency
+    TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
 set(RVX_VISUAL_GOLDEN_REPORT_SELFTEST_IMAGE
     "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R7_DX11_320x180.ppm")
 if(EXISTS "${RVX_VISUAL_GOLDEN_REPORT_SELFTEST_IMAGE}")
@@ -386,6 +397,8 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderContractsValidation/main.cpp
             RenderContractsValidation/TransparentTemporalPolicyTests.cpp
+            RenderContractsValidation/TransmissionProjectionTests.cpp
+            RenderContractsValidation/TransmissionFootprintTests.cpp
     LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Private
     TIMEOUT 60
@@ -1432,12 +1445,37 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
         RVX_World
     )
 
-    rvx_add_validation_test(
+    # Discover every Python case instead of one subprocess-heavy CTest.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py")
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py"
+            --list-tests
+        RESULT_VARIABLE _rvx_quality_discovery_result
+        OUTPUT_VARIABLE _rvx_quality_test_inventory
+        ERROR_VARIABLE _rvx_quality_discovery_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        TIMEOUT 20)
+    if(NOT "${_rvx_quality_discovery_result}" STREQUAL "0")
+        message(FATAL_ERROR "Render quality unit discovery failed: ${_rvx_quality_discovery_error}")
+    endif()
+    string(JSON _rvx_quality_test_count LENGTH "${_rvx_quality_test_inventory}")
+    if(_rvx_quality_test_count LESS 1)
+        message(FATAL_ERROR "Render quality unit discovery returned zero tests")
+    endif()
+    math(EXPR _rvx_quality_last_test "${_rvx_quality_test_count} - 1")
+    foreach(_rvx_quality_test_index RANGE 0 ${_rvx_quality_last_test})
+        string(JSON _rvx_quality_test GET "${_rvx_quality_test_inventory}" ${_rvx_quality_test_index})
+        if(NOT _rvx_quality_test MATCHES "^[A-Za-z0-9_.]+$")
+            message(FATAL_ERROR "Invalid discovered Python test: ${_rvx_quality_test}")
+        endif()
+        rvx_add_validation_test(
         LANE unit
-        NAME RenderQualityMetricsValidationSelfTest
+        NAME RenderQualityMetricsValidationSelfTest.${_rvx_quality_test}
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/Scripts/test_render_quality_qualification.py
-            -v
+            -v ${_rvx_quality_test}
         BUILD_TARGETS RenderQualityMetricsValidation
         REQUIRED_FILES
             ${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_bundle.py
@@ -1452,6 +1490,7 @@ if(RVX_ENABLE_GFX24_QUALIFICATION)
         TIMEOUT 60
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
+    endforeach()
 
     rvx_add_validation_test(
         LANE unit

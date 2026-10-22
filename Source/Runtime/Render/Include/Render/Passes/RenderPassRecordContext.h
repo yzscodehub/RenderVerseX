@@ -650,6 +650,7 @@ namespace RVX
         RGTextureHandle texture{};
         RenderOutputExtent sourceExtent{};
         RenderOutputExtent baseExtent{};
+        Vec2 rasterToColorUV{0.0f};
         RenderQualityTier quality = RenderQualityTier::Medium;
         uint32 mipCount = 0;
         std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt{};
@@ -674,7 +675,8 @@ namespace RVX
                     : RenderOutputExtent{
                         std::max(1u, (sourceExtent.width + 1u) / 2u),
                         std::max(1u, (sourceExtent.height + 1u) / 2u)};
-            return identity == expected && texture.IsValid() &&
+            return std::isfinite(rasterToColorUV.x) && std::isfinite(rasterToColorUV.y) &&
+                   identity == expected && texture.IsValid() &&
                    HasCurrentGraphProvenance(texture, expected) &&
                    sourceExtent.IsValid() && baseExtent == expectedBase &&
                    mipCount ==
@@ -699,12 +701,27 @@ namespace RVX
         RHIFormat format = RHIFormat::Unknown;
         RHISampleCount sampleCount = RHISampleCount::Count1;
         std::shared_ptr<SceneDepthSnapshotCopyReceipt> receipt{};
+        RGTextureHandle transmissionPyramid{};
+        RenderOutputExtent transmissionBaseExtent{};
+        uint32 transmissionMipCount = 0;
+        std::shared_ptr<TransmissionDepthPyramidBuildReceipt> transmissionReceipt{};
+
+        [[nodiscard]] bool HasTransmissionPyramid(
+            const RenderPassRecordIdentity& expected, RenderOutputExtent base, uint32 mips) const noexcept
+        {
+            return identity == expected && transmissionPyramid.IsValid() &&
+                HasCurrentGraphProvenance(transmissionPyramid, expected) &&
+                transmissionBaseExtent == base && transmissionMipCount == mips &&
+                mips != 0 && transmissionReceipt != nullptr;
+        }
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
             return !identity.IsValid() && !texture.IsValid() &&
                    !extent.IsValid() && format == RHIFormat::Unknown &&
-                   sampleCount == RHISampleCount::Count1 && !receipt;
+                   sampleCount == RHISampleCount::Count1 && !receipt &&
+                   !transmissionPyramid.IsValid() && !transmissionBaseExtent.IsValid() &&
+                   transmissionMipCount == 0 && !transmissionReceipt;
         }
 
         [[nodiscard]] bool IsCompatibleWith(
@@ -2120,6 +2137,7 @@ namespace RVX
         RenderPassLateBoundHdrAttachment lateBoundHdrAttachment{};
         OpaqueSceneColorPyramidRecordInput opaqueSceneColorPyramid{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
+        SceneDepthSnapshotRecordInput sceneDepthSnapshot{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
         {
@@ -2401,6 +2419,7 @@ namespace RVX
                 result.lateBoundHdrAttachment.finalHdrSceneColor;
         }
         result.opaqueSceneColorPyramid = context.opaqueSceneColorPyramid;
+        result.sceneDepthSnapshot = context.sceneDepthSnapshot;
         result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;
     }

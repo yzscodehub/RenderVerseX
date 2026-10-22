@@ -127,9 +127,9 @@ namespace
      * device without queue submission plans must stay on Graphics even if its
      * topology advertises a distinct Copy mapping.
      */
-    GPUQueueDomain ResolveCopyPassDomain(const IRHIDevice* device) noexcept
+    GPUQueueDomain ResolveCopyPassDomain(const IRHIDevice* device, RGQueuePolicy queuePolicy) noexcept
     {
-        if (!device)
+        if (!device || queuePolicy == RGQueuePolicy::GraphicsOnly)
         {
             return GPUQueueDomain::Graphics;
         }
@@ -780,7 +780,8 @@ void GPUSceneUploader::Observe(
 
 void GPUSceneUploader::BuildRenderGraph(
     RenderGraph& graph,
-    RenderSubmissionResourceBatch* submissionBatch) noexcept
+    RenderSubmissionResourceBatch* submissionBatch,
+    RGQueuePolicy queuePolicy) noexcept
 {
     if (!m_impl)
     {
@@ -1166,7 +1167,7 @@ void GPUSceneUploader::BuildRenderGraph(
         };
 
         const GPUQueueDomain stagingDomain = ResolveCopyPassDomain(
-            m_impl->device);
+            m_impl->device, queuePolicy);
         std::vector<RGBufferHandle> stagingHandles;
         stagingHandles.reserve(pending.tables.size());
         for (Impl::TableUploadPlan& plan : pending.tables)

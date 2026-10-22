@@ -10,6 +10,28 @@
 
 namespace RVX
 {
+    uint32 GetDX12LegacyBarrierBatchSize(
+        const D3D12_RESOURCE_BARRIER* barriers, uint32 count) noexcept
+    {
+        if (!barriers) return 0;
+        for (uint32 current = 1; current < count; ++current)
+        {
+            const auto& next = barriers[current];
+            if (next.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) continue;
+            for (uint32 previous = 0; previous < current; ++previous)
+            {
+                const auto& prior = barriers[previous];
+                if (prior.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ||
+                    prior.Transition.pResource != next.Transition.pResource) continue;
+                if (prior.Transition.Subresource == next.Transition.Subresource ||
+                    prior.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
+                    next.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
+                    return current;
+            }
+        }
+        return count;
+    }
+
     namespace
     {
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
@@ -1432,9 +1454,16 @@ namespace RVX
     {
         if (!m_pendingLegacyBarriers.empty())
         {
-            m_commandList->ResourceBarrier(
-                static_cast<UINT>(m_pendingLegacyBarriers.size()),
-                m_pendingLegacyBarriers.data());
+            const uint32 count = static_cast<uint32>(m_pendingLegacyBarriers.size());
+            uint32 offset = 0;
+            while (offset < count)
+            {
+                const uint32 batchSize = GetDX12LegacyBarrierBatchSize(
+                    m_pendingLegacyBarriers.data() + offset, count - offset);
+                m_commandList->ResourceBarrier(batchSize,
+                    m_pendingLegacyBarriers.data() + offset);
+                offset += batchSize;
+            }
             m_pendingLegacyBarriers.clear();
         }
 

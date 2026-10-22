@@ -25,6 +25,7 @@
 #include "Samples/SampleModelLoader.h"
 #include "Samples/SampleParticleEffectLoader.h"
 #include "Samples/SampleRegistry.h"
+#include "Samples/SampleRenderQualityDiagnostics.h"
 #include "Samples/SampleScreenshotWriter.h"
 #include "Samples/SampleSurfaceQualification.h"
 #include "World/World.h"
@@ -3673,6 +3674,12 @@ namespace
                 diagnostics.postProcessGraphPassCount;
             result.postProcessActualExecution =
                 MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
+            result.transparentTemporalExecutionQualified =
+                renderDiagnostics.frameFeatures.available &&
+                renderDiagnostics.frameFeatures.frameSequence == renderDiagnostics.lastPresentedFrameSequence &&
+                renderDiagnostics.frameFeatures.executionReceipt.IsStructurallyValid() &&
+                HasSampleTransparentTemporalExecution(
+                    renderDiagnostics.frameFeatures.executionReceipt, renderDiagnostics.lastPresentedFrameSequence);
             result.ambientOcclusionActualExecution =
                 MakeSampleAmbientOcclusionExecutionDiagnostics(renderDiagnostics);
             result.hizReflectionActualExecution =

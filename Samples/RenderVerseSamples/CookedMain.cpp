@@ -22,7 +22,7 @@ namespace
         std::string_view sampleId) noexcept
     {
         return sampleId == "render-quality-lab" || sampleId == "model-viewer" ||
-               sampleId == "pbr-materials";
+               sampleId == "pbr-materials" || sampleId == "transparent-materials";
     }
 
     [[nodiscard]] bool IsProductOverride(std::string_view argument) noexcept

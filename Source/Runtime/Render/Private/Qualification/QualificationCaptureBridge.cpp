@@ -73,7 +73,7 @@ namespace
             case QualificationCaptureAttachmentSemantic::PreToneHDR:
                 return format == RHIFormat::RGBA16_FLOAT;
             case QualificationCaptureAttachmentSemantic::LinearDepth:
-                return format == RHIFormat::D32_FLOAT;
+                return format == RHIFormat::D32_FLOAT || format == RHIFormat::R32_FLOAT;
             case QualificationCaptureAttachmentSemantic::Normal:
                 return format == RHIFormat::RGBA8_UNORM;
             case QualificationCaptureAttachmentSemantic::Velocity:
@@ -265,6 +265,12 @@ namespace
                 if (!std::isfinite(deviceDepth))
                 {
                     return false;
+                }
+                if (format == RHIFormat::R32_FLOAT)
+                {
+                    if (deviceDepth <= 0.0f) return false;
+                    StoreFloat(destination, deviceDepth);
+                    return true;
                 }
                 if (reverseZ)
                 {

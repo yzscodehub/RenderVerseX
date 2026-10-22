@@ -3205,12 +3205,34 @@ namespace
                     value.waterExecutable,
                     value.particleRequested,
                     value.particleRequired,
-                    value.particleExecutable);
+                    value.particleExecutable, false, false);
             EXPECT_EQ(demand.valid, value.valid);
             EXPECT_EQ(demand.requested, value.requested);
             EXPECT_EQ(demand.required, value.required);
             EXPECT_EQ(demand.failureReason.empty(), value.valid);
         }
+    }
+
+    TEST(RenderFeatureValidation, TransmissionRequiresSharedDepthWithoutWaterOrParticles)
+    {
+        const auto required = ResolveSceneDepthSnapshotDemand(
+            false, false, false, false, false, true, true);
+        EXPECT_TRUE(required.valid);
+        EXPECT_TRUE(required.requested);
+        EXPECT_TRUE(required.required);
+        EXPECT_FALSE(ResolveSceneDepthSnapshotDemand(
+            false, false, false, false, false, true, false).valid);
+        RenderPassRecordContext context;
+        std::vector<RenderDrawItem> items(1);
+        context.transparentDrawItems = &items;
+        EXPECT_FALSE(HasThinTransmissionDraws(context));
+        items.front().packet.pipelineKey.shadingModel = MaterialShadingModel::ThinTransmission;
+        EXPECT_TRUE(HasThinTransmissionDraws(context));
+        auto frozen = std::make_shared<RenderPassFrameSnapshot>();
+        context.frameSnapshot = frozen;
+        EXPECT_FALSE(HasThinTransmissionDraws(context));
+        frozen->transparentDrawItems = items;
+        EXPECT_TRUE(HasThinTransmissionDraws(context));
     }
 
     TEST(RenderFeatureValidation,
@@ -3282,6 +3304,44 @@ namespace
         EXPECT_EQ(missingReceipt.Publish(producerId, producer,
                                          std::move(noReceipt)),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         SceneDepthSnapshotGuardRejectsInvalidMetadata)
+    {
+        // Existing generic copy coverage follows in the separate test below.
+        const auto provenance = MakeProvenance();
+        auto producer = MakeDescriptor(81, "guard-depth-producer", RenderFeaturePhase::Sky);
+        producer.producedResources.push_back(SceneDepthSnapshotContract);
+        const auto makeGuard = [&]()
+        {
+            auto snapshot = MakeSceneDepthSnapshot(provenance);
+            snapshot.transmissionRequested = true;
+            snapshot.transmissionPyramid = MakeTextureHandle(provenance, 82);
+            snapshot.transmissionMetadata = {{160, 90}, RHIFormat::R32_FLOAT, RHISampleCount::Count1};
+            snapshot.transmissionMipCount = CalculateOpaqueSceneColorPyramidMipCount({160, 90});
+            snapshot.transmissionReceipt = std::make_shared<TransmissionDepthPyramidBuildReceipt>();
+            return snapshot;
+        };
+        RenderGraphBlackboard good(provenance);
+        EXPECT_EQ(good.Publish(RenderFeatureId{81}, producer, makeGuard()), RenderGraphBlackboardCode::Success);
+        for (uint32 fault = 0; fault < 5; ++fault)
+        {
+            auto invalid = makeGuard();
+            if (fault == 0) invalid.transmissionReceipt.reset();
+            if (fault == 1) invalid.transmissionMipCount--;
+            if (fault == 2) invalid.transmissionMetadata.extent.width++;
+            if (fault == 3) invalid.transmissionMetadata.format = RHIFormat::D32_FLOAT;
+            if (fault == 4) invalid.transmissionRequested = false;
+            RenderGraphBlackboard board(provenance);
+            EXPECT_EQ(board.Publish(RenderFeatureId{81}, producer, std::move(invalid)),
+                      RenderGraphBlackboardCode::InvalidSemanticContract);
+        }
+        auto stale = makeGuard();
+        ++stale.transmissionPyramid.recordingGeneration;
+        RenderGraphBlackboard staleBoard(provenance);
+        EXPECT_EQ(staleBoard.Publish(RenderFeatureId{81}, producer, std::move(stale)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
     }
 
     TEST(RenderFeatureValidation,

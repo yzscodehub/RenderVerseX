@@ -1,6 +1,114 @@
 {
   "schemaVersion": 1,
   "entries": [
+{
+  "path": "Source/Runtime/Render/Private/PostProcess/TransparentTemporalResolve.cpp",
+  "owner": "ResolveData",
+  "symbol": "parameters",
+  "policy": "SubmissionBatch",
+  "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+  "normalRelease": "graph records own the immutable upload; execution retains it until submission completion before binding slot 7",
+  "deviceLostRelease": "submission batch explicit device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+  "owner": "PipelineCache",
+  "symbol": "m_transparentTemporalCandidateLayout",
+  "policy": "ShutdownAfterDrain",
+  "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+  "normalRelease": "cache layout generation release; exact graph records retain descriptor layout and pipeline through submission completion",
+  "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+  "owner": "PipelineCache",
+  "symbol": "m_transparentTemporalCandidateSetLayout",
+  "policy": "ShutdownAfterDrain",
+  "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+  "normalRelease": "cache layout generation release; exact graph records retain descriptor layout and pipeline through submission completion",
+  "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+  "owner": "PipelineCache",
+  "symbol": "m_transparentTemporalRasterShaders",
+  "policy": "ShutdownAfterDrain",
+  "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+  "normalRelease": "cache generation release; graph recordings retain exact pipeline resources",
+  "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+  "owner": "PipelineCache",
+  "symbol": "m_transmissionDepthPyramidPixelShader",
+  "policy": "ShutdownAfterDrain",
+  "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+  "normalRelease": "cache generation release; recorded graph batches independently retain exact pipeline and layout",
+  "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+  "owner": "PipelineCache",
+  "symbol": "m_transmissionDepthPyramidPipeline",
+  "policy": "ShutdownAfterDrain",
+  "completionSource": "Render owner drains active queues before cache reinitialization or shutdown",
+  "normalRelease": "cache generation release; recorded graph batches independently retain exact pipeline and layout",
+  "deviceLostRelease": "explicit cache shutdown after render owner device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Private/PostProcess/TransmissionDepthPyramid.cpp",
+  "owner": "TransmissionDepthPyramidPassData",
+  "symbol": "pipeline",
+  "policy": "SubmissionBatch",
+  "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+  "normalRelease": "graph execution retains exact immutable resources until submission completion",
+  "deviceLostRelease": "submission batch explicit device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Private/PostProcess/TransmissionDepthPyramid.cpp",
+  "owner": "TransmissionDepthPyramidPassData",
+  "symbol": "setLayout",
+  "policy": "SubmissionBatch",
+  "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+  "normalRelease": "graph execution retains exact immutable resources until submission completion",
+  "deviceLostRelease": "submission batch explicit device-lost teardown"
+},
+{
+  "path": "Source/Runtime/Render/Private/PostProcess/TransmissionDepthPyramid.cpp",
+  "owner": "TransmissionDepthPyramidPassData",
+  "symbol": "sampler",
+  "policy": "SubmissionBatch",
+  "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+  "normalRelease": "graph execution retains exact immutable resources until submission completion",
+  "deviceLostRelease": "submission batch explicit device-lost teardown"
+},
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshotRequest",
+      "symbol": "transmissionDepthPyramidView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "transmissionDepthPyramidView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrameDescriptorBindingOwners",
+      "symbol": "transmissionDepthPyramidView",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
     {
       "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",

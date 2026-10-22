@@ -41,4 +41,12 @@ namespace RVX
     {
         std::atomic_bool copied{false};
     };
+
+    /** Recorded mip draws, not a GPU fence completion claim. */
+    struct TransmissionDepthPyramidBuildReceipt
+    {
+        std::atomic<std::uint32_t> completedMipCount{0};
+        std::atomic_bool failed{false};
+        std::atomic_bool completed{false};
+    };
 } // namespace RVX

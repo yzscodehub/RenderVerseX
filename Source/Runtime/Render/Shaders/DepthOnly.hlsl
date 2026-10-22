@@ -188,44 +188,8 @@ MaskedVSOutput VSMainMaskedRigid(MaskedRigidVSInput input)
 
 MaterialParameterData ResolveMaterialParameters()
 {
-    MaterialParameterData material;
-    material.BaseColorFactor = BaseColorFactor;
-    material.MetallicFactor = MetallicFactor;
-    material.RoughnessFactor = RoughnessFactor;
-    material.NormalScale = NormalScale;
-    material.OcclusionStrength = OcclusionStrength;
-    material.EmissiveColor_Strength = EmissiveColor_Strength;
-    material.TextureFlags = TextureFlags;
-    material.AlphaMode = AlphaMode;
-    material.AlphaCutoff = AlphaCutoff;
-    material.Workflow = Workflow;
-    material.DoubleSided = DoubleSided;
-    material.ShadingModel = ShadingModel;
-    material.MaterialTableIndex = MaterialTableIndex;
-    material.ToonBands = ToonBands;
-    material.ToonSpecularThreshold = ToonSpecularThreshold;
-    material.ToonRimStrength = ToonRimStrength;
-    material.ToonOutlineWidth = ToonOutlineWidth;
-    material.BlendMode = BlendMode;
-    material.ToonShadowTint = ToonShadowTint;
-    material.ThinTransmissionParams = ThinTransmissionParams;
-    material.AttenuationColor = AttenuationColor;
-    material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
-    material.BaseColorUVRotationSet = BaseColorUVRotationSet;
-    material.NormalUVScaleOffset = NormalUVScaleOffset;
-    material.NormalUVRotationSet = NormalUVRotationSet;
-    material.MetallicRoughnessUVScaleOffset = MetallicRoughnessUVScaleOffset;
-    material.MetallicRoughnessUVRotationSet = MetallicRoughnessUVRotationSet;
-    material.OcclusionUVScaleOffset = OcclusionUVScaleOffset;
-    material.OcclusionUVRotationSet = OcclusionUVRotationSet;
-    material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
-    material.EmissiveUVRotationSet = EmissiveUVRotationSet;
-    material.ToonRampUVScaleOffset = ToonRampUVScaleOffset;
-    material.ToonRampUVRotationSet = ToonRampUVRotationSet;
-    material.TransmissionUVScaleOffset = TransmissionUVScaleOffset;
-    material.TransmissionUVRotationSet = TransmissionUVRotationSet;
-    material.ThicknessUVScaleOffset = ThicknessUVScaleOffset;
-    material.ThicknessUVRotationSet = ThicknessUVRotationSet;
+    MaterialParameterData material = (MaterialParameterData)0;
+    RVX_COPY_MATERIAL_PARAMETERS_FROM_CONSTANTS;
     return material;
 }
 

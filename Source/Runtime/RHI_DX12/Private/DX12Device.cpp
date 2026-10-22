@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,31 @@ namespace RVX
 
     namespace
     {
+        // SDK INFO/MESSAGE filtering does not hide validation problems. Reject
+        // allow-lists or ID/category filters whose severity cannot be proven.
+        bool AreCriticalDX12MessagesVisible(ID3D12InfoQueue& queue, bool retrieval)
+        {
+            SIZE_T size = 0;
+            HRESULT result = retrieval ? queue.GetRetrievalFilter(nullptr, &size)
+                                       : queue.GetStorageFilter(nullptr, &size);
+            if (FAILED(result) || size < sizeof(D3D12_INFO_QUEUE_FILTER)) return false;
+            std::vector<uint8> bytes(size);
+            auto* filter = reinterpret_cast<D3D12_INFO_QUEUE_FILTER*>(bytes.data());
+            result = retrieval ? queue.GetRetrievalFilter(filter, &size)
+                               : queue.GetStorageFilter(filter, &size);
+            if (FAILED(result)) return false;
+            if (filter->AllowList.NumCategories || filter->AllowList.NumIDs ||
+                filter->AllowList.NumSeverities || filter->DenyList.NumCategories ||
+                filter->DenyList.NumIDs) return false;
+            for (UINT i = 0; i < filter->DenyList.NumSeverities; ++i)
+            {
+                const auto severity = filter->DenyList.pSeverityList[i];
+                if (severity != D3D12_MESSAGE_SEVERITY_INFO &&
+                    severity != D3D12_MESSAGE_SEVERITY_MESSAGE) return false;
+            }
+            return true;
+        }
+
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
             RHIAccelerationStructureBuildFlags flags)
         {
@@ -392,143 +418,205 @@ namespace RVX
     {
         char* reportPathValue = nullptr;
         size_t reportPathLength = 0;
-        if (_dupenv_s(&reportPathValue,
-                       &reportPathLength,
+        if (_dupenv_s(&reportPathValue, &reportPathLength,
                        "RVX_DX12_DEBUG_QUEUE_REPORT_PATH") != 0 ||
             reportPathValue == nullptr)
-        {
             return;
-        }
         const std::string reportPath(reportPathValue);
         std::free(reportPathValue);
-        if (reportPath.empty())
-        {
-            return;
-        }
+        if (reportPath.empty()) return;
 
+        const auto escapeJson = [](const std::string& value)
+        {
+            constexpr char hex[] = "0123456789abcdef";
+            std::string escaped;
+            for (const unsigned char c : value)
+            {
+                if (c == '"' || c == '\\') { escaped += '\\'; escaped += static_cast<char>(c); }
+                else if (c < 0x20)
+                {
+                    escaped += "\\u00";
+                    escaped += hex[c >> 4];
+                    escaped += hex[c & 15];
+                }
+                else escaped += static_cast<char>(c);
+            }
+            return escaped;
+        };
         bool available = false;
-        bool readComplete = true;
+        bool readComplete = false;
+        bool criticalMessagesVisible = false;
         uint64 messageCount = 0;
+        uint64 retrievalMessageCount = 0;
+        uint64 messageCountLimit = 0;
+        uint64 discardedMessageCount = 0;
+        uint64 deniedByStorageFilterCount = 0;
+        uint64 allowedByStorageFilterCount = 0;
+        uint64 warningCount = 0;
         uint64 errorCount = 0;
         uint64 corruptionCount = 0;
+        uint64 exportedMessageCount = 0;
+        std::ostringstream messages;
+        std::ostringstream filters;
         if (m_device)
         {
             ComPtr<ID3D12InfoQueue> infoQueue;
             if (SUCCEEDED(m_device.As(&infoQueue)) && infoQueue)
             {
                 available = true;
+                const auto writeFilter = [&](bool retrieval)
+                {
+                    SIZE_T size = 0;
+                    HRESULT result = retrieval ? infoQueue->GetRetrievalFilter(nullptr, &size)
+                                               : infoQueue->GetStorageFilter(nullptr, &size);
+                    if (FAILED(result) || size < sizeof(D3D12_INFO_QUEUE_FILTER)) return false;
+                    std::vector<uint8> bytes(size);
+                    auto* filter = reinterpret_cast<D3D12_INFO_QUEUE_FILTER*>(bytes.data());
+                    result = retrieval ? infoQueue->GetRetrievalFilter(filter, &size)
+                                       : infoQueue->GetStorageFilter(filter, &size);
+                    if (FAILED(result)) return false;
+                    if (!filters.str().empty()) filters << ",\n  ";
+                    const auto list = [&](const char* label, const auto* values, UINT count)
+                    {
+                        filters << "\"" << label << "\":[";
+                        for (UINT i = 0; i < count; ++i)
+                        {
+                            if (i) filters << ',';
+                            filters << static_cast<uint32>(values[i]);
+                        }
+                        filters << ']';
+                    };
+                    filters << "\"" << (retrieval ? "retrievalFilter" : "storageFilter") << "\":{";
+                    for (uint32 side = 0; side < 2; ++side)
+                    {
+                        if (side) filters << ',';
+                        filters << "\"" << (side ? "deny" : "allow") << "\":{";
+                        const auto& desc = side ? filter->DenyList : filter->AllowList;
+                        list("categories", desc.pCategoryList, desc.NumCategories); filters << ',';
+                        list("severities", desc.pSeverityList, desc.NumSeverities); filters << ',';
+                        list("ids", desc.pIDList, desc.NumIDs); filters << '}';
+                    }
+                    filters << "}";
+                    return true;
+                };
+                const bool storageFilterRead = writeFilter(false);
+                const bool retrievalFilterRead = writeFilter(true);
+                criticalMessagesVisible = AreCriticalDX12MessagesVisible(*infoQueue.Get(), false) &&
+                    AreCriticalDX12MessagesVisible(*infoQueue.Get(), true);
                 messageCount = infoQueue->GetNumStoredMessages();
-                for (UINT64 index = 0; index < messageCount; ++index)
+                retrievalMessageCount = infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
+                messageCountLimit = infoQueue->GetMessageCountLimit();
+                discardedMessageCount = infoQueue->GetNumMessagesDiscardedByMessageCountLimit();
+                deniedByStorageFilterCount = infoQueue->GetNumMessagesDeniedByStorageFilter();
+                allowedByStorageFilterCount = infoQueue->GetNumMessagesAllowedByStorageFilter();
+                readComplete = discardedMessageCount == 0 &&
+                    storageFilterRead && retrievalFilterRead &&
+                    criticalMessagesVisible && retrievalMessageCount == messageCount;
+                for (UINT64 index = 0; index < retrievalMessageCount; ++index)
                 {
                     SIZE_T messageSize = 0;
                     if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
-                        messageSize == 0)
+                        messageSize < sizeof(D3D12_MESSAGE))
                     {
                         readComplete = false;
                         continue;
                     }
-                    std::vector<uint8> messageBytes(messageSize);
-                    auto* message = reinterpret_cast<D3D12_MESSAGE*>(
-                        messageBytes.data());
-                    if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+                    std::vector<uint8> bytes(messageSize);
+                    auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+                    if (FAILED(infoQueue->GetMessage(index, message, &messageSize)) ||
+                        (message->DescriptionByteLength != 0 && message->pDescription == nullptr))
                     {
                         readComplete = false;
                         continue;
                     }
-                    if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR)
-                    {
-                        ++errorCount;
-                    }
-                    else if (message->Severity ==
-                             D3D12_MESSAGE_SEVERITY_CORRUPTION)
-                    {
-                        ++corruptionCount;
-                    }
-                    if ((message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
-                         message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION) &&
-                        message->pDescription != nullptr)
-                    {
-                        RVX_RHI_ERROR("DX12 debug queue: {}", message->pDescription);
-                    }
+                    warningCount += message->Severity == D3D12_MESSAGE_SEVERITY_WARNING;
+                    errorCount += message->Severity == D3D12_MESSAGE_SEVERITY_ERROR;
+                    corruptionCount += message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION;
+                    std::string description = message->pDescription
+                        ? std::string(message->pDescription, message->DescriptionByteLength) : std::string{};
+                    while (!description.empty() && description.back() == '\0') description.pop_back();
+                    if (exportedMessageCount++ != 0) messages << ",\n";
+                    messages << "    {\"index\":" << index
+                             << ",\"id\":" << static_cast<uint32>(message->ID)
+                             << ",\"category\":" << static_cast<uint32>(message->Category)
+                             << ",\"severity\":" << static_cast<uint32>(message->Severity)
+                             << ",\"description\":\"" << escapeJson(description) << "\"}";
+                    if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                        message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
+                        RVX_RHI_ERROR("DX12 debug queue: {}", description);
                 }
-                infoQueue->ClearStoredMessages();
+                // Do not clear the queue: this report is evidence, not an acknowledgement.
+                readComplete = readComplete && exportedMessageCount == retrievalMessageCount &&
+                    infoQueue->GetNumStoredMessages() == messageCount &&
+                    infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter() == retrievalMessageCount &&
+                    infoQueue->GetNumMessagesDiscardedByMessageCountLimit() == discardedMessageCount &&
+                    infoQueue->GetNumMessagesDeniedByStorageFilter() == deniedByStorageFilterCount;
             }
         }
 
         std::ofstream output(reportPath, std::ios::out | std::ios::trunc);
-        const bool reportWritten = static_cast<bool>(output);
-        if (reportWritten)
+        if (output)
         {
-            output << "{\n"
-                   << "  \"schema\": \"RVX.DX12DebugQueue\",\n"
+            output << "{\n  \"schema\": \"RVX.DX12DebugQueue\",\n"
                    << "  \"schemaVersion\": 1,\n"
-                   << "  \"debugLayerEnabled\": "
-                   << (m_debugLayerEnabled ? "true" : "false") << ",\n"
+                   << "  \"debugLayerEnabled\": " << (m_debugLayerEnabled ? "true" : "false") << ",\n"
                    << "  \"available\": " << (available ? "true" : "false") << ",\n"
-                   << "  \"readComplete\": "
-                   << (readComplete ? "true" : "false") << ",\n"
+                   << "  \"readComplete\": " << (readComplete ? "true" : "false") << ",\n"
+                   << "  \"coverage\": \"warning-error-corruption\",\n"
+                   << "  \"criticalMessagesVisible\": " << (criticalMessagesVisible ? "true" : "false") << ",\n"
                    << "  \"messageCount\": " << messageCount << ",\n"
+                   << "  \"retrievalMessageCount\": " << retrievalMessageCount << ",\n"
+                   << "  \"messageCountLimit\": " << messageCountLimit << ",\n"
+                   << "  \"discardedMessageCount\": " << discardedMessageCount << ",\n"
+                   << "  \"deniedByStorageFilterCount\": " << deniedByStorageFilterCount << ",\n"
+                   << "  \"allowedByStorageFilterCount\": " << allowedByStorageFilterCount << ",\n"
+                   << "  \"warningCount\": " << warningCount << ",\n"
                    << "  \"errorCount\": " << errorCount << ",\n"
                    << "  \"corruptionCount\": " << corruptionCount << ",\n"
+                   << "  \"messages\": [\n" << messages.str() << "\n  ],\n"
+                   << "  " << (filters.str().empty() ? "\"filtersUnavailable\":true" : filters.str()) << ",\n"
                    << "  \"passed\": "
                    << ((m_debugLayerEnabled && available && readComplete &&
-                        errorCount == 0 && corruptionCount == 0)
-                       ? "true" : "false") << "\n"
-                   << "}\n";
+                        errorCount == 0 && corruptionCount == 0) ? "true" : "false")
+                   << "\n}\n";
+            output.flush();
         }
-        if (!output && reportWritten)
-        {
-            RVX_RHI_ERROR("Failed to write DX12 debug queue report: {}",
-                          reportPath);
-        }
-        else if (!reportWritten)
-        {
-            RVX_RHI_ERROR("Failed to open DX12 debug queue report: {}",
-                          reportPath);
-        }
+        if (!output) RVX_RHI_ERROR("Failed to write DX12 debug queue report: {}", reportPath);
         RVX_RHI_INFO(
-            "RVX_DX12_DEBUG_QUEUE_SUMMARY debugLayerEnabled={} available={} readComplete={} messageCount={} errorCount={} corruptionCount={} reportWritten={}",
-            m_debugLayerEnabled,
-            available,
-            readComplete,
-            messageCount,
-            errorCount,
-            corruptionCount,
-            reportWritten && static_cast<bool>(output));
+            "RVX_DX12_DEBUG_QUEUE_SUMMARY debugLayerEnabled={} available={} readComplete={} messageCount={} errorCount={} corruptionCount={} reportWritten={} limit={} discarded={} denied={} warnings={}",
+            m_debugLayerEnabled, available, readComplete, messageCount, errorCount, corruptionCount,
+            static_cast<bool>(output), messageCountLimit, discardedMessageCount, deniedByStorageFilterCount, warningCount);
     }
 
-    RHINativeValidationDiagnostics
-        DX12Device::GetNativeValidationDiagnostics() const
+    RHINativeValidationDiagnostics DX12Device::GetNativeValidationDiagnostics() const
     {
         RHINativeValidationDiagnostics diagnostics;
         diagnostics.enabled = m_debugLayerEnabled;
-        if (!m_device)
-        {
-            diagnostics.readComplete = false;
-            return diagnostics;
-        }
-
         ComPtr<ID3D12InfoQueue> infoQueue;
-        if (FAILED(m_device.As(&infoQueue)) || !infoQueue)
+        if (!m_device || FAILED(m_device.As(&infoQueue)) || !infoQueue)
         {
             diagnostics.readComplete = false;
             return diagnostics;
         }
-
         diagnostics.available = true;
         diagnostics.messageCount = infoQueue->GetNumStoredMessages();
-        for (UINT64 index = 0; index < diagnostics.messageCount; ++index)
+        const UINT64 retrievalCount = infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
+        diagnostics.readComplete =
+            infoQueue->GetNumMessagesDiscardedByMessageCountLimit() == 0 &&
+            AreCriticalDX12MessagesVisible(*infoQueue.Get(), false) &&
+            AreCriticalDX12MessagesVisible(*infoQueue.Get(), true) &&
+            retrievalCount == diagnostics.messageCount;
+        for (UINT64 index = 0; index < retrievalCount; ++index)
         {
             SIZE_T messageSize = 0;
             if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
-                messageSize == 0)
+                messageSize < sizeof(D3D12_MESSAGE))
             {
                 diagnostics.readComplete = false;
                 continue;
             }
-            std::vector<uint8> messageBytes(messageSize);
-            auto* message = reinterpret_cast<D3D12_MESSAGE*>(
-                messageBytes.data());
+            std::vector<uint8> bytes(messageSize);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
             if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
             {
                 diagnostics.readComplete = false;
@@ -536,19 +624,18 @@ namespace RVX
             }
             switch (message->Severity)
             {
-                case D3D12_MESSAGE_SEVERITY_WARNING:
-                    ++diagnostics.warningCount;
-                    break;
-                case D3D12_MESSAGE_SEVERITY_ERROR:
-                    ++diagnostics.errorCount;
-                    break;
-                case D3D12_MESSAGE_SEVERITY_CORRUPTION:
-                    ++diagnostics.corruptionCount;
-                    break;
-                default:
-                    break;
+                case D3D12_MESSAGE_SEVERITY_WARNING: ++diagnostics.warningCount; break;
+                case D3D12_MESSAGE_SEVERITY_ERROR: ++diagnostics.errorCount; break;
+                case D3D12_MESSAGE_SEVERITY_CORRUPTION: ++diagnostics.corruptionCount; break;
+                default: break;
             }
         }
+        diagnostics.readComplete = diagnostics.readComplete &&
+            infoQueue->GetNumStoredMessages() == diagnostics.messageCount &&
+            infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter() == retrievalCount &&
+            infoQueue->GetNumMessagesDiscardedByMessageCountLimit() == 0 &&
+            AreCriticalDX12MessagesVisible(*infoQueue.Get(), false) &&
+            AreCriticalDX12MessagesVisible(*infoQueue.Get(), true);
         return diagnostics;
     }
 

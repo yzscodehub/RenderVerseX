@@ -24,6 +24,7 @@ cbuffer WaterSurfaceConstants : register(b0, space0)
     // x = authored steepness, y = CPU-quantized wave number,
     // z = CPU-reduced temporal phase, w = enabled.
     float4 WaveSteepnessTemporalPhase[8];
+    float4 OpaqueSceneColorUVTransform;
 };
 
 Texture2D gOpaqueSceneColorPyramid : register(t1, space0);
@@ -178,7 +179,7 @@ WaterTargets PSMain(VSOutput input)
     const float refractionLod = roughness * roughness *
         max((float)pyramidMipCount - 1.0f, 0.0f);
     const float3 refracted = gOpaqueSceneColorPyramid.SampleLevel(
-        gLinearClamp, saturate(uv + refractOffset), refractionLod).rgb;
+        gLinearClamp, saturate(uv + refractOffset + OpaqueSceneColorUVTransform.xy), refractionLod).rgb;
     // Authored shallow/deep water radiance is physical. Convert it once into
     // the committed producer domain before composing with the already
     // pre-exposed opaque/refraction snapshot.

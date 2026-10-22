@@ -32,3 +32,19 @@ model.material.Transparent_ThinTransmission.attenuationColor.green=0.92
 model.material.Transparent_ThinTransmission.attenuationColor.blue=0.80
 model.material.Transparent_ThinTransmission.attenuationDistance=1.80
 model.material.Transparent_ThinTransmission.sortPriority=40
+
+# The lower panel changes only roughness; the writer gives both panes a 24
+# degree tilt so the view exercises refraction and mip filtering together.
+model.material.Transparent_ThinTransmissionRough.shadingModel=thin-transmission
+model.material.Transparent_ThinTransmissionRough.blendMode=alpha-blend
+model.material.Transparent_ThinTransmissionRough.cullMode=no-cull
+model.material.Transparent_ThinTransmissionRough.shadowPolicy=receive
+model.material.Transparent_ThinTransmissionRough.translucencyPhase=standard
+model.material.Transparent_ThinTransmissionRough.transmission=0.92
+model.material.Transparent_ThinTransmissionRough.indexOfRefraction=1.45
+model.material.Transparent_ThinTransmissionRough.thickness=0.18
+model.material.Transparent_ThinTransmissionRough.attenuationColor.red=0.42
+model.material.Transparent_ThinTransmissionRough.attenuationColor.green=0.92
+model.material.Transparent_ThinTransmissionRough.attenuationColor.blue=0.80
+model.material.Transparent_ThinTransmissionRough.attenuationDistance=1.80
+model.material.Transparent_ThinTransmissionRough.sortPriority=40

@@ -58,6 +58,8 @@
 #endif
 
 // Keep this list byte-for-byte compatible with MaterialGPUConstants.
+// Canonical field declaration. Native reconstruction probes derive their
+// comparisons from this declaration, including any future extension fields.
 #define RVX_MATERIAL_PARAMETER_FIELDS \
     float4 BaseColorFactor; \
     float MetallicFactor; \
@@ -108,6 +110,60 @@
     float4 ClearcoatRoughnessUVRotationSet; \
     float4 ClearcoatNormalUVScaleOffset; \
     float4 ClearcoatNormalUVRotationSet
+
+// FXC-compatible shared reconstruction (no higher-order macro expansion).
+// Destination is resolver-local material. Native tests upload a nonzero sentinel
+// to every word and compare every declared field against its cbuffer source.
+#define RVX_COPY_MATERIAL_PARAMETERS_FROM_CONSTANTS \
+    material.BaseColorFactor = BaseColorFactor; \
+    material.MetallicFactor = MetallicFactor; \
+    material.RoughnessFactor = RoughnessFactor; \
+    material.NormalScale = NormalScale; \
+    material.OcclusionStrength = OcclusionStrength; \
+    material.EmissiveColor_Strength = EmissiveColor_Strength; \
+    material.SpecularColor_Factor = SpecularColor_Factor; \
+    material.ClearcoatParams = ClearcoatParams; \
+    material.TextureFlags = TextureFlags; \
+    material.AlphaMode = AlphaMode; \
+    material.AlphaCutoff = AlphaCutoff; \
+    material.Workflow = Workflow; \
+    material.DoubleSided = DoubleSided; \
+    material.ShadingModel = ShadingModel; \
+    material.MaterialTableIndex = MaterialTableIndex; \
+    material.ToonBands = ToonBands; \
+    material.ToonSpecularThreshold = ToonSpecularThreshold; \
+    material.ToonRimStrength = ToonRimStrength; \
+    material.ToonOutlineWidth = ToonOutlineWidth; \
+    material.BlendMode = BlendMode; \
+    material.ToonShadowTint = ToonShadowTint; \
+    material.ThinTransmissionParams = ThinTransmissionParams; \
+    material.AttenuationColor = AttenuationColor; \
+    material.BaseColorUVScaleOffset = BaseColorUVScaleOffset; \
+    material.BaseColorUVRotationSet = BaseColorUVRotationSet; \
+    material.NormalUVScaleOffset = NormalUVScaleOffset; \
+    material.NormalUVRotationSet = NormalUVRotationSet; \
+    material.MetallicRoughnessUVScaleOffset = MetallicRoughnessUVScaleOffset; \
+    material.MetallicRoughnessUVRotationSet = MetallicRoughnessUVRotationSet; \
+    material.OcclusionUVScaleOffset = OcclusionUVScaleOffset; \
+    material.OcclusionUVRotationSet = OcclusionUVRotationSet; \
+    material.EmissiveUVScaleOffset = EmissiveUVScaleOffset; \
+    material.EmissiveUVRotationSet = EmissiveUVRotationSet; \
+    material.ToonRampUVScaleOffset = ToonRampUVScaleOffset; \
+    material.ToonRampUVRotationSet = ToonRampUVRotationSet; \
+    material.TransmissionUVScaleOffset = TransmissionUVScaleOffset; \
+    material.TransmissionUVRotationSet = TransmissionUVRotationSet; \
+    material.ThicknessUVScaleOffset = ThicknessUVScaleOffset; \
+    material.ThicknessUVRotationSet = ThicknessUVRotationSet; \
+    material.SpecularUVScaleOffset = SpecularUVScaleOffset; \
+    material.SpecularUVRotationSet = SpecularUVRotationSet; \
+    material.SpecularColorUVScaleOffset = SpecularColorUVScaleOffset; \
+    material.SpecularColorUVRotationSet = SpecularColorUVRotationSet; \
+    material.ClearcoatUVScaleOffset = ClearcoatUVScaleOffset; \
+    material.ClearcoatUVRotationSet = ClearcoatUVRotationSet; \
+    material.ClearcoatRoughnessUVScaleOffset = ClearcoatRoughnessUVScaleOffset; \
+    material.ClearcoatRoughnessUVRotationSet = ClearcoatRoughnessUVRotationSet; \
+    material.ClearcoatNormalUVScaleOffset = ClearcoatNormalUVScaleOffset; \
+    material.ClearcoatNormalUVRotationSet = ClearcoatNormalUVRotationSet;
 
 struct MaterialParameterData
 {

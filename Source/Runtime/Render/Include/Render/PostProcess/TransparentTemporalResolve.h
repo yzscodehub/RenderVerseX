@@ -26,6 +26,12 @@ namespace RVX
         RGTextureHandle opaqueLinearDepth{};
         /** Global view history gate; per-surface flags cannot override a reset. */
         bool historyAvailable = false;
+        /** Production raw-candidate mode: exact device depth and contributing layer count. */
+        bool rawCandidates = false;
+        RGTextureHandle opaqueDeviceDepth{};
+        RGTextureHandle layerCount{};
+        RGTextureHandle meshReactive{};
+        Mat4 inverseProjectionMatrix = Mat4Identity();
     };
 
     struct TransparentTemporalResolveReceipt

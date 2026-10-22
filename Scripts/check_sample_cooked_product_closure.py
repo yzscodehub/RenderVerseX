@@ -16,6 +16,7 @@ DEVELOPMENT_COMPOSITION = "RVX_SampleDevelopmentComposition"
 REQUIRED_SCENARIOS = frozenset({
     "RVX_Gfx24SampleScenarios",
     "RVX_Gfx25SampleScenarios",
+    "RVX_Gfx26SampleScenarios",
 })
 FORBIDDEN = frozenset({
     "RVX_AssetImport",

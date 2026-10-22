@@ -1,4 +1,5 @@
 #include "Features/DefaultRenderComposition.h"
+#include "Features/OpaqueSceneColorHistory.h"
 
 #include "Render/PostProcess/Bloom.h"
 #include "Render/PostProcess/ChromaticAberration.h"
@@ -17,6 +18,7 @@ namespace RVX
 {
 DefaultRenderComposition::DefaultRenderComposition()
     : m_passBundle(std::make_unique<DefaultRenderPassBundle>())
+    , m_opaqueSceneColorHistory(std::make_unique<OpaqueSceneColorHistory>())
 {
 }
 
@@ -142,6 +144,8 @@ bool DefaultRenderComposition::InitializePostProcess(
     m_postProcessStack = std::make_unique<PostProcessStack>();
     m_postProcessStack->Initialize(device);
     m_postProcessStack->SetExposureResources(pipelineCache);
+    m_opaqueSceneColorHistory->Shutdown();
+    m_opaqueSceneColorHistory->SetResources(pipelineCache, resourceViewCache);
 
     BloomPass* const bloom = m_postProcessStack->AddEffect<BloomPass>();
     ToneMappingPass* const toneMapping =
@@ -212,6 +216,7 @@ DefaultRenderComposition::GetPostProcessStack() const noexcept
 void DefaultRenderComposition::Shutdown() noexcept
 {
     ResetFeatures();
+    m_opaqueSceneColorHistory->Shutdown();
     if (m_postProcessStack != nullptr)
     {
         m_postProcessStack->Shutdown();

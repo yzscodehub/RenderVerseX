@@ -65,6 +65,7 @@ namespace
         Vec4 detailTemporalPhases{};
         std::array<Vec4, RVX_WATER_MAX_GERSTNER_WAVES> waveDirectionAmplitude{};
         std::array<Vec4, RVX_WATER_MAX_GERSTNER_WAVES> waveSteepnessTemporalPhase{};
+        Vec4 opaqueSceneColorUVTransform{};
     };
     static_assert(sizeof(WaterSurfaceGPUConstants) <= RVX_WATER_CONSTANT_BUFFER_SIZE);
 
@@ -232,7 +233,7 @@ public:
 
     [[nodiscard]] Submission Prepare(const WaterRenderSnapshot& snapshot,
                                      const EffectFrameTime& effectTime,
-                                     const ViewData& view)
+                                     const ViewData& view, Vec2 rasterToColorUV)
     {
         Submission submission;
         submission.resourceCreationCount = m_resourceCreationCount;
@@ -306,6 +307,7 @@ public:
                 return submission;
             }
             WaterSurfaceGPUConstants constants;
+            constants.opaqueSceneColorUVTransform = Vec4(rasterToColorUV, 0.0f, 0.0f);
             // ViewData is semantic clip space. Apply the same one-time
             // backend conversion as PipelineCache before this feature-owned
             // vertex shader consumes it.
@@ -1320,7 +1322,8 @@ void WaterFeaturePass::AddToGraph(RenderGraph& graph,
         return;
     }
     WaterSurfaceRenderer::Submission submission = m_renderer->Prepare(
-        *m_snapshot, context.effectTime, execution.view);
+        *m_snapshot, context.effectTime, execution.view,
+        context.waterSurface.sceneColorPyramid.rasterToColorUV);
     if (!submission.IsReady())
     {
         ++m_stats.fallbackCount;

@@ -2,85 +2,113 @@
 
 # Session Handoff
 
-The single active coordinator feature now covers GFX24 qualification closeout
-and the user-requested GFX25 production PBR/showcase implementation.
+## Resume 2026-10-22
 
-Historical qualification checkpoint: `6ad09dcb`; current product HEAD is `a38fbb8b`.
-Bundle/Series/Golden V2 binds actual render path, instancing mode, recipe,
-quality, backend, profile hash, commit, run, and preset. Forward+ and Deferred
-DX12 Goldens are explicitly user-approved and committed. The isolated clean
-Release raster required suite passed 4/4 with run
-`9881ff4eea0a42a3be1a5e4be6365bc7` and immutable receipt SHA-256
-`109843e2638c7220d7a296fbcb599cfdd87b6a322c25f14265423463b9198ad5`.
-Architecture diagnostics pass 65/65; RenderQuality self-tests pass 46/46,
-cross-backend self-tests 4/4, and CI policy self-tests 61/61.
+Local gates now passed: Debug BuildTruth 83350e06bfb3458f92a86607ee2d043a,
+Shipping 0ecc60d488b446b897a2cdef53acfc1d (5/5), qualification
+9d6b2a37b39a4696bfca23e39298538c (117/117), focused temporal 3/3 and
+Vulkan transparency/reference 16/16 (gfx26-resume-vulkan.xml).
+Both resume-20261022-{forward,deferred}/review.json reports passed unchanged
+Tests/RenderQuality/Policies/transparency-v4-{forward-plus,deferred}.json.
+Forward report SHA256 c56cce2dcda89acdfbfaeb7d4d405eb38a1bdb4ca6db727bbe47b078c40f299b;
+Deferred report SHA256 f29f8f65f9104eeb3dd2d19ca07529b3a29cf81098eeacb227b05084ceaca216.
+These are local candidate reviews, not approved Goldens or performance baselines.
+Next: final Architecture/Close and scoped commit; then pause GFX27+.
+Remaining global gfx-24 approvals/remote CI keep the coordinator active;
+do not mislabel the entire graphics roadmap passing.
 
-The user explicitly deferred the fixed RTX 4070 Ti A4 calibration and all
-Windows/Linux/macOS plus DX12/Vulkan RT remote qualification until GFX25 is
-implemented. Do not reuse the rejected A4 runs and do not call GFX24 or GFX25
-fully qualified before those final gates run.
+User reaffirmed: finish GFX26 with glass-local MAE <= 0.0005 unchanged,
+commit owned changes only after all required gates pass, no push, pause GFX27+.
+Architecture Verify passed: Architecture.11af743f5f584c6fa8e2bb0a1568d8e1.json.
+Forward+ 1280x720 series resume-20261022-forward passed visibility and all
+temporal policy checks: clear 0.0003878385, rough 0.0001682968. This is not
+Golden approval. Deferred and final Debug/Shipping gates are still pending.
+The latest implementation uses a stable-grid color pyramid with explicit
+raster-to-color UV conversion; depth guarding remains raster aligned.
+Focused test correction clears mock descriptor records between the two TAA
+purpose cases so each case checks its own exposure resource. Rebuild/retest
+is in progress; the prior Architecture receipt predates this test-only edit.
 
-Next implementation order:
+Latest user steering: finish GFX26 and commit its owned changes after the
+required gates pass, then pause GFX27 onward. Assess the existing Samples and
+model library and propose a realistic integrated scene; no new stage is
+authorized for implementation yet. No push or protected-file staging.
 
-1. Generalize deterministic cooked visual qualification for `model-viewer`
-   and `pbr-materials`.
-2. Upgrade MaterialStaticDescriptor and CookedMaterialArtifact to strict V2,
-   with specular, clearcoat, transmission, volume, IOR, and emissive-strength
-   glTF semantics and no V1 reader.
-3. Qualify small redistributable required assets; keep Porsche and large HDRI
-   as optional developer/nightly evidence until their catalog provenance and
-   complete material mapping pass.
-4. Run the deferred A4 and cross-platform/RT evidence closure.
+## Active GFX26 visual-fixture refinement (2026-10-02)
 
-Preserve the existing user-owned changes in `AGENTS.md`, `CLAUDE.md`,
-`Docs/README.md`, `Docs/engine-capabilities.json`, `ViewData.h`,
-`GPUSceneRaster.hlsli`, and the deletion of `BACKEND_ANALYSIS.md`. Do not
-edit or stage `.agent-harness/`. Do not push or modify master.
+Latest explicit decision: satisfy the added glass-local temporal MAE <= 0.0005
+before committing. Do not defer/remove/relax it. Composition now owns one
+opaque refraction history shared by both raster recipes, with fixed raster
+grid / committed-producer exposure / linear-depth domains and the existing
+Present transaction. This implementation is in progress, not verified.
+GFX27+ stays paused; commit is authorized only after required gates pass.
 
-## Current implementation: GFX25-C / VAL-R / GFX-T0
+Observed dependency: new per-material temporal ROIs reveal raster-jitter
+movement on rejected-history pixels. Extend the existing Render scope to
+TAA.cpp / TAA.hlsl stable-grid reconstruction and a real DX12/Vulkan affine
+color readback test. Keep raw transparent history admission conservative;
+do not raise the failed ROI thresholds. This repair still requires validation.
 
-The user approved these three slices under the existing gfx-24 coordinator.
-GFX25-C lighting/magic fix is committed as 1b7668a6. The user explicitly
-authorized only the Material V2 magic line in the protected capability file.
-Architecture run 9aaa233ebfb34021b947013967b5de35 passed 65/65 before commits;
-GFX25 candidate run 285f561f8c8848f18adbe2bb7367800e passed 16/16. These are
-historical receipts, not current-HEAD release claims. Golden approval is pending.
+Observed validation dependency: the 46-case Python qualification self-test
+exceeded its single 60-second CTest budget. Include the exact
+Scripts/test_render_quality_qualification.py path in this coordinator's
+validation responsibility: automatically discover all cases into exclusive
+CTest entries and reject zero/duplicate/skipped/expected-failure outcomes.
+The new GPU reference supersedes implementation-string sampling assertions;
+the binding/MRT/nine-color-load checks remain. No visual threshold is widened.
 
-VAL-R adds SampleSurfaceQualification to the actual SampleRunner. It rejects
-unrequested extent/generation changes before plateau observation and permits
-only the exact authorized resize. Finite lifetime windows disallow manual
-resize. GFX25 candidates now use case/runs/RVX_VALIDATION_RUN_ID; existing run
-directories fail rather than being deleted. Producer stdout/stderr are retained.
+User authorized improvements following the visual review. E:/g24 was removed
+after SHA-256-verified archival of 37 evidence files under
+.codex-validation/archives/g24-20261002; current product worktree unchanged.
+Primary owns existing Sample/Render validation scope. Deliver balanced physical
+lighting/exposure, equally tilted clear/frosted glass, per-material ROIs and
+visual contract v4. Prior v3 candidates remain unapproved historical evidence.
+Baseline Architecture 50eaaeab56ee4274a6f0181c72cdfc54 is current before edits.
+Run Cooked host/assets build, focused image/contract checks, deterministic cook,
+presented DX12 Forward/Deferred series, then final native/Debug/Shipping gates.
+Record exact receipts before Close; no commit/push or performance approval.
 
-GFX-T0 CPU reference is committed as 95b2c865; GPU infrastructure is a38fbb8b. It adds graph-owned
-RG16F motion/R8 reactive/R32F paired linear-depth outputs, fixed typed surface inputs, optional Translucency integration,
-shader-provider/PipelineCache ownership and a no-history GPU variant. Only a
-single fully contributing, non-refractive sorted surface with qualified history
-selects transparent motion. Mixtures, WBOIT, refraction and invalid history
-preserve opaque motion and raise reactive. Global view reset cannot be overridden
-by per-pixel flags. The original opaque velocity texture is never written.
-DX12/Vulkan graph-native readback cases, Feature and depth-domain tests passed
-83/83; see build/win_x64_debug/t0-depth-focused.log. TAA invalidates history on
-device/linear-depth switches and commits that domain only after presentation;
-an abandoned candidate cannot change it. Metal remains pending. Actual mesh,
-water and particle temporal producers are later GFX26/GFX27 work. Existing
-RenderViewHistoryCoordinator/TAA presentation commits remain authoritative.
-Final paired-depth Build Truth passed as run 05bddea8260242ac8542f58f942bedba
-(Architecture 65, Unit 2106, Integration 765, DX12 Native 64). Its receipt is
-bound to the pre-commit 95b2c865 worktree fingerprint, not final HEAD. The older
-2efc478c4d2249f799c3721be063b2b3 result predates the depth fix. Preserve both.
-Final log: build/win_x64_debug/t0-build-truth-03.log. Refresh post-commit
-Architecture before claiming current harness verification.
+## GFX26 local implementation verified (2026-10-02)
 
-Next verification commands (from repository root):
+Coordinator primary; branch codex/runtime-architecture-validation,
+HEAD 31b28d0c. Keep the existing scope and protected exclusions.
+No commit, push, Fresh, dependency installation or protected-file edits.
 
-    cmake --build build/win_x64_debug --config Debug --target SampleCLIValidation RenderContractsValidation RenderViewHistoryValidation RenderVerseSamplesCooked --parallel 8
-    ctest --test-dir build/win_x64_debug -C Debug -R "^(SampleCLIValidation|RenderContractsValidation|TransparentTemporalPolicy|RenderViewHistoryValidation|Gfx25CandidateRunIsolationSelfTest)(\\.|$)" --output-on-failure
+Main composition is wired: sealed temporal raster, presented material /
+texture / LOD history, raw admission, separate mesh reactivity, TAA and
+matched linear-depth capture. GPUScene staging first-use ownership follows
+the frozen RenderGraph queue policy. Optional composition diagnostics no
+longer require an initialized global logger; the regression suite passes 9/9.
 
-Run the opt-in suite.gfx25-candidate with a fresh explicit run id after the
-cooked executable and DX12 shader aggregate are built. Review full-size beauty
-and seven attachments before requesting Golden approval. VAL-R is committed as
-14cc30a1; native resize passed 120 warmup + 480 observation frames, one resize
-and two plateaus (Tests/ValR/native-20260912-02 under the Debug build).
-The GPU T0 implementation is committed. Golden approval, refreshed Shipping,
-fixed-GPU performance and remote/Metal qualification remain pending. No push.
+Current product-source digest:
+e04366456e0c90e3c11aa31e131c2504b6e5bafb4ad98961198e88daf44065a7.
+Exact commands, hashes and identities are in feature_list.json:
+- BuildTruth.3f63cb5c2abc41e8b4134080f67a5ec1:
+  Architecture 65, Unit 2126, Integration 771, DX12 Native 82, all passed.
+- RequiredSuite.d39ad9f064dc4def9c85c044e10b6c6f: Shipping 5/5 passed.
+- Architecture.50eaaeab56ee4274a6f0181c72cdfc54: canonical Verify passed.
+- gfx26-final-vulkan.xml: Windows Vulkan native transmission / temporal 15/15.
+- current-final-20261002-{forward,deferred}: latest cooked same-process
+  ticks 120/360/361, seven attachments, clean debug queue and series validation.
+  Tick120 matches all 14 unapproved candidate payloads byte-for-byte.
+
+NEXT: human review and approval of both candidate Goldens and visual policies:
+build/win_x64_debug/Tests/Gfx26Completion/GoldenReview/{forward,deferred}-candidate.
+REVIEW.md and beauty-1280x720.png describe the generated regression fixture.
+Do not auto-promote it or claim a photorealistic art showcase. After explicit
+approval, use Scripts/render_quality_golden.py approve, preserve .raw LFS
+policy, and run approved compare-series against the current captures.
+
+Five prior fixed 4070 Ti 2560x1440 High runs pass both absolute budgets.
+Candidate baseline:
+build/gfx24_perf_calibration/PerformanceCalibration/510404e7cb584129949ec7d913a948b5/candidate/baseline-record.json.
+User explicitly chose to keep it unapproved and recalibrate when idle.
+Its source precedes the logger guard; it is not final-source relative
+performance approval. No 10 percent regression-baseline claim.
+
+Prior failures are retained, including the repaired Copy ownership failure,
+the repaired null-logger Integration failure, and the separately intermittent
+source-publication/World teardown timeout. Later successful captures do not
+prove a root fix for that separate stall. Remote Linux/macOS/Metal and broader
+gfx-24 qualification remain pending. Keep gfx-24 active/non-complete.
+No validation process remains running after lifecycle Close.

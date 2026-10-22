@@ -627,7 +627,7 @@ namespace
     TEST(GPUSceneUploadValidation,
          UploadStagingFallsBackToGraphicsForAliasedOrUnavailableCopyPlans)
     {
-        const auto expectNoStagingOwnership = [](FakeDevice& device)
+        const auto expectNoStagingOwnership = [](FakeDevice& device, RGQueuePolicy policy)
         {
             RenderSubmissionTracker tracker;
             ASSERT_TRUE(tracker.Initialize(&device));
@@ -642,9 +642,9 @@ namespace
 
             RenderGraph graph;
             RenderGraphValidationAccess::SetDevice(graph, &device);
-            uploader.BuildRenderGraph(graph, nullptr);
+            uploader.BuildRenderGraph(graph, nullptr, policy);
             RenderGraphCompileOptions options;
-            options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+            options.queuePolicy = policy;
             options.capabilities = device.GetCapabilities();
             options.hasCapabilitySnapshot = true;
             RenderGraphValidationAccess::Compile(graph, options);
@@ -667,13 +667,18 @@ namespace
         FakeDevice aliasedCopyDevice;
         aliasedCopyDevice.SetBackendType(RHIBackendType::Vulkan);
         aliasedCopyDevice.SetCopyQueueDomain(GPUQueueDomain::Graphics);
-        expectNoStagingOwnership(aliasedCopyDevice);
+        expectNoStagingOwnership(aliasedCopyDevice, RGQueuePolicy::PreferMultiQueue);
 
         // A distinct topology alone is insufficient: without an executable
         // queue submission plan RenderGraph routes Copy passes on Graphics.
         FakeDevice noPlanDevice;
         noPlanDevice.SetQueueSubmissionPlanSupported(false);
-        expectNoStagingOwnership(noPlanDevice);
+        expectNoStagingOwnership(noPlanDevice, RGQueuePolicy::PreferMultiQueue);
+        // A device can support real Copy plans while this frame explicitly
+        // uses GraphicsOnly for one trustworthy timestamp span.
+        FakeDevice graphicsOnlyDevice;
+        ASSERT_TRUE(graphicsOnlyDevice.GetCapabilities().supportsQueueSubmissionPlan);
+        expectNoStagingOwnership(graphicsOnlyDevice, RGQueuePolicy::GraphicsOnly);
     }
 
     TEST(GPUSceneUploadValidation, FullThenIncrementalUploadKeepsUntouchedRows)

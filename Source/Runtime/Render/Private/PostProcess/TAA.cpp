@@ -25,6 +25,9 @@ namespace
         float renderSize[4] = {1.0f, 1.0f, 1.0f, 1.0f};
         float feedbackParams[4] = {0.88f, 0.97f, 1.0f, 1000.0f};
         float resolveParams[4] = {0.01f, 1.0f, 0.25f, 0.0f};
+        float jitterPixels[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        float resolvePolicy[4] = {};
+        float depthProjection[4] = {};
     };
 
     [[nodiscard]] uint64 AlignConstantBufferSize(uint64 size) noexcept
@@ -148,7 +151,7 @@ namespace
     }
 } // namespace
 
-TAA::TAA()
+TAA::TAA(TemporalResolvePurpose purpose) : m_purpose(purpose)
 {
     MarkUnsupported(
         "TAA requires initialized cooked pipeline and view-cache resources");
@@ -394,7 +397,9 @@ void TAA::AddToGraph(RenderGraph& graph,
         RecordUnsupported("TAA was offered history without a committed matching resource", &frameInputs);
         return;
     }
-    const bool depthDomainMatches = usesLinearDepth == m_committedLinearDepth;
+    const bool storedLinearDepth = usesLinearDepth ||
+        m_purpose == TemporalResolvePurpose::OpaqueRefraction;
+    const bool depthDomainMatches = storedLinearDepth == m_committedLinearDepth;
     if (m_historyValid && !depthDomainMatches)
         m_lastResolveStats.historyResetReasons |= RenderHistoryResetReason::FormatChanged;
     if (frameInputs.HasHistory() && m_historyValid && depthDomainMatches &&
@@ -409,6 +414,10 @@ void TAA::AddToGraph(RenderGraph& graph,
 
     AbandonPendingHistory();
     const bool useHistory = frameInputs.HasHistory() && m_historyValid && depthDomainMatches;
+    // The coordinator may offer a prior frame whose depth encoding changed.
+    // Report resource-qualified availability, not merely the offer; otherwise
+    // FormatChanged + historyAvailableBefore=true is a contradictory receipt.
+    m_lastResolveStats.historyAvailableBefore = useHistory;
     const uint32 readHistoryIndex = m_committedHistoryIndex;
     const uint32 writeHistoryIndex = 1u - readHistoryIndex;
     const RHIResourceState historyInitialState =
@@ -465,12 +474,16 @@ void TAA::AddToGraph(RenderGraph& graph,
         bool useHistory = false;
         bool linearDepth = false;
         Vec2 currentJitterPixels = Vec2(0.0f);
+        Vec2 previousJitterPixels = Vec2(0.0f);
+        Vec4 depthProjection = Vec4(0.0f);
+        bool convertDeviceDepth = false;
         RenderViewHistoryIdentity historyIdentity{};
         uint64 exposureStateContentHash = 0;
     };
 
     graph.AddPass<ResolveData>(
-        "TAAResolve",
+        m_purpose == TemporalResolvePurpose::OpaqueRefraction
+            ? "OpaqueSceneTemporalResolve" : "TAAResolve",
         RenderGraphPassType::Graphics,
         [this, frameInputs, output, historyColorRead, historyDepthRead,
          historyColorWrite, historyDepthWrite, useHistory](
@@ -527,8 +540,12 @@ void TAA::AddToGraph(RenderGraph& graph,
             const RHITextureDesc* const outputTextureDesc = builder.GetTextureDesc(output);
             data.outputFormat = outputTextureDesc ? outputTextureDesc->format : RHIFormat::Unknown;
             data.useHistory = useHistory;
-            data.linearDepth = frameInputs.temporalLinearDepth.IsValid();
+            data.convertDeviceDepth = m_purpose == TemporalResolvePurpose::OpaqueRefraction &&
+                !frameInputs.temporalLinearDepth.IsValid();
+            data.linearDepth = frameInputs.temporalLinearDepth.IsValid() || data.convertDeviceDepth;
+            data.depthProjection = frameInputs.deviceDepthProjection;
             data.currentJitterPixels = frameInputs.jitterOffset;
+            data.previousJitterPixels = m_previousJitterPixels;
             data.historyIdentity = frameInputs.historyIdentity;
             data.exposureStateContentHash = frameInputs.exposureStateContentHash;
         },
@@ -599,6 +616,15 @@ void TAA::AddToGraph(RenderGraph& graph,
             constants.resolveParams[1] = m_config.reactiveMaskScale;
             constants.resolveParams[2] = m_config.sharpen ? m_config.sharpness : 0.0f;
             constants.resolveParams[3] = data.useHistory ? 1.0f : 0.0f;
+            constants.jitterPixels[0] = data.currentJitterPixels.x;
+            constants.jitterPixels[1] = data.currentJitterPixels.y;
+            constants.jitterPixels[2] = data.previousJitterPixels.x;
+            constants.jitterPixels[3] = data.previousJitterPixels.y;
+            constants.resolvePolicy[0] =
+                m_purpose == TemporalResolvePurpose::OpaqueRefraction ? 1.0f : 0.0f;
+            constants.resolvePolicy[1] = data.convertDeviceDepth ? 1.0f : 0.0f;
+            for (uint32 i = 0; i < 4; ++i)
+                constants.depthProjection[i] = data.depthProjection[i];
             RHIBufferRef constantBuffer = CreateImmutablePassConstants(
                 *device,
                 constants,

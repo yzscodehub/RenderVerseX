@@ -30,6 +30,8 @@
 #include "Include/ToonLighting.hlsli"
 #include "GPUDriven/GPUSceneRaster.hlsli"
 #include "Translucency/WeightedBlendedOIT.hlsli"
+#include "Translucency/TransmissionProjection.hlsli"
+#include "Translucency/TransmissionFootprint.hlsli"
 
 // =============================================================================
 // Constant Buffers
@@ -51,6 +53,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4 DirectionalShadowCascadeSplits; // absolute camera-forward split distances
     float4 DirectionalShadowCascadeFadeDistances; // absolute fade widths before split boundaries
     float4 RayTracedShadowParams; // x: enabled, y: screen-space filter radius in pixels, z: composition mode
+    float4 OpaqueSceneColorUVTransform; // xy: raster-to-stable color UV; depth remains raster aligned
 };
 
 #if !defined(RVX_GPU_SCENE_RASTER)
@@ -165,6 +168,8 @@ Texture2DArray<float> LocalShadowAtlasTexture : register(t17, space0);
 // camera-to-slice transmittance. Opaque/geometry records bind the immutable
 // neutral (0,0,0,1) 3D texture; late surfaces bind the exact graph volume.
 Texture3D<float4> FroxelVolumetricLightingTexture : register(t18, space0);
+// Graph-owned conservative canonical R32 depth mips matching the color pyramid.
+Texture2D<float> TransmissionDepthPyramidTexture : register(t19, space0);
 #define LocalShadowAtlasSampler DirectionalShadowSampler
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
@@ -805,46 +810,8 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
         return MaterialParameterTable[materialSlot];
     }
 
-    MaterialParameterData material;
-    material.BaseColorFactor = BaseColorFactor;
-    material.MetallicFactor = MetallicFactor;
-    material.RoughnessFactor = RoughnessFactor;
-    material.NormalScale = NormalScale;
-    material.OcclusionStrength = OcclusionStrength;
-    material.EmissiveColor_Strength = EmissiveColor_Strength;
-    material.TextureFlags = TextureFlags;
-    material.AlphaMode = AlphaMode;
-    material.AlphaCutoff = AlphaCutoff;
-    material.Workflow = Workflow;
-    material.DoubleSided = DoubleSided;
-    material.ShadingModel = ShadingModel;
-    material.MaterialTableIndex = MaterialTableIndex;
-    material.ToonBands = ToonBands;
-    material.ToonSpecularThreshold = ToonSpecularThreshold;
-    material.ToonRimStrength = ToonRimStrength;
-    material.ToonOutlineWidth = ToonOutlineWidth;
-    material.BlendMode = BlendMode;
-    material.ToonShadowTint = ToonShadowTint;
-    material.ThinTransmissionParams = ThinTransmissionParams;
-    material.AttenuationColor = AttenuationColor;
-    material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
-    material.BaseColorUVRotationSet = BaseColorUVRotationSet;
-    material.NormalUVScaleOffset = NormalUVScaleOffset;
-    material.NormalUVRotationSet = NormalUVRotationSet;
-    material.MetallicRoughnessUVScaleOffset =
-        MetallicRoughnessUVScaleOffset;
-    material.MetallicRoughnessUVRotationSet =
-        MetallicRoughnessUVRotationSet;
-    material.OcclusionUVScaleOffset = OcclusionUVScaleOffset;
-    material.OcclusionUVRotationSet = OcclusionUVRotationSet;
-    material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
-    material.EmissiveUVRotationSet = EmissiveUVRotationSet;
-    material.ToonRampUVScaleOffset = ToonRampUVScaleOffset;
-    material.ToonRampUVRotationSet = ToonRampUVRotationSet;
-    material.TransmissionUVScaleOffset = TransmissionUVScaleOffset;
-    material.TransmissionUVRotationSet = TransmissionUVRotationSet;
-    material.ThicknessUVScaleOffset = ThicknessUVScaleOffset;
-    material.ThicknessUVRotationSet = ThicknessUVRotationSet;
+    MaterialParameterData material = (MaterialParameterData)0;
+    RVX_COPY_MATERIAL_PARAMETERS_FROM_CONSTANTS;
     return material;
 }
 
@@ -1423,30 +1390,41 @@ float3 RVXApplyThinTransmission(
     const float fresnel = max(
         dielectricFresnel.x,
         max(dielectricFresnel.y, dielectricFresnel.z));
-    const float refractionScale = (ior - 1.0f) / ior *
-        (0.5f + saturate(surface.roughness));
-    const float2 baseUV = saturate(input.Position.xy / sourceExtent);
-    const float4 baseClip = mul(float4(input.WorldPos, 1.0f), ViewProjection);
-    const float4 normalClip = mul(
-        float4(input.WorldPos + surface.normal, 1.0f), ViewProjection);
-    const float2 screenNormal = (normalClip.xy / max(abs(normalClip.w), 1.0e-4f) -
-                                 baseClip.xy / max(abs(baseClip.w), 1.0e-4f)) *
-        float2(0.5f, -0.5f);
-    const float2 offset = screenNormal * refractionScale * thickness;
+    const float2 baseUV = input.Position.xy / sourceExtent;
+    float3 displacement;
+    float pathLength;
+    const bool rayValid = RVXTransmissionRay(
+        -viewDirection, surface.normal, ior, thickness, displacement, pathLength);
+    float2 candidateUV;
+    bool candidateValid = rayValid && RVXProjectTransmissionCandidate(
+        ViewProjection, input.WorldPos + displacement,
+        float2(pyramidWidth, pyramidHeight), candidateUV);
     const float refractionLod = saturate(surface.roughness * surface.roughness) *
         max((float)pyramidMipCount - 1.0f, 0.0f);
+    const float4 exitClip = mul(ViewProjection, float4(input.WorldPos + displacement, 1.0f));
+    if (!rayValid || !all(isfinite(exitClip)) || exitClip.w <= 1.0e-4f)
+        return litColor;
+    const float exitDepth = exitClip.z / exitClip.w;
+    if (!isfinite(exitDepth) || exitDepth < 0.0f || exitDepth > 1.0f)
+        return litColor;
+    const float canonicalExit = RVXCanonicalTransmissionDepth(exitDepth, ReverseZ > 0.5f);
+    float2 sampleUV;
+    // Neither safe: retain surface lighting, never sample rejected scene color.
+    if (!RVXResolveTransmissionSampleUV(TransmissionDepthPyramidTexture,
+        candidateUV, candidateValid, baseUV, refractionLod, canonicalExit, sampleUV))
+        return litColor;
     const float3 refracted = OpaqueSceneColorPyramidTexture.SampleLevel(
-        IBLLinearClampSampler, saturate(baseUV + offset), refractionLod).rgb;
+        IBLLinearClampSampler, sampleUV + OpaqueSceneColorUVTransform.xy, refractionLod).rgb;
     // attenuationDistance==0 is the canonical infinite-distance/no-absorption case.
     const float3 absorption = attenuationDistance > 0.0f
-        ? exp(-max(thickness, 0.0f) / attenuationDistance *
+        ? exp(-(rayValid ? pathLength : thickness) / attenuationDistance *
               max(-log(max(surface.material.AttenuationColor.xyz, 1.0e-4f)), 0.0f))
         : float3(1.0f, 1.0f, 1.0f);
     const float3 transmitted = refracted * absorption;
     return lerp(transmitted, litColor, saturate(fresnel + (1.0f - transmission)));
 }
 
-ForwardTranslucencyOutput PSForwardTranslucency(
+ForwardTranslucencyOutput PSForwardTranslucencyGuarded(
     PSInput input,
     bool isFrontFace : SV_IsFrontFace)
 {

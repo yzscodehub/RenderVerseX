@@ -956,6 +956,7 @@ void ShadowPass::Setup(
     shadowDesc.arraySize = std::max(RVX_MIN_DIRECTIONAL_SHADOW_ARRAY_LAYERS,
                                     static_cast<uint32>(m_cascades.size()));
     shadowDesc.debugName = "DirectionalShadowCascadeArray";
+    shadowDesc.SetOptimizedClearDepthStencil({m_pipelineCache->GetDepthClearValue(), 0});
 
     m_shadowMapTextureHandle = builder.CreateTexture(shadowDesc);
     builder.SetExportState(

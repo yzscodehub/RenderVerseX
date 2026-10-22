@@ -20,6 +20,7 @@
 #include "Render/Passes/RayTracedReflectionPass.h"
 #include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/ShadowPass.h"
+#include "Render/Passes/TransparentPass.h"
 #include "Render/Passes/WaterFeaturePass.h"
 #include "Render/PipelineCache.h"
 
@@ -379,11 +380,13 @@ namespace
     [[nodiscard]] RHITextureDesc MakeGBufferDesc(
         RenderOutputExtent extent,
         SceneTextures::FormatContract contract,
-        const char* name)
+        const char* name,
+        RHIClearColor clearValue)
     {
         RHITextureDesc desc = RHITextureDesc::RenderTarget(
             extent.width, extent.height, contract.format);
         desc.sampleCount = contract.sampleCount;
+        desc.SetOptimizedClearColor(clearValue);
         desc.debugName = name;
         return desc;
     }
@@ -664,16 +667,16 @@ void DeferredGeometryFeatureAdapter::AddPasses(
             extent, SceneTextures::VelocityContract);
     }
     textures.gBuffer0 = builder.CreateTexture(MakeGBufferDesc(
-        extent, SceneTextures::GBuffer0Contract, "DeferredGBuffer0"));
+        extent, SceneTextures::GBuffer0Contract, "DeferredGBuffer0", SceneTextures::GBufferClearValues[0]));
     textures.gBuffer0Metadata = MakeMetadata(extent, SceneTextures::GBuffer0Contract);
     textures.gBuffer1 = builder.CreateTexture(MakeGBufferDesc(
-        extent, SceneTextures::GBuffer1Contract, "DeferredGBuffer1"));
+        extent, SceneTextures::GBuffer1Contract, "DeferredGBuffer1", SceneTextures::GBufferClearValues[1]));
     textures.gBuffer1Metadata = MakeMetadata(extent, SceneTextures::GBuffer1Contract);
     textures.gBuffer2 = builder.CreateTexture(MakeGBufferDesc(
-        extent, SceneTextures::GBuffer2Contract, "DeferredGBuffer2"));
+        extent, SceneTextures::GBuffer2Contract, "DeferredGBuffer2", SceneTextures::GBufferClearValues[2]));
     textures.gBuffer2Metadata = MakeMetadata(extent, SceneTextures::GBuffer2Contract);
     textures.gBuffer3 = builder.CreateTexture(MakeGBufferDesc(
-        extent, SceneTextures::GBuffer3Contract, "DeferredGBuffer3"));
+        extent, SceneTextures::GBuffer3Contract, "DeferredGBuffer3", SceneTextures::GBufferClearValues[3]));
     textures.gBuffer3Metadata = MakeMetadata(extent, SceneTextures::GBuffer3Contract);
 
     // GFX14 publishes the exact stable-slot material ABI consumed by both
@@ -1326,9 +1329,10 @@ void DeferredLightingFeatureAdapter::SetCompositionFailure(std::string diagnosti
 
 DeferredForwardSpecialFeatureAdapter::DeferredForwardSpecialFeatureAdapter(
     DefaultRenderPassBundle* passBundle,
-    PipelineCache* pipelineCache) noexcept
+    PipelineCache* pipelineCache, OpaqueSceneColorHistory* opaqueHistory) noexcept
     : m_passBundle(passBundle)
     , m_pipelineCache(pipelineCache)
+    , m_opaqueHistory(opaqueHistory)
 {
 }
 
@@ -1628,6 +1632,9 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     const bool particleExecutable = particlePass != nullptr &&
         particleStatus.requestedEnabled && particleStatus.supported &&
         particleStatus.enabled;
+    const auto* transmissionPass = m_passBundle->FindPass<TransparentPass>();
+    const RenderPassStatus transmissionStatus = transmissionPass != nullptr
+        ? transmissionPass->GetStatus() : RenderPassStatus{};
     const SceneDepthSnapshotDemand depthDemand =
         ResolveSceneDepthSnapshotDemand(
             waterRequirements.depthSnapshotRequired,
@@ -1635,7 +1642,10 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             particleRequirements.requested &&
                 particleRequirements.softDepthRequested,
             particleRequirements.softDepthRequired,
-            particleExecutable);
+            particleExecutable,
+            HasThinTransmissionDraws(postLightingContext),
+            transmissionStatus.requestedEnabled && transmissionStatus.supported &&
+                transmissionStatus.enabled);
     if (!depthDemand.valid)
     {
         SetCompositionFailure(depthDemand.failureReason);
@@ -1663,12 +1673,17 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             m_preparedContext.resolvedQuality,
             opaqueSceneColorPyramid,
             opaqueSceneColorPyramidInput,
-            opaqueSceneColorPyramidFailure))
+            opaqueSceneColorPyramidFailure, m_opaqueHistory))
     {
         SetCompositionFailure(std::move(opaqueSceneColorPyramidFailure));
         return;
     }
     m_lastPassChainStats.graphPassCount += opaqueSceneColorPyramid.mipCount;
+    if (postLightingContext.view.currentTemporalJitter.IsValid())
+    {
+        ++m_lastPassChainStats.graphPassCount;
+        m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneTemporalResolve");
+    }
     m_lastPassChainStats.graphPassNames.push_back(
         "OpaqueSceneColorPyramidBase");
     for (uint32 mipIndex = 1;
@@ -1711,6 +1726,16 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             ++m_lastPassChainStats.graphPassCount;
             m_lastPassChainStats.graphPassNames.push_back(
                 "SceneDepthSnapshotCopy");
+            if (!BuildSceneTransmissionDepth(builder, *m_pipelineCache, postLightingContext,
+                    m_preparedContext.resolvedQuality, sceneDepthSnapshot,
+                    sceneDepthSnapshotInput, sceneDepthFailure))
+            {
+                SetCompositionFailure(std::move(sceneDepthFailure));
+                return;
+            }
+            m_lastPassChainStats.graphPassCount += sceneDepthSnapshotInput.transmissionMipCount;
+            for (uint32 mip = 0; mip < sceneDepthSnapshotInput.transmissionMipCount; ++mip)
+                m_lastPassChainStats.graphPassNames.push_back("TransmissionDepthPyramidMip" + std::to_string(mip));
         }
     }
     RenderPassRecordContext translucencyContext = postLightingContext;

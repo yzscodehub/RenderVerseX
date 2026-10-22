@@ -1,4 +1,5 @@
 #include "Features/OpaqueSceneColorPyramidBuilder.h"
+#include "Features/OpaqueSceneColorHistory.h"
 
 #include "Core/Log.h"
 #include "Render/PipelineCache.h"
@@ -31,6 +32,7 @@ namespace
         uint32 mipIndex = 0;
         uint32 mipCount = 0;
         bool sourceIsFullResolution = false;
+        OpaqueSceneColorHistory* temporalHistory = nullptr;
         std::shared_ptr<OpaqueSceneColorPyramidBuildReceipt> receipt{};
     };
 
@@ -104,7 +106,7 @@ bool BuildOpaqueSceneColorPyramid(
     RenderQualityTier quality,
     OpaqueSceneColorPyramid& outPyramid,
     OpaqueSceneColorPyramidRecordInput& outRecordInput,
-    std::string& outFailure)
+    std::string& outFailure, OpaqueSceneColorHistory* temporalHistory)
 {
     outPyramid = {};
     outRecordInput = {};
@@ -118,7 +120,7 @@ bool BuildOpaqueSceneColorPyramid(
             std::max(1u, (sourceExtent.height + 1u) / 2u)};
     const uint32 mipCount =
         CalculateOpaqueSceneColorPyramidMipCount(baseExtent);
-    const RGTextureHandle source = context.view.colorTarget;
+    RGTextureHandle source = context.view.colorTarget;
     const RHITextureDesc* const sourceDescription =
         builder.GetGraph().GetTextureDesc(source);
     if (!builder.IsValid() || !context.identity.IsValid() ||
@@ -139,6 +141,17 @@ bool BuildOpaqueSceneColorPyramid(
         return false;
     }
 
+    const bool temporalRequested = context.view.currentTemporalJitter.IsValid();
+    if (temporalRequested)
+    {
+        if (!temporalHistory)
+        {
+            outFailure = "Jittered opaque refraction requires composition-owned temporal history";
+            return false;
+        }
+        if (!temporalHistory->Record(builder, context, frameIdentity, viewIdentity, source, outFailure))
+            return false;
+    }
     RHITextureDesc pyramidDescription = RHITextureDesc::RenderTarget(
         baseExtent.width, baseExtent.height, RHIFormat::RGBA16_FLOAT);
     pyramidDescription.usage = pyramidDescription.usage |
@@ -177,7 +190,7 @@ bool BuildOpaqueSceneColorPyramid(
                  mipIndex,
                  mipCount,
                  sourceIsFullResolution,
-                 receipt](RenderGraphBuilder& graphBuilder,
+                 receipt, temporalRequested, temporalHistory](RenderGraphBuilder& graphBuilder,
                           OpaqueSceneColorPyramidPassData& data)
                 {
                     // The texture-view declarations below are the sole graph
@@ -185,6 +198,7 @@ bool BuildOpaqueSceneColorPyramid(
                     // handles only lets the execution callback verify view
                     // provenance without creating duplicate same-pass usage.
                     data.source = sourceMip;
+                    data.temporalHistory = temporalRequested ? temporalHistory : nullptr;
                     data.destination = destinationMip;
 
                     const RHITextureDesc* const sourceDesc =
@@ -250,6 +264,7 @@ bool BuildOpaqueSceneColorPyramid(
                         graphContext.MarkExecutionFailed(diagnostic);
                     };
                     if (data.receipt == nullptr ||
+                        (data.temporalHistory && !data.temporalHistory->WasExecuted()) ||
                         data.receipt->failed.load(std::memory_order_acquire) ||
                         data.receipt->completedMipCount.load(
                             std::memory_order_acquire) != data.mipIndex)
@@ -368,6 +383,10 @@ bool BuildOpaqueSceneColorPyramid(
     outPyramid.viewIdentity = viewIdentity;
     outPyramid.sourceExtent = sourceExtent;
     outPyramid.baseExtent = baseExtent;
+    outPyramid.rasterToColorUV = temporalRequested
+        ? Vec2(context.view.currentTemporalJitter.pixelOffset.x / sourceExtent.width,
+               -context.view.currentTemporalJitter.pixelOffset.y / sourceExtent.height)
+        : Vec2(0.0f);
     outPyramid.quality = quality;
     outPyramid.mipCount = mipCount;
     outPyramid.texture = pyramid;
@@ -378,6 +397,7 @@ bool BuildOpaqueSceneColorPyramid(
     outRecordInput.texture = pyramid;
     outRecordInput.sourceExtent = sourceExtent;
     outRecordInput.baseExtent = baseExtent;
+    outRecordInput.rasterToColorUV = outPyramid.rasterToColorUV;
     outRecordInput.quality = quality;
     outRecordInput.mipCount = mipCount;
     outRecordInput.receipt = receipt;

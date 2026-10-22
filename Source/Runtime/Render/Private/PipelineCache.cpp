@@ -427,7 +427,7 @@ namespace
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
         if (set == 0 &&
-            binding <= PipelineCache::DefaultLitFroxelVolumetricLightingBinding)
+            binding <= PipelineCache::DefaultLitTransmissionDepthPyramidBinding)
         {
             return true;
         }
@@ -489,6 +489,10 @@ namespace
                                RHIShaderStage::Pixel);
         frameLayout.AddBinding(
             PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        frameLayout.AddBinding(
+            PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
 
@@ -1473,13 +1477,20 @@ void PipelineCache::Shutdown()
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
     m_opaqueSceneColorPyramidPipeline.Reset();
+    m_transmissionDepthPyramidPipeline.Reset();
+    m_transmissionDepthPyramidPixelShader.Reset();
+    m_transmissionDepthPyramidMetadata.reset();
     m_transparentTemporalResolvePipeline.Reset();
     m_transparentTemporalResolveLayout.Reset();
+    m_transparentTemporalCandidateLayout.Reset();
+    m_transparentTemporalCandidateSetLayout.Reset();
     m_transparentTemporalResolveNoHistoryPipeline.Reset();
     m_transparentTemporalResolveNoHistoryPixelShader.Reset();
     m_transparentTemporalResolveNoHistoryMetadata.reset();
     m_transparentTemporalResolveSetLayout.Reset();
     m_transparentTemporalResolvePixelShader.Reset();
+    for (auto& shader : m_transparentTemporalRasterShaders) shader.Reset();
+    for (auto& metadata : m_transparentTemporalRasterMetadata) metadata.reset();
     m_transparentTemporalResolveMetadata.reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
@@ -1792,12 +1803,18 @@ void PipelineCache::RetireOwnerSnapshots(
 
 bool PipelineCache::CompileShaders()
 {
+    // Lazy transmission programs belong to this shader generation as well.
+    m_transmissionDepthPyramidPipeline.Reset();
+    m_transmissionDepthPyramidPixelShader.Reset();
+    m_transmissionDepthPyramidMetadata.reset();
     m_transparentTemporalResolveNoHistoryPipeline.Reset();
     m_transparentTemporalResolveNoHistoryPixelShader.Reset();
     m_transparentTemporalResolveNoHistoryMetadata.reset();
     // Lazy temporal programs belong to this shader generation as well.
     m_transparentTemporalResolvePipeline.Reset();
     m_transparentTemporalResolvePixelShader.Reset();
+    for (auto& shader : m_transparentTemporalRasterShaders) shader.Reset();
+    for (auto& metadata : m_transparentTemporalRasterMetadata) metadata.reset();
     m_transparentTemporalResolveMetadata.reset();
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
     std::string weightedBlendedOITCompositeShaderPath =
@@ -1957,7 +1974,7 @@ bool PipelineCache::CompileShaders()
     m_psCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(psResult.compileResult));
 
     RenderShaderLoadDesc translucencyPsDesc = psDesc;
-    translucencyPsDesc.entryPoint = "PSForwardTranslucency";
+    translucencyPsDesc.entryPoint = "PSForwardTranslucencyGuarded";
     auto translucencyPsResult = m_shaderProgramLoader->LoadFromFile(
         m_device, translucencyPsDesc);
     if (!translucencyPsResult.compileResult.success || !translucencyPsResult.shader)
@@ -4469,6 +4486,9 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0],
                   PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0],
+                  PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                  RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
@@ -4611,6 +4631,10 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
         return false;
     if (!requireBinding(0,
                         PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+                        RHIBindingType::SampledTexture))
+        return false;
+    if (!requireBinding(0,
+                        PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
                         RHIBindingType::SampledTexture))
         return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
@@ -5298,6 +5322,13 @@ bool PipelineCache::CreateLightingBindingSnapshot(
             "Lighting binding snapshot requires opaque-scene pyramid view and sampler together");
         return false;
     }
+    if (request.transmissionDepthPyramidView &&
+        !opaqueSceneColorPyramidViewRequested)
+    {
+        SetLastError(
+            "Lighting binding snapshot requires the opaque-scene pyramid with a TransmissionDepthPyramid");
+        return false;
+    }
 
     const FrozenFrameLightResources& frozenLightResources = request.frozenLightResources;
     if (!frozenLightResources.IsComplete())
@@ -5449,8 +5480,17 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         SetLastError("Lighting binding snapshot could not map record-owned view constants");
         return false;
     }
-    const ViewConstants constants = BuildViewConstantsSnapshot(
+    ViewConstants constants = BuildViewConstantsSnapshot(
         view, m_device->GetBackendType(), m_config.reverseZ);
+    if (!std::isfinite(request.opaqueSceneColorRasterToUV.x) ||
+        !std::isfinite(request.opaqueSceneColorRasterToUV.y))
+    {
+        viewConstantBuffer->Unmap();
+        SetLastError("Opaque scene-color coordinate transform must be finite");
+        return false;
+    }
+    constants.opaqueSceneColorUVTransform =
+        Vec4(request.opaqueSceneColorRasterToUV, 0.0f, 0.0f);
     std::memcpy(mappedViewConstants, &constants, sizeof(constants));
     viewConstantBuffer->Unmap();
 
@@ -5517,6 +5557,16 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         : m_environmentIBLSampler;
     if (opaqueSceneColorPyramidViewRequested)
     {
+        // RHISampler has no portable descriptor introspection. Restrict this
+        // source to the cache-owned sampler, whose concrete CreateSampler
+        // descriptor is LinearClamp with zero LOD bias and no anisotropy.
+        if (request.opaqueSceneColorPyramidSampler.Get() !=
+            m_environmentIBLSampler.Get())
+        {
+            SetLastError(
+                "Lighting binding snapshot requires the cache-owned linear-clamp opaque-scene pyramid sampler");
+            return false;
+        }
         RHITexture* const texture =
             request.opaqueSceneColorPyramidView->GetTexture();
         const RHISubresourceRange& range =
@@ -5558,6 +5608,43 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         snapshot.opaqueSceneColorPyramidSourceExtent = {1, 1};
         snapshot.opaqueSceneColorPyramidBaseExtent = {1, 1};
         snapshot.opaqueSceneColorPyramidMipCount = 1;
+    }
+    snapshot.transmissionDepthPyramidView = request.transmissionDepthPyramidView
+        ? request.transmissionDepthPyramidView
+        : m_fallbackAmbientOcclusionView;
+    if (request.transmissionDepthPyramidView)
+    {
+        RHITexture* const texture =
+            request.transmissionDepthPyramidView->GetTexture();
+        const RHISubresourceRange& range =
+            request.transmissionDepthPyramidView->GetSubresourceRange();
+        if (texture == nullptr ||
+            request.transmissionDepthPyramidView->GetFormat() !=
+                RHIFormat::R32_FLOAT ||
+            texture->GetFormat() != RHIFormat::R32_FLOAT ||
+            texture->GetDimension() != RHITextureDimension::Texture2D ||
+            texture->GetWidth() !=
+                request.opaqueSceneColorPyramidBaseExtent.width ||
+            texture->GetHeight() !=
+                request.opaqueSceneColorPyramidBaseExtent.height ||
+            texture->GetDepth() != 1 ||
+            texture->GetMipLevels() !=
+                request.opaqueSceneColorPyramidMipCount ||
+            texture->GetArraySize() != 1 ||
+            texture->GetSampleCount() != RHISampleCount::Count1 ||
+            !HasFlag(texture->GetUsage(), RHITextureUsage::ShaderResource) ||
+            range.baseMipLevel != 0 ||
+            (range.mipLevelCount != RVX_ALL_MIPS &&
+             range.mipLevelCount != texture->GetMipLevels()) ||
+            range.baseArrayLayer != 0 ||
+            (range.arrayLayerCount != 1 &&
+             range.arrayLayerCount != RVX_ALL_LAYERS) ||
+            range.aspect != RHITextureAspect::Color)
+        {
+            SetLastError(
+                "Lighting binding snapshot requires an exact all-mip canonical R32 TransmissionDepthPyramid matching the opaque-scene pyramid");
+            return false;
+        }
     }
     if (request.froxelVolumetricLightingView)
     {
@@ -5625,6 +5712,7 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.opaqueSceneColorPyramidSourceExtent.IsValid() ||
         !snapshot.opaqueSceneColorPyramidBaseExtent.IsValid() ||
         snapshot.opaqueSceneColorPyramidMipCount == 0 ||
+        !snapshot.transmissionDepthPyramidView ||
         !snapshot.froxelVolumetricLightingView ||
         !snapshot.frameSetLayout)
     {
@@ -5665,6 +5753,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
                                   snapshot.localShadowAtlasView.Get());
     descriptorSetDesc.BindTexture(DefaultLitFroxelVolumetricLightingBinding,
                                   snapshot.froxelVolumetricLightingView.Get());
+    descriptorSetDesc.BindTexture(DefaultLitTransmissionDepthPyramidBinding,
+                                  snapshot.transmissionDepthPyramidView.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -6633,6 +6723,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         frameSetDesc.BindTexture(
             DefaultLitFroxelVolumetricLightingBinding,
             m_fallbackFroxelVolumetricLightingView.Get());
+        frameSetDesc.BindTexture(
+            DefaultLitTransmissionDepthPyramidBinding,
+            m_fallbackAmbientOcclusionView.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -6829,7 +6922,8 @@ bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
     const Mat4& previousViewProjectionMatrix,
     bool previousWorldViewProjectionValid,
     bool receivesShadow,
-    const SkinningPaletteSliceBinding& skinningSlice) const
+    const SkinningPaletteSliceBinding& skinningSlice,
+    bool temporalSurfaceHistoryQualified) const
 {
     if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
     {
@@ -6852,6 +6946,7 @@ bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
         return false;
     }
 
+    constants.objectVelocityParams.w = temporalSurfaceHistoryQualified ? 1.0f : 0.0f;
     const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
                           snapshot.objectConstantStride;
     void* mapped = snapshot.objectConstantBuffer->Map();
@@ -6875,7 +6970,8 @@ bool PipelineCache::UpdateRasterObjectBindingSnapshotObject(
     const Mat4& previousViewProjectionMatrix,
     bool previousWorldViewProjectionValid,
     bool receivesShadow,
-    const SkinningPaletteSliceBinding& skinningSlice) const
+    const SkinningPaletteSliceBinding& skinningSlice,
+    bool temporalSurfaceHistoryQualified) const
 {
     if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
     {
@@ -6898,6 +6994,7 @@ bool PipelineCache::UpdateRasterObjectBindingSnapshotObject(
         return false;
     }
 
+    constants.objectVelocityParams.w = temporalSurfaceHistoryQualified ? 1.0f : 0.0f;
     const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
         snapshot.objectConstantStride;
     void* mapped = snapshot.objectConstantBuffer->Map();
@@ -8392,6 +8489,224 @@ RHIPipeline* PipelineCache::GetOpaqueSceneColorPyramidPipeline(
     return m_opaqueSceneColorPyramidPipeline.Get();
 }
 
+RHIPipeline* PipelineCache::GetTransmissionDepthPyramidPipeline()
+{
+    if (m_transmissionDepthPyramidPipeline)
+    {
+        return m_transmissionDepthPyramidPipeline.Get();
+    }
+    if (!m_device || !m_shaderProgramLoader ||
+        !m_opaqueSceneColorPyramidVertexShader ||
+        !m_opaqueSceneColorPyramidPipelineLayout)
+    {
+        SetLastError(
+            "Transmission depth pyramid requires initialized fullscreen shader, layout, device, and provider resources");
+        return nullptr;
+    }
+
+    if (!m_transmissionDepthPyramidPixelShader)
+    {
+        RenderShaderLoadDesc shader;
+        shader.path = m_shaderDir + "/Translucency/TransmissionDepthPyramid.hlsl";
+        shader.entryPoint = "PSMain";
+        shader.stage = RHIShaderStage::Pixel;
+        shader.backend = m_device->GetBackendType();
+        if (shader.backend == RHIBackendType::DX11)
+        {
+            shader.targetProfile = "ps_5_0";
+        }
+
+        auto loaded = m_shaderProgramLoader->LoadFromFile(m_device, shader);
+        if (!loaded.compileResult.success || !loaded.shader)
+        {
+            SetLastError("Transmission depth pyramid shader unavailable: " +
+                         loaded.compileResult.errorMessage);
+            return nullptr;
+        }
+        m_transmissionDepthPyramidPixelShader = loaded.shader;
+        m_transmissionDepthPyramidMetadata =
+            std::make_unique<ShaderProgramMetadata>(
+                std::move(loaded.compileResult));
+    }
+
+    RHIGraphicsPipelineDesc desc;
+    desc.vertexShader = m_opaqueSceneColorPyramidVertexShader.Get();
+    desc.pixelShader = m_transmissionDepthPyramidPixelShader.Get();
+    desc.pipelineLayout = m_opaqueSceneColorPyramidPipelineLayout.Get();
+    desc.debugName = "TransmissionDepthPyramidPipeline";
+    desc.rasterizerState = RHIRasterizerState::Default();
+    desc.rasterizerState.cullMode = RHICullMode::None;
+    desc.depthStencilState = RHIDepthStencilState::Disabled();
+    desc.blendState = RHIBlendState::Default();
+    desc.numRenderTargets = 1;
+    desc.renderTargetFormats[0] = RHIFormat::R32_FLOAT;
+    desc.depthStencilFormat = RHIFormat::Unknown;
+    desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    const uint64 hash = ComputePipelineStateHash(
+        desc, MaterialPipelineVariant::Transparent);
+    const auto cached = m_pipelineCache.find(hash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        m_transmissionDepthPyramidPipeline = cached->second;
+        return m_transmissionDepthPyramidPipeline.Get();
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    m_transmissionDepthPyramidPipeline = m_device->CreateGraphicsPipeline(desc);
+    if (!m_transmissionDepthPyramidPipeline)
+    {
+        SetLastError("Backend rejected transmission depth pyramid pipeline");
+        return nullptr;
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[hash] = m_transmissionDepthPyramidPipeline;
+    return m_transmissionDepthPyramidPipeline.Get();
+}
+
+RHIPipeline* PipelineCache::GetTransparentTemporalRasterPipeline(
+    DefaultLitDirectVertexInputMode inputMode, MaterialCullMode cullMode,
+    bool reverseWinding, bool weighted)
+{
+    if (!m_device || !m_shaderProgramLoader ||
+        (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+         inputMode != DefaultLitDirectVertexInputMode::Skinned) ||
+        !IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Transparent temporal raster requires initialized resources and valid raster policy");
+        return nullptr;
+    }
+    const auto& caps = m_device->GetCapabilities();
+    if (!caps.supportsIndependentColorAttachmentBlend ||
+        !caps.GetFormatCapabilities(RHIFormat::RGBA16_FLOAT).colorAttachment ||
+        !caps.GetFormatCapabilities(RHIFormat::R32_UINT).colorAttachment ||
+        !caps.GetFormatCapabilities(RHIFormat::R16_FLOAT).colorAttachmentBlend)
+    {
+        SetLastError("Transparent temporal raster requires independent MRT and R16F blend support");
+        return nullptr;
+    }
+    const size_t vertex = inputMode == DefaultLitDirectVertexInputMode::Rigid ? 0u : 1u;
+    const size_t pixel = weighted ? 3u : 2u;
+    constexpr std::array<const char*, 4> entries{"VSRigid", "VSSkinned", "PSSorted", "PSWeighted"};
+    for (const size_t index : {vertex, pixel})
+    {
+        if (m_transparentTemporalRasterShaders[index]) continue;
+        RenderShaderLoadDesc request;
+        request.path = m_shaderDir + "/Translucency/TransparentTemporalRaster.hlsl";
+        request.entryPoint = entries[index];
+        request.stage = index < 2 ? RHIShaderStage::Vertex : RHIShaderStage::Pixel;
+        request.backend = m_device->GetBackendType();
+        if (request.backend == RHIBackendType::DX11)
+            request.targetProfile = index < 2 ? "vs_5_0" : "ps_5_0";
+        auto loaded = m_shaderProgramLoader->LoadFromFile(m_device, request);
+        if (!loaded.compileResult.success || !loaded.shader)
+        {
+            SetLastError("Transparent temporal raster shader unavailable: " + loaded.compileResult.errorMessage);
+            return nullptr;
+        }
+        m_transparentTemporalRasterShaders[index] = loaded.shader;
+        m_transparentTemporalRasterMetadata[index] =
+            std::make_unique<ShaderProgramMetadata>(std::move(loaded.compileResult));
+    }
+    auto desc = BuildMaskedObjectVelocityPipelineDesc(
+        RHIFormat::RGBA16_FLOAT, inputMode, cullMode, reverseWinding);
+    desc.vertexShader = m_transparentTemporalRasterShaders[vertex].Get();
+    desc.pixelShader = m_transparentTemporalRasterShaders[pixel].Get();
+    desc.debugName = "TransparentTemporalRaster";
+    desc.numRenderTargets = 3;
+    desc.renderTargetFormats[1] = RHIFormat::R32_UINT;
+    desc.renderTargetFormats[2] = RHIFormat::R16_FLOAT;
+    desc.blendState.independentBlendEnable = true;
+    auto& layers = desc.blendState.renderTargets[2];
+    layers.blendEnable = true;
+    layers.srcColorBlend = RHIBlendFactor::One;
+    layers.dstColorBlend = RHIBlendFactor::One;
+    layers.colorBlendOp = RHIBlendOp::Add;
+    layers.srcAlphaBlend = RHIBlendFactor::One;
+    layers.dstAlphaBlend = RHIBlendFactor::One;
+    layers.alphaBlendOp = RHIBlendOp::Add;
+    constexpr uint32 RVX_TEMPORAL_RASTER_PURPOSE = 0x54525000u;
+    const uint64 hash = ComputePipelineStateHash(desc, MaterialPipelineVariant::Transparent,
+        RVX_TEMPORAL_RASTER_PURPOSE | static_cast<uint32>(vertex * 4u + pixel));
+    if (const auto found = m_pipelineCache.find(hash); found != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return found->second.Get();
+    }
+    ++m_stats.pipelineCacheMissCount;
+    auto pipeline = m_device->CreateGraphicsPipeline(desc);
+    if (!pipeline) { SetLastError("Transparent temporal raster pipeline creation failed"); return nullptr; }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[hash] = pipeline;
+    return pipeline.Get();
+}
+
+RHIPipeline* PipelineCache::GetTransparentTemporalCandidateResolvePipeline()
+{
+    if (!m_device || !m_shaderProgramLoader || !m_toneMappingVertexShader) return nullptr;
+    auto& shader = m_transparentTemporalRasterShaders[4];
+    if (!shader)
+    {
+        RenderShaderLoadDesc request;
+        request.path = m_shaderDir + "/PostProcess/TransparentTemporalResolve.hlsl";
+        request.entryPoint = "PSRaw";
+        request.stage = RHIShaderStage::Pixel;
+        request.backend = m_device->GetBackendType();
+        if (request.backend == RHIBackendType::DX11) request.targetProfile = "ps_5_0";
+        auto loaded = m_shaderProgramLoader->LoadFromFile(m_device, request);
+        if (!loaded.compileResult.success || !loaded.shader)
+        {
+            SetLastError("Transparent temporal admission shader unavailable: " + loaded.compileResult.errorMessage);
+            return nullptr;
+        }
+        shader = loaded.shader;
+        m_transparentTemporalRasterMetadata[4] =
+            std::make_unique<ShaderProgramMetadata>(std::move(loaded.compileResult));
+    }
+    if (!m_transparentTemporalCandidateSetLayout)
+    {
+        RHIDescriptorSetLayoutDesc desc;
+        desc.debugName = "TransparentTemporalCandidateSetLayout";
+        for (uint32 i = 0; i < 7; ++i)
+            desc.AddBinding(i, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        desc.AddBinding(7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        m_transparentTemporalCandidateSetLayout = m_device->CreateDescriptorSetLayout(desc);
+        if (!m_transparentTemporalCandidateSetLayout) return nullptr;
+    }
+    if (!m_transparentTemporalCandidateLayout)
+    {
+        RHIPipelineLayoutDesc desc;
+        desc.setLayouts.push_back(m_transparentTemporalCandidateSetLayout.Get());
+        desc.debugName = "TransparentTemporalCandidateLayout";
+        m_transparentTemporalCandidateLayout = m_device->CreatePipelineLayout(desc);
+        if (!m_transparentTemporalCandidateLayout) return nullptr;
+    }
+    RHIGraphicsPipelineDesc desc;
+    desc.vertexShader = m_toneMappingVertexShader.Get();
+    desc.pixelShader = shader.Get();
+    desc.pipelineLayout = m_transparentTemporalCandidateLayout.Get();
+    desc.debugName = "TransparentTemporalAdmission";
+    desc.rasterizerState = RHIRasterizerState::Default();
+    desc.rasterizerState.cullMode = RHICullMode::None;
+    desc.depthStencilState = RHIDepthStencilState::Disabled();
+    desc.blendState = RHIBlendState::Default();
+    desc.numRenderTargets = 3;
+    desc.renderTargetFormats[0] = RHIFormat::RG16_FLOAT;
+    desc.renderTargetFormats[1] = RHIFormat::R8_UNORM;
+    desc.renderTargetFormats[2] = RHIFormat::R32_FLOAT;
+    desc.depthStencilFormat = RHIFormat::Unknown;
+    desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    const auto hash = ComputePipelineStateHash(desc, MaterialPipelineVariant::Transparent, 0x54525202u);
+    if (const auto found = m_pipelineCache.find(hash); found != m_pipelineCache.end()) return found->second.Get();
+    auto pipeline = m_device->CreateGraphicsPipeline(desc);
+    if (!pipeline) { SetLastError("Transparent temporal admission pipeline unavailable"); return nullptr; }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[hash] = pipeline;
+    return pipeline.Get();
+}
+
 RHIPipeline* PipelineCache::GetTransparentTemporalResolvePipeline(bool allowHistory)
 {
     auto& requestedPipeline = allowHistory ? m_transparentTemporalResolvePipeline
@@ -8467,7 +8782,8 @@ RHIPipeline* PipelineCache::GetTransparentTemporalResolvePipeline(bool allowHist
     desc.renderTargetFormats[2] = RHIFormat::R32_FLOAT;
     desc.depthStencilFormat = RHIFormat::Unknown;
     desc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
-    const uint64 hash = ComputePipelineStateHash(desc, MaterialPipelineVariant::Transparent);
+    const uint64 hash = ComputePipelineStateHash(desc, MaterialPipelineVariant::Transparent,
+        allowHistory ? 0x54525201u : 0x54525200u);
     const auto cached = m_pipelineCache.find(hash);
     if (cached != m_pipelineCache.end())
     {
@@ -9577,6 +9893,7 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
     owners->ambientOcclusionView = m_fallbackAmbientOcclusionView;
     owners->opaqueSceneColorPyramidView =
         m_fallbackEnvironmentIBLBRDFLUTView;
+    owners->transmissionDepthPyramidView = m_fallbackAmbientOcclusionView;
     owners->froxelVolumetricLightingView =
         m_fallbackFroxelVolumetricLightingView;
     owners->ambientOcclusionFieldHash =
@@ -9590,7 +9907,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(19);
+    bindings.reserve(20);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -9618,6 +9935,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
                         owners.localShadowAtlasView.Get(), nullptr});
     bindings.push_back({DefaultLitFroxelVolumetricLightingBinding, nullptr, 0, 0,
                         owners.froxelVolumetricLightingView.Get(), nullptr});
+    bindings.push_back({DefaultLitTransmissionDepthPyramidBinding, nullptr, 0, 0,
+                        owners.transmissionDepthPyramidView.Get(), nullptr});
     return bindings;
 }
 
@@ -12895,8 +13214,13 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_ssrResolvePsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
+        if (shader == m_transmissionDepthPyramidPixelShader.Get())
+            return ComputeShaderHash(m_transmissionDepthPyramidMetadata.get());
         if (shader == m_transparentTemporalResolvePixelShader.Get())
             return ComputeShaderHash(m_transparentTemporalResolveMetadata.get());
+        for (size_t i = 0; i < m_transparentTemporalRasterShaders.size(); ++i)
+            if (shader == m_transparentTemporalRasterShaders[i].Get())
+                return ComputeShaderHash(m_transparentTemporalRasterMetadata[i].get());
         if (shader == m_transparentTemporalResolveNoHistoryPixelShader.Get())
             return ComputeShaderHash(m_transparentTemporalResolveNoHistoryMetadata.get());
         if (shader == m_objectVelocityVertexShader.Get())

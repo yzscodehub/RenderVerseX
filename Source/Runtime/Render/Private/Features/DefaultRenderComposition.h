@@ -12,6 +12,7 @@ namespace RVX
     class PipelineCache;
     class PostProcessStack;
     class ResourceViewCache;
+    class OpaqueSceneColorHistory;
 
     /**
      * @brief Private owner for the default renderer's passes and features.
@@ -101,6 +102,8 @@ namespace RVX
         [[nodiscard]] PostProcessStack* GetPostProcessStack() noexcept;
         [[nodiscard]] const PostProcessStack*
             GetPostProcessStack() const noexcept;
+        OpaqueSceneColorHistory* GetOpaqueSceneColorHistory() noexcept
+        { return m_opaqueSceneColorHistory.get(); }
         void Shutdown() noexcept;
 
     private:
@@ -108,6 +111,7 @@ namespace RVX
         std::unique_ptr<RenderFeatureRegistry> m_featureRegistry;
         std::vector<IRenderFeature*> m_featureIndex;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
+        std::unique_ptr<OpaqueSceneColorHistory> m_opaqueSceneColorHistory;
         bool m_defaultPassBundleInstalled = false;
     };
 } // namespace RVX

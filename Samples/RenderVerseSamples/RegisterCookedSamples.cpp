@@ -5,6 +5,7 @@
 #include "Scenes/ModelViewerSample.h"
 #include "Scenes/PBRMaterialsSample.h"
 #include "Scenes/RenderQualityLabSample.h"
+#include "Scenes/TransparentMaterialsSample.h"
 #include "Samples/SampleRegistry.h"
 
 #include <memory>
@@ -77,6 +78,8 @@ namespace RVX
                RegisterCookedSample<ModelViewerSample>(
                    manifest, registry, outError) &&
                RegisterCookedSample<PBRMaterialsSample>(
+                   manifest, registry, outError) &&
+               RegisterCookedSample<TransparentMaterialsSample>(
                    manifest, registry, outError) &&
                registry.ValidateManifestSelection(manifest, outError);
     }

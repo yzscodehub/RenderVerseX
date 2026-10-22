@@ -475,11 +475,15 @@ namespace
         {
             RHITextureDesc distortionDesc = RHITextureDesc::RenderTarget(
                 extent.width, extent.height, RHIFormat::RG16_FLOAT);
+            distortionDesc.SetOptimizedClearColor(
+                RHIClearColor{0.0f, 0.0f, 0.0f, 1.0f});
             distortionDesc.debugName = "ParticleDistortionVectors";
             outInput.distortionVectors = builder.CreateTexture(distortionDesc);
 
             RHITextureDesc compositeDesc = RHITextureDesc::RenderTarget(
                 extent.width, extent.height, RHIFormat::RGBA16_FLOAT);
+            compositeDesc.SetOptimizedClearColor(
+                RHIClearColor{0.0f, 0.0f, 0.0f, 1.0f});
             compositeDesc.debugName =
                 "ParticleDistortionCompositeSceneColor";
             outInput.compositedSceneColor =
@@ -714,6 +718,7 @@ void TranslucencyFeatureAdapter::AddPasses(
         inputs->opaqueSceneColorPyramid.texture,
         inputs->opaqueSceneColorPyramid.sourceExtent,
         inputs->opaqueSceneColorPyramid.baseExtent,
+        inputs->opaqueSceneColorPyramid.rasterToColorUV,
         inputs->opaqueSceneColorPyramid.quality,
         inputs->opaqueSceneColorPyramid.mipCount,
         inputs->opaqueSceneColorPyramid.receipt};
@@ -726,6 +731,10 @@ void TranslucencyFeatureAdapter::AddPasses(
             sceneDepthSnapshot->depthSnapshotMetadata.format,
             sceneDepthSnapshot->depthSnapshotMetadata.sampleCount,
             sceneDepthSnapshot->receipt};
+        context.sceneDepthSnapshot.transmissionPyramid = sceneDepthSnapshot->transmissionPyramid;
+        context.sceneDepthSnapshot.transmissionBaseExtent = sceneDepthSnapshot->transmissionMetadata.extent;
+        context.sceneDepthSnapshot.transmissionMipCount = sceneDepthSnapshot->transmissionMipCount;
+        context.sceneDepthSnapshot.transmissionReceipt = sceneDepthSnapshot->transmissionReceipt;
     }
     context.volumetricLighting = VolumetricLightingRecordInput{
         context.identity,
@@ -822,6 +831,46 @@ void TranslucencyFeatureAdapter::AddPasses(
         }
     }
 
+    // Keep non-mesh history interference (Water/Particle/OIT) separate from
+    // sorted mesh reactivity. Qualified single surfaces may override only the
+    // latter; they must never erase a particle or water contribution.
+    const bool produceTemporal = meshRecording.IsPrepared() && inputs->velocity.IsValid() &&
+        !context.transparentTemporalSurface.has_value();
+    RGTextureHandle meshReactive = inputs->reactiveMask;
+    if (produceTemporal)
+    {
+        auto desc = RHITextureDesc::RenderTarget(m_preparedContext.outputExtent.width,
+            m_preparedContext.outputExtent.height, RHIFormat::R8_UNORM);
+        desc.usage = desc.usage | RHITextureUsage::ShaderResource;
+        desc.SetOptimizedClearColor(RHIClearColor{0, 0, 0, 0});
+        desc.debugName = "TransparentMeshReactive";
+        meshReactive = builder.CreateTexture(desc);
+        struct ClearData { RGTextureViewHandle view; RenderOutputExtent extent; };
+        if (!meshReactive.IsValid() || !builder.AddPass<ClearData>("TransparentMeshReactiveClear",
+            RenderGraphPassType::Graphics,
+            [meshReactive, extent = m_preparedContext.outputExtent](RenderGraphBuilder& graph, ClearData& data)
+            {
+                RHITextureViewDesc view;
+                view.format = RHIFormat::R8_UNORM;
+                view.type = RHITextureViewType::RenderTarget;
+                data.view = graph.Write(graph.CreateTextureView(meshReactive, view),
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget, RHIShaderStage::Pixel));
+                data.extent = extent;
+            }, [](const ClearData& data, RenderGraphPassContext& passContext)
+            {
+                auto* view = passContext.GetTextureView(data.view);
+                if (!view) { passContext.MarkExecutionFailed("Transparent mesh reactive clear unavailable"); return; }
+                RHIRenderPassDesc pass;
+                pass.AddColorAttachment(view, RHILoadOp::Clear, RHIStoreOp::Store, RHIClearColor{0, 0, 0, 0});
+                pass.SetRenderArea(0, 0, data.extent.width, data.extent.height);
+                passContext.Commands().BeginRenderPass(pass);
+                passContext.Commands().EndRenderPass();
+            }))
+        {
+            SetCompositionFailure("Transparent mesh reactive target unavailable");
+            return;
+        }
+    }
     RGTextureHandle activeSceneColor = inputs->hdrSceneColor;
     const uint32 weightedEntryCount = routeSummary.GetEntryCount(
         TranslucencyRoute::WeightedBlended);
@@ -841,11 +890,15 @@ void TranslucencyFeatureAdapter::AddPasses(
             m_preparedContext.outputExtent.width,
             m_preparedContext.outputExtent.height,
             RHIFormat::RGBA16_FLOAT);
+        accumulationDesc.SetOptimizedClearColor(
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
         accumulationDesc.debugName = "WeightedBlendedOITAccumulation";
         RHITextureDesc revealageDesc = RHITextureDesc::RenderTarget(
             m_preparedContext.outputExtent.width,
             m_preparedContext.outputExtent.height,
             RHIFormat::R16_FLOAT);
+        revealageDesc.SetOptimizedClearColor(
+            RHIClearColor{1.0f, 1.0f, 1.0f, 1.0f});
         revealageDesc.debugName = "WeightedBlendedOITRevealage";
 
         const RGTextureHandle accumulation =
@@ -976,7 +1029,7 @@ void TranslucencyFeatureAdapter::AddPasses(
                         graph,
                         meshRecording,
                         activeSceneColor,
-                        inputs->reactiveMask);
+                        meshReactive);
                 }) ||
             !meshDirectRecorded)
         {
@@ -1019,6 +1072,31 @@ void TranslucencyFeatureAdapter::AddPasses(
         return;
     }
 
+    if (produceTemporal)
+    {
+        TransparentTemporalCandidates candidates;
+        bool recorded = false;
+        if (!builder.AddGraphCallback("TransparentTemporalCandidates", context,
+                [&](RenderGraph& graph)
+                { recorded = transparentPass->RecordTemporalCandidates(graph, meshRecording, candidates); }) || !recorded)
+        {
+            SetCompositionFailure("Transparent temporal candidate recording failed");
+            return;
+        }
+        TransparentTemporalSurfaceInputs surface;
+        surface.frameIdentity = inputs->frameIdentity;
+        surface.viewIdentity = inputs->viewIdentity;
+        surface.extent = candidates.extent;
+        surface.motionCoverageDepth = candidates.motionCoverageDepth;
+        surface.flags = candidates.flags;
+        surface.layerCount = candidates.layerCount;
+        surface.meshReactive = meshReactive;
+        surface.opaqueDeviceDepth = inputs->deviceDepth;
+        surface.inverseProjectionMatrix = context.view.inverseProjectionMatrix;
+        surface.rawCandidates = true;
+        surface.historyAvailable = context.view.previousViewProjectionValid != 0 && !context.view.resetTemporalHistory;
+        context.transparentTemporalSurface = surface;
+    }
     TranslucencyOutputs outputs;
     outputs.provenance = builder.GetProvenance();
     outputs.frameIdentity = inputs->frameIdentity;

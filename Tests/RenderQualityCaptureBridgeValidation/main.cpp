@@ -158,6 +158,23 @@ TEST(RenderQualityCaptureBridge, UsesTopLeftCanonicalRowsForOpenGLReadback)
                   3, 3, true));
 }
 
+TEST(RenderQualityCaptureBridge, PreservesSelectedLinearDepthWithoutDeviceDepthConversion)
+{
+    float32 depth = 12.5f;
+    std::array<uint8, 16> output{};
+    for (bool reverse : {false, true})
+    {
+        ASSERT_TRUE(QualificationCaptureBridgeTestAccess::ConvertPixel(
+            QualificationCaptureAttachmentSemantic::LinearDepth, RHIFormat::R32_FLOAT,
+            reinterpret_cast<const uint8*>(&depth), 0.1f, 100.0f, reverse, output.data()));
+        EXPECT_FLOAT_EQ(ReadFloat(output), depth);
+    }
+    depth = 0;
+    EXPECT_FALSE(QualificationCaptureBridgeTestAccess::ConvertPixel(
+        QualificationCaptureAttachmentSemantic::LinearDepth, RHIFormat::R32_FLOAT,
+        reinterpret_cast<const uint8*>(&depth), 0.1f, 100.0f, false, output.data()));
+}
+
 TEST(RenderQualityCaptureBridge, FinalizedReceiptIdentityCanBeSubmitted)
 {
     QualificationCaptureOwner owner;

@@ -121,6 +121,7 @@ namespace RVX
         Vec4 directionalShadowCascadeSplits;
         Vec4 directionalShadowCascadeFadeDistances;
         Vec4 rayTracedShadowParams;
+        Vec4 opaqueSceneColorUVTransform{0.0f};
     };
 
     enum class DirectionalShadowFallbackReason : uint8
@@ -320,6 +321,15 @@ namespace RVX
         RenderOutputExtent opaqueSceneColorPyramidSourceExtent{};
         RenderOutputExtent opaqueSceneColorPyramidBaseExtent{};
         uint32 opaqueSceneColorPyramidMipCount = 0;
+        Vec2 opaqueSceneColorRasterToUV{0.0f};
+        /**
+         * Exact graph-owned canonical R32_FLOAT depth pyramid paired with the
+         * opaque scene-color pyramid. ThinTransmission reads matching mips to
+         * reject foreground and depth-discontinuous refraction samples.
+         * Omission retains the stable neutral fallback for non-transmission
+         * draws, which never read this binding.
+         */
+        RHITextureViewRef transmissionDepthPyramidView;
         /**
          * Exact graph-owned RGBA16F Texture3D with integrated in-scattering
          * in rgb and transmittance in alpha.  Omission binds the immutable
@@ -366,6 +376,7 @@ namespace RVX
         RenderOutputExtent opaqueSceneColorPyramidSourceExtent{};
         RenderOutputExtent opaqueSceneColorPyramidBaseExtent{};
         uint32 opaqueSceneColorPyramidMipCount = 0;
+        RHITextureViewRef transmissionDepthPyramidView;
         RHITextureViewRef froxelVolumetricLightingView;
         uint64 froxelVolumetricLightingPlanIdentity = 0;
         RHIDescriptorSetLayoutRef frameSetLayout;
@@ -388,6 +399,7 @@ namespace RVX
                    opaqueSceneColorPyramidSourceExtent.IsValid() &&
                    opaqueSceneColorPyramidBaseExtent.IsValid() &&
                    opaqueSceneColorPyramidMipCount != 0 &&
+                   transmissionDepthPyramidView &&
                    froxelVolumetricLightingView &&
                    frameSetLayout && frameDescriptorSet;
         }
@@ -943,6 +955,12 @@ namespace RVX
          */
         static constexpr uint32 DefaultLitFroxelVolumetricLightingBinding = 18u;
         /**
+         * Canonical R32_FLOAT transmission-depth pyramid paired with the
+         * opaque scene-color pyramid. ThinTransmission uses integer loads and
+         * intentionally consumes no sampler pair for this binding.
+         */
+        static constexpr uint32 DefaultLitTransmissionDepthPyramidBinding = 19u;
+        /**
          * Strong immutable fallback for non-volumetric/identity paths.  The
          * texel is exactly (0, 0, 0, 1) in RGBA16F and has Texture3D shape.
          */
@@ -1096,8 +1114,23 @@ namespace RVX
         RHIPipeline* GetOpaqueSceneColorPyramidPipeline(
             RHIFormat outputFormat = RHIFormat::RGBA16_FLOAT);
 
+        /**
+         * Build the conservative canonical R32 transmission-depth pyramid.
+         * It reuses the opaque color-pyramid fullscreen descriptor and layout
+         * ABI: b0 SourceParameters, t1 source, s2 reserved.
+         */
+        RHIPipeline* GetTransmissionDepthPyramidPipeline();
+
         /** Fixed RG16F motion + R8 reactive + R32F paired depth, prepared before execution. */
         RHIPipeline* GetTransparentTemporalResolvePipeline(bool allowHistory = true);
+        RHIPipeline* GetTransparentTemporalCandidateResolvePipeline();
+        RHIDescriptorSetLayout* GetTransparentTemporalCandidateResolveSetLayout() const
+        { return m_transparentTemporalCandidateSetLayout.Get(); }
+        /** Raw RGBA16F motion/contribution/depth + R32_UINT candidates + R16F layers.
+         * Not final admitted temporal inputs; single-sample, read-only depth. */
+        RHIPipeline* GetTransparentTemporalRasterPipeline(
+            DefaultLitDirectVertexInputMode inputMode, MaterialCullMode cullMode,
+            bool reverseWinding = false, bool weighted = false);
         RHIDescriptorSetLayout* GetTransparentTemporalResolveSetLayout() const
         {
             return m_transparentTemporalResolveSetLayout.Get();
@@ -1646,7 +1679,8 @@ namespace RVX
             const Mat4& previousViewProjectionMatrix,
             bool previousWorldViewProjectionValid,
             bool receivesShadow,
-            const SkinningPaletteSliceBinding& skinningSlice = {}) const;
+            const SkinningPaletteSliceBinding& skinningSlice = {},
+            bool temporalSurfaceHistoryQualified = false) const;
 
         /** @brief Upload an object slot in a set-1-only recording snapshot. */
         bool UpdateRasterObjectBindingSnapshotObject(
@@ -1657,7 +1691,8 @@ namespace RVX
             const Mat4& previousViewProjectionMatrix,
             bool previousWorldViewProjectionValid,
             bool receivesShadow,
-            const SkinningPaletteSliceBinding& skinningSlice = {}) const;
+            const SkinningPaletteSliceBinding& skinningSlice = {},
+            bool temporalSurfaceHistoryQualified = false) const;
 
         /**
          * @brief Build a single dynamic offset span for descriptor sets with one dynamic binding
@@ -1793,6 +1828,7 @@ namespace RVX
             RHIBufferRef exposureStateBuffer;
             RHITextureViewRef ambientOcclusionView;
             RHITextureViewRef opaqueSceneColorPyramidView;
+            RHITextureViewRef transmissionDepthPyramidView;
             RHITextureViewRef froxelVolumetricLightingView;
             uint64 ambientOcclusionFieldHash = 0;
 
@@ -1808,6 +1844,7 @@ namespace RVX
                        environmentIBLBRDFLUTView && environmentIBLSampler &&
                        exposureStateBuffer && ambientOcclusionView &&
                        opaqueSceneColorPyramidView &&
+                       transmissionDepthPyramidView &&
                        froxelVolumetricLightingView &&
                        ambientOcclusionFieldHash != 0;
             }
@@ -2205,7 +2242,14 @@ namespace RVX
         RHIShaderRef m_bloomPixelShader;
         RHIShaderRef m_opaqueSceneColorPyramidVertexShader;
         RHIShaderRef m_opaqueSceneColorPyramidPixelShader;
+        RHIShaderRef m_transmissionDepthPyramidPixelShader;
+        std::unique_ptr<ShaderProgramMetadata> m_transmissionDepthPyramidMetadata;
+        RHIPipelineRef m_transmissionDepthPyramidPipeline;
         RHIShaderRef m_transparentTemporalResolvePixelShader;
+        std::array<RHIShaderRef, 5> m_transparentTemporalRasterShaders;
+        std::array<std::unique_ptr<ShaderProgramMetadata>, 5> m_transparentTemporalRasterMetadata;
+        RHIPipelineLayoutRef m_transparentTemporalCandidateLayout;
+        RHIDescriptorSetLayoutRef m_transparentTemporalCandidateSetLayout;
         std::unique_ptr<ShaderProgramMetadata> m_transparentTemporalResolveMetadata;
         RHIDescriptorSetLayoutRef m_transparentTemporalResolveSetLayout;
         RHIPipelineLayoutRef m_transparentTemporalResolveLayout;

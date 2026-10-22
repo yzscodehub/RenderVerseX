@@ -205,12 +205,25 @@ namespace
         return result;
     }
 
+    void ValidateObjectMotionHistory(
+        RenderObject& object,
+        const std::unordered_map<uint64, RenderObjectMotionHistory>& history)
+    {
+        if (object.previousWorldMatrixValid == 0) return;
+        const auto previous = history.find(object.entityId);
+        if (previous == history.end() || !previous->second.IsCompatible(object))
+        {
+            object.previousWorldMatrix = object.worldMatrix;
+            object.previousWorldMatrixValid = 0;
+        }
+    }
+
     bool BuildRetainedObject(
         const RenderPrimitiveSnapshot& primitive,
         PrimitiveDataIndex primitiveData,
         uint64 objectRevision,
         bool resetHistory,
-        const std::unordered_map<uint64, Mat4>& lastRenderedTransforms,
+        const std::unordered_map<uint64, RenderObjectMotionHistory>& lastRenderedTransforms,
         const RenderResourceRegistry& registry,
         RenderFrameApplyResult& result,
         RenderObject& object,
@@ -255,7 +268,7 @@ namespace
             const auto previous = lastRenderedTransforms.find(primitive.objectId);
             if (previous != lastRenderedTransforms.end())
             {
-                object.previousWorldMatrix = previous->second;
+                object.previousWorldMatrix = previous->second.worldMatrix;
                 object.previousWorldMatrixValid = 1;
             }
         }
@@ -271,6 +284,8 @@ namespace
         object.hasSkinningPaletteProvider =
             primitive.hasSkinningPaletteProvider;
         object.skinningPalette = primitive.skinningPalette;
+        object.meshContentRevision = registry.GetContentRevision(object.mesh);
+        ValidateObjectMotionHistory(object, lastRenderedTransforms);
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
         object.flags = primitive.flags;
@@ -831,7 +846,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
                 primitive.objectId);
             if (previous != m_lastRenderedObjectTransforms.end())
             {
-                object.previousWorldMatrix = previous->second;
+                object.previousWorldMatrix = previous->second.worldMatrix;
                 object.previousWorldMatrixValid = 1;
             }
         }
@@ -848,6 +863,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         object.hasSkinningPaletteProvider =
             primitive.hasSkinningPaletteProvider;
         object.skinningPalette = primitive.skinningPalette;
+        object.meshContentRevision = registry.GetContentRevision(object.mesh);
+        ValidateObjectMotionHistory(object, m_lastRenderedObjectTransforms);
         ResolvePreviousSkinningPalette(primitive, resetHistory, object);
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
@@ -1763,7 +1780,7 @@ void RenderScene::MarkAcceptedFrameRendered()
         for (const RenderObject& object : m_objects)
         {
             m_lastRenderedObjectTransforms.insert_or_assign(
-                object.entityId, object.worldMatrix);
+                object.entityId, RenderObjectMotionHistory::Capture(object));
             if (object.previousWorldMatrixValid == 0 ||
                 !MatricesEqual(object.previousWorldMatrix, object.worldMatrix))
             {
@@ -1781,7 +1798,7 @@ void RenderScene::MarkAcceptedFrameRendered()
             if (object == nullptr)
                 continue;
             m_lastRenderedObjectTransforms.insert_or_assign(
-                objectId, object->worldMatrix);
+                objectId, RenderObjectMotionHistory::Capture(*object));
             if (object->previousWorldMatrixValid == 0 ||
                 !MatricesEqual(object->previousWorldMatrix,
                                object->worldMatrix))

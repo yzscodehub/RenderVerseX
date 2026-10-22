@@ -14,6 +14,7 @@
 
 namespace RVX
 {
+    class OpaqueSceneColorHistory;
     class DefaultRenderPassBundle;
     class PipelineCache;
 
@@ -149,7 +150,7 @@ namespace RVX
     public:
         explicit ForwardSpecialFeatureAdapter(
             DefaultRenderPassBundle* passBundle,
-            PipelineCache* pipelineCache) noexcept;
+            PipelineCache* pipelineCache, OpaqueSceneColorHistory* opaqueHistory = nullptr) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
@@ -181,6 +182,7 @@ namespace RVX
 
         DefaultRenderPassBundle* m_passBundle = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
+        OpaqueSceneColorHistory* m_opaqueHistory = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         LegacyForwardFeaturePassChainStats m_lastPassChainStats{};
