@@ -66,6 +66,13 @@ namespace RVX
         RuntimeFrameDriver(Engine& engine, RenderSubsystem& render) noexcept;
 
         [[nodiscard]] RenderDiagnosticsSnapshot TickOnce(float32 deltaTime);
+        /** @brief Restart the deterministic sample effect clock at zero. */
+        void ResetFixedTime() noexcept;
+        /** @brief Current deterministic sample effect time in seconds. */
+        [[nodiscard]] float64 GetFixedElapsedTimeSeconds() const noexcept
+        {
+            return m_fixedElapsedTimeSeconds;
+        }
         [[nodiscard]] RenderDiagnosticsSnapshot PumpRenderProgressOnce();
         [[nodiscard]] RuntimeFrameWaitResult WaitFor(
             const RuntimeFrameWaitRequest& request);
@@ -91,5 +98,6 @@ namespace RVX
 
         Engine& m_engine;
         RenderSubsystem& m_render;
+        float64 m_fixedElapsedTimeSeconds = 0.0;
     };
 } // namespace RVX

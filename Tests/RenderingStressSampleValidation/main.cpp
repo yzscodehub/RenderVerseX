@@ -1974,6 +1974,7 @@ namespace RVX
         light.type = SceneECS::LightType::Point;
         light.color = Vec3(1.0f, 0.78f, 0.55f);
         light.intensity = 64.0f;
+        light.intensityUnit = SceneECS::LightIntensityUnit::Candela;
         light.range = 32.0f;
         light.castsShadows = false;
         SceneECS::MaterialSlots materialSlots;
@@ -2030,6 +2031,7 @@ namespace RVX
         SceneECS::Light light;
         light.type = SceneECS::LightType::Point;
         light.intensity = 48.0f;
+        light.intensityUnit = SceneECS::LightIntensityUnit::Candela;
         const SceneECS::SceneCommandReceipt added =
             commands.Add(created, light);
         ASSERT_TRUE(added.IsQueued());

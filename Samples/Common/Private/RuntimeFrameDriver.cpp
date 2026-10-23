@@ -8,6 +8,8 @@
 #include "Engine/Engine.h"
 #include "Render/RenderSubsystem.h"
 
+#include <cmath>
+#include <limits>
 #include <thread>
 
 namespace RVX
@@ -22,9 +24,29 @@ namespace RVX
     RenderDiagnosticsSnapshot RuntimeFrameDriver::TickOnce(
         float32 deltaTime)
     {
-        m_engine.Tick(deltaTime);
+        if (!std::isfinite(deltaTime) || deltaTime < 0.0f)
+        {
+            return m_render.GetDiagnosticsSnapshot();
+        }
+
+        const float64 nextFixedElapsedTimeSeconds =
+            m_fixedElapsedTimeSeconds + static_cast<float64>(deltaTime);
+        if (!std::isfinite(nextFixedElapsedTimeSeconds) ||
+            nextFixedElapsedTimeSeconds > static_cast<float64>(
+                std::numeric_limits<float32>::max()))
+        {
+            return m_render.GetDiagnosticsSnapshot();
+        }
+
+        m_engine.TickFixed(deltaTime, nextFixedElapsedTimeSeconds);
+        m_fixedElapsedTimeSeconds = nextFixedElapsedTimeSeconds;
         std::this_thread::yield();
         return m_render.GetDiagnosticsSnapshot();
+    }
+
+    void RuntimeFrameDriver::ResetFixedTime() noexcept
+    {
+        m_fixedElapsedTimeSeconds = 0.0;
     }
 
     RenderDiagnosticsSnapshot RuntimeFrameDriver::PumpRenderProgressOnce()

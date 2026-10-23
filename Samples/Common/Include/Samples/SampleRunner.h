@@ -9,13 +9,18 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace RVX
 {
     struct EngineRenderRuntimeDiagnostics;
     class SampleRegistry;
+    struct SampleAssessmentContract;
+    struct SampleScenarioManifest;
     struct RenderDiagnosticsSnapshot;
+    struct RuntimeFrameWaitRequest;
     struct SampleRunnerTestAccess;
+    class ISampleHostComposition;
 
     enum class SampleAssessmentProfile : uint8
     {
@@ -37,6 +42,17 @@ namespace RVX
         std::filesystem::path environmentPath;
         std::filesystem::path catalogPath;
         std::filesystem::path assetRoot;
+        /** Explicit strict shader artifact root for a runtime-only execution. */
+        std::filesystem::path cookedShaderRoot;
+        SamplePipelineRecipe pipelineRecipe =
+            SamplePipelineRecipe::ForwardStandard;
+        SampleQualityTier qualityTier = SampleQualityTier::Default;
+        std::string viewBookmarkId;
+        float64 fixedDeltaSeconds = 1.0 / 60.0;
+        uint64 captureTick = 0;
+        uint32 fixedTimeNumerator = 1;
+        uint32 fixedTimeDenominator = 60;
+        uint32 deterministicSeed = 0;
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
         uint32 readyTimeoutMs = 120000;
@@ -46,15 +62,40 @@ namespace RVX
         std::filesystem::path startupReportPath;
         std::filesystem::path assessmentReportPath;
         std::filesystem::path assessmentBaselinePath;
+        /** Completion-owned GFX24 semantic attachment bundle output. */
+        std::filesystem::path qualificationBundlePath;
+        /** Same-process GFX24 semantic attachment series success manifest. */
+        std::filesystem::path qualificationSeriesPath;
+        /** Completion-owned GFX24 fixed-duration performance report output. */
+        std::filesystem::path qualificationPerformancePath;
+        /** Explicit opaque baseline identity; the host never self-approves one. */
+        std::string qualificationPerformanceBaselineIdentity;
+        /** Trusted host OS build provenance resolved before the session starts. */
+        std::string qualificationPerformanceOsBuild;
         SampleAssessmentProfile assessmentProfile =
             SampleAssessmentProfile::Smoke;
         SampleWorkloadScale workloadScale = SampleWorkloadScale::PullRequest;
+        bool pipelineExplicit = false;
+        bool qualityExplicit = false;
+        bool viewBookmarkExplicit = false;
+        bool fixedDeltaExplicit = false;
+        bool captureTickExplicit = false;
+        bool manifestContractResolved = false;
+        bool viewBookmarkResolved = false;
+        bool captureTickResolved = false;
+        bool deterministicContractActive = false;
         bool renderPathExplicit = false;
         bool workloadScaleExplicit = false;
         bool readyTimeoutExplicit = false;
         bool readyMaxFramesExplicit = false;
         bool waitReady = false;
         bool deterministicCameraOrbit = false;
+        /**
+         * Select the fail-closed Runtime composition rather than Development
+         * composition.  This is execution evidence only: the host executable
+         * may still contain legacy Developer-linked scenarios.
+         */
+        bool runtimeOnlyComposition = false;
         bool listSamples = false;
 
         [[nodiscard]] bool HasLifetimeQualification() const noexcept
@@ -71,9 +112,14 @@ namespace RVX
         [[nodiscard]] bool RequiresReadinessWait() const noexcept
         {
             return waitReady || !common.screenshotPath.empty() ||
+                   !qualificationBundlePath.empty() ||
+                   !qualificationSeriesPath.empty() ||
+                   !qualificationPerformancePath.empty() ||
                    common.pixelProbeEnabled ||
                    common.gpuSceneCullingQualificationEnabled ||
                    common.directOpaqueRasterReadbackQualificationEnabled ||
+                   common.exposureQualificationProbeEnabled ||
+                   common.hiZReflectionQualificationProbeEnabled ||
                    HasLifetimeQualification() || HasFrameworkAssessment();
         }
     };
@@ -106,6 +152,8 @@ namespace RVX
     {
     public:
         explicit SampleRunner(const SampleRegistry& registry) noexcept;
+        SampleRunner(const SampleRegistry& registry,
+                     const ISampleHostComposition& composition) noexcept;
         int Run(int argc, char* argv[]) const;
 
     private:
@@ -117,6 +165,47 @@ namespace RVX
             uint32 executedFrames,
             uint32 minimumFrames,
             uint32 maximumFrames) noexcept;
+
+        [[nodiscard]] static bool ShouldArmRenderQualityPerformanceSession(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept;
+
+        [[nodiscard]] static bool HasMissedRenderQualityPerformanceSessionStart(
+            bool sampleReady,
+            bool deterministicEpochActive,
+            uint64 deterministicTick,
+            uint64 sessionStartTick) noexcept;
+
+        [[nodiscard]] static bool ShouldDeferGenericFiniteCompletion(
+            bool renderQualityPerformanceActive) noexcept;
+
+        static void ConfigureFrameWaitPolicy(
+            bool deterministicEpochActive,
+            float32 deltaTime,
+            RuntimeFrameWaitRequest& request) noexcept;
+
+        [[nodiscard]] static bool ResolveManifestContract(
+            const SampleScenarioManifest& manifest,
+            SampleRunnerCLIOptions& options,
+            std::string& outError);
+
+        [[nodiscard]] static bool ValidateManifestAssessmentContract(
+            const SampleScenarioManifest& manifest,
+            const SampleAssessmentContract& contract,
+            std::string& outError);
+
+        /**
+         * @brief Activates the narrow GFX19 Hi-Z reflection qualification
+         *        profile without changing the base scenario contract.
+         */
+        [[nodiscard]] static bool ApplyHiZReflectionQualificationProfile(
+            std::string_view sampleId,
+            bool probeEnabled,
+            SampleScenarioManifest& manifest,
+            SampleAssessmentContract& contract,
+            std::string& outError);
 
         [[nodiscard]] static uint64 ResolveSceneRemovalPublicationSequence(
             uint64 removalSceneRevision,
@@ -132,5 +221,6 @@ namespace RVX
         friend struct SampleRunnerTestAccess;
 
         const SampleRegistry& m_registry;
+        const ISampleHostComposition* m_composition = nullptr;
     };
 } // namespace RVX

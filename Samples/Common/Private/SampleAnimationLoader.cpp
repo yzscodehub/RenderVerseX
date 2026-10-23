@@ -81,8 +81,14 @@ namespace RVX
             return false;
         }
 
+        std::string resourcePath;
+        if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
+        {
+            return false;
+        }
+
         AnimationSceneAdapters::EcsAnimationAssetLoadDesc desc;
-        desc.path = lookup.entry->resolvedPath.string();
+        desc.path = resourcePath;
         desc.expectedSceneRuntimeId = m_sceneRuntimeId;
         desc.resourceOptions.expectedContentIdentity =
             lookup.entry->contentIdentity;
@@ -93,8 +99,7 @@ namespace RVX
         if (!request.IsValid() || request.sceneRuntimeId != m_sceneRuntimeId)
         {
             outError = requestError.empty()
-                           ? "ECS World rejected animation request: " +
-                                 lookup.entry->resolvedPath.string()
+                           ? "ECS World rejected animation request: " + resourcePath
                            : std::move(requestError);
             return false;
         }

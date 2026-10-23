@@ -1,0 +1,123 @@
+/**
+ * @file ViewData.cpp
+ * @brief ViewData implementation
+ */
+
+#include "Render/Renderer/ViewData.h"
+#include "Core/Camera/Camera.h"
+
+namespace RVX
+{
+void ViewData::SetupFromCamera(const Camera& camera, uint32_t width, uint32_t height)
+{
+    // Matrices
+    viewMatrix = camera.GetView();
+    projectionMatrix = camera.GetProjection();
+    viewProjectionMatrix = camera.GetViewProjection();
+    jitteredProjectionMatrix = projectionMatrix;
+    jitteredViewProjectionMatrix = viewProjectionMatrix;
+    previousJitteredViewProjectionMatrix = previousViewProjectionMatrix;
+    currentTemporalJitter = {};
+    previousTemporalJitter = {};
+    
+    // Inverse matrices
+    inverseViewMatrix = inverse(viewMatrix);
+    inverseProjectionMatrix = inverse(projectionMatrix);
+    inverseJitteredViewProjectionMatrix =
+        inverseViewMatrix * inverseProjectionMatrix;
+    
+    // Camera transform
+    cameraPosition = camera.GetPosition();
+    // Extract forward from view matrix (inverted Z column)
+    cameraForward = -Vec3(inverseViewMatrix[2]);
+    // Core::Camera has no layer-selection state. Do not retain a mask from a
+    // previous snapshot-backed setup.
+    cullingMask = ~0U;
+    clearPolicy = RenderViewClearPolicy::Skybox;
+    clearColor = {0.1f, 0.1f, 0.15f, 1.0f};
+    
+    // Viewport
+    viewportWidth = width;
+    viewportHeight = height;
+    viewportX = 0;
+    viewportY = 0;
+    aspectRatio = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
+}
+
+void ViewData::SetupFromSnapshot(
+    const RenderViewSnapshot& snapshot,
+    const Mat4& previousRenderedViewProjection,
+    bool previousRenderedViewValid,
+    bool resetHistory)
+{
+    viewMatrix = snapshot.viewMatrix;
+    projectionMatrix = snapshot.projectionMatrix;
+    viewProjectionMatrix = snapshot.viewProjectionMatrix;
+    jitteredProjectionMatrix = projectionMatrix;
+    jitteredViewProjectionMatrix = viewProjectionMatrix;
+    inverseViewMatrix = inverse(viewMatrix);
+    inverseProjectionMatrix = inverse(projectionMatrix);
+    inverseJitteredViewProjectionMatrix =
+        inverseViewMatrix * inverseProjectionMatrix;
+    cameraPosition = snapshot.cameraPosition;
+    cameraForward = snapshot.cameraDirection;
+    cullingMask = snapshot.cullingMask;
+    clearPolicy = snapshot.clearPolicy;
+    clearColor = snapshot.clearColor;
+    nearPlane = snapshot.nearPlane;
+    farPlane = snapshot.farPlane;
+    viewportX = static_cast<int32>(snapshot.viewportX);
+    viewportY = static_cast<int32>(snapshot.viewportY);
+    viewportWidth = snapshot.viewportWidth;
+    viewportHeight = snapshot.viewportHeight;
+    aspectRatio = viewportHeight == 0
+                      ? 1.0f
+                      : static_cast<float>(viewportWidth) /
+                            static_cast<float>(viewportHeight);
+    previousViewProjectionMatrix = resetHistory
+                                       ? snapshot.viewProjectionMatrix
+                                       : previousRenderedViewProjection;
+    previousViewProjectionValid =
+        static_cast<uint8>(previousRenderedViewValid && !resetHistory);
+    previousJitteredViewProjectionMatrix = previousViewProjectionMatrix;
+    currentTemporalJitter = {};
+    previousTemporalJitter = {};
+    resetTemporalHistory = resetHistory;
+    // Shader view constants remain float32; the frame contract validates the
+    // representable range before this explicit presentation-time projection.
+    time = static_cast<float32>(snapshot.absoluteTime);
+    deltaTime = snapshot.deltaTime;
+}
+
+void ViewData::SetTemporalJitter(
+    const RenderTemporalJitter& currentJitter,
+    const RenderTemporalJitter& previousJitter,
+    const Mat4& previousPresentedJitteredViewProjection,
+    bool previousPresentedJitteredViewValid)
+{
+    if (!IsValidRenderTemporalJitter(currentJitter))
+    {
+        currentTemporalJitter = {};
+        jitteredProjectionMatrix = projectionMatrix;
+        jitteredViewProjectionMatrix = viewProjectionMatrix;
+    }
+    else
+    {
+        currentTemporalJitter = currentJitter;
+        jitteredProjectionMatrix =
+            ApplyRenderTemporalJitter(projectionMatrix, currentJitter);
+        jitteredViewProjectionMatrix = jitteredProjectionMatrix * viewMatrix;
+    }
+    inverseJitteredViewProjectionMatrix =
+        inverse(jitteredViewProjectionMatrix);
+
+    const bool priorValid = previousViewProjectionValid != 0U &&
+                            previousPresentedJitteredViewValid &&
+                            IsValidRenderTemporalJitter(previousJitter);
+    previousTemporalJitter = priorValid ? previousJitter : RenderTemporalJitter{};
+    previousJitteredViewProjectionMatrix = priorValid
+        ? previousPresentedJitteredViewProjection
+        : previousViewProjectionMatrix;
+}
+
+} // namespace RVX

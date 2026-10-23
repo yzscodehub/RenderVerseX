@@ -1,5 +1,11 @@
 # RenderVerseX Architecture Implementation Plan
 
+> Historical plan: this document records the pre-runtime-layout implementation
+> sequence and retains its original terminology. Current architecture truth is
+> `Docs/module-boundaries.json`, `Docs/module-boundaries.md`, and the generated
+> `RVXModuleInventory-<configuration>.json`; do not use paths below as current
+> source locations.
+
 Date: 2026-07-02
 Branch: `codex/architecture-implementation`
 Base: `engine-remediation` at `6b09c4d`
@@ -350,8 +356,9 @@ Tasks:
   states.
 - Reject hot reload when the active resource runtime policy requires cooked
   artifacts or runtime packages.
-- Register source-loaded editor resources with `HotReloadManager` and the
-  underlying `FileWatcher` when hot reload is active.
+- Inject `IResourceChangeMonitor` through development composition and register
+  source-loaded resources with it when hot reload is active. The monitor only
+  reports changes; `ResourceManager` owns the reload transaction.
 - Keep watcher statistics stable enough to feed editor tooling and validation
   tests.
 
@@ -1720,7 +1727,7 @@ Tasks:
 - Add the checker to the architecture baseline runner.
 - Promote `Tools -> Audio` to a public CMake dependency because
   `Tools/Importers/AudioImporter.h` exposes `Audio::AudioFormat`.
-- Remove the private Audio include-directory workaround from `RVX_Tools`.
+- Remove the private Audio include-directory workaround from `RVX_AssetPipeline`.
 
 Gate:
 

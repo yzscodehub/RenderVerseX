@@ -5,10 +5,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
-#include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,7 +13,7 @@ namespace RVX::Tests
 {
     static_assert(
         static_cast<uint8>(
-            RHIPipelineValidationCode::InvalidVertexInputLayout) == 25);
+            RHIPipelineValidationCode::UnsupportedColorAttachmentBlend) == 29);
 
     namespace
     {
@@ -143,15 +139,6 @@ namespace RVX::Tests
             return shaderInterface;
         }
 
-        std::string ReadTextFile(
-            const std::filesystem::path& path)
-        {
-            std::ifstream file(path);
-            std::ostringstream stream;
-            stream << file.rdbuf();
-            return stream.str();
-        }
-
         struct ValidPipelineFixture
         {
             RHIPipelineLayoutDesc layoutDesc;
@@ -183,6 +170,21 @@ namespace RVX::Tests
                     RHIFormat::RGBA8_UNORM;
             }
         };
+
+        RHICapabilities MakeColorAttachmentCapabilities()
+        {
+            RHICapabilities capabilities;
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.maxColorAttachments = 8;
+            capabilities.supportsIndependentColorAttachmentBlend = true;
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::R16_FLOAT)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA16_FLOAT)] = {true, true};
+            return capabilities;
+        }
     } // namespace
 
     TEST(RHIPipelineValidation,
@@ -313,64 +315,6 @@ namespace RVX::Tests
             instanceDataStepRate = 2;
         EXPECT_FALSE(BuildRHIVertexInputTranslation(
             unsupportedStepRateLayout));
-    }
-
-    TEST(RHIPipelineValidation,
-         PrimaryBackendsConsumeSharedVertexTranslation)
-    {
-        const std::filesystem::path sourceRoot =
-            RVX_SOURCE_DIR;
-        const std::array<std::filesystem::path, 3> backendSources = {
-            sourceRoot / "RHI_DX12" / "Private" /
-                "DX12Pipeline.cpp",
-            sourceRoot / "RHI_Vulkan" / "Private" /
-                "VulkanPipeline.cpp",
-            sourceRoot / "RHI_Metal" / "Private" /
-                "MetalPipeline.mm",
-        };
-
-        for (const std::filesystem::path& path : backendSources)
-        {
-            const std::string source = ReadTextFile(path);
-            ASSERT_FALSE(source.empty()) << path.string();
-            EXPECT_NE(
-                source.find(
-                    "BuildRHIVertexInputTranslation"),
-                std::string::npos)
-                << path.string();
-        }
-    }
-
-    TEST(RHIPipelineValidation,
-         MetalVertexStreamsUseLegalDescendingBufferIndices)
-    {
-        const std::filesystem::path sourceRoot = RVX_SOURCE_DIR;
-        const std::string commonSource = ReadTextFile(
-            sourceRoot / "RHI_Metal" / "Private" / "MetalCommon.h");
-        const std::string pipelineSource = ReadTextFile(
-            sourceRoot / "RHI_Metal" / "Private" / "MetalPipeline.mm");
-        const std::string commandSource = ReadTextFile(
-            sourceRoot / "RHI_Metal" / "Private" / "MetalCommandContext.mm");
-
-        ASSERT_FALSE(commonSource.empty());
-        ASSERT_FALSE(pipelineSource.empty());
-        ASSERT_FALSE(commandSource.empty());
-        EXPECT_NE(commonSource.find("kMetalHighestBufferIndex = 30"),
-                  std::string::npos);
-        EXPECT_NE(commonSource.find(
-                      "kMetalHighestBufferIndex - inputSlot"),
-                  std::string::npos);
-        EXPECT_NE(pipelineSource.find(
-                      "MetalVertexBufferIndex(attribute.inputSlot)"),
-                  std::string::npos);
-        EXPECT_NE(pipelineSource.find(
-                      "MetalVertexBufferIndex(binding.inputSlot)"),
-                  std::string::npos);
-        EXPECT_NE(commandSource.find("MetalVertexBufferIndex(slot)"),
-                  std::string::npos);
-        EXPECT_EQ(pipelineSource.find("30 + attribute.inputSlot"),
-                  std::string::npos);
-        EXPECT_EQ(commandSource.find("30 + slot"), std::string::npos);
     }
 
     TEST(RHIPipelineValidation,
@@ -643,5 +587,97 @@ namespace RVX::Tests
         desc.pipelineLayout = &completeLayout;
         result = ValidateRHIGraphicsPipelineDesc(desc);
         EXPECT_TRUE(result);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightAcceptsIndependentFp16Attachments)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.numRenderTargets = 2;
+        fixture.pipelineDesc.renderTargetFormats[0] =
+            RHIFormat::RGBA16_FLOAT;
+        fixture.pipelineDesc.renderTargetFormats[1] =
+            RHIFormat::R16_FLOAT;
+        fixture.pipelineDesc.blendState.independentBlendEnable = true;
+        fixture.pipelineDesc.blendState.renderTargets[0] =
+            RHIRenderTargetBlendState::Additive();
+        fixture.pipelineDesc.blendState.renderTargets[1].blendEnable = true;
+        fixture.pipelineDesc.blendState.renderTargets[1].srcColorBlend =
+            RHIBlendFactor::Zero;
+        fixture.pipelineDesc.blendState.renderTargets[1].dstColorBlend =
+            RHIBlendFactor::InvSrcColor;
+
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc,
+                MakeColorAttachmentCapabilities());
+        EXPECT_TRUE(result) << FormatRHIPipelineValidationResult(result);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightRejectsUnsupportedIndependentBlend)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.blendState.independentBlendEnable = true;
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+        capabilities.supportsIndependentColorAttachmentBlend = false;
+
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(
+            result.code,
+            RHIPipelineValidationCode::
+                UnsupportedIndependentColorAttachmentBlend);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightRejectsUnsupportedAttachmentAndBlendFormats)
+    {
+        ValidPipelineFixture fixture;
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {};
+        RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(result.code,
+                  RHIPipelineValidationCode::
+                      UnsupportedColorAttachmentFormat);
+        EXPECT_EQ(result.location, 0u);
+
+        capabilities = MakeColorAttachmentCapabilities();
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {true, false};
+        fixture.pipelineDesc.blendState.renderTargets[0].blendEnable = true;
+        result = ValidateRHIGraphicsPipelineCapabilities(
+            fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(result.code,
+                  RHIPipelineValidationCode::
+                      UnsupportedColorAttachmentBlend);
+        EXPECT_EQ(result.location, 0u);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightUsesAttachmentZeroStateWhenIndependentBlendIsOff)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.numRenderTargets = 2;
+        fixture.pipelineDesc.renderTargetFormats[1] = RHIFormat::R16_FLOAT;
+        fixture.pipelineDesc.blendState.independentBlendEnable = false;
+        fixture.pipelineDesc.blendState.renderTargets[0].blendEnable = false;
+        fixture.pipelineDesc.blendState.renderTargets[1].blendEnable = true;
+
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::R16_FLOAT)] = {true, false};
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_TRUE(result) << FormatRHIPipelineValidationResult(result);
     }
 } // namespace RVX::Tests

@@ -17,4 +17,4 @@ python Scripts/Assets/convert_crytek_sponza.py \
 
 The converter refuses to overwrite an existing output. Remove or move the
 derived directory only as part of an intentional asset-update review, then
-independently compare every output hash and update Catalog v3/CookManifest v2.
+independently compare every output hash and update Catalog v4/CookManifest v2.

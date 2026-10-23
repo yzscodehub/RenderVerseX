@@ -167,6 +167,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.95f, 0.86f),
                 .intensity = 3.5f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.001f,
                 .castsShadows = true,
             };
@@ -279,9 +280,9 @@ namespace RVX
         context.renderSettings.shadows.atlasResolution = 1024u;
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
 
         if (!ConfigureDefaultScene(context, outError) ||

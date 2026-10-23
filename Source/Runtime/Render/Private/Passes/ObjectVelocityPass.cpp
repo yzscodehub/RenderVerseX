@@ -1,0 +1,1004 @@
+#include "Render/Passes/ObjectVelocityPass.h"
+
+#include "Passes/MaterialTextureGraphBindings.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
+
+#include "Core/Log.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/Material/MaterialSystem.h"
+#include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
+#include "Render/Resources/RenderResourceTypes.h"
+#include "Resources/RenderResourceResolver.h"
+#include "RHI/RHIRenderPass.h"
+
+#include <array>
+#include <memory>
+#include <vector>
+
+namespace RVX
+{
+    namespace
+    {
+        [[nodiscard]] bool SamePaletteMetadata(
+            const RenderSkinningPaletteMetadata& left,
+            const RenderSkinningPaletteMetadata& right) noexcept
+        {
+            return left.providerComponentId == right.providerComponentId &&
+                   left.sourceModelResourceId == right.sourceModelResourceId &&
+                   left.poseSequence == right.poseSequence &&
+                   left.paletteHash == right.paletteHash &&
+                   left.paletteCount == right.paletteCount;
+        }
+
+        [[nodiscard]] bool MatricesEqual(
+            const Mat4& left,
+            const Mat4& right) noexcept
+        {
+            for (uint32 column = 0; column < 4; ++column)
+            {
+                for (uint32 row = 0; row < 4; ++row)
+                {
+                    if (left[column][row] != right[column][row])
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] bool ResolveSkinningPaletteBinding(
+            const RenderObject& object,
+            const MeshGPUBuffers& buffers,
+            const RenderDeformationFrameResources* resources,
+            SkinningPaletteBufferBinding& outBuffers,
+            SkinningPaletteSliceBinding& outSlice) noexcept
+        {
+            outBuffers = {};
+            outSlice = {};
+            if (!object.HasSkinningData())
+                return true;
+            if (!buffers.HasSkinningVertexData() || resources == nullptr ||
+                !resources->IsComplete() || object.entityId == 0 ||
+                !object.HasValidSkinningPalette())
+            {
+                return false;
+            }
+            const RenderDeformationPaletteSlice* const slice =
+                resources->FindSlice(object.entityId);
+            if (slice == nullptr || !slice->IsStructurallyValid() ||
+                slice->matrixCount != object.skinningMatrices.size() ||
+                !SamePaletteMetadata(
+                    slice->currentMetadata, object.skinningPalette) ||
+                slice->currentOffset >
+                    resources->GetMatrixCount() - slice->matrixCount ||
+                slice->previousOffset >
+                    resources->GetMatrixCount() - slice->matrixCount ||
+                (slice->previousValid &&
+                 (!object.HasValidPreviousSkinningPalette() ||
+                  !SamePaletteMetadata(
+                      slice->previousMetadata,
+                      object.previousSkinningPalette))) ||
+                (!slice->previousValid &&
+                 (object.HasValidPreviousSkinningPalette() ||
+                  slice->previousMetadata.paletteCount != 0)))
+            {
+                return false;
+            }
+            outBuffers.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+            outBuffers.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+            outSlice.currentOffset = slice->currentOffset;
+            outSlice.previousOffset = slice->previousOffset;
+            outSlice.matrixCount = slice->matrixCount;
+            outSlice.previousValid = slice->previousValid;
+            return outBuffers.HasPalettes() && outSlice.IsWellFormed();
+        }
+
+        [[nodiscard]] bool HasExactDeformationBuffers(
+            RenderGraphPassContext& context,
+            const RenderDeformationFrameResources* resources,
+            RGBufferHandle currentHandle,
+            RGBufferHandle previousHandle) noexcept
+        {
+            return resources != nullptr && resources->IsComplete() &&
+                   resources->GetMatrixCount() != 0 &&
+                   currentHandle.IsValid() && previousHandle.IsValid() &&
+                   context.GetBuffer(currentHandle) ==
+                       resources->GetCurrentPaletteBuffer().Get() &&
+                   context.GetBuffer(previousHandle) ==
+                       resources->GetPreviousPaletteBuffer().Get();
+        }
+
+        struct DrawRecord
+        {
+            MeshGPUBuffers buffers{};
+            SubmeshGPUInfo submesh{};
+            std::array<uint32, 1> objectDynamicOffsets{0};
+            MaterialBindingSnapshot material{};
+            RHIPipelineRef pipeline;
+            bool masked = false;
+            bool skinned = false;
+            bool requiresUV1 = false;
+        };
+
+        struct GraphPassData
+        {
+            RenderPassExecutionData execution{};
+            RenderPassRecordIdentity identity{};
+            std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
+            std::shared_ptr<RenderPassRecordResults> results;
+            const RenderResourceRegistry* resourceRegistry = nullptr;
+            PipelineCache* pipelineCache = nullptr;
+            MaterialSystem* materialSystem = nullptr;
+            RHIPipelineRef opaquePipeline;
+            RHIPipelineRef rigidOpaquePipeline;
+            RHIPipelineRef maskedPipeline;
+            RHIPipelineRef rigidMaskedPipeline;
+            RasterDrawBindingSnapshot bindings{};
+            std::vector<DrawRecord> draws;
+            RGTextureHandle velocityHandle{};
+            RGTextureHandle depthHandle{};
+            RGTextureViewHandle velocityViewHandle{};
+            RGTextureViewHandle depthViewHandle{};
+            RGBufferHandle currentPaletteReadHandle{};
+            RGBufferHandle previousPaletteReadHandle{};
+            bool requestedEnabled = false;
+            bool supported = false;
+            bool contextValid = false;
+        };
+
+        [[nodiscard]] bool IsNewerOrSameRecording(
+            const RenderPassRecordIdentity& candidate,
+            const RenderPassRecordIdentity& previous)
+        {
+            if (!candidate.IsValid())
+            {
+                return false;
+            }
+            if (!previous.IsValid())
+            {
+                return true;
+            }
+            if (candidate == previous)
+            {
+                return true;
+            }
+            if (candidate.frameSequence != previous.frameSequence)
+            {
+                return candidate.frameSequence > previous.frameSequence;
+            }
+            if (candidate.viewOrdinal != previous.viewOrdinal)
+            {
+                return candidate.viewOrdinal > previous.viewOrdinal;
+            }
+            return candidate.recordEpoch > previous.recordEpoch;
+        }
+
+        void ResetStatsForIdentity(GraphPassData& data)
+        {
+            if (!data.results || data.results->identity != data.identity)
+            {
+                return;
+            }
+            ObjectVelocityPassStats& stats = data.results->objectVelocityStats;
+            stats = {};
+            stats.requested = data.requestedEnabled;
+            stats.supported = data.supported;
+            stats.outputFormat = RHIFormat::RG16_FLOAT;
+            if (!data.frameSnapshot)
+            {
+                return;
+            }
+            const ViewData& view = data.execution.view;
+            stats.velocityTargetAvailable = view.velocityTarget.IsValid();
+            stats.depthAvailable = view.depthTarget.IsValid();
+            stats.previousViewProjectionAvailable =
+                view.previousViewProjectionValid != 0 && !view.resetTemporalHistory;
+            stats.width = view.viewportWidth;
+            stats.height = view.viewportHeight;
+            stats.opaqueDrawItemCount = static_cast<uint32>(
+                data.frameSnapshot->opaqueDrawItems.size());
+            stats.maskedDrawItemCount = static_cast<uint32>(
+                data.frameSnapshot->maskedDrawItems.size());
+            stats.drawItemCount = stats.opaqueDrawItemCount + stats.maskedDrawItemCount;
+            stats.drawItemsAvailable = stats.drawItemCount > 0;
+            if (data.identity.graph == nullptr ||
+                !view.velocityTarget.IsValid() ||
+                !HasCurrentGraphProvenance(view.velocityTarget, data.identity))
+            {
+                return;
+            }
+
+            stats.velocityTargetResourceIndex = view.velocityTarget.index;
+            stats.velocityTargetGraphIdentity = data.identity.graphIdentity;
+            stats.velocityTargetRecordingGeneration =
+                data.identity.graphRecordingGeneration;
+            if (const RHITextureDesc* const desc =
+                    data.identity.graph->GetTextureDesc(view.velocityTarget))
+            {
+                stats.outputFormat = desc->format;
+                stats.width = desc->width;
+                stats.height = desc->height;
+            }
+        }
+
+        bool RetainResource(RenderGraphBuilder& builder,
+                            RefCounted* resource)
+        {
+            return !resource ||
+                   builder.RetainSubmissionResource(
+                       Ref<RefCounted>(resource));
+        }
+
+        bool RetainDrawResources(GraphPassData& data,
+                                 RenderGraphBuilder& builder)
+        {
+            for (const Ref<RefCounted>& resource : data.bindings.retainedResources)
+            {
+                if (!builder.RetainSubmissionResource(resource))
+                {
+                    return false;
+                }
+            }
+            if (!RetainResource(builder, data.opaquePipeline.Get()) ||
+                !RetainResource(builder, data.rigidOpaquePipeline.Get()) ||
+                !RetainResource(builder, data.maskedPipeline.Get()) ||
+                !RetainResource(builder, data.rigidMaskedPipeline.Get()))
+            {
+                return false;
+            }
+            for (const DrawRecord& draw : data.draws)
+            {
+                if (!RetainResource(builder, draw.buffers.positionBuffer) ||
+                    !RetainResource(builder, draw.buffers.indexBuffer) ||
+                    !RetainResource(builder, draw.buffers.uvBuffer) ||
+                    !RetainResource(builder, draw.buffers.uv1Buffer) ||
+                    !RetainResource(builder, draw.pipeline.Get()) ||
+                    !RetainResource(builder, draw.buffers.boneIndicesBuffer) ||
+                    !RetainResource(builder, draw.buffers.boneWeightsBuffer) ||
+                    !RetainResource(builder, draw.material.constantBuffer.Get()) ||
+                    !RetainResource(builder, draw.material.descriptorSet.Get()) ||
+                    !RetainResource(builder, draw.material.layout.Get()))
+                {
+                    return false;
+                }
+                for (const RHISamplerRef& sampler : draw.material.samplers)
+                {
+                    if (!RetainResource(builder, sampler.Get()))
+                    {
+                        return false;
+                    }
+                }
+                for (const RHITextureViewRef& view : draw.material.textureViews)
+                {
+                    if (!RetainResource(builder, view.Get()))
+                    {
+                        return false;
+                    }
+                }
+                for (const RHITextureRef& texture : draw.material.textures)
+                {
+                    if (!RetainResource(builder, texture.Get()))
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        bool PrepareDrawRecord(GraphPassData& data,
+                               const RenderDrawItem& item,
+                               bool masked)
+        {
+            ObjectVelocityPassStats& stats = data.results->objectVelocityStats;
+            const RenderScene& scene = data.frameSnapshot->scene;
+            if (item.objectIndex >= scene.GetObjectCount())
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            const RenderObject& object = scene.GetObject(item.objectIndex);
+            if (object.previousWorldMatrixValid == 0 ||
+                !stats.previousViewProjectionAvailable)
+            {
+                ++stats.skippedNoHistoryCount;
+                return false;
+            }
+            const bool skinned = object.HasSkinningData();
+            if (!skinned &&
+                MatricesEqual(object.worldMatrix, object.previousWorldMatrix))
+            {
+                // CameraVelocity owns camera-only motion for static rigid
+                // surfaces. Re-drawing them here would evaluate the same RG16F
+                // field through a second numerical path at depth-equal edges.
+                ++stats.skippedStaticRigidCount;
+                return false;
+            }
+
+            MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                data.resourceRegistry, object.mesh);
+            if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            if (masked && !buffers.uvBuffer)
+            {
+                ++stats.skippedMissingUVCount;
+                return false;
+            }
+            if (!item.packet.pipelineKey.materialPolicyValid ||
+                (item.packet.pipelineKey.requiresUV1 &&
+                 !buffers.HasTextureCoordinateSet(1)))
+            {
+                ++stats.skippedMissingUVCount;
+                return false;
+            }
+            if (skinned && !buffers.HasSkinningVertexData())
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+
+            DrawRecord record;
+            record.buffers = buffers;
+            record.submesh = buffers.submeshes[item.submeshIndex];
+            record.masked = masked;
+            record.skinned = skinned;
+            record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
+            const DefaultLitDirectVertexInputMode inputMode = skinned
+                ? DefaultLitDirectVertexInputMode::Skinned
+                : DefaultLitDirectVertexInputMode::Rigid;
+            record.pipeline = RHIPipelineRef(masked
+                ? data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                      stats.outputFormat,
+                      inputMode,
+                      item.packet.pipelineKey.cullMode,
+                      item.packet.pipelineKey.reverseWinding)
+                : data.pipelineCache->GetObjectVelocityPipeline(
+                      stats.outputFormat,
+                      inputMode,
+                      item.packet.pipelineKey.cullMode,
+                      item.packet.pipelineKey.reverseWinding));
+            if (!record.pipeline)
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            if (masked)
+            {
+                MaterialBindingOptions materialOptions;
+                materialOptions.allowNormalMap = false;
+                if (!data.materialSystem->CreateMaterialBindingSnapshot(
+                        item.material,
+                        nullptr,
+                        materialOptions,
+                        record.material) ||
+                    !record.material.IsDrawable())
+                {
+                    ++stats.skippedMaterialBindingCount;
+                    return false;
+                }
+            }
+
+            const uint32 objectSlot = data.bindings.objectCursor;
+            SkinningPaletteBufferBinding skinningBuffers;
+            SkinningPaletteSliceBinding skinningSlice;
+            if (!ResolveSkinningPaletteBinding(
+                    object, buffers,
+                    data.execution.deformationResources.get(),
+                    skinningBuffers, skinningSlice))
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            if (skinned && !skinningSlice.previousValid)
+            {
+                ++stats.skippedNoHistoryCount;
+                return false;
+            }
+            if (!data.pipelineCache->UpdateRasterDrawBindingSnapshotObject(
+                    data.bindings,
+                    object.worldMatrix,
+                    object.normalMatrix,
+                    object.previousWorldMatrix,
+                    data.execution.view.previousJitteredViewProjectionMatrix,
+                    true,
+                    object.receivesShadow,
+                    skinningSlice))
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            record.objectDynamicOffsets =
+                PipelineCache::BuildSingleDynamicOffset(
+                    static_cast<uint64>(objectSlot) *
+                    data.bindings.objectConstantStride);
+            data.draws.push_back(std::move(record));
+            return true;
+        }
+
+        bool PrepareRecording(GraphPassData& data,
+                              RenderGraphBuilder& builder)
+        {
+            ResetStatsForIdentity(data);
+            if (!data.contextValid || !data.results || !data.frameSnapshot ||
+                !data.requestedEnabled || !data.supported)
+            {
+                return false;
+            }
+            const ViewData& view = data.execution.view;
+            ObjectVelocityPassStats& stats = data.results->objectVelocityStats;
+            if (!view.velocityTarget.IsValid() ||
+                !view.depthTarget.IsValid() ||
+                !HasCurrentGraphProvenance(view.depthTarget, data.identity) ||
+                !stats.MatchesVelocityTarget(view.velocityTarget, data.identity) ||
+                !stats.previousViewProjectionAvailable ||
+                !stats.drawItemsAvailable || view.viewportWidth == 0 ||
+                view.viewportHeight == 0)
+            {
+                return false;
+            }
+
+            const uint32 candidateCount = std::max(1u, stats.drawItemCount);
+            SkinningPaletteBufferBinding skinningPalettes;
+            const std::shared_ptr<const RenderDeformationFrameResources>&
+                deformationResources = data.execution.deformationResources;
+            if (deformationResources != nullptr &&
+                deformationResources->GetMatrixCount() != 0)
+            {
+                if (!deformationResources->MatchesIdentity(
+                        MakeRenderDeformationFrameIdentity(data.identity)) ||
+                    !deformationResources->MatchesGraphProvenance(
+                        *data.identity.graph) ||
+                    builder.GetBufferDesc(
+                        deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+                    builder.GetBufferDesc(
+                        deformationResources->GetPreviousPaletteHandle()) == nullptr)
+                {
+                    return false;
+                }
+                data.currentPaletteReadHandle = builder.Read(
+                    deformationResources->GetCurrentPaletteHandle(),
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Vertex);
+                data.previousPaletteReadHandle = builder.Read(
+                    deformationResources->GetPreviousPaletteHandle(),
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Vertex);
+                if (!data.currentPaletteReadHandle.IsValid() ||
+                    !data.previousPaletteReadHandle.IsValid())
+                {
+                    return false;
+                }
+                skinningPalettes.currentPaletteBuffer =
+                    deformationResources->GetCurrentPaletteBuffer();
+                skinningPalettes.previousPaletteBuffer =
+                    deformationResources->GetPreviousPaletteBuffer();
+            }
+            if (!data.pipelineCache->CreateRasterDrawBindingSnapshot(
+                    view, candidateCount, skinningPalettes, data.bindings))
+            {
+                return false;
+            }
+            const RHIFormat outputFormat = stats.outputFormat;
+            data.opaquePipeline = RHIPipelineRef(
+                data.pipelineCache->GetObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Skinned));
+            data.rigidOpaquePipeline = RHIPipelineRef(
+                data.pipelineCache->GetObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Rigid));
+            data.maskedPipeline = RHIPipelineRef(
+                data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Skinned));
+            data.rigidMaskedPipeline = RHIPipelineRef(
+                data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Rigid));
+            if (!data.opaquePipeline || !data.rigidOpaquePipeline ||
+                !data.maskedPipeline || !data.rigidMaskedPipeline)
+            {
+                return false;
+            }
+
+            for (const RenderDrawItem& item :
+                 data.frameSnapshot->maskedDrawItems)
+            {
+                if (!DeclareMaterialTextureGraphReads(
+                        builder,
+                        data.resourceRegistry,
+                        item.material,
+                        *data.results))
+                {
+                    return false;
+                }
+            }
+
+            data.draws.reserve(stats.drawItemCount);
+            for (const RenderDrawItem& item : data.frameSnapshot->opaqueDrawItems)
+            {
+                PrepareDrawRecord(data, item, false);
+            }
+            for (const RenderDrawItem& item : data.frameSnapshot->maskedDrawItems)
+            {
+                PrepareDrawRecord(data, item, true);
+            }
+            if (data.draws.empty())
+            {
+                return false;
+            }
+
+            // Resource declarations cannot be rolled back.  Establish the
+            // submission lifetime before publishing ReadWrite/Read access so a
+            // sealed/rejected batch fails as a true no-op rather than leaving
+            // a graph-visible velocity/depth usage with no executable draw.
+            if (!RetainDrawResources(data, builder))
+            {
+                return false;
+            }
+
+            data.velocityHandle = view.velocityTarget;
+            data.depthHandle = view.depthTarget;
+            const RHITextureDesc* velocityDesc =
+                builder.GetTextureDesc(data.velocityHandle);
+            const RHITextureDesc* depthDesc =
+                builder.GetTextureDesc(data.depthHandle);
+            if (velocityDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = velocityDesc->format;
+                viewDesc.dimension = velocityDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "ObjectVelocityRTV";
+                data.velocityViewHandle = builder.ReadWrite(
+                    builder.CreateTextureView(
+                        data.velocityHandle, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel));
+            }
+            if (depthDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = depthDesc->format;
+                viewDesc.dimension = depthDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                if (IsDepthFormat(viewDesc.format))
+                    viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                viewDesc.type = RHITextureViewType::DepthStencil;
+                viewDesc.debugName = "ObjectVelocityDepthDSV";
+                data.depthViewHandle = builder.Read(
+                    builder.CreateTextureView(data.depthHandle, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::DepthRead,
+                        RHIShaderStage::Vertex | RHIShaderStage::Pixel));
+            }
+            if (!data.velocityViewHandle.IsValid() ||
+                !data.depthViewHandle.IsValid())
+            {
+                data.draws.clear();
+                return false;
+            }
+            stats.outputDeclared = true;
+            return true;
+        }
+
+        void ExecuteRecording(const GraphPassData& data,
+                              RenderGraphPassContext& context)
+        {
+            if (!data.results || data.results->identity != data.identity)
+            {
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass has no matching recording-results owner");
+                return;
+            }
+            ObjectVelocityPassStats stats = data.results->objectVelocityStats;
+            stats.velocityRecorded = false;
+            if (data.draws.empty())
+            {
+                // The typed motion list may legitimately be empty for a
+                // static scene or reset history.
+                data.results->objectVelocityStats = stats;
+                return;
+            }
+            if (!data.contextValid || !stats.outputDeclared ||
+                !data.identity.IsValid() || data.identity.graph == nullptr ||
+                !data.identity.Matches(*data.identity.graph) ||
+                !data.velocityHandle.IsValid() || !data.depthHandle.IsValid() ||
+                !data.velocityViewHandle.IsValid() ||
+                !data.depthViewHandle.IsValid() ||
+                !stats.MatchesVelocityTarget(data.velocityHandle, data.identity) ||
+                data.velocityHandle.graphIdentity != data.identity.graphIdentity ||
+                data.velocityHandle.recordingGeneration != data.identity.graphRecordingGeneration ||
+                data.depthHandle.graphIdentity != data.identity.graphIdentity ||
+                data.depthHandle.recordingGeneration != data.identity.graphRecordingGeneration ||
+                data.velocityViewHandle.graphIdentity != data.identity.graphIdentity ||
+                data.velocityViewHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration ||
+                data.depthViewHandle.graphIdentity != data.identity.graphIdentity ||
+                data.depthViewHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration)
+            {
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass graph recording prerequisites are unavailable");
+                return;
+            }
+
+            const bool hasSkinnedDraw = std::any_of(
+                data.draws.begin(), data.draws.end(),
+                [](const DrawRecord& draw) { return draw.skinned; });
+            if (hasSkinnedDraw && !HasExactDeformationBuffers(
+                    context, data.execution.deformationResources.get(),
+                    data.currentPaletteReadHandle,
+                    data.previousPaletteReadHandle))
+            {
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass deformation graph resources do not match the recording snapshot");
+                return;
+            }
+
+            RHITexture* velocityTexture =
+                context.GetTexture(data.velocityHandle);
+            RHITexture* depthTexture = context.GetTexture(data.depthHandle);
+            if (!velocityTexture || !depthTexture || !data.bindings.IsValid())
+            {
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass could not realize a required graph texture or binding");
+                return;
+            }
+            RHITextureView* velocityView =
+                context.GetTextureView(data.velocityViewHandle);
+            RHITextureView* depthView =
+                context.GetTextureView(data.depthViewHandle);
+            if (!velocityView || !depthView)
+            {
+                RVX_CORE_WARN("ObjectVelocityPass: failed to resolve velocity RTV or depth DSV");
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass could not realize a required graph texture view");
+                return;
+            }
+
+            uint32 drawableCount = 0;
+            for (const DrawRecord& draw : data.draws)
+            {
+                if (draw.buffers.IsValid() && draw.buffers.positionBuffer &&
+                    draw.buffers.indexBuffer &&
+                    (!draw.masked || (draw.buffers.uvBuffer && draw.material.IsDrawable())))
+                {
+                    ++drawableCount;
+                }
+            }
+            if (drawableCount == 0)
+            {
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass prepared motion records but none remained drawable");
+                return;
+            }
+
+            RHIRenderPassDesc renderPassDesc;
+            renderPassDesc.AddColorAttachment(velocityView, RHILoadOp::Load, RHIStoreOp::Store);
+            renderPassDesc.SetDepthStencil(depthView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+            renderPassDesc.depthStencilAttachment.readOnly = true;
+            renderPassDesc.SetRenderArea(0, 0, velocityTexture->GetWidth(), velocityTexture->GetHeight());
+            RHICommandContext& ctx = context.Commands();
+            ctx.BeginRenderPass(renderPassDesc);
+
+            RHIViewport viewport;
+            viewport.width = static_cast<float>(velocityTexture->GetWidth());
+            viewport.height = static_cast<float>(velocityTexture->GetHeight());
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            ctx.SetViewport(viewport);
+            RHIRect scissor;
+            scissor.width = velocityTexture->GetWidth();
+            scissor.height = velocityTexture->GetHeight();
+            ctx.SetScissor(scissor);
+
+            RHIDescriptorSet* frameSet = data.bindings.frameDescriptorSet.Get();
+            RHIDescriptorSet* objectSet = data.bindings.objectDescriptorSet.Get();
+            RHIPipeline* currentPipeline = nullptr;
+            for (const DrawRecord& draw : data.draws)
+            {
+                if (!draw.buffers.IsValid() || !draw.buffers.positionBuffer ||
+                    !draw.buffers.indexBuffer ||
+                    (draw.masked && (!draw.buffers.uvBuffer || !draw.material.IsDrawable())))
+                {
+                    ++stats.skippedMissingResourceCount;
+                    continue;
+                }
+                RHIPipeline* pipeline = draw.pipeline.Get();
+                if (pipeline != currentPipeline)
+                {
+                    ctx.SetPipeline(pipeline);
+                    ctx.SetDescriptorSet(0, frameSet);
+                    currentPipeline = pipeline;
+                }
+                ctx.SetDescriptorSet(1, objectSet, draw.objectDynamicOffsets);
+                if (draw.masked)
+                {
+                    ctx.SetDescriptorSet(2,
+                                         draw.material.descriptorSet.Get(),
+                                         draw.material.binding.dynamicOffsets);
+                }
+                ctx.SetVertexBuffer(0, draw.buffers.positionBuffer);
+                if (draw.masked)
+                {
+                    ctx.SetVertexBuffer(2, draw.buffers.uvBuffer);
+                    ctx.SetVertexBuffer(
+                        7,
+                        draw.requiresUV1
+                            ? draw.buffers.uv1Buffer
+                            : draw.buffers.uvBuffer);
+                }
+                if (draw.skinned)
+                {
+                    ctx.SetVertexBuffer(4, draw.buffers.boneIndicesBuffer);
+                    ctx.SetVertexBuffer(5, draw.buffers.boneWeightsBuffer);
+                }
+                ctx.SetIndexBuffer(draw.buffers.indexBuffer, RHIFormat::R32_UINT);
+                ctx.DrawIndexed(draw.submesh.indexCount,
+                                1,
+                                draw.submesh.indexOffset,
+                                draw.submesh.baseVertex,
+                                0);
+                ++stats.objectsWithHistory;
+                ++stats.drawCount;
+                if (draw.masked)
+                    ++stats.maskedDrawCount;
+                if (draw.skinned)
+                {
+                    const uint64 deformationHash =
+                        data.execution.deformationResources->GetContentHash();
+                    if (stats.deformationContentHash != 0 &&
+                        stats.deformationContentHash != deformationHash)
+                    {
+                        ctx.EndRenderPass();
+                        data.results->objectVelocityStats = stats;
+                        context.MarkExecutionFailed(
+                            "ObjectVelocityPass observed inconsistent deformation content hashes");
+                        return;
+                    }
+                    stats.deformationContentHash = deformationHash;
+                    ++stats.skinnedDrawCount;
+                    ++stats.currentPaletteBoundDrawCount;
+                    ++stats.previousPaletteBoundDrawCount;
+                }
+            }
+            ctx.EndRenderPass();
+            stats.velocityRecorded = stats.drawCount > 0;
+            data.results->objectVelocityStats = stats;
+        }
+    } // namespace
+
+    void ObjectVelocityPass::OnAdd(IRHIDevice* device)
+    {
+        m_device = device;
+    }
+
+    void ObjectVelocityPass::OnRemove()
+    {
+        m_device = nullptr;
+        m_resourceRegistry = nullptr;
+        m_pipelineCache = nullptr;
+        m_viewCache = nullptr;
+        m_materialSystem = nullptr;
+        m_enabled = false;
+        m_lastPublishedIdentity = {};
+        m_lastPublishedStats = {};
+    }
+
+    void ObjectVelocityPass::SetResources(PipelineCache* pipelineCache,
+                                          ResourceViewCache* viewCache,
+                                          MaterialSystem* materialSystem)
+    {
+        m_pipelineCache = pipelineCache;
+        m_viewCache = viewCache;
+        m_materialSystem = materialSystem;
+        m_device = pipelineCache ? pipelineCache->GetDevice() : m_device;
+    }
+
+    void ObjectVelocityPass::PublishRecordResults(
+        const std::shared_ptr<RenderPassRecordResults>& results,
+        const RenderPassRecordIdentity& expectedIdentity)
+    {
+        if (results == nullptr || results->identity != expectedIdentity ||
+            !IsNewerOrSameRecording(expectedIdentity, m_lastPublishedIdentity))
+        {
+            return;
+        }
+
+        m_lastPublishedIdentity = expectedIdentity;
+        m_lastPublishedStats = results->objectVelocityStats;
+    }
+
+    bool ObjectVelocityPass::IsSupported() const
+    {
+        if (!m_enabled)
+        {
+            m_unsupportedReason = "Object velocity pass has not been requested";
+            return false;
+        }
+        if (m_resourceRegistry == nullptr)
+        {
+            m_unsupportedReason = "Object velocity pass requires a RenderResourceRegistry";
+            return false;
+        }
+        if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
+        {
+            m_unsupportedReason = "Object velocity pass requires an initialized PipelineCache";
+            return false;
+        }
+        if (!m_viewCache || !m_viewCache->IsInitialized())
+        {
+            m_unsupportedReason = "Object velocity pass requires an initialized ResourceViewCache";
+            return false;
+        }
+        if (!m_materialSystem || !m_materialSystem->IsInitialized())
+        {
+            m_unsupportedReason = "Object velocity pass requires an initialized MaterialSystem";
+            return false;
+        }
+        if (!m_pipelineCache->GetFrameDescriptorSet() ||
+            !m_pipelineCache->GetObjectDescriptorSet() ||
+            !m_pipelineCache->GetObjectVelocityPipeline(RHIFormat::RG16_FLOAT) ||
+            !m_pipelineCache->GetObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT,
+                DefaultLitDirectVertexInputMode::Rigid) ||
+            !m_pipelineCache->GetMaskedObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT) ||
+            !m_pipelineCache->GetMaskedObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT,
+                DefaultLitDirectVertexInputMode::Rigid))
+        {
+            m_unsupportedReason = "Object velocity pipeline resources are not available";
+            return false;
+        }
+        m_unsupportedReason.clear();
+        return true;
+    }
+
+    void ObjectVelocityPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
+    {
+        (void)builder;
+        (void)view;
+        // Typed AddToGraph owns all per-recording setup.  The legacy hook is
+        // deliberately inert so it cannot reintroduce persistent frame mailboxes.
+    }
+
+    void ObjectVelocityPass::Execute(RHICommandContext& ctx, const ViewData& view)
+    {
+        (void)ctx;
+        (void)view;
+        // Typed AddToGraph owns execution; no persistent pass state is consumed.
+    }
+
+    void ObjectVelocityPass::AddToGraph(RenderGraph& graph, const ViewData& view)
+    {
+        AddToGraph(graph, MakeRenderPassRecordContext(graph, view));
+    }
+
+    void ObjectVelocityPass::AddToGraph(
+        RenderGraph& graph,
+        const RenderPassRecordContext& context)
+    {
+        // This migrated typed path requires an already paired graph-owned
+        // snapshot and results object. Never let the generic helper synthesize
+        // either one before proving the supplied source belongs to this exact
+        // target graph: synthesis initializes results and could otherwise
+        // mutate another graph's recording before rejection.
+        const bool sourceContextValid = !context.legacyAdapter &&
+            context.MatchesTargetGraph(graph) &&
+            context.IsFrameIdentityValid() &&
+            context.frameSnapshot != nullptr && context.results != nullptr;
+        const bool suppliedResultsCompatible =
+            context.results == nullptr ||
+            context.results->identity == RenderPassRecordIdentity{} ||
+            context.results->identity == context.identity;
+        const bool suppliedSnapshotCompatible =
+            context.frameSnapshot == nullptr ||
+            context.frameSnapshot->identity == context.identity;
+        RenderPassExecutionData execution;
+        if (sourceContextValid && suppliedResultsCompatible &&
+            suppliedSnapshotCompatible)
+        {
+            execution = MakeRenderPassExecutionData(context);
+        }
+        else
+        {
+            // Deliberately construct a no-op payload rather than invoking the
+            // normal snapshot helper.  This preserves the foreign result and
+            // snapshot byte-for-byte for the graph that owns them.
+            execution.view = context.view;
+            execution.identity = context.identity;
+        }
+        const bool contextValid = !context.legacyAdapter &&
+            context.MatchesTargetGraph(graph) &&
+            context.IsFrameIdentityValid() &&
+            execution.MatchesTargetGraph(graph) &&
+            execution.IsFrameIdentityValid() &&
+            execution.frameSnapshot != nullptr && execution.results != nullptr &&
+            execution.view.velocityTarget.IsValid() &&
+            execution.view.depthTarget.IsValid() &&
+            HasCurrentGraphProvenance(execution.view.velocityTarget, execution.identity) &&
+            HasCurrentGraphProvenance(execution.view.depthTarget, execution.identity) &&
+            graph.GetTextureDesc(execution.view.velocityTarget) != nullptr &&
+            graph.GetTextureDesc(execution.view.depthTarget) != nullptr;
+        // A malformed context can carry a results object owned by another
+        // graph.  Never capture that object into this graph's callback: even
+        // fail-closed diagnostics must not mutate foreign recording results.
+        const bool resultOwnershipValid = execution.identity.Matches(graph) &&
+            execution.results != nullptr &&
+            execution.results->identity == execution.identity &&
+            execution.frameSnapshot != nullptr &&
+            execution.frameSnapshot->identity == execution.identity;
+        const bool requestedEnabled = m_enabled;
+        const bool supported = IsSupported();
+        PipelineCache* const pipelineCache = m_pipelineCache;
+        MaterialSystem* const materialSystem = m_materialSystem;
+        const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
+        const std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot =
+            resultOwnershipValid ? execution.frameSnapshot : nullptr;
+        const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+
+        graph.AddPass<GraphPassData>(
+            GetName(),
+            GetPassType(),
+            [execution,
+             contextValid,
+             requestedEnabled,
+             supported,
+             pipelineCache,
+             materialSystem,
+             resourceRegistry,
+             frameSnapshot,
+             results,
+             resultOwnershipValid](RenderGraphBuilder& builder, GraphPassData& data)
+            {
+                data.execution = execution;
+                data.identity = execution.identity;
+                data.contextValid = contextValid;
+                data.requestedEnabled = requestedEnabled;
+                data.supported = supported;
+                data.pipelineCache = pipelineCache;
+                data.materialSystem = materialSystem;
+                data.resourceRegistry = resourceRegistry;
+                data.frameSnapshot = frameSnapshot;
+                data.results = resultOwnershipValid ? results : nullptr;
+                ResetStatsForIdentity(data);
+                if (!data.pipelineCache || !data.materialSystem ||
+                    !data.resourceRegistry)
+                {
+                    data.contextValid = false;
+                    return;
+                }
+                if (!PrepareRecording(data, builder))
+                {
+                    data.draws.clear();
+                    data.velocityHandle = {};
+                    data.depthHandle = {};
+                    data.velocityViewHandle = {};
+                    data.depthViewHandle = {};
+                    if (data.results && data.results->identity == data.identity)
+                    {
+                        data.results->objectVelocityStats.outputDeclared = false;
+                        data.results->objectVelocityStats.velocityRecorded = false;
+                    }
+                }
+            },
+            [](const GraphPassData& data, RenderGraphPassContext& context)
+            {
+                ExecuteRecording(data, context);
+            });
+    }
+
+} // namespace RVX

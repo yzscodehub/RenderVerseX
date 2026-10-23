@@ -3,6 +3,7 @@
 #include "RegisterSamples.h"
 
 #include "Scenes/AnimationCharacterSample.h"
+#include "Scenes/AutoExposureSample.h"
 #include "Scenes/AssetStreamingSample.h"
 #include "Scenes/AssetGalleryShowcaseSample.h"
 #include "Scenes/GPUDrivenShowcaseSample.h"
@@ -12,169 +13,104 @@
 #include "Scenes/ModelViewerSample.h"
 #include "Scenes/PBRMaterialsSample.h"
 #include "Scenes/PhysicsSandboxSample.h"
+#include "Scenes/PhysicalExposureSample.h"
+#include "Scenes/ParticleVfxSamples.h"
+#include "Scenes/PostProcessingShowcaseSample.h"
 #include "Scenes/RenderPipelineShowcaseSample.h"
+#include "Scenes/RenderQualityLabSample.h"
 #include "Scenes/RenderingStressSample.h"
 #include "Scenes/SceneLifecycleSample.h"
+#include "Scenes/StylizedMaterialsSample.h"
+#include "Scenes/TemporalAASample.h"
+#include "Scenes/TransparentMaterialsSample.h"
+#include "Scenes/WaterSurfaceSample.h"
 #include "Samples/SampleRegistry.h"
 
 #include <memory>
+#include <string>
 
 namespace RVX
 {
-    bool RegisterRenderVerseSamples(SampleRegistry& registry,
+    namespace
+    {
+        template <typename SampleType>
+        bool RegisterBuiltInSample(const SampleManifestCatalog& catalog,
+                                   SampleRegistry& registry,
+                                   std::string* outError)
+        {
+            SampleType sample;
+            const SampleInfo& info = sample.GetInfo();
+            const SampleScenarioManifest* manifest = catalog.Find(info.id);
+            if (manifest == nullptr)
+            {
+                if (outError)
+                {
+                    *outError = "Sample manifest is missing registered scenario: " +
+                                info.id;
+                }
+                return false;
+            }
+            return registry.Register(
+                info,
+                *manifest,
+                []()
+                {
+                    return std::make_unique<SampleType>();
+                },
+                outError);
+        }
+    } // namespace
+
+    bool RegisterRenderVerseSamples(const SampleManifestCatalog& manifest,
+                                    SampleRegistry& registry,
                                     std::string* outError)
     {
-        ModelRenderingSample sample;
-        if (!registry.Register(
-            sample.GetInfo(),
-            []()
-            {
-                return std::make_unique<ModelRenderingSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        ModelViewerSample modelViewer;
-        if (!registry.Register(
-            modelViewer.GetInfo(),
-            []()
-            {
-                return std::make_unique<ModelViewerSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        PBRMaterialsSample pbrMaterials;
-        if (!registry.Register(
-            pbrMaterials.GetInfo(),
-            []()
-            {
-                return std::make_unique<PBRMaterialsSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        GPUDrivenShowcaseSample gpuDriven;
-        if (!registry.Register(
-            gpuDriven.GetInfo(),
-            []()
-            {
-                return std::make_unique<GPUDrivenShowcaseSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        LightingShadowShowcaseSample lightingShadows;
-        if (!registry.Register(
-            lightingShadows.GetInfo(),
-            []()
-            {
-                return std::make_unique<LightingShadowShowcaseSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        AssetGalleryShowcaseSample assetGallery;
-        if (!registry.Register(
-            assetGallery.GetInfo(),
-            []()
-            {
-                return std::make_unique<AssetGalleryShowcaseSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        RenderPipelineShowcaseSample renderPipeline;
-        if (!registry.Register(
-            renderPipeline.GetInfo(),
-            []()
-            {
-                return std::make_unique<RenderPipelineShowcaseSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        SceneLifecycleSample sceneLifecycle;
-        if (!registry.Register(
-            sceneLifecycle.GetInfo(),
-            []()
-            {
-                return std::make_unique<SceneLifecycleSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        AssetStreamingSample assetStreaming;
-        if (!registry.Register(
-            assetStreaming.GetInfo(),
-            []()
-            {
-                return std::make_unique<AssetStreamingSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        InteriorRenderingSample interiorRendering;
-        if (!registry.Register(
-            interiorRendering.GetInfo(),
-            []()
-            {
-                return std::make_unique<InteriorRenderingSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        PhysicsSandboxSample physicsSandbox;
-        if (!registry.Register(
-            physicsSandbox.GetInfo(),
-            []()
-            {
-                return std::make_unique<PhysicsSandboxSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        AnimationCharacterSample animationCharacter;
-        if (!registry.Register(
-            animationCharacter.GetInfo(),
-            []()
-            {
-                return std::make_unique<AnimationCharacterSample>();
-            },
-            outError))
-        {
-            return false;
-        }
-
-        RenderingStressSample renderingStress;
-        return registry.Register(
-            renderingStress.GetInfo(),
-            []()
-            {
-                return std::make_unique<RenderingStressSample>();
-            },
-            outError);
+        return RegisterBuiltInSample<ModelRenderingSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PhysicalExposureSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<AutoExposureSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<ModelViewerSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PBRMaterialsSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<GPUDrivenShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<LightingShadowShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<AssetGalleryShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PostProcessingShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<RenderPipelineShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<SceneLifecycleSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<AssetStreamingSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<InteriorRenderingSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PhysicsSandboxSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<AnimationCharacterSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<TemporalAASample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<StylizedMaterialsSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<TransparentMaterialsSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<ParticleFireSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<ParticleSmokeSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<WaterSurfaceSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<RenderQualityLabSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<RenderingStressSample>(
+                   manifest, registry, outError) &&
+               registry.ValidateManifestCoverage(manifest, outError);
     }
 } // namespace RVX

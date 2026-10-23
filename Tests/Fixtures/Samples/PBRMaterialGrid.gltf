@@ -1643,7 +1643,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.25_R0.05",
@@ -1657,7 +1667,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.50_R0.05",
@@ -1671,7 +1691,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.75_R0.05",
@@ -1685,7 +1715,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M1.00_R0.05",
@@ -1699,7 +1739,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.00_R0.25",
@@ -1713,7 +1763,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.25_R0.25",
@@ -1727,7 +1787,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.50_R0.25",
@@ -1741,7 +1811,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.75_R0.25",
@@ -1755,7 +1835,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M1.00_R0.25",
@@ -1769,7 +1859,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.00_R0.50",
@@ -1783,7 +1883,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.25_R0.50",
@@ -1797,7 +1907,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.50_R0.50",
@@ -1811,7 +1931,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.75_R0.50",
@@ -1825,7 +1955,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M1.00_R0.50",
@@ -1839,7 +1979,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.00_R0.75",
@@ -1853,7 +2003,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.25_R0.75",
@@ -1867,7 +2027,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.50_R0.75",
@@ -1881,7 +2051,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.75_R0.75",
@@ -1895,7 +2075,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M1.00_R0.75",
@@ -1909,7 +2099,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.00_R1.00",
@@ -1923,7 +2123,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.25_R1.00",
@@ -1937,7 +2147,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.50_R1.00",
@@ -1951,7 +2171,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M0.75_R1.00",
@@ -1965,7 +2195,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C1_gold_M1.00_R1.00",
@@ -1979,7 +2219,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularFactor": 0.65,
+          "specularColorFactor": [
+            0.85,
+            0.95,
+            1.0
+          ]
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.00_R0.05",
@@ -1993,7 +2243,13 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.25_R0.05",
@@ -2007,7 +2263,13 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.50_R0.05",
@@ -2021,7 +2283,13 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.75_R0.05",
@@ -2035,7 +2303,13 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M1.00_R0.05",
@@ -2049,7 +2323,13 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.00_R0.25",
@@ -2063,7 +2343,13 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.25_R0.25",
@@ -2077,7 +2363,13 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.50_R0.25",
@@ -2091,7 +2383,13 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.75_R0.25",
@@ -2105,7 +2403,13 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M1.00_R0.25",
@@ -2119,7 +2423,13 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.00_R0.50",
@@ -2133,7 +2443,13 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.25_R0.50",
@@ -2147,7 +2463,13 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.50_R0.50",
@@ -2161,7 +2483,13 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.75_R0.50",
@@ -2175,7 +2503,13 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M1.00_R0.50",
@@ -2189,7 +2523,13 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.00_R0.75",
@@ -2203,7 +2543,13 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.25_R0.75",
@@ -2217,7 +2563,13 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.50_R0.75",
@@ -2231,7 +2583,13 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.75_R0.75",
@@ -2245,7 +2603,13 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M1.00_R0.75",
@@ -2259,7 +2623,13 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.00_R1.00",
@@ -2273,7 +2643,13 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.25_R1.00",
@@ -2287,7 +2663,13 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.50_R1.00",
@@ -2301,7 +2683,13 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M0.75_R1.00",
@@ -2315,7 +2703,13 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C2_green_M1.00_R1.00",
@@ -2329,7 +2723,13 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.8,
+          "clearcoatRoughnessFactor": 0.2
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.00_R0.05",
@@ -2343,7 +2743,12 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.25_R0.05",
@@ -2357,7 +2762,12 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.50_R0.05",
@@ -2371,7 +2781,12 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.75_R0.05",
@@ -2385,7 +2800,12 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M1.00_R0.05",
@@ -2399,7 +2819,12 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.00_R0.25",
@@ -2413,7 +2838,12 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.25_R0.25",
@@ -2427,7 +2857,12 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.50_R0.25",
@@ -2441,7 +2876,12 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.75_R0.25",
@@ -2455,7 +2895,12 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M1.00_R0.25",
@@ -2469,7 +2914,12 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.00_R0.50",
@@ -2483,7 +2933,12 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.25_R0.50",
@@ -2497,7 +2952,12 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.50_R0.50",
@@ -2511,7 +2971,12 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.75_R0.50",
@@ -2525,7 +2990,12 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M1.00_R0.50",
@@ -2539,7 +3009,12 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.00_R0.75",
@@ -2553,7 +3028,12 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.25_R0.75",
@@ -2567,7 +3047,12 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.50_R0.75",
@@ -2581,7 +3066,12 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.75_R0.75",
@@ -2595,7 +3085,12 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M1.00_R0.75",
@@ -2609,7 +3104,12 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.00_R1.00",
@@ -2623,7 +3123,12 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.25_R1.00",
@@ -2637,7 +3142,12 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.50_R1.00",
@@ -2651,7 +3161,12 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M0.75_R1.00",
@@ -2665,7 +3180,12 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C3_blue_M1.00_R1.00",
@@ -2679,7 +3199,12 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1.45
+        }
+      }
     },
     {
       "name": "PBRFactor_C4_neutral_M0.00_R0.05",
@@ -2693,7 +3218,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.25_R0.05",
@@ -2707,7 +3242,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.50_R0.05",
@@ -2721,7 +3266,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.75_R0.05",
@@ -2735,7 +3290,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M1.00_R0.05",
@@ -2749,7 +3314,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.050980392156862744
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.00_R0.25",
@@ -2763,7 +3338,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.25_R0.25",
@@ -2777,7 +3362,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.50_R0.25",
@@ -2791,7 +3386,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.75_R0.25",
@@ -2805,7 +3410,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M1.00_R0.25",
@@ -2819,7 +3434,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.25098039215686274
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.00_R0.50",
@@ -2833,7 +3458,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.25_R0.50",
@@ -2847,7 +3482,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.50_R0.50",
@@ -2861,7 +3506,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.75_R0.50",
@@ -2875,7 +3530,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M1.00_R0.50",
@@ -2889,7 +3554,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.5019607843137255
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.00_R0.75",
@@ -2903,7 +3578,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.25_R0.75",
@@ -2917,7 +3602,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.50_R0.75",
@@ -2931,7 +3626,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.75_R0.75",
@@ -2945,7 +3650,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M1.00_R0.75",
@@ -2959,7 +3674,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 0.7490196078431373
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.00_R1.00",
@@ -2973,7 +3698,17 @@
         "metallicFactor": 0.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.25_R1.00",
@@ -2987,7 +3722,17 @@
         "metallicFactor": 0.25098039215686274,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.50_R1.00",
@@ -3001,7 +3746,17 @@
         "metallicFactor": 0.5019607843137255,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M0.75_R1.00",
@@ -3015,7 +3770,17 @@
         "metallicFactor": 0.7490196078431373,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     },
     {
       "name": "PBRFactor_C4_neutral_M1.00_R1.00",
@@ -3029,7 +3794,17 @@
         "metallicFactor": 1.0,
         "roughnessFactor": 1.0
       },
-      "alphaMode": "OPAQUE"
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_emissive_strength": {
+          "emissiveStrength": 3.0
+        }
+      },
+      "emissiveFactor": [
+        0.08,
+        0.03,
+        0.01
+      ]
     }
   ],
   "textures": [],
@@ -3196,5 +3971,17 @@
         5524
       ]
     }
+  ],
+  "extensionsUsed": [
+    "KHR_materials_specular",
+    "KHR_materials_clearcoat",
+    "KHR_materials_ior",
+    "KHR_materials_emissive_strength"
+  ],
+  "extensionsRequired": [
+    "KHR_materials_specular",
+    "KHR_materials_clearcoat",
+    "KHR_materials_ior",
+    "KHR_materials_emissive_strength"
   ]
 }

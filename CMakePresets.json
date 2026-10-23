@@ -23,6 +23,12 @@
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "ON",
+        "VCPKG_MANIFEST_FEATURES": "fbx",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       },
       "condition": {
@@ -49,6 +55,12 @@
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "ON",
+        "VCPKG_MANIFEST_FEATURES": "fbx",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
       },
       "condition": {
@@ -75,7 +87,13 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "RVX_BUILD_SAMPLES": "ON",
-        "RVX_BUILD_TESTS": "ON"
+        "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "ON",
+        "VCPKG_MANIFEST_FEATURES": "fbx"
       },
       "condition": {
         "type": "equals",
@@ -89,7 +107,11 @@
       "inherits": "win_x64_base",
       "binaryDir": "${sourceDir}/build/win_x64_debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
     {
@@ -98,7 +120,175 @@
       "inherits": "win_x64_base",
       "binaryDir": "${sourceDir}/build/win_x64_release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_candidate_release",
+      "displayName": "Windows x64 Release GFX24 Candidate Evidence",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/gfx24_rel",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release",
+      "displayName": "Windows x64 Release GFX24 Performance Calibration",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/gfx24_perf_calibration",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_raster_release",
+      "displayName": "Windows x64 Release GFX24 Raster Correctness",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release",
+      "displayName": "Windows x64 Release GFX24 Approved Golden",
+      "inherits": "win_x64_gfx24_raster_release",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_approved_golden_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "exact-hardware",
+        "RVX_GFX24_RASTER_GOLDEN_ROOT": {
+          "value": "${sourceDir}/Tests/RenderQuality/Goldens",
+          "type": "PATH"
+        }
+      }
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release",
+      "displayName": "Windows x64 Release GFX24 DX12 Hardware RT",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "OFF",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_qualification_debug",
+      "displayName": "Windows x64 Debug Qualification",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_qualification_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "ON",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "ON",
+        "RVX_ENABLE_GFX07_DEFERRED_NATIVE": "ON",
+        "RVX_ENABLE_GFX08_LIGHTING_NATIVE": "ON",
+        "RVX_ENABLE_GFX09_ANIMATION_NATIVE": "ON",
+        "RVX_ENABLE_GFX10_POST_PROCESS_NATIVE": "ON",
+        "RVX_ENABLE_GFX11_TAA_NATIVE": "ON",
+        "RVX_ENABLE_GFX12_EXPOSURE_NATIVE": "ON",
+        "RVX_ENABLE_GFX13_GTAO_NATIVE": "ON",
+        "RVX_ENABLE_GFX14_TOON_NATIVE": "ON",
+        "RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE": "ON",
+        "RVX_ENABLE_GFX17_VFX_NATIVE": "ON",
+        "RVX_ENABLE_GFX18_WATER_NATIVE": "ON",
+        "RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE": "ON",
+        "RVX_ENABLE_GFX19_REFLECTIONS_NATIVE": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_pr_debug",
+      "displayName": "Windows x64 Debug PR Smoke",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "displayName": "Windows x64 Nightly Compatibility Smoke",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_nightly_compatibility_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "ON",
+        "RVX_ENABLE_WEEKLY_SOAK": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "displayName": "Windows x64 Weekly DX12 Soak",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -107,7 +297,48 @@
       "inherits": "linux_x64_base",
       "binaryDir": "${sourceDir}/build/linux_x64_debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_pr_debug",
+      "displayName": "Linux x64 Debug PR Smoke",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "displayName": "Linux x64 Nightly OpenGL Smoke",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_nightly_compatibility_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "ON",
+        "RVX_ENABLE_WEEKLY_SOAK": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "displayName": "Linux x64 Weekly Vulkan Soak",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -133,12 +364,82 @@
       }
     },
     {
+      "name": "linux_x64_gfx24_raster_release",
+      "displayName": "Linux x64 Release GFX24 Raster Correctness",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release",
+      "displayName": "Linux x64 Release GFX24 Vulkan Hardware RT",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "OFF",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
       "name": "mac_arm64_debug",
       "displayName": "macOS arm64 Debug",
       "inherits": "mac_arm64_base",
       "binaryDir": "${sourceDir}/build/mac_arm64_debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "mac_arm64_pr_debug",
+      "displayName": "macOS arm64 Debug PR Smoke",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "displayName": "macOS arm64 Weekly Metal Soak",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -148,6 +449,179 @@
       "binaryDir": "${sourceDir}/build/mac_arm64_release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release",
+      "displayName": "macOS arm64 Release GFX24 Raster Correctness",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/macos_arm64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_GFX24_QUALIFICATION": "OFF",
+        "RVX_ENABLE_GFX24_NATIVE_CANDIDATES": "OFF",
+        "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION": "OFF",
+        "RVX_ENABLE_GFX24_RASTER_CORRECTNESS": "ON",
+        "RVX_GFX24_RASTER_GOLDEN_MODE": "none",
+        "RVX_ENABLE_GFX24_HARDWARE_RT_QUALIFICATION": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_shipping_host_release",
+      "displayName": "Windows x64 Shipping Host Tools Release",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "ON",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
+    },
+    {
+      "name": "linux_x64_shipping_host_release",
+      "displayName": "Linux x64 Shipping Host Tools Release",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
+    },
+    {
+      "name": "mac_arm64_shipping_host_release",
+      "displayName": "macOS arm64 Shipping Host Tools Release",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "ON",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
+    },
+    {
+      "name": "win_x64_shipping_release",
+      "displayName": "Windows x64 Shipping Release",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "ON",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/win_x64_shipping_host_release/Source/Programs/RVXCook/Release/RVXCook.exe",
+          "type": "FILEPATH"
+        },
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
+    },
+    {
+      "name": "linux_x64_shipping_release",
+      "displayName": "Linux x64 Shipping Release",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/linux_x64_shipping_host_release/Source/Programs/RVXCook/RVXCook",
+          "type": "FILEPATH"
+        },
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
+    },
+    {
+      "name": "mac_arm64_shipping_release",
+      "displayName": "macOS arm64 Shipping Release",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "ON",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/mac_arm64_shipping_host_release/Source/Programs/RVXCook/RVXCook",
+          "type": "FILEPATH"
+        },
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
       }
     }
   ],
@@ -163,8 +637,91 @@
       "configuration": "Release"
     },
     {
+      "name": "win_x64_gfx24_candidate_release",
+      "configurePreset": "win_x64_gfx24_candidate_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24Candidate"]
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release",
+      "configurePreset": "win_x64_gfx24_performance_calibration_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24PerformanceCalibration"]
+    },
+    {
+      "name": "win_x64_gfx24_raster_release",
+      "configurePreset": "win_x64_gfx24_raster_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release",
+      "configurePreset": "win_x64_gfx24_approved_golden_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release",
+      "configurePreset": "win_x64_gfx24_hardware_rt_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationSuiteGfx24HardwareRtDx12"]
+    },
+    {
+      "name": "linux_x64_gfx24_raster_release",
+      "configurePreset": "linux_x64_gfx24_raster_release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release",
+      "configurePreset": "linux_x64_gfx24_hardware_rt_release",
+      "targets": ["RVXValidationSuiteGfx24HardwareRtVulkan"]
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release",
+      "configurePreset": "macos_arm64_gfx24_raster_release",
+      "targets": ["RVXValidationSuiteGfx24RasterCorrectness"]
+    },
+    {
+      "name": "win_x64_qualification_debug",
+      "configurePreset": "win_x64_qualification_debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win_x64_pr_debug",
+      "configurePreset": "win_x64_pr_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "configurePreset": "win_x64_nightly_compatibility_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "configurePreset": "win_x64_weekly_soak_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples"]
+    },
+    {
       "name": "linux_x64_debug",
       "configurePreset": "linux_x64_debug"
+    },
+    {
+      "name": "linux_x64_pr_debug",
+      "configurePreset": "linux_x64_pr_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "configurePreset": "linux_x64_nightly_compatibility_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "configurePreset": "linux_x64_weekly_soak_debug",
+      "targets": ["RenderVerseSamples"]
     },
     {
       "name": "linux_x64_release",
@@ -179,96 +736,611 @@
       "configurePreset": "mac_arm64_debug"
     },
     {
+      "name": "mac_arm64_pr_debug",
+      "configurePreset": "mac_arm64_pr_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "configurePreset": "mac_arm64_weekly_soak_debug",
+      "targets": ["RenderVerseSamples"]
+    },
+    {
       "name": "mac_arm64_release",
       "configurePreset": "mac_arm64_release"
+    },
+    {
+      "name": "win_x64_shipping_host_release",
+      "configurePreset": "win_x64_shipping_host_release",
+      "configuration": "Release",
+      "targets": ["RVXCook"]
+    },
+    {
+      "name": "linux_x64_shipping_host_release",
+      "configurePreset": "linux_x64_shipping_host_release",
+      "targets": ["RVXCook"]
+    },
+    {
+      "name": "mac_arm64_shipping_host_release",
+      "configurePreset": "mac_arm64_shipping_host_release",
+      "targets": ["RVXCook"]
+    },
+    {
+      "name": "win_x64_shipping_release",
+      "configurePreset": "win_x64_shipping_release",
+      "configuration": "Release",
+      "targets": ["RVXValidationShipping"]
+    },
+    {
+      "name": "linux_x64_shipping_release",
+      "configurePreset": "linux_x64_shipping_release",
+      "targets": ["RVXValidationShipping"]
+    },
+    {
+      "name": "mac_arm64_shipping_release",
+      "configurePreset": "mac_arm64_shipping_release",
+      "targets": ["RVXValidationShipping"]
     }
   ],
   "testPresets": [
     {
-      "name": "win_x64_debug_unit_lint",
+      "name": "win_x64_debug_gfx25_candidate",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": { "renderversex.com/validation/1.0": { "visibility": "internal" } },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx25-candidate$" } }
+    },
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "configurePreset": "win_x64_nightly_compatibility_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.compatibility-smoke$" } }
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "configurePreset": "linux_x64_nightly_compatibility_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.compatibility-smoke$" } }
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "configurePreset": "win_x64_weekly_soak_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "configurePreset": "linux_x64_weekly_soak_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "configurePreset": "mac_arm64_weekly_soak_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "win_x64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_pr_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_pr_debug_smoke",
+      "inherits": "win_x64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
+    {
+      "name": "linux_x64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "linux_x64_pr_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux_x64_pr_debug_smoke",
+      "inherits": "linux_x64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
+    {
+      "name": "mac_arm64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "mac_arm64_pr_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "mac_arm64_pr_debug_smoke",
+      "inherits": "mac_arm64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
+    {
+      "name": "win_x64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_shipping_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_shipping_release_shipping",
+      "inherits": "win_x64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
+    {
+      "name": "linux_x64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "linux_x64_shipping_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux_x64_shipping_release_shipping",
+      "inherits": "linux_x64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
+    {
+      "name": "mac_arm64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "mac_arm64_shipping_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "mac_arm64_shipping_release_shipping",
+      "inherits": "mac_arm64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
+    {
+      "name": "win_x64_debug_lane_base",
+      "hidden": true,
       "configurePreset": "win_x64_debug",
       "configuration": "Debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "unit|lint"
-        }
-      }
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
     },
     {
-      "name": "win_x64_release_unit_lint",
-      "configurePreset": "win_x64_release",
+      "name": "win_x64_debug_architecture",
+      "inherits": "win_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.architecture$" } }
+    },
+    {
+      "name": "win_x64_debug_unit",
+      "inherits": "win_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.unit$" } }
+    },
+    {
+      "name": "win_x64_debug_integration",
+      "inherits": "win_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.integration$" } }
+    },
+    {
+      "name": "win_x64_debug_native",
+      "inherits": "win_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx20_vulkan_rt",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx20-vulkan-rt$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx21_hybrid_rt",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx21-hybrid-rt$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx22_oit",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx22-oit$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx24_qualification",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-qualification$" } }
+    },
+    {
+      "name": "win_x64_gfx24_candidate_release_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_gfx24_candidate_release",
       "configuration": "Release",
-      "output": {
-        "outputOnFailure": true
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_gfx24_candidate_release_gfx24_candidate",
+      "inherits": "win_x64_gfx24_candidate_release_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
       },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-candidate$" } }
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_gfx24_performance_calibration_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_gfx24_performance_calibration_release_run",
+      "inherits": "win_x64_gfx24_performance_calibration_release_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
       "filter": {
         "include": {
-          "label": "unit|lint"
+          "label": "^suite\\.gfx24-performance-calibration$"
         }
       }
     },
     {
-      "name": "linux_x64_debug_unit_lint",
+      "name": "win_x64_qualification_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_qualification_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_qualification_debug_qualification",
+      "inherits": "win_x64_qualification_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.qualification$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx07_deferred",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx07-deferred$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx08_lighting",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx08-lighting$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx09_animation",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx09-animation$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx10_postprocess",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx10-postprocess$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx11_taa",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx11-taa$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx12_exposure",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx12-exposure$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx13_gtao",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx13-gtao$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx14_toon",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx14-toon$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx15_translucency",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx15-translucency$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx17_vfx",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx17-vfx$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx18_water",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx18-water$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx19_local_lighting",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx19-local-lighting$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx19_reflections",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx19-reflections$" } }
+    },
+    {
+      "name": "linux_x64_debug_lane_base",
+      "hidden": true,
       "configurePreset": "linux_x64_debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "unit|lint"
-        }
-      }
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
     },
     {
-      "name": "linux_x64_release_unit_lint",
-      "configurePreset": "linux_x64_release",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "unit|lint"
-        }
-      }
+      "name": "linux_x64_debug_architecture",
+      "inherits": "linux_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.architecture$" } }
+    },
+    {
+      "name": "linux_x64_debug_unit",
+      "inherits": "linux_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.unit$" } }
+    },
+    {
+      "name": "linux_x64_debug_integration",
+      "inherits": "linux_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.integration$" } }
+    },
+    {
+      "name": "linux_x64_debug_native",
+      "inherits": "linux_x64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
+    },
+    {
+      "name": "linux_x64_tsan_lane_base",
+      "hidden": true,
+      "configurePreset": "linux_x64_tsan",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux_x64_tsan_integration",
+      "inherits": "linux_x64_tsan_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.integration$" } }
     },
     {
       "name": "linux_x64_tsan",
-      "configurePreset": "linux_x64_tsan",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "tsan"
-        }
-      }
+      "inherits": "linux_x64_tsan_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^trait\\.tsan$" } }
     },
     {
-      "name": "mac_arm64_debug_unit_lint",
+      "name": "mac_arm64_debug_lane_base",
+      "hidden": true,
       "configurePreset": "mac_arm64_debug",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "unit|lint"
-        }
-      }
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
     },
     {
-      "name": "mac_arm64_release_unit_lint",
-      "configurePreset": "mac_arm64_release",
-      "output": {
-        "outputOnFailure": true
-      },
-      "filter": {
-        "include": {
-          "label": "unit|lint"
+      "name": "mac_arm64_debug_architecture",
+      "inherits": "mac_arm64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.architecture$" } }
+    },
+    {
+      "name": "mac_arm64_debug_unit",
+      "inherits": "mac_arm64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.unit$" } }
+    },
+    {
+      "name": "mac_arm64_debug_integration",
+      "inherits": "mac_arm64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^lane\\.integration$" } }
+    },
+    {
+      "name": "mac_arm64_debug_native",
+      "inherits": "mac_arm64_debug_lane_base",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
+    },
+    {
+      "name": "win_x64_gfx24_raster_release_run",
+      "configurePreset": "win_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
         }
-      }
+      },
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "win_x64_gfx24_approved_golden_release_run",
+      "configurePreset": "win_x64_gfx24_approved_golden_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "linux_x64_gfx24_raster_release_run",
+      "configurePreset": "linux_x64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "macos_arm64_gfx24_raster_release_run",
+      "configurePreset": "macos_arm64_gfx24_raster_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-raster-correctness$" } }
+    },
+    {
+      "name": "win_x64_gfx24_hardware_rt_release_run",
+      "configurePreset": "win_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-hardware-rt-dx12$" } }
+    },
+    {
+      "name": "linux_x64_gfx24_hardware_rt_release_run",
+      "configurePreset": "linux_x64_gfx24_hardware_rt_release",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx24-hardware-rt-vulkan$" } }
     }
   ]
 }

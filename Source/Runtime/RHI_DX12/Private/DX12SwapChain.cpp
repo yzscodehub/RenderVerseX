@@ -1,0 +1,243 @@
+#include "DX12SwapChain.h"
+#include "DX12Device.h"
+
+namespace RVX
+{
+    DX12SwapChain::DX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
+        : m_device(device)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.config.format)
+        , m_bufferCount(desc.bufferCount)
+        , m_vsync(desc.config.vsync)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::DX12) ||
+            !IsSwapChainConfigValid(desc.config))
+        {
+            RVX_RHI_ERROR("Invalid Win32 surface for DX12 swap chain");
+            return;
+        }
+        HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
+
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(device->GetDXGIFactory()->QueryInterface(
+                IID_PPV_ARGS(&factory5))))
+        {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                    &allowTearing,
+                    sizeof(allowTearing))))
+            {
+                m_tearingSupported = allowTearing == TRUE;
+            }
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+        swapChainDesc.Width = desc.surface.width;
+        swapChainDesc.Height = desc.surface.height;
+        swapChainDesc.Format = ToDXGIFormat(desc.config.format);
+        swapChainDesc.Stereo = FALSE;
+        swapChainDesc.SampleDesc.Count = 1;
+        swapChainDesc.SampleDesc.Quality = 0;
+        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swapChainDesc.BufferCount = desc.bufferCount;
+        swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        swapChainDesc.Flags = ResolveCreationFlags(
+            m_vsync, m_tearingSupported);
+
+        ComPtr<IDXGISwapChain1> swapChain1;
+        HRESULT hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
+            device->GetGraphicsQueue(),
+            hwnd,
+            &swapChainDesc,
+            nullptr,
+            nullptr,
+            &swapChain1);
+        if (FAILED(hr))
+        {
+            // Some drivers reject sRGB swapchains; fall back to UNORM.
+            if (desc.config.format == RHIFormat::BGRA8_UNORM_SRGB)
+            {
+                RVX_RHI_WARN("DX12 swapchain sRGB not supported (0x{:08X}), falling back to UNORM",
+                    static_cast<uint32>(hr));
+                swapChainDesc.Format = ToDXGIFormat(RHIFormat::BGRA8_UNORM);
+                hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                    device->GetGraphicsQueue(),
+                    hwnd,
+                    &swapChainDesc,
+                    nullptr,
+                    nullptr,
+                    &swapChain1);
+                if (SUCCEEDED(hr))
+                {
+                    m_format = RHIFormat::BGRA8_UNORM;
+                }
+            }
+        }
+        DX12_CHECK(hr);
+
+        // Disable Alt+Enter fullscreen toggle
+        device->GetDXGIFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+        DX12_CHECK(swapChain1.As(&m_swapChain));
+
+        m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+        CreateBackBufferResources();
+
+        RVX_RHI_INFO("DX12 SwapChain created: {}x{}, {} buffers, format {}",
+            desc.surface.width, desc.surface.height, desc.bufferCount,
+            static_cast<int>(desc.config.format));
+    }
+
+    DX12SwapChain::~DX12SwapChain()
+    {
+        ReleaseBackBufferResources();
+    }
+
+    void DX12SwapChain::CreateBackBufferResources()
+    {
+        m_backBuffers.resize(m_bufferCount);
+        m_backBufferViews.resize(m_bufferCount);
+
+        for (uint32 i = 0; i < m_bufferCount; ++i)
+        {
+            ComPtr<ID3D12Resource> backBuffer;
+            DX12_CHECK(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer)));
+
+            RHITextureDesc textureDesc;
+            textureDesc.width = m_width;
+            textureDesc.height = m_height;
+            textureDesc.depth = 1;
+            textureDesc.mipLevels = 1;
+            textureDesc.arraySize = 1;
+            textureDesc.format = m_format;
+            textureDesc.usage = RHITextureUsage::RenderTarget;
+            textureDesc.dimension = RHITextureDimension::Texture2D;
+            textureDesc.sampleCount = RHISampleCount::Count1;
+
+            char debugName[64];
+            snprintf(debugName, sizeof(debugName), "SwapChain BackBuffer %u", i);
+            textureDesc.debugName = debugName;
+
+            m_backBuffers[i] = CreateDX12TextureFromResource(m_device, backBuffer, textureDesc);
+
+            // Create view for the back buffer
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = m_format;
+            viewDesc.type = RHITextureViewType::RenderTarget;
+            m_backBufferViews[i] = m_device->CreateTextureView(m_backBuffers[i].Get(), viewDesc);
+        }
+    }
+
+    void DX12SwapChain::ReleaseBackBufferResources()
+    {
+        m_backBufferViews.clear();
+        m_backBuffers.clear();
+    }
+
+    RHITexture* DX12SwapChain::GetCurrentBackBuffer()
+    {
+        return m_backBuffers[m_currentBackBufferIndex].Get();
+    }
+
+    RHITextureView* DX12SwapChain::GetCurrentBackBufferView()
+    {
+        return m_backBufferViews[m_currentBackBufferIndex].Get();
+    }
+
+    UINT DX12SwapChain::ResolveCreationFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        UINT flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        if (!vsync && tearingSupported)
+        {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+        return flags;
+    }
+
+    UINT DX12SwapChain::ResolvePresentFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        return !vsync && tearingSupported
+            ? DXGI_PRESENT_ALLOW_TEARING
+            : 0U;
+    }
+
+    void DX12SwapChain::Present()
+    {
+        UINT syncInterval = m_vsync ? 1 : 0;
+        const UINT presentFlags = ResolvePresentFlags(
+            m_vsync, m_tearingSupported);
+
+        HRESULT hr = m_swapChain->Present(syncInterval, presentFlags);
+
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        {
+            m_device->HandleDeviceLost(hr);
+            return;
+        }
+
+        m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+    }
+
+    void DX12SwapChain::Resize(uint32 width, uint32 height)
+    {
+        if (width == m_width && height == m_height)
+            return;
+
+        if (width == 0 || height == 0)
+        {
+            RVX_RHI_WARN("Ignoring resize to 0x0");
+            return;
+        }
+
+        RVX_RHI_DEBUG("Resizing swap chain: {}x{} -> {}x{}", m_width, m_height, width, height);
+
+        // RenderContext has already resolved the old surface-generation token.
+        ReleaseBackBufferResources();
+
+        // Resize buffers
+        DXGI_SWAP_CHAIN_DESC1 desc;
+        m_swapChain->GetDesc1(&desc);
+
+        DX12_CHECK(m_swapChain->ResizeBuffers(
+            m_bufferCount,
+            width,
+            height,
+            desc.Format,
+            desc.Flags));
+
+        m_width = width;
+        m_height = height;
+        m_currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+        // Recreate resources
+        CreateBackBufferResources();
+    }
+
+    // =============================================================================
+    // Factory Function
+    // =============================================================================
+    RHISwapChainRef CreateDX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
+    {
+        Ref<DX12SwapChain> swapChain(new DX12SwapChain(device, desc));
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
+    }
+
+} // namespace RVX

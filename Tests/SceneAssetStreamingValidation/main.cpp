@@ -1,14 +1,16 @@
 #include "Core/Diagnostics/Trace.h"
 #include "Core/Log.h"
-#include "Resource/Importer/GLTFImporter.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "AssetImport/GLTFImporter.h"
+#include "AssetImport/TextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceSource/ResourceSourceComposition.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
 #include <thread>
 
 using namespace RVX;
@@ -44,23 +46,40 @@ public:
         config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
         config.runtimePolicy.allowSourceAssetReads = true;
         config.startupTraceContext = std::move(traceContext);
-        ResourceManager::Get().Initialize(config);
+        ResourceManagerDependencies dependencies =
+            CreateRuntimeResourceManagerDependencies();
+        std::string compositionError;
+        if (!ResourceSource::AddSourceResourceDependencies(
+                dependencies,
+                compositionError))
+        {
+            throw std::runtime_error(
+                "Failed to compose source resource dependencies: " +
+                compositionError);
+        }
+        m_manager.Initialize(config, std::move(dependencies));
     }
 
     ~ManagerGuard()
     {
-        ResourceManager::Get().Shutdown();
+        m_manager.Shutdown();
     }
+
+    ResourceManager& GetManager() noexcept { return m_manager; }
+
+private:
+    ResourceManager m_manager;
 };
 
 ResourceHandle<ModelResource> AwaitModel(
+    ResourceManager& manager,
     ResourceLoadHandle<ModelResource>& request)
 {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        manager.ProcessCompletedLoads();
         if (ResourceHandle<ModelResource> model = request.TryGet())
             return model;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -95,7 +114,7 @@ TEST(SceneAssetStreamingValidation,
     EXPECT_EQ(encodedReads, 1u);
     EXPECT_EQ(decodes, 0u);
 
-    TextureLoader decoder(nullptr, true);
+    TextureLoader decoder;
     uint64 estimate = 0;
     std::string error;
     ASSERT_TRUE(decoder.EstimateDecodedByteSize(
@@ -131,17 +150,17 @@ TEST(SceneAssetStreamingValidation,
     ManagerGuard guard(1024u * 1024u, trace->CreateRootContext());
 
     uint32 reloadEvents = 0;
-    ResourceManager::Get().SetLifecycleEventCallback(
+    guard.GetManager().SetLifecycleEventCallback(
         [&reloadEvents](const ResourceLifecycleEvent& event)
         {
             if (event.type == ResourceLifecycleEventType::Reloaded)
                 ++reloadEvents;
         });
 
-    auto request = ResourceManager::Get().RequestAsync<ModelResource>(
+    auto request = guard.GetManager().RequestAsync<ModelResource>(
         FixturePath().string());
     ASSERT_TRUE(request);
-    ResourceHandle<ModelResource> model = AwaitModel(request);
+    ResourceHandle<ModelResource> model = AwaitModel(guard.GetManager(), request);
     ASSERT_TRUE(model);
     ASSERT_EQ(model->GetTextureStreamingSnapshot().stage,
               ModelTextureStreamingStage::AwaitingMinimumResident);
@@ -153,17 +172,17 @@ TEST(SceneAssetStreamingValidation,
     EXPECT_FALSE(texture->IsDefaultFallback());
     EXPECT_EQ(texture->GetData().size(), 4u);
 
-    ASSERT_TRUE(ResourceManager::Get().BeginModelTextureStreaming(model));
+    ASSERT_TRUE(guard.GetManager().BeginModelTextureStreaming(model));
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline &&
            model->GetTextureStreamingSnapshot().stage ==
                ModelTextureStreamingStage::Decoding)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
 
     EXPECT_EQ(model->GetTextureStreamingSnapshot().stage,
               ModelTextureStreamingStage::Uploading);
@@ -173,7 +192,7 @@ TEST(SceneAssetStreamingValidation,
     EXPECT_GT(texture->GetData().size(), 4u);
     EXPECT_EQ(reloadEvents, 1u);
     const ModelTextureStreamingStats stats =
-        ResourceManager::Get().GetModelTextureStreamingStats();
+        guard.GetManager().GetModelTextureStreamingStats();
     EXPECT_EQ(stats.completedDecodes, 1u);
     EXPECT_EQ(stats.failedDecodes, 0u);
     EXPECT_GT(stats.reservedDecodedBytes, 0u);
@@ -182,20 +201,20 @@ TEST(SceneAssetStreamingValidation,
     EXPECT_LE(stats.peakActiveDecodes, stats.maxConcurrentDecodes);
 
     const auto publications =
-        ResourceManager::Get().GetPendingModelTexturePublications();
+        guard.GetManager().GetPendingModelTexturePublications();
     ASSERT_EQ(publications.size(), 1u);
     EXPECT_EQ(publications.front().GetId(), texture.GetId());
-    ASSERT_TRUE(ResourceManager::Get().CompleteModelTexturePublication(
+    ASSERT_TRUE(guard.GetManager().CompleteModelTexturePublication(
         texture.GetId(), true));
     EXPECT_EQ(model->GetTextureStreamingSnapshot().stage,
               ModelTextureStreamingStage::FullyResident);
     EXPECT_FALSE(texture->IsStreamingPlaceholder());
     EXPECT_TRUE(texture->GetData().empty());
-    EXPECT_EQ(ResourceManager::Get()
+    EXPECT_EQ(guard.GetManager()
                   .GetModelTextureStreamingStats()
                   .reservedDecodedBytes,
               0u);
-    EXPECT_EQ(ResourceManager::Get()
+    EXPECT_EQ(guard.GetManager()
                   .GetModelTextureStreamingStats()
                   .pendingPublications,
               0u);
@@ -205,23 +224,23 @@ TEST(SceneAssetStreamingValidation,
      OversizedTextureFailsAfterFallbackPublicationWithoutDecode)
 {
     ManagerGuard guard(64u, {});
-    auto request = ResourceManager::Get().RequestAsync<ModelResource>(
+    auto request = guard.GetManager().RequestAsync<ModelResource>(
         FixturePath().string());
     ASSERT_TRUE(request);
-    ResourceHandle<ModelResource> model = AwaitModel(request);
+    ResourceHandle<ModelResource> model = AwaitModel(guard.GetManager(), request);
     ASSERT_TRUE(model);
     ASSERT_FALSE(model->GetStreamingTextures().empty());
     const ResourceHandle<TextureResource> texture =
         model->GetStreamingTextures().front();
     ASSERT_TRUE(texture->IsStreamingPlaceholder());
 
-    EXPECT_FALSE(ResourceManager::Get().BeginModelTextureStreaming(model));
+    EXPECT_FALSE(guard.GetManager().BeginModelTextureStreaming(model));
     EXPECT_EQ(model->GetTextureStreamingSnapshot().stage,
               ModelTextureStreamingStage::Failed);
     EXPECT_TRUE(texture->IsStreamingPlaceholder());
     EXPECT_EQ(texture->GetData().size(), 4u);
     const ModelTextureStreamingStats stats =
-        ResourceManager::Get().GetModelTextureStreamingStats();
+        guard.GetManager().GetModelTextureStreamingStats();
     EXPECT_EQ(stats.completedDecodes, 0u);
     EXPECT_EQ(stats.failedDecodes, 1u);
     EXPECT_LE(stats.peakReservedDecodedBytes, stats.decodedByteBudget);
@@ -231,37 +250,37 @@ TEST(SceneAssetStreamingValidation,
      FailedGpuPublicationRetiresBudgetAndKeepsCommittedFallback)
 {
     ManagerGuard guard(1024u * 1024u, {});
-    auto request = ResourceManager::Get().RequestAsync<ModelResource>(
+    auto request = guard.GetManager().RequestAsync<ModelResource>(
         FixturePath().string());
     ASSERT_TRUE(request);
-    ResourceHandle<ModelResource> model = AwaitModel(request);
+    ResourceHandle<ModelResource> model = AwaitModel(guard.GetManager(), request);
     ASSERT_TRUE(model);
-    ASSERT_TRUE(ResourceManager::Get().BeginModelTextureStreaming(model));
+    ASSERT_TRUE(guard.GetManager().BeginModelTextureStreaming(model));
 
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline &&
-           ResourceManager::Get()
+           guard.GetManager()
                    .GetPendingModelTexturePublications()
                    .empty())
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     const auto publications =
-        ResourceManager::Get().GetPendingModelTexturePublications();
+        guard.GetManager().GetPendingModelTexturePublications();
     ASSERT_EQ(publications.size(), 1u);
     const ResourceHandle<TextureResource> texture = publications.front();
     ASSERT_TRUE(texture);
     EXPECT_TRUE(texture->IsStreamingPlaceholder());
     EXPECT_GT(texture->GetData().size(), 4u);
-    EXPECT_GT(ResourceManager::Get()
+    EXPECT_GT(guard.GetManager()
                   .GetModelTextureStreamingStats()
                   .reservedDecodedBytes,
               0u);
 
-    ASSERT_TRUE(ResourceManager::Get().CompleteModelTexturePublication(
+    ASSERT_TRUE(guard.GetManager().CompleteModelTexturePublication(
         texture.GetId(), false, "injected replacement failure"));
     const ModelTextureStreamingSnapshot snapshot =
         model->GetTextureStreamingSnapshot();
@@ -269,11 +288,11 @@ TEST(SceneAssetStreamingValidation,
     EXPECT_EQ(snapshot.error, "injected replacement failure");
     EXPECT_TRUE(texture->IsStreamingPlaceholder());
     EXPECT_TRUE(texture->GetData().empty());
-    EXPECT_EQ(ResourceManager::Get()
+    EXPECT_EQ(guard.GetManager()
                   .GetModelTextureStreamingStats()
                   .reservedDecodedBytes,
               0u);
-    EXPECT_EQ(ResourceManager::Get()
+    EXPECT_EQ(guard.GetManager()
                   .GetModelTextureStreamingStats()
                   .pendingPublications,
               0u);
@@ -287,7 +306,7 @@ TEST(SceneAssetStreamingValidation,
     ASSERT_TRUE(imported.success) << imported.errorMessage;
     ASSERT_EQ(imported.textures.size(), 1u);
 
-    TextureLoader loader(nullptr, true);
+    TextureLoader loader;
     TextureResource* raw = loader.CreateStreamingPlaceholder(
         imported.textures[0],
         FixturePath().string(),

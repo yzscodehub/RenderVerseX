@@ -1,0 +1,332 @@
+name: Nightly Validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
+
+concurrency:
+  group: nightly-validation
+  cancel-in-progress: false
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
+jobs:
+  windows-qualification:
+    name: Windows Full Qualification
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:/vcpkg
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-windows-
+      - name: Full Windows validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset win_x64_debug
+          -BuildPreset win_x64_debug
+          -LaneTestPresets "win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native"
+          -BuildDir build/win_x64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -RequiredNativeBackend DX12
+          -Fresh
+      - name: Run fail-closed DX11/OpenGL compatibility smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_nightly_compatibility_debug
+          -BuildPreset win_x64_nightly_compatibility_debug
+          -TestPreset win_x64_nightly_compatibility_debug
+          -BuildDir build/win_x64_nightly_compatibility_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteCompatibilitySmoke
+          -RequiredLabel suite.compatibility-smoke
+          -BaseRef origin/master
+          -Fresh
+      - name: Stage hash-pinned external asset library
+        shell: pwsh
+        env:
+          RVX_EXTERNAL_ASSET_URL: ${{ secrets.RVX_EXTERNAL_ASSET_URL }}
+          RVX_EXTERNAL_ASSET_SHA256: ${{ secrets.RVX_EXTERNAL_ASSET_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RVX_EXTERNAL_ASSET_URL) -or
+              $env:RVX_EXTERNAL_ASSET_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'Nightly external asset URL and SHA-256 secrets are required'
+          }
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'build/nightly-external-assets.zip'
+          $assetRoot = Join-Path $env:GITHUB_WORKSPACE 'build/nightly-external-assets'
+          New-Item -ItemType Directory -Force -Path (Split-Path $archive) | Out-Null
+          Invoke-WebRequest -Uri $env:RVX_EXTERNAL_ASSET_URL -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:RVX_EXTERNAL_ASSET_SHA256.ToLowerInvariant()) {
+            throw "External asset archive SHA-256 mismatch: $actual"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $assetRoot -Force
+          foreach ($required in @('catalog.json', 'models/free_1975_porsche_911_930_turbo/scene.gltf', 'models/free_1975_porsche_911_930_turbo/license.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $assetRoot $required) -PathType Leaf)) {
+              throw "External asset archive is missing $required"
+            }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "RVX_NIGHTLY_EXTERNAL_ASSET_ROOT=$assetRoot"
+      - name: Configure full qualification
+        shell: pwsh
+        run: >-
+          cmake --preset win_x64_qualification_debug
+          -DRVX_ENABLE_EXTERNAL_ASSET_TESTS=ON
+          "-DRVX_EXTERNAL_TEST_ASSET_ROOT=$env:RVX_NIGHTLY_EXTERNAL_ASSET_ROOT"
+      - name: Run fail-closed full qualification and parity
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_qualification
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationQualification
+          -RequiredLabel lane.qualification
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX12 physical exposure matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx12_exposure
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx12Exposure
+          -RequiredLabel suite.gfx12-exposure
+          -ExpectedTestCount 24
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX13 GTAO matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx13_gtao
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx13Gtao
+          -RequiredLabel suite.gfx13-gtao
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX14 Toon matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx14_toon
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx14Toon
+          -RequiredLabel suite.gfx14-toon
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX15 translucency matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx15_translucency
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx15Translucency
+          -RequiredLabel suite.gfx15-translucency
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX17 fire and smoke VFX matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx17_vfx
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx17Vfx
+          -RequiredLabel suite.gfx17-vfx
+          -ExpectedTestCount 24
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleFire_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleFire_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleFire_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleFire_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleFire_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleFire_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleFire_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleFire_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleFire_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleFire_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleFire_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleFire_640x360.json;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleSmoke_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleSmoke_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleSmoke_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleSmoke_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleSmoke_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleSmoke_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleSmoke_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleSmoke_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17ForwardPlusParticleSmoke_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX17DeferredParticleSmoke_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17ForwardPlusParticleSmoke_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX17DeferredParticleSmoke_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run fail-closed GFX18 water matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx18_water
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx18Water
+          -RequiredLabel suite.gfx18-water
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows
+          path: |
+            build/win_x64_debug/BuildTruth
+            build/win_x64_nightly_compatibility_debug/BuildTruth
+            build/win_x64_qualification_debug/BuildTruth
+            build/win_x64_qualification_debug/Tests/VisualArtifacts
+            build/win_x64_qualification_debug/Tests/SampleReports
+            build/win_x64_qualification_debug/Tests/StartupTimelines
+          if-no-files-found: error
+
+  linux-full:
+    name: Linux Full Validation
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-linux-
+      - name: Full Linux validation
+        run: |
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_build_truth.ps1 \
+            -ConfigurePreset linux_x64_debug \
+            -BuildPreset linux_x64_debug \
+            -LaneTestPresets 'linux_x64_debug_architecture,linux_x64_debug_unit,linux_x64_debug_integration,linux_x64_debug_native' \
+            -BuildDir build/linux_x64_debug \
+            -Configuration Debug \
+            -BaseRef origin/master \
+            -RequiredNativeBackend Vulkan \
+            -Fresh
+      - name: Run fail-closed OpenGL compatibility smoke
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_nightly_compatibility_debug
+          -BuildPreset linux_x64_nightly_compatibility_debug
+          -TestPreset linux_x64_nightly_compatibility_debug
+          -BuildDir build/linux_x64_nightly_compatibility_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteCompatibilitySmoke
+          -RequiredLabel suite.compatibility-smoke
+          -BaseRef origin/master
+          -Fresh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux
+          path: |
+            build/linux_x64_debug/BuildTruth
+            build/linux_x64_nightly_compatibility_debug/BuildTruth
+
+  linux-tsan-full:
+    name: Linux Full TSAN Integration
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-linux-tsan-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-linux-tsan-
+      - run: cmake --preset linux_x64_tsan
+      - name: Run fail-closed full integration under TSAN
+        env:
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_tsan
+          -BuildPreset linux_x64_tsan
+          -TestPreset linux_x64_tsan_integration
+          -BuildDir build/linux_x64_tsan
+          -Configuration Debug
+          -BuildTarget RVXValidationIntegration
+          -RequiredLabel lane.integration
+          -BaseRef origin/master
+          -SkipConfigure
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-tsan
+          path: build/linux_x64_tsan/BuildTruth
+
+  macos-full:
+    name: macOS ARM64 Full Validation
+    runs-on: macos-15
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve vcpkg root
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-macos-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-macos-
+      - name: Full macOS validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset mac_arm64_debug
+          -BuildPreset mac_arm64_debug
+          -LaneTestPresets "mac_arm64_debug_architecture,mac_arm64_debug_unit,mac_arm64_debug_integration,mac_arm64_debug_native"
+          -BuildDir build/mac_arm64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -RequiredNativeBackend Metal
+          -Fresh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos
+          path: build/mac_arm64_debug/BuildTruth

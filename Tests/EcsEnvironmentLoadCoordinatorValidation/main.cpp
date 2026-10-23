@@ -1,5 +1,5 @@
 #include "Core/Log.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <unordered_map>
 
 namespace
@@ -45,8 +46,12 @@ namespace
         }
 
         std::vector<std::string> GetSupportedExtensions() const override { return {".hdr"}; }
-        RVX::Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const RVX::Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == RVX::ResourceType::Environment &&
+                request.resolvedPath.ends_with(".hdr");
+        }
 
         bool ValidatePreparationState(
             RVX::uint64 requestedImportOptionsHash,
@@ -232,10 +237,14 @@ namespace
             m_resources.SetRenderResourceGateway(&m_gateway);
             RVX::Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_resources.Initialize(config);
-            m_resources.RegisterLoader(
-                RVX::ResourceType::Environment,
-                std::make_unique<ImmediateEnvironmentLoader>());
+            RVX::Resource::ResourceManagerDependencies dependencies;
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<ImmediateEnvironmentLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceSubsystemScope() { m_resources.Deinitialize(); }
@@ -338,11 +347,18 @@ namespace
 
     RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc MakeEnvironmentDesc(
         std::string path,
-        RVX::ECS::SceneRuntimeId sceneRuntimeId)
+        RVX::ECS::SceneRuntimeId sceneRuntimeId,
+        const RVX::Resource::EnvironmentLoadOptions& options = {})
     {
         RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
         desc.path = std::move(path);
         desc.expectedSceneRuntimeId = sceneRuntimeId;
+        RVX::Resource::ResourceLoadError preparationError;
+        desc.preparationState = RVX::Resource::EnvironmentLoader::CreatePreparationState(
+            options,
+            desc.resourceOptions.importOptionsHash,
+            preparationError);
+        EXPECT_NE(desc.preparationState, nullptr) << preparationError.message;
         return desc;
     }
 } // namespace
@@ -508,10 +524,12 @@ TEST(EcsEnvironmentLoadCoordinatorValidation,
         runtime, resources.m_resources, &proof);
 
     const RVX::Resource::ResourceContentIdentity expectedIdentity = MakeObservedIdentity();
+    const RVX::Resource::EnvironmentLoadOptions lowOptions{
+        .quality = RVX::Resource::HDRIBLQualityProfile::Low,
+        .exposure = 1.25f,
+    };
     RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc desc =
-        MakeEnvironmentDesc("profile-low.hdr", runtime.GetSceneRuntimeId());
-    desc.environmentOptions.quality = RVX::Resource::HDRIBLQualityProfile::Low;
-    desc.environmentOptions.exposure = 1.25f;
+        MakeEnvironmentDesc("profile-low.hdr", runtime.GetSceneRuntimeId(), lowOptions);
     desc.resourceOptions.expectedContentIdentity = expectedIdentity;
     std::string error;
     const auto low = coordinator.RequestEnvironment(std::move(desc), error);
@@ -520,8 +538,7 @@ TEST(EcsEnvironmentLoadCoordinatorValidation,
     const auto lowRequested = coordinator.GetStatus(low);
     ASSERT_TRUE(lowRequested.has_value());
     EXPECT_EQ(lowRequested->canonicalImportOptionsHash,
-              RVX::Resource::EnvironmentLoader::ComputeImportOptionsHash(
-                  lowRequested->environmentOptions));
+              RVX::Resource::EnvironmentLoader::ComputeImportOptionsHash(lowOptions));
     EXPECT_EQ(lowRequested->request.assetKey.importOptionsHash,
               lowRequested->canonicalImportOptionsHash);
     const RVX::Resource::EnvironmentLoadOptions smokeOptions{

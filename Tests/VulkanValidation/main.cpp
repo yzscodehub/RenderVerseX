@@ -1,32 +1,143 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/MaterialCopyProbe.h"
 #include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/GPUUploadService.h"
+#include "Render/Material/MaterialGPUData.h"
+#include "Render/PipelineCache.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/Submission/RasterInstanceStream.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "VulkanCommandContext.h"
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
+#include "VulkanPipeline.h"
+#include "VulkanRayTracing.h"
 #include "VulkanResources.h"
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace RVX;
 
 namespace
 {
+    std::filesystem::path FindRenderShaderDirectory()
+    {
+        std::filesystem::path current = std::filesystem::current_path();
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            const std::filesystem::path candidate =
+                current / "Source" / "Runtime" / "Render" / "Shaders";
+            if (std::filesystem::exists(candidate / "DefaultLit.hlsl"))
+            {
+                return candidate;
+            }
+
+            if (!current.has_parent_path() || current.parent_path() == current)
+            {
+                break;
+            }
+            current = current.parent_path();
+        }
+
+        return {};
+    }
+
+    class HiddenVulkanPresentationWindow final
+    {
+    public:
+        HiddenVulkanPresentationWindow() = default;
+
+        ~HiddenVulkanPresentationWindow()
+        {
+            Shutdown();
+        }
+
+        HiddenVulkanPresentationWindow(const HiddenVulkanPresentationWindow&) = delete;
+        HiddenVulkanPresentationWindow& operator=(const HiddenVulkanPresentationWindow&) = delete;
+
+        [[nodiscard]] bool Initialize(uint32 width, uint32 height)
+        {
+            // The vcpkg Vulkan loader can be outside GLFW's default dynamic
+            // loader search path in CI, so register the linked loader before
+            // GLFW performs its first Vulkan query.
+            glfwInitVulkanLoader(vkGetInstanceProcAddr);
+            if (glfwInit() != GLFW_TRUE)
+            {
+                return false;
+            }
+            m_glfwInitialized = true;
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+            m_window = glfwCreateWindow(static_cast<int>(width),
+                                        static_cast<int>(height),
+                                        "RenderVerseX Vulkan Abort Validation",
+                                        nullptr,
+                                        nullptr);
+            return m_window != nullptr;
+        }
+
+        [[nodiscard]] HAL::NativeSurfaceDesc Capture(uint64 generation) const
+        {
+            HAL::NativeSurfaceDesc surface;
+            if (m_window == nullptr)
+            {
+                return surface;
+            }
+
+            int width = 0;
+            int height = 0;
+            glfwGetFramebufferSize(m_window, &width, &height);
+            surface.platform = HAL::NativeSurfacePlatform::GLFW;
+            surface.backendWindow = reinterpret_cast<uintptr_t>(m_window);
+            surface.width = static_cast<uint32>(width);
+            surface.height = static_cast<uint32>(height);
+            surface.contentScale = 1.0f;
+            surface.generation = generation;
+            return surface;
+        }
+
+    private:
+        void Shutdown()
+        {
+            if (m_window != nullptr)
+            {
+                glfwDestroyWindow(m_window);
+                m_window = nullptr;
+            }
+            if (m_glfwInitialized)
+            {
+                glfwTerminate();
+                m_glfwInitialized = false;
+            }
+        }
+
+        GLFWwindow* m_window = nullptr;
+        bool m_glfwInitialized = false;
+    };
+
     class LegacyMappedBuffer : public RHIBuffer
     {
     public:
@@ -111,6 +222,48 @@ namespace
         return device.CreateShader(shaderDesc);
     }
 
+    RHIShaderRef CompileVulkanSurfaceMaterialValidationShader(
+        IRHIDevice& device,
+        RHIShaderStage stage,
+        const char* entryPoint,
+        const char* source,
+        const std::filesystem::path& sourcePath,
+        const char* debugName)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+        if (!compiler)
+        {
+            ADD_FAILURE() << "Shader compiler is unavailable for " << debugName;
+            return {};
+        }
+
+        const std::string sourcePathText = sourcePath.string();
+        ShaderCompileOptions options;
+        options.stage = stage;
+        options.entryPoint = entryPoint;
+        options.sourceCode = source;
+        options.sourcePath = sourcePathText.c_str();
+        options.targetProfile = stage == RHIShaderStage::Vertex ? "vs_6_0" : "ps_6_0";
+        options.targetBackend = RHIBackendType::Vulkan;
+        options.enableDebugInfo = true;
+
+        ShaderCompileResult compiled = compiler->Compile(options);
+        if (!compiled.success)
+        {
+            ADD_FAILURE() << "Failed to compile " << debugName << ": "
+                          << compiled.errorMessage;
+            return {};
+        }
+
+        RHIShaderDesc shaderDesc;
+        shaderDesc.stage = stage;
+        shaderDesc.bytecode = compiled.bytecode.data();
+        shaderDesc.bytecodeSize = static_cast<uint64>(compiled.bytecode.size());
+        shaderDesc.entryPoint = entryPoint;
+        shaderDesc.debugName = debugName;
+        return device.CreateShader(shaderDesc);
+    }
+
     RHIBufferRef CreateVulkanUploadBuffer(IRHIDevice& device,
                                           RHIBufferUsage usage,
                                           uint32 stride,
@@ -163,6 +316,1001 @@ namespace
         viewDesc.debugName = "VulkanDynamicRenderingDSV";
         return device.CreateTextureView(texture, viewDesc);
     }
+
+    RHITextureViewRef CreateVulkanTextureView(IRHIDevice& device,
+                                               RHITexture* texture,
+                                               RHITextureViewType type,
+                                               RHIFormat format,
+                                               RHITextureDimension dimension,
+                                               const char* debugName)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.type = type;
+        viewDesc.format = format;
+        viewDesc.dimension = dimension;
+        viewDesc.debugName = debugName;
+        return device.CreateTextureView(texture, viewDesc);
+    }
+
+    /**
+     * @brief Keep the required native suite executable on software adapters
+     * that do not expose the optional multi-draw/count path.
+     *
+     * The full raster parity qualification runs whenever all of its hardware
+     * prerequisites are published.  Otherwise this branch proves that the
+     * backend's public fallback contract remains honest rather than marking
+     * the required test as skipped.
+     */
+    bool CanRunOptionalIndexedIndirectQualification(
+        const RHICapabilities& capabilities)
+    {
+        const RHIIndexedIndirectExecutionCapabilities& indirect =
+            capabilities.indexedIndirectExecution;
+        if (indirect.supportsFirstInstance &&
+            indirect.supportsCountBuffer &&
+            indirect.maxDrawCount >= 3u)
+        {
+            return true;
+        }
+
+        EXPECT_TRUE(indirect.supportsFixedCount);
+        EXPECT_EQ(capabilities.supportsIndirectDrawCount,
+                  indirect.supportsCountBuffer);
+        if (!indirect.supportsCountBuffer)
+        {
+            // Count-buffer dispatch is a distinct optional path.  The
+            // single-command fixed-count fallback must not advertise it.
+            EXPECT_FALSE(capabilities.supportsIndirectDrawCount);
+        }
+        if (!indirect.supportsFirstInstance)
+        {
+            RHIIndexedIndirectExecutionDesc descriptor;
+            descriptor.mode = RHIIndirectExecutionMode::CountBuffer;
+            descriptor.maxDrawCount = 1u;
+            descriptor.requiresFirstInstance = true;
+            const RHIIndexedIndirectExecutionValidationResult validation =
+                ValidateRHIIndexedIndirectExecutionDesc(capabilities,
+                                                        descriptor);
+            if (indirect.supportsCountBuffer)
+            {
+                EXPECT_EQ(validation.code,
+                          RHIIndexedIndirectExecutionValidationCode::FirstInstanceUnsupported);
+            }
+            else
+            {
+                EXPECT_EQ(validation.code,
+                          RHIIndexedIndirectExecutionValidationCode::CapabilityUnsupported);
+            }
+        }
+        if (indirect.maxDrawCount < 3u)
+        {
+            EXPECT_LT(indirect.maxDrawCount, 3u);
+        }
+        return false;
+    }
+
+    /**
+     * @brief Verify the graphics-queue fallback when no dedicated compute
+     * family is present instead of skipping the required native test.
+     */
+    bool CanRunOptionalDedicatedComputeQualification(
+        const VulkanDevice& device,
+        const RHICapabilities& capabilities)
+    {
+        if (device.GetComputeQueueFamily() != device.GetGraphicsQueueFamily())
+        {
+            return true;
+        }
+
+        EXPECT_FALSE(capabilities.supportsAsyncCompute);
+        EXPECT_EQ(capabilities.queueTopology.logicalQueueDomains[1],
+                  GPUQueueDomain::Graphics);
+        return false;
+    }
+
+    struct NativeCullRasterReadback
+    {
+        std::array<uint8, 4> centerPixel{};
+        bool completed = false;
+    };
+
+    /**
+     * @brief Submit one real Vulkan raster draw and read back its center pixel.
+     *
+     * The raster cases mirror the production surface policy: the shader applies
+     * the same clip-Y negation as ApplyBackendClipConvention(), so canonical
+     * counter-clockwise engine geometry remains counter-clockwise at the RHI
+     * contract and a negative determinant reverses it.
+     */
+    NativeCullRasterReadback ExecuteNativeCullRasterScenario(
+        IRHIDevice& device,
+        VulkanDevice& vulkanDevice,
+        RHIFrontFace frontFace,
+        RHICullMode cullMode,
+        bool reverseIndices,
+        const char* debugName)
+    {
+        NativeCullRasterReadback result;
+        const VulkanValidationMessageCounts messagesBefore =
+            vulkanDevice.GetValidationMessageCounts();
+
+        constexpr const char* kVertexShaderSource = R"(
+            struct Output { float4 position : SV_Position; };
+            Output VSMain(uint vertexId : SV_VertexID)
+            {
+                const float2 position = vertexId == 0
+                    ? float2(-0.55, -0.55)
+                    : (vertexId == 1
+                        ? float2(0.55, -0.55)
+                        : float2(0.00, 0.55));
+                Output output;
+                // Production Vulkan view constants negate the output clip-Y
+                // row in ApplyBackendClipConvention(). Keep that transform in
+                // this native proof so it validates the composed policy rather
+                // than raw Vulkan viewport semantics in isolation.
+                output.position = float4(position.x, -position.y, 0.0, 1.0);
+                return output;
+            }
+        )";
+        constexpr const char* kPixelShaderSource = R"(
+            float4 PSMain(bool isFrontFace : SV_IsFrontFace) : SV_Target0
+            {
+                return isFrontFace
+                    ? float4(0.0, 1.0, 0.0, 1.0)
+                    : float4(1.0, 0.0, 0.0, 1.0);
+            }
+        )";
+
+        RHIShaderRef vertexShader = CompileInlineVulkanGraphicsShader(
+            device, RHIShaderStage::Vertex, "VSMain", kVertexShaderSource,
+            "vs_6_0", "VulkanNativeCullRasterVS");
+        RHIShaderRef pixelShader = CompileInlineVulkanGraphicsShader(
+            device, RHIShaderStage::Pixel, "PSMain", kPixelShaderSource,
+            "ps_6_0", "VulkanNativeCullRasterPS");
+        if (!vertexShader || !pixelShader)
+        {
+            return result;
+        }
+
+        RHIPipelineLayoutDesc layoutDesc;
+        layoutDesc.debugName = "VulkanNativeCullRasterLayout";
+        RHIPipelineLayoutRef pipelineLayout = device.CreatePipelineLayout(layoutDesc);
+        if (!pipelineLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create a pipeline layout";
+            return result;
+        }
+
+        RHIGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.vertexShader = vertexShader.Get();
+        pipelineDesc.pixelShader = pixelShader.Get();
+        pipelineDesc.pipelineLayout = pipelineLayout.Get();
+        pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+        pipelineDesc.rasterizerState.cullMode = cullMode;
+        pipelineDesc.rasterizerState.frontFace = frontFace;
+        pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+        pipelineDesc.numRenderTargets = 1;
+        pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+        pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+        pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+        pipelineDesc.debugName = "VulkanNativeCullRasterPipeline";
+        RHIPipelineRef pipeline = device.CreateGraphicsPipeline(pipelineDesc);
+        if (!pipeline)
+        {
+            ADD_FAILURE() << debugName << " failed to create a raster pipeline";
+            return result;
+        }
+
+        const std::array<uint32, 3> indices = reverseIndices
+            ? std::array<uint32, 3>{0u, 2u, 1u}
+            : std::array<uint32, 3>{0u, 1u, 2u};
+        RHIBufferRef indexBuffer = CreateVulkanUploadBuffer(
+            device,
+            RHIBufferUsage::Index,
+            sizeof(uint32),
+            indices.data(),
+            sizeof(indices),
+            "VulkanNativeCullRasterIndices");
+
+        constexpr uint32 kExtent = 32u;
+        constexpr uint32 kRowPitch = 256u;
+        RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
+            kExtent,
+            kExtent,
+            RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        renderTargetDesc.debugName = "VulkanNativeCullRasterRenderTarget";
+        RHITextureRef renderTarget = device.CreateTexture(renderTargetDesc);
+        RHITextureViewRef renderTargetView = CreateVulkanRenderTargetView(
+            device, renderTarget.Get());
+
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(kRowPitch) * kExtent;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "VulkanNativeCullRasterReadback";
+        RHIBufferRef readbackBuffer = device.CreateBuffer(readbackDesc);
+        if (!indexBuffer || !renderTarget || !renderTargetView || !readbackBuffer)
+        {
+            ADD_FAILURE() << debugName << " failed to create raster resources";
+            return result;
+        }
+
+        RHICommandContextRef context = device.CreateCommandContext(
+            RHICommandQueueType::Graphics);
+        RHIFenceRef fence = device.CreateFence(0);
+        if (!context || !fence)
+        {
+            ADD_FAILURE() << debugName << " failed to create a context or fence";
+            return result;
+        }
+
+        context->Begin();
+        context->TextureBarrier({renderTarget.Get(), RHIResourceState::Undefined,
+                                 RHIResourceState::RenderTarget});
+        RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                      RHIStoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f});
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f, static_cast<float>(kExtent),
+                              static_cast<float>(kExtent), 0.0f, 1.0f});
+        context->SetScissor({0, 0, kExtent, kExtent});
+        context->SetPipeline(pipeline.Get());
+        context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
+        context->DrawIndexed(3u, 1u, 0u, 0, 0u);
+        context->EndRenderPass();
+        context->TextureBarrier({renderTarget.Get(), RHIResourceState::RenderTarget,
+                                 RHIResourceState::CopySource});
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::Common,
+                                RHIResourceState::CopyDest});
+        RHIBufferTextureCopyDesc readbackCopy;
+        readbackCopy.bufferRowPitch = kRowPitch;
+        readbackCopy.textureRegion = {0, 0, kExtent, kExtent};
+        context->CopyTextureToBuffer(renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::CopyDest,
+                                RHIResourceState::Common});
+        context->End();
+
+        const uint64 submittedValue = device.SubmitCommandContext(context.Get(), fence.Get());
+        if (submittedValue == 0)
+        {
+            ADD_FAILURE() << debugName << " failed to submit raster work";
+            return result;
+        }
+        device.WaitForFence(fence.Get(), submittedValue);
+        if (fence->GetCompletedValue() < submittedValue)
+        {
+            ADD_FAILURE() << debugName << " did not complete its raster fence";
+            return result;
+        }
+
+        const auto* mappedReadback = static_cast<const uint8*>(readbackBuffer->Map());
+        if (!mappedReadback)
+        {
+            ADD_FAILURE() << debugName << " failed to map raster readback";
+            return result;
+        }
+        const size_t pixelOffset = static_cast<size_t>(kExtent / 2u) * kRowPitch +
+            static_cast<size_t>(kExtent / 2u) * 4u;
+        std::memcpy(result.centerPixel.data(), mappedReadback + pixelOffset,
+                    result.centerPixel.size());
+        readbackBuffer->Unmap();
+
+        device.WaitIdle();
+        const VulkanValidationMessageCounts messagesAfter =
+            vulkanDevice.GetValidationMessageCounts();
+        if (messagesAfter.errors != messagesBefore.errors ||
+            messagesAfter.warnings != messagesBefore.warnings)
+        {
+            ADD_FAILURE() << debugName << " emitted Vulkan validation messages; errors "
+                          << messagesBefore.errors << " -> " << messagesAfter.errors
+                          << ", warnings " << messagesBefore.warnings << " -> "
+                          << messagesAfter.warnings;
+            return result;
+        }
+
+        result.completed = true;
+        return result;
+    }
+
+    bool IsNativeCullRasterGreen(const NativeCullRasterReadback& readback)
+    {
+        return readback.centerPixel[0] < 32u && readback.centerPixel[1] > 200u &&
+            readback.centerPixel[2] < 32u && readback.centerPixel[3] == 255u;
+    }
+
+    bool IsNativeCullRasterRed(const NativeCullRasterReadback& readback)
+    {
+        return readback.centerPixel[0] > 200u && readback.centerPixel[1] < 32u &&
+            readback.centerPixel[2] < 32u && readback.centerPixel[3] == 255u;
+    }
+
+    struct NativeSurfaceAlphaMaskReadback
+    {
+        static constexpr uint32 Extent = 32u;
+        std::array<uint8, Extent * Extent> coverage{};
+        std::array<uint8, 4> centerPixel{};
+        bool completed = false;
+    };
+
+    NativeSurfaceAlphaMaskReadback ExecuteNativeSurfaceAlphaMaskScenario(
+        IRHIDevice& device,
+        VulkanDevice& vulkanDevice,
+        const char* sourceFile,
+        const char* pixelEntry,
+        bool useUV1,
+        const char* debugName)
+    {
+        NativeSurfaceAlphaMaskReadback result;
+        const char* phase = "initialization";
+        try
+        {
+        const VulkanValidationMessageCounts messagesBefore =
+            vulkanDevice.GetValidationMessageCounts();
+        phase = "shader source discovery";
+        const std::filesystem::path shaderDirectory = FindRenderShaderDirectory();
+        if (shaderDirectory.empty())
+        {
+            ADD_FAILURE() << debugName << " could not locate Render/Shaders";
+            return result;
+        }
+
+        // The vertex shims only provide the semantic contract consumed by the
+        // production PS entries. They deliberately contain no alpha, UV-set,
+        // transform, or material policy.
+        constexpr const char* kMainVertexShaderSource = R"(
+            struct VSInput { float2 Position : POSITION; float2 TexCoord : TEXCOORD0; float2 TexCoord1 : TEXCOORD1; };
+            struct PSInput
+            {
+                float4 Position : SV_POSITION;
+                float3 WorldPos : TEXCOORD0;
+                float3 WorldNormal : TEXCOORD1;
+                float2 TexCoord : TEXCOORD2;
+                float4 WorldTangent : TEXCOORD3;
+                nointerpolation float ReceivesShadowValue : TEXCOORD4;
+                nointerpolation uint MaterialParameterSlot : TEXCOORD5;
+                float2 TexCoord1 : TEXCOORD6;
+            };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position.x, -input.Position.y, 0.5, 1.0);
+                output.WorldPos = float3(0.0, 0.0, 1.0);
+                output.WorldNormal = float3(0.0, 0.0, 1.0);
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                output.WorldTangent = float4(1.0, 0.0, 0.0, 1.0);
+                output.ReceivesShadowValue = 0.0;
+                output.MaterialParameterSlot = 0xffffffffu;
+                return output;
+            }
+        )";
+        constexpr const char* kDepthVertexShaderSource = R"(
+            struct VSInput { float2 Position : POSITION; float2 TexCoord : TEXCOORD0; float2 TexCoord1 : TEXCOORD1; };
+            struct PSInput { float4 Position : SV_POSITION; float2 TexCoord : TEXCOORD0; float2 TexCoord1 : TEXCOORD1; };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position.x, -input.Position.y, 0.5, 1.0);
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                return output;
+            }
+        )";
+        constexpr const char* kVelocityVertexShaderSource = R"(
+            struct VSInput { float2 Position : POSITION; float2 TexCoord : TEXCOORD0; float2 TexCoord1 : TEXCOORD1; };
+            struct PSInput
+            {
+                float4 Position : SV_POSITION;
+                float4 CurrentClip : TEXCOORD0;
+                float4 PreviousClip : TEXCOORD1;
+                float HistoryValid : TEXCOORD2;
+                float2 TexCoord : TEXCOORD3;
+                float2 TexCoord1 : TEXCOORD4;
+                nointerpolation float NdcYScale : TEXCOORD5;
+            };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position.x, -input.Position.y, 0.5, 1.0);
+                output.CurrentClip = output.Position;
+                output.PreviousClip = output.Position;
+                output.HistoryValid = 1.0;
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                output.NdcYScale = -1.0;
+                return output;
+            }
+        )";
+        // Vulkan's current RHI copy path deliberately supports color images
+        // only. Read depth through a native sampled-depth pass, preserving the
+        // actual production depth-only draw and avoiding a software readback.
+        constexpr const char* kDepthReadbackVertexShaderSource = R"(
+            struct Output { float4 Position : SV_POSITION; float2 UV : TEXCOORD0; };
+            Output VSMain(uint vertexId : SV_VertexID)
+            {
+                const float2 position = vertexId == 0 ? float2(-1.0, -1.0) :
+                    (vertexId == 1 ? float2(-1.0, 3.0) : float2(3.0, -1.0));
+                Output output;
+                output.Position = float4(position.x, -position.y, 0.0, 1.0);
+                // Position has the production Vulkan clip-Y conversion. Keep
+                // the sampled-depth coordinate in framebuffer orientation.
+                output.UV = float2(position.x * 0.5 + 0.5,
+                                   0.5 - position.y * 0.5);
+                return output;
+            }
+        )";
+        constexpr const char* kDepthReadbackPixelShaderSource = R"(
+            Texture2D<float> SourceDepth : register(t0);
+            SamplerState SourceSampler : register(s1);
+            float4 PSMain(float2 uv : TEXCOORD0) : SV_Target0
+            {
+                return SourceDepth.SampleLevel(SourceSampler, uv, 0.0) < 0.75
+                    ? float4(1.0, 1.0, 1.0, 1.0)
+                    : float4(0.0, 0.0, 0.0, 1.0);
+            }
+        )";
+
+        const std::filesystem::path virtualSourcePath =
+            shaderDirectory / "NativeSurfaceMaterialSilhouetteValidation.hlsl";
+        const std::filesystem::path productionShaderPath = shaderDirectory / sourceFile;
+        std::ifstream productionShaderFile(productionShaderPath, std::ios::binary);
+        std::string productionPixelSource{
+            std::istreambuf_iterator<char>(productionShaderFile),
+            std::istreambuf_iterator<char>()};
+        if (productionPixelSource.empty())
+        {
+            ADD_FAILURE() << debugName << " could not read " << productionShaderPath.string();
+            return result;
+        }
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::AppendMaterialCopyProbe(productionPixelSource, shaderDirectory);
+        }
+        const bool isDepthOnly = std::string_view(sourceFile) == "DepthOnly.hlsl";
+        const bool isVelocity = std::string_view(sourceFile) == "ObjectVelocity.hlsl";
+        phase = "production shader compilation";
+        const char* vertexSource = isDepthOnly
+            ? kDepthVertexShaderSource
+            : (isVelocity ? kVelocityVertexShaderSource : kMainVertexShaderSource);
+        RHIShaderRef vertexShader = CompileVulkanSurfaceMaterialValidationShader(
+            device, RHIShaderStage::Vertex, "VSMain", vertexSource, virtualSourcePath,
+            "VulkanNativeSurfaceMaterialSilhouetteVS");
+        RHIShaderRef pixelShader = CompileVulkanSurfaceMaterialValidationShader(
+            device, RHIShaderStage::Pixel, pixelEntry, productionPixelSource.c_str(),
+            productionShaderPath, debugName);
+        if (!vertexShader || !pixelShader)
+        {
+            return result;
+        }
+
+        phase = "production descriptor layouts";
+        RHIDescriptorSetLayoutDesc frameLayoutDesc;
+        frameLayoutDesc.debugName = "VulkanNativeSurfaceAlphaFrameSet";
+        frameLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::AllGraphics);
+        frameLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(3, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(4, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(5, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(10, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
+                                   RHIBindingType::ShaderResourceBuffer,
+                                   RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        // DefaultLit always declares its fixed froxel Texture3D binding. Keep
+        // this native fixture ABI-complete even though the coverage scenario
+        // consumes the exact neutral volume.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        RHIDescriptorSetLayoutRef frameLayout = device.CreateDescriptorSetLayout(frameLayoutDesc);
+        RHIDescriptorSetLayoutDesc emptyLayoutDesc;
+        emptyLayoutDesc.debugName = "VulkanNativeSurfaceAlphaEmptySet";
+        RHIDescriptorSetLayoutRef emptySet1 = device.CreateDescriptorSetLayout(emptyLayoutDesc);
+        RHIDescriptorSetLayoutDesc materialLayoutDesc;
+        materialLayoutDesc.debugName = "VulkanNativeSurfaceAlphaMaterialSet";
+        materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::AllGraphics);
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
+        {
+            materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                          RHIShaderStage::Pixel);
+        }
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
+        {
+            materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
+                                          RHIShaderStage::Pixel);
+        }
+        materialLayoutDesc.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                      RHIBindingType::ShaderResourceBuffer,
+                                      RHIShaderStage::Pixel);
+        RHIDescriptorSetLayoutRef materialLayout = device.CreateDescriptorSetLayout(materialLayoutDesc);
+        if (!frameLayout || !emptySet1 || !materialLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create descriptor layouts";
+            return result;
+        }
+        RHIPipelineLayoutDesc pipelineLayoutDesc;
+        pipelineLayoutDesc.setLayouts = {frameLayout.Get(), emptySet1.Get(), materialLayout.Get()};
+        pipelineLayoutDesc.debugName = "VulkanNativeSurfaceAlphaPipelineLayout";
+        RHIPipelineLayoutRef pipelineLayout = device.CreatePipelineLayout(pipelineLayoutDesc);
+        if (!pipelineLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create a pipeline layout";
+            return result;
+        }
+
+        phase = "surface resources";
+        struct NativeSurfaceVertex { float32 position[2]; float32 uv0[2]; float32 uv1[2]; };
+        const std::array<NativeSurfaceVertex, 3> vertices{{
+            {{-1.0f, -1.0f}, {0.05f, 0.05f}, {0.10f, 0.90f}},
+            {{-1.0f,  3.0f}, {0.05f, 0.05f}, {0.20f, 1.40f}},
+            {{ 3.0f, -1.0f}, {0.05f, 0.05f}, {1.30f, 0.80f}},
+        }};
+        RHIBufferRef vertexBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Vertex, sizeof(NativeSurfaceVertex), vertices.data(),
+            sizeof(vertices), "VulkanNativeSurfaceAlphaVertices");
+        MaterialGPUConstants material;
+        material.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
+        material.textureFlags = static_cast<uint32>(MaterialTextureFlags::HasBaseColor);
+        material.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
+        material.alphaCutoff = 0.5f;
+        material.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
+        material.shadingModel =
+            static_cast<uint32>(MaterialGPUShadingModel::Unlit);
+        material.blendMode =
+            static_cast<uint32>(MaterialGPUBlendMode::Masked);
+        material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
+        material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::FillMaterialCopySentinels(material);
+        }
+        constexpr uint32 kConstantBufferAlignment = 256u;
+        constexpr uint32 kMaterialConstantBufferSize =
+            (static_cast<uint32>(sizeof(MaterialGPUConstants)) +
+             kConstantBufferAlignment - 1u) /
+            kConstantBufferAlignment * kConstantBufferAlignment;
+        std::array<uint8, kMaterialConstantBufferSize> materialBytes{};
+        std::memcpy(materialBytes.data(), &material, sizeof(material));
+        RHIBufferRef materialBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Constant, 0, materialBytes.data(), materialBytes.size(),
+            "VulkanNativeSurfaceAlphaMaterialConstants");
+        constexpr std::array<uint8, 16> alphaTexels{{
+            255u, 255u, 255u, 0u, 255u, 255u, 255u, 255u,
+            255u, 255u, 255u, 255u, 255u, 255u, 255u, 0u,
+        }};
+        constexpr uint32 kRowPitch = 256u;
+        std::array<uint8, kRowPitch * 2u> alphaUploadBytes{};
+        std::memcpy(alphaUploadBytes.data(), alphaTexels.data(), 8u);
+        std::memcpy(alphaUploadBytes.data() + kRowPitch, alphaTexels.data() + 8u, 8u);
+        RHIBufferRef textureUpload = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::CopySrc, 0, alphaUploadBytes.data(), alphaUploadBytes.size(),
+            "VulkanNativeSurfaceAlphaTextureUpload");
+        RHITextureDesc sourceTextureDesc = RHITextureDesc::Texture2D(
+            2u, 2u, RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        sourceTextureDesc.debugName = "VulkanNativeSurfaceAlphaTexture";
+        RHITextureRef sourceTexture = device.CreateTexture(sourceTextureDesc);
+        RHITextureViewRef sourceTextureView = CreateVulkanTextureView(
+            device, sourceTexture.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::RGBA8_UNORM, RHITextureDimension::Texture2D,
+            "VulkanNativeSurfaceAlphaTextureSRV");
+        RHITextureDesc directionalShadowArrayDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::R32_FLOAT, RHITextureUsage::ShaderResource);
+        directionalShadowArrayDesc.arraySize = 4u;
+        directionalShadowArrayDesc.debugName = "VulkanNativeSurfaceAlphaDirectionalShadowArray";
+        RHITextureRef directionalShadowArray = device.CreateTexture(directionalShadowArrayDesc);
+        RHITextureViewRef directionalShadowArrayView = CreateVulkanTextureView(
+            device, directionalShadowArray.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::R32_FLOAT, RHITextureDimension::Texture2D,
+            "VulkanNativeSurfaceAlphaDirectionalShadowArraySRV");
+        RHITextureDesc environmentCubeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA8_UNORM, RHITextureUsage::ShaderResource);
+        environmentCubeDesc.dimension = RHITextureDimension::TextureCube;
+        environmentCubeDesc.arraySize = 1u;
+        environmentCubeDesc.debugName = "VulkanNativeSurfaceAlphaEnvironmentCube";
+        RHITextureRef environmentCube = device.CreateTexture(environmentCubeDesc);
+        RHITextureViewRef environmentCubeView = CreateVulkanTextureView(
+            device, environmentCube.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::RGBA8_UNORM, RHITextureDimension::TextureCube,
+            "VulkanNativeSurfaceAlphaEnvironmentCubeSRV");
+        // Match PipelineCache's fallback exactly: zero in-scattering and unit
+        // transmittance in a real 1x1x1 RGBA16F Texture3D.
+        RHITextureDesc froxelVolumeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        froxelVolumeDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeDesc.depth = 1u;
+        froxelVolumeDesc.arraySize = 1u;
+        froxelVolumeDesc.mipLevels = 1u;
+        froxelVolumeDesc.debugName = "VulkanNativeSurfaceAlphaFroxelVolume";
+        RHITextureRef froxelVolume = device.CreateTexture(froxelVolumeDesc);
+        RHITextureViewRef froxelVolumeView = CreateVulkanTextureView(
+            device, froxelVolume.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::RGBA16_FLOAT, RHITextureDimension::Texture3D,
+            "VulkanNativeSurfaceAlphaFroxelVolumeSRV");
+        const std::array<uint16, 4> neutralFroxelTexel = {
+            0u, 0u, 0u, 0x3c00u};
+        std::array<uint8, kRowPitch> froxelUploadBytes{};
+        std::memcpy(froxelUploadBytes.data(), neutralFroxelTexel.data(),
+                    sizeof(neutralFroxelTexel));
+        RHIBufferRef froxelVolumeUpload = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::CopySrc, 0, froxelUploadBytes.data(),
+            froxelUploadBytes.size(),
+            "VulkanNativeSurfaceAlphaFroxelVolumeUpload");
+        RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
+        samplerDesc.debugName = "VulkanNativeSurfaceAlphaPointClamp";
+        RHISamplerRef sampler = device.CreateSampler(samplerDesc);
+        const std::array<uint8, 512> zeroedFrameConstants{};
+        RHIBufferRef frameConstantsBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Constant, 0, zeroedFrameConstants.data(),
+            zeroedFrameConstants.size(), "VulkanNativeSurfaceAlphaFrameConstants");
+        const std::array<uint8, 256> zeroedStructuredElements{};
+        RHIBufferRef dummyStructuredBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource, 16u,
+            zeroedStructuredElements.data(), zeroedStructuredElements.size(),
+            "VulkanNativeSurfaceAlphaDummyStructuredBuffer");
+        struct alignas(16) NativeSurfaceExposureState
+        {
+            float32 exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            uint32 targetAndNonce[4] = {};
+            uint32 stateMeta[4] = {
+                1u,
+                0u,
+                static_cast<uint32>(RenderExposureMode::ManualEV100),
+                1u};
+        };
+        static_assert(sizeof(NativeSurfaceExposureState) ==
+                      RVX_EXPOSURE_STATE_STRIDE);
+        const NativeSurfaceExposureState exposureState{};
+        RHIBufferRef exposureStateBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+            sizeof(NativeSurfaceExposureState), &exposureState,
+            sizeof(exposureState), "VulkanNativeSurfaceAlphaExposureState");
+
+        RHIDescriptorSetDesc frameSetDesc;
+        frameSetDesc.layout = frameLayout.Get();
+        frameSetDesc.debugName = "VulkanNativeSurfaceAlphaFrameDescriptorSet";
+        frameSetDesc.BindBuffer(0, frameConstantsBuffer.Get());
+        frameSetDesc.BindTexture(1, directionalShadowArrayView.Get());
+        frameSetDesc.BindSampler(2, sampler.Get());
+        frameSetDesc.BindBuffer(3, frameConstantsBuffer.Get());
+        frameSetDesc.BindBuffer(4, dummyStructuredBuffer.Get());
+        frameSetDesc.BindBuffer(5, dummyStructuredBuffer.Get());
+        frameSetDesc.BindTexture(6, sourceTextureView.Get());
+        frameSetDesc.BindBuffer(7, frameConstantsBuffer.Get());
+        frameSetDesc.BindBuffer(8, dummyStructuredBuffer.Get());
+        frameSetDesc.BindBuffer(9, dummyStructuredBuffer.Get());
+        frameSetDesc.BindTexture(10, environmentCubeView.Get());
+        frameSetDesc.BindTexture(11, environmentCubeView.Get());
+        frameSetDesc.BindTexture(12, sourceTextureView.Get());
+        frameSetDesc.BindSampler(13, sampler.Get());
+        frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
+                                exposureStateBuffer.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            sourceTextureView.Get());
+        frameSetDesc.BindTexture(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                 sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
+            sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            directionalShadowArrayView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            froxelVolumeView.Get());
+        RHIDescriptorSetRef frameSet = device.CreateDescriptorSet(frameSetDesc);
+        RHIDescriptorSetDesc materialSetDesc;
+        materialSetDesc.layout = materialLayout.Get();
+        materialSetDesc.debugName = "VulkanNativeSurfaceAlphaMaterialDescriptorSet";
+        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
+                                  kMaterialConstantBufferSize);
+        for (uint32 binding = 1; binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; ++binding) materialSetDesc.BindTexture(binding, sourceTextureView.Get());
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2; ++binding) materialSetDesc.BindSampler(binding, sampler.Get());
+        materialSetDesc.BindBuffer(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2, dummyStructuredBuffer.Get());
+        RHIDescriptorSetRef materialSet = device.CreateDescriptorSet(materialSetDesc);
+
+        RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
+            NativeSurfaceAlphaMaskReadback::Extent, NativeSurfaceAlphaMaskReadback::Extent,
+            RHIFormat::RGBA8_UNORM, RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        renderTargetDesc.debugName = "VulkanNativeSurfaceAlphaRenderTarget";
+        RHITextureRef renderTarget = device.CreateTexture(renderTargetDesc);
+        RHITextureViewRef renderTargetView = CreateVulkanTextureView(
+            device, renderTarget.Get(), RHITextureViewType::RenderTarget,
+            RHIFormat::RGBA8_UNORM, RHITextureDimension::Texture2D,
+            "VulkanNativeSurfaceAlphaRTV");
+        RHITextureRef depthTarget;
+        RHITextureViewRef depthTargetView;
+        RHITextureViewRef depthTargetSRV;
+        if (isDepthOnly)
+        {
+            RHITextureDesc depthTargetDesc = RHITextureDesc::DepthStencil(
+                NativeSurfaceAlphaMaskReadback::Extent, NativeSurfaceAlphaMaskReadback::Extent,
+                RHIFormat::D32_FLOAT);
+            depthTargetDesc.debugName = "VulkanNativeSurfaceAlphaDepthTarget";
+            depthTarget = device.CreateTexture(depthTargetDesc);
+            depthTargetView = CreateVulkanTextureView(
+                device, depthTarget.Get(), RHITextureViewType::DepthStencil, RHIFormat::D32_FLOAT,
+                RHITextureDimension::Texture2D, "VulkanNativeSurfaceAlphaDSV");
+            depthTargetSRV = CreateVulkanTextureView(
+                device, depthTarget.Get(), RHITextureViewType::ShaderResource, RHIFormat::D32_FLOAT,
+                RHITextureDimension::Texture2D, "VulkanNativeSurfaceAlphaDepthSRV");
+        }
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(kRowPitch) * NativeSurfaceAlphaMaskReadback::Extent;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "VulkanNativeSurfaceAlphaReadback";
+        RHIBufferRef readbackBuffer = device.CreateBuffer(readbackDesc);
+        if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
+            !sourceTextureView || !directionalShadowArray || !directionalShadowArrayView ||
+            !environmentCube || !environmentCubeView || !froxelVolume ||
+            !froxelVolumeView || !froxelVolumeUpload || !sampler ||
+            !frameConstantsBuffer || !dummyStructuredBuffer ||
+            !exposureStateBuffer || !frameSet || !materialSet ||
+            !renderTarget || !renderTargetView || !readbackBuffer ||
+            (isDepthOnly && (!depthTarget || !depthTargetView || !depthTargetSRV)))
+        {
+            ADD_FAILURE() << debugName << " failed to create surface alpha resources";
+            return result;
+        }
+
+        phase = "production graphics pipeline";
+        RHIGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.vertexShader = vertexShader.Get();
+        pipelineDesc.pixelShader = pixelShader.Get();
+        pipelineDesc.pipelineLayout = pipelineLayout.Get();
+        pipelineDesc.inputLayout.AddElement("POSITION", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.elements.back().semanticIndex = 1;
+        pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+        pipelineDesc.depthStencilState = isDepthOnly ? RHIDepthStencilState::Default()
+                                                     : RHIDepthStencilState::Disabled();
+        pipelineDesc.numRenderTargets = isDepthOnly ? 0u : 1u;
+        pipelineDesc.renderTargetFormats[0] = isDepthOnly ? RHIFormat::Unknown
+                                                           : RHIFormat::RGBA8_UNORM;
+        pipelineDesc.depthStencilFormat = isDepthOnly ? RHIFormat::D32_FLOAT : RHIFormat::Unknown;
+        pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+        pipelineDesc.debugName = debugName;
+        RHIPipelineRef pipeline = device.CreateGraphicsPipeline(pipelineDesc);
+        if (!pipeline)
+        {
+            ADD_FAILURE() << debugName << " failed to create a production pipeline";
+            return result;
+        }
+
+        phase = "depth readback pipeline";
+        RHIPipelineRef depthReadbackPipeline;
+        RHIDescriptorSetRef depthReadbackSet;
+        RHIDescriptorSetLayoutRef depthReadbackLayout;
+        RHIPipelineLayoutRef depthReadbackPipelineLayout;
+        if (isDepthOnly)
+        {
+            RHIDescriptorSetLayoutDesc readbackLayoutDesc;
+            readbackLayoutDesc.debugName = "VulkanNativeSurfaceAlphaDepthReadbackSet";
+            readbackLayoutDesc.AddBinding(0, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+            readbackLayoutDesc.AddBinding(1, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+            depthReadbackLayout = device.CreateDescriptorSetLayout(readbackLayoutDesc);
+            RHIPipelineLayoutDesc readbackPipelineLayoutDesc;
+            readbackPipelineLayoutDesc.setLayouts = {depthReadbackLayout.Get()};
+            readbackPipelineLayoutDesc.debugName = "VulkanNativeSurfaceAlphaDepthReadbackLayout";
+            depthReadbackPipelineLayout = device.CreatePipelineLayout(readbackPipelineLayoutDesc);
+            RHIShaderRef readbackVS = CompileInlineVulkanGraphicsShader(
+                device, RHIShaderStage::Vertex, "VSMain", kDepthReadbackVertexShaderSource,
+                "vs_6_0", "VulkanNativeSurfaceAlphaDepthReadbackVS");
+            RHIShaderRef readbackPS = CompileInlineVulkanGraphicsShader(
+                device, RHIShaderStage::Pixel, "PSMain", kDepthReadbackPixelShaderSource,
+                "ps_6_0", "VulkanNativeSurfaceAlphaDepthReadbackPS");
+            if (!depthReadbackLayout || !depthReadbackPipelineLayout || !readbackVS || !readbackPS)
+            {
+                ADD_FAILURE() << debugName << " failed to create depth readback resources";
+                return result;
+            }
+            RHIGraphicsPipelineDesc readbackPipelineDesc;
+            readbackPipelineDesc.vertexShader = readbackVS.Get();
+            readbackPipelineDesc.pixelShader = readbackPS.Get();
+            readbackPipelineDesc.pipelineLayout = depthReadbackPipelineLayout.Get();
+            readbackPipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+            readbackPipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+            readbackPipelineDesc.numRenderTargets = 1;
+            readbackPipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+            readbackPipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+            readbackPipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+            readbackPipelineDesc.debugName = "VulkanNativeSurfaceAlphaDepthReadbackPipeline";
+            depthReadbackPipeline = device.CreateGraphicsPipeline(readbackPipelineDesc);
+            RHIDescriptorSetDesc readbackSetDesc;
+            readbackSetDesc.layout = depthReadbackLayout.Get();
+            readbackSetDesc.debugName = "VulkanNativeSurfaceAlphaDepthReadbackDescriptorSet";
+            readbackSetDesc.BindTexture(0, depthTargetSRV.Get());
+            readbackSetDesc.BindSampler(1, sampler.Get());
+            depthReadbackSet = device.CreateDescriptorSet(readbackSetDesc);
+            if (!depthReadbackPipeline || !depthReadbackSet)
+            {
+                ADD_FAILURE() << debugName << " failed to create a depth readback pipeline";
+                return result;
+            }
+        }
+
+        phase = "native command recording";
+        RHICommandContextRef context = device.CreateCommandContext(RHICommandQueueType::Graphics);
+        RHIFenceRef fence = device.CreateFence(0);
+        if (!context || !fence)
+        {
+            ADD_FAILURE() << debugName << " failed to create a command context or fence";
+            return result;
+        }
+        context->Begin();
+        phase = "alpha texture upload";
+        context->TextureBarrier({sourceTexture.Get(), RHIResourceState::Undefined, RHIResourceState::CopyDest});
+        RHIBufferTextureCopyDesc uploadCopy;
+        uploadCopy.bufferRowPitch = kRowPitch;
+        uploadCopy.textureRegion = {0, 0, 2, 2};
+        context->CopyBufferToTexture(textureUpload.Get(), sourceTexture.Get(), uploadCopy);
+        context->TextureBarrier({sourceTexture.Get(), RHIResourceState::CopyDest, RHIResourceState::ShaderResource});
+        context->TextureBarrier({directionalShadowArray.Get(), RHIResourceState::Undefined,
+                                 RHIResourceState::ShaderResource});
+        context->TextureBarrier({environmentCube.Get(), RHIResourceState::Undefined, RHIResourceState::ShaderResource});
+        context->TextureBarrier({froxelVolume.Get(), RHIResourceState::Undefined,
+                                 RHIResourceState::CopyDest});
+        RHIBufferTextureCopyDesc froxelUploadCopy;
+        froxelUploadCopy.bufferRowPitch = kRowPitch;
+        froxelUploadCopy.bufferImageHeight = 1u;
+        froxelUploadCopy.textureRegion = {0, 0, 1, 1};
+        froxelUploadCopy.textureDepthSlice = 0u;
+        context->CopyBufferToTexture(
+            froxelVolumeUpload.Get(), froxelVolume.Get(), froxelUploadCopy);
+        context->TextureBarrier({froxelVolume.Get(), RHIResourceState::CopyDest,
+                                 RHIResourceState::ShaderResource});
+        phase = "production target transition";
+        if (isDepthOnly)
+        {
+            context->TextureBarrier({depthTarget.Get(), RHIResourceState::Undefined, RHIResourceState::DepthWrite});
+        }
+        else
+        {
+            context->TextureBarrier({renderTarget.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
+        }
+        phase = "production render pass";
+        RHIRenderPassDesc renderPass;
+        if (isDepthOnly)
+        {
+            renderPass.SetDepthStencil(depthTargetView.Get(), RHILoadOp::Clear, RHIStoreOp::Store, 1.0f);
+        }
+        else
+        {
+            const RHIClearColor clearColor = isVelocity ? RHIClearColor{1.0f, 0.0f, 0.0f, 1.0f}
+                                                        : RHIClearColor{0.0f, 0.0f, 0.0f, 1.0f};
+            renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                          RHIStoreOp::Store, clearColor);
+        }
+        context->BeginRenderPass(renderPass);
+        phase = "production draw";
+        context->SetViewport({0.0f, 0.0f, static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent),
+                              static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent), 0.0f, 1.0f});
+        context->SetScissor({0, 0, NativeSurfaceAlphaMaskReadback::Extent,
+                             NativeSurfaceAlphaMaskReadback::Extent});
+        context->SetPipeline(pipeline.Get());
+        context->SetDescriptorSet(0, frameSet.Get());
+        context->SetDescriptorSet(2, materialSet.Get());
+        context->SetVertexBuffer(0, vertexBuffer.Get());
+        context->Draw(3u, 1u, 0u, 0u);
+        context->EndRenderPass();
+        if (isDepthOnly)
+        {
+            phase = "depth readback transition";
+            context->TextureBarrier({depthTarget.Get(), RHIResourceState::DepthWrite, RHIResourceState::ShaderResource});
+            context->TextureBarrier({renderTarget.Get(), RHIResourceState::Undefined, RHIResourceState::RenderTarget});
+            RHIRenderPassDesc depthReadbackPass;
+            depthReadbackPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                                  RHIStoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f});
+            phase = "depth sampled readback BeginRenderPass";
+            context->BeginRenderPass(depthReadbackPass);
+            context->SetViewport({0.0f, 0.0f, static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent),
+                                  static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent), 0.0f, 1.0f});
+            context->SetScissor({0, 0, NativeSurfaceAlphaMaskReadback::Extent,
+                                 NativeSurfaceAlphaMaskReadback::Extent});
+            phase = "depth sampled readback SetPipeline";
+            context->SetPipeline(depthReadbackPipeline.Get());
+            phase = "depth sampled readback SetDescriptorSet";
+            context->SetDescriptorSet(0, depthReadbackSet.Get());
+            phase = "depth sampled readback Draw";
+            context->Draw(3u, 1u, 0u, 0u);
+            context->EndRenderPass();
+        }
+        phase = "color readback copy";
+        context->TextureBarrier({renderTarget.Get(), RHIResourceState::RenderTarget, RHIResourceState::CopySource});
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::Common, RHIResourceState::CopyDest});
+        RHIBufferTextureCopyDesc readbackCopy;
+        readbackCopy.bufferRowPitch = kRowPitch;
+        readbackCopy.textureRegion = {0, 0, NativeSurfaceAlphaMaskReadback::Extent,
+                                      NativeSurfaceAlphaMaskReadback::Extent};
+        context->CopyTextureToBuffer(renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::CopyDest, RHIResourceState::Common});
+        context->End();
+
+        phase = "native command submission";
+        const uint64 submittedValue = device.SubmitCommandContext(context.Get(), fence.Get());
+        if (submittedValue == 0u)
+        {
+            ADD_FAILURE() << debugName << " failed to submit surface alpha work";
+            return result;
+        }
+        device.WaitForFence(fence.Get(), submittedValue);
+        if (fence->GetCompletedValue() < submittedValue)
+        {
+            ADD_FAILURE() << debugName << " did not complete its surface alpha fence";
+            return result;
+        }
+        phase = "native readback";
+        const auto* bytes = static_cast<const uint8*>(readbackBuffer->Map());
+        if (!bytes)
+        {
+            ADD_FAILURE() << debugName << " failed to map surface alpha readback";
+            return result;
+        }
+        for (uint32 y = 0; y < NativeSurfaceAlphaMaskReadback::Extent; ++y)
+        {
+            for (uint32 x = 0; x < NativeSurfaceAlphaMaskReadback::Extent; ++x)
+            {
+                const size_t offset = static_cast<size_t>(y) * kRowPitch + x * 4u;
+                result.coverage[y * NativeSurfaceAlphaMaskReadback::Extent + x] =
+                    isVelocity ? (bytes[offset] < 32u ? 1u : 0u)
+                               : (bytes[offset] > 200u ? 1u : 0u);
+            }
+        }
+        std::memcpy(result.centerPixel.data(),
+                    bytes + (NativeSurfaceAlphaMaskReadback::Extent / 2u) * kRowPitch +
+                        (NativeSurfaceAlphaMaskReadback::Extent / 2u) * 4u, 4u);
+        readbackBuffer->Unmap();
+        device.WaitIdle();
+        const VulkanValidationMessageCounts messagesAfter = vulkanDevice.GetValidationMessageCounts();
+        if (messagesAfter.errors != messagesBefore.errors ||
+            messagesAfter.warnings != messagesBefore.warnings)
+        {
+            ADD_FAILURE() << debugName << " emitted Vulkan validation messages; errors "
+                          << messagesBefore.errors << " -> " << messagesAfter.errors
+                          << ", warnings " << messagesBefore.warnings << " -> "
+                          << messagesAfter.warnings;
+            return result;
+        }
+        result.completed = true;
+        return result;
+        }
+        catch (const std::exception& error)
+        {
+            ADD_FAILURE() << debugName << " threw during " << phase << ": " << error.what();
+            return result;
+        }
+    }
 } // namespace
 
 // =============================================================================
@@ -174,6 +1322,7 @@ TEST(VulkanValidation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
     RenderContextConfig config;
     config.backendType = RHIBackendType::Vulkan;
     config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
     config.frameBuffering = 2;
     config.appName = "VulkanRenderContextValidation";
 
@@ -182,13 +1331,6 @@ TEST(VulkanValidation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
     {
         GTEST_SKIP() << "Vulkan RenderContext is not available";
     }
-    if (RVX::Test::IsSoftwareAdapterName(
-            context.GetDevice()->GetCapabilities().adapterName))
-    {
-        context.Shutdown();
-        GTEST_SKIP() << "Vulkan RenderContext uses a software adapter";
-    }
-
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(context.GetDevice());
     ASSERT_NE(vulkanDevice, nullptr);
     const VulkanValidationMessageCounts messagesBefore =
@@ -223,6 +1365,7 @@ TEST(VulkanValidation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     RenderContextConfig config;
     config.backendType = RHIBackendType::Vulkan;
     config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
     config.frameBuffering = 2;
     config.appName = "VulkanRenderContextQueueGatewayValidation";
 
@@ -231,13 +1374,6 @@ TEST(VulkanValidation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     {
         GTEST_SKIP() << "Vulkan RenderContext is not available";
     }
-    if (RVX::Test::IsSoftwareAdapterName(
-            context.GetDevice()->GetCapabilities().adapterName))
-    {
-        context.Shutdown();
-        GTEST_SKIP() << "Vulkan RenderContext uses a software adapter";
-    }
-
     ASSERT_TRUE(
         context.GetDevice()->GetCapabilities().supportsQueueSubmissionPlan);
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(context.GetDevice());
@@ -286,6 +1422,26 @@ TEST(VulkanValidation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     std::vector<RHICommandContextRef> ownedContexts;
     ownedContexts.push_back(std::move(computeContext));
     ownedContexts.push_back(std::move(graphTerminalContext));
+    size_t plannedContextCount = 0;
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        plannedContextCount += batch.contexts.size();
+    }
+    ASSERT_EQ(ownedContexts.size(), plannedContextCount);
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        for (RHICommandContext* plannedContext : batch.contexts)
+        {
+            const bool owned = std::any_of(
+                ownedContexts.begin(),
+                ownedContexts.end(),
+                [plannedContext](const RHICommandContextRef& context)
+                {
+                    return context.Get() == plannedContext;
+                });
+            ASSERT_TRUE(owned);
+        }
+    }
     ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
                                              std::move(ownedContexts)));
 
@@ -319,6 +1475,7 @@ TEST(VulkanValidation, RenderContextAbortFrameDoesNotStarveHeadlessFrameFence)
     RenderContextConfig config;
     config.backendType = RHIBackendType::Vulkan;
     config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
     config.frameBuffering = 2;
     config.appName = "VulkanRenderContextAbortValidation";
 
@@ -327,20 +1484,13 @@ TEST(VulkanValidation, RenderContextAbortFrameDoesNotStarveHeadlessFrameFence)
     {
         GTEST_SKIP() << "Vulkan RenderContext is not available";
     }
-    if (RVX::Test::IsSoftwareAdapterName(
-            context.GetDevice()->GetCapabilities().adapterName))
-    {
-        context.Shutdown();
-        GTEST_SKIP() << "Vulkan RenderContext uses a software adapter";
-    }
-
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(context.GetDevice());
     ASSERT_NE(vulkanDevice, nullptr);
     const VulkanValidationMessageCounts messagesBefore =
         vulkanDevice->GetValidationMessageCounts();
 
     ASSERT_TRUE(context.BeginFrame());
-    context.AbortFrame();
+    EXPECT_TRUE(context.AbortFrame());
 
     constexpr uint32 completedFrameCount = 4;
     for (uint32 frame = 0; frame < completedFrameCount; ++frame)
@@ -359,12 +1509,65 @@ TEST(VulkanValidation, RenderContextAbortFrameDoesNotStarveHeadlessFrameFence)
     context.Shutdown();
 }
 
+TEST(VulkanValidation,
+     RenderContextAbortFrameRetiresAcquiredPresentationImageBeforeNextFrame)
+{
+    HiddenVulkanPresentationWindow window;
+    if (!window.Initialize(64u, 64u))
+    {
+        GTEST_SKIP() << "A hidden GLFW Vulkan presentation surface is unavailable";
+    }
+
+    const HAL::NativeSurfaceDesc surface = window.Capture(1u);
+    ASSERT_TRUE(IsNativeSurfaceValidFor(surface, RHIBackendType::Vulkan));
+
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::Vulkan;
+    config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
+    config.frameBuffering = 2;
+    config.appName = "VulkanRenderContextAcquireAbortValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config, surface))
+    {
+        GTEST_SKIP() << "Vulkan RenderContext is not available for presentation";
+    }
+    ASSERT_TRUE(context.CreateSwapChain(surface));
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(context.GetDevice());
+    ASSERT_NE(vulkanDevice, nullptr);
+    const VulkanValidationMessageCounts messagesBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    ASSERT_TRUE(context.BeginFrame());
+    ASSERT_NE(context.GetCurrentBackBuffer(), nullptr);
+    ASSERT_TRUE(context.HasAcquiredPresentationImage());
+
+    // AbortFrame must submit the discard-to-present transition, present the
+    // acquired image, and consume the acquire semaphore before reusing the
+    // frame slot.
+    ASSERT_TRUE(context.AbortFrame());
+    EXPECT_FALSE(context.HasAcquiredPresentationImage());
+
+    ASSERT_TRUE(context.BeginFrame());
+    EXPECT_FALSE(context.HasAcquiredPresentationImage());
+    EXPECT_TRUE(context.AbortFrame());
+    context.WaitIdle();
+
+    const VulkanValidationMessageCounts messagesAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(messagesAfter.errors, messagesBefore.errors);
+    EXPECT_EQ(messagesAfter.warnings, messagesBefore.warnings);
+    context.Shutdown();
+}
+
 TEST(VulkanValidation, DeviceCreation)
 {
     RHIDeviceDesc desc;
     desc.enableDebugLayer = true;
 
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::Vulkan);
 }
@@ -372,7 +1575,7 @@ TEST(VulkanValidation, DeviceCreation)
 TEST(VulkanValidation, DriverIdentityMatchesPhysicalDeviceDriverEvidence)
 {
     RHIDeviceDesc desc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
@@ -425,23 +1628,282 @@ TEST(VulkanValidation, DriverIdentityMatchesPhysicalDeviceDriverEvidence)
     EXPECT_EQ(reportedVersion, expectedVersion);
 }
 
-TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementation)
+TEST(VulkanValidation,
+     RayTracingCapabilitiesPublishCompleteOrDisabledLogicalDeviceState)
 {
     RHIDeviceDesc desc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
 
     const RHICapabilities& caps = device->GetCapabilities();
     EXPECT_FALSE(caps.supportsMeshShaders);
-    EXPECT_FALSE(caps.supportsRaytracing);
-    EXPECT_FALSE(caps.supportsRaytracingPipeline);
     EXPECT_FALSE(caps.supportsRayQuery);
-    EXPECT_FALSE(caps.supportsAccelerationStructureUpdate);
-    EXPECT_FALSE(caps.supportsAccelerationStructureCompaction);
-    EXPECT_EQ(caps.maxRayRecursionDepth, 0u);
-    EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
-    EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
-    EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+    EXPECT_EQ(caps.supportsAccelerationStructureCompaction,
+              caps.supportsRaytracing);
+
+    // Ray tracing is an all-or-nothing logical-device capability. A raster-only
+    // adapter must remain usable, while an enabled RT path cannot publish a
+    // partial API surface with missing pipeline/update support or entry points.
+    EXPECT_EQ(caps.supportsRaytracing, caps.supportsRaytracingPipeline);
+    EXPECT_EQ(caps.supportsRaytracing,
+              caps.supportsAccelerationStructureUpdate);
+    EXPECT_EQ(caps.supportsRaytracing, vulkanDevice->IsRayTracingEnabled());
+
+    if (caps.supportsRaytracing)
+    {
+        EXPECT_TRUE(vulkanDevice->IsBufferDeviceAddressEnabled());
+        EXPECT_TRUE(vulkanDevice->GetRayTracingFunctions().IsComplete());
+        EXPECT_TRUE(caps.supportsAccelerationStructureCompaction);
+        EXPECT_GT(vulkanDevice->GetAccelerationStructureProperties()
+                      .minAccelerationStructureScratchOffsetAlignment,
+                  0u);
+        EXPECT_GT(caps.maxRayRecursionDepth, 0u);
+        EXPECT_GT(caps.shaderGroupHandleSize, 0u);
+        EXPECT_GT(caps.shaderGroupHandleAlignment, 0u);
+        EXPECT_GT(caps.shaderTableBaseAlignment, 0u);
+
+        RHIBufferDesc unsupportedVertexBufferDesc;
+        unsupportedVertexBufferDesc.size = 12u;
+        unsupportedVertexBufferDesc.usage =
+            RHIBufferUsage::AccelerationStructureInput |
+            RHIBufferUsage::DeviceAddress;
+        unsupportedVertexBufferDesc.memoryType = RHIMemoryType::Upload;
+        unsupportedVertexBufferDesc.stride = 4u;
+        unsupportedVertexBufferDesc.debugName =
+            "VulkanUnsupportedRayTracingVertexFormat";
+        RHIBufferRef unsupportedVertexBuffer =
+            device->CreateBuffer(unsupportedVertexBufferDesc);
+        ASSERT_NE(unsupportedVertexBuffer.Get(), nullptr);
+
+        RHIRayTracingGeometryDesc unsupportedGeometry;
+        unsupportedGeometry.type = RHIRayTracingGeometryType::Triangles;
+        unsupportedGeometry.triangles.vertexBuffer =
+            unsupportedVertexBuffer.Get();
+        unsupportedGeometry.triangles.vertexCount = 3u;
+        unsupportedGeometry.triangles.vertexStride = 4u;
+        unsupportedGeometry.triangles.vertexFormat = RHIFormat::RGBA8_UNORM;
+        RHIBottomLevelASDesc unsupportedBlasDesc;
+        unsupportedBlasDesc.geometries.push_back(unsupportedGeometry);
+        EXPECT_FALSE(
+            device->GetBottomLevelASBuildSizes(unsupportedBlasDesc).IsValid())
+            << "Vulkan must reject formats outside the declared RGB32_FLOAT "
+               "BLAS position contract before reaching a native build";
+
+        RHIAccelerationStructureCompactedSizeQueryDesc invalidQueryDesc;
+        invalidQueryDesc.count = 0;
+        EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                      invalidQueryDesc).Get(),
+                  nullptr);
+
+        invalidQueryDesc.count = 1;
+        invalidQueryDesc.queueType = RHICommandQueueType::Copy;
+        EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                      invalidQueryDesc).Get(),
+                  nullptr);
+
+        RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+        queryDesc.count = 2;
+        queryDesc.queueType = RHICommandQueueType::Graphics;
+        queryDesc.debugName = "VulkanCompactedSizeQuery";
+        auto compactedSizeQuery =
+            device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+        ASSERT_NE(compactedSizeQuery.Get(), nullptr);
+        EXPECT_EQ(compactedSizeQuery->GetCount(), queryDesc.count);
+        EXPECT_EQ(compactedSizeQuery->GetQueueType(), queryDesc.queueType);
+    }
+    else
+    {
+        EXPECT_FALSE(vulkanDevice->GetRayTracingFunctions().IsComplete());
+        EXPECT_EQ(caps.maxRayRecursionDepth, 0u);
+        EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
+        EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
+        EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+    }
+}
+
+TEST(VulkanValidation,
+     RayTracingAccelerationStructureDeviceLimitsRejectExcessiveInputs)
+{
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    properties.maxGeometryCount = 2;
+    properties.maxPrimitiveCount = 4;
+    properties.maxInstanceCount = 2;
+
+    const auto MakeTriangleGeometry = [](uint32 vertexCount)
+    {
+        RHIRayTracingGeometryDesc geometry;
+        geometry.type = RHIRayTracingGeometryType::Triangles;
+        geometry.triangles.vertexCount = vertexCount;
+        return geometry;
+    };
+
+    RHIBottomLevelASDesc validBlas;
+    validBlas.geometries.push_back(MakeTriangleGeometry(6));
+    validBlas.geometries.push_back(MakeTriangleGeometry(6));
+    EXPECT_TRUE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, validBlas, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyGeometries = validBlas;
+    tooManyGeometries.geometries.push_back(MakeTriangleGeometry(3));
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyGeometries, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyPrimitives = validBlas;
+    tooManyPrimitives.geometries[1] = MakeTriangleGeometry(9);
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyPrimitives, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyAABBs;
+    RHIRayTracingGeometryDesc aabbs;
+    aabbs.type = RHIRayTracingGeometryType::AABBs;
+    aabbs.aabbs.count = 5;
+    tooManyAABBs.geometries.push_back(aabbs);
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyAABBs, "test BLAS limit"));
+
+    RHITopLevelASDesc validTlas;
+    validTlas.instances.resize(2);
+    EXPECT_TRUE(ValidateVulkanTopLevelASDeviceLimits(
+        properties, validTlas, "test TLAS limit"));
+
+    RHITopLevelASDesc tooManyInstances = validTlas;
+    tooManyInstances.instances.resize(3);
+    EXPECT_FALSE(ValidateVulkanTopLevelASDeviceLimits(
+        properties, tooManyInstances, "test TLAS limit"));
+}
+
+TEST(VulkanValidation,
+     RayTracingUpdateSignatureRejectsEveryVulkanInvariantDifference)
+{
+    using Compatibility =
+        VulkanAccelerationStructureUpdateCompatibility;
+
+    VulkanAccelerationStructureBuildSignature triangleSource;
+    triangleSource.type = RHIAccelerationStructureType::BottomLevel;
+    triangleSource.buildFlags =
+        RHIAccelerationStructureBuildFlags::AllowUpdate |
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    VulkanAccelerationStructureGeometryBuildSignature triangle;
+    triangle.type =
+        VulkanAccelerationStructureSignatureGeometryType::Triangles;
+    triangle.flags = RHIRayTracingGeometryFlags::Opaque;
+    triangle.primitiveCount = 1;
+    triangle.vertexFormat = RHIFormat::RGB32_FLOAT;
+    triangle.maxVertex = 2;
+    triangle.indexFormat = RHIFormat::Unknown;
+    triangle.hasTransform = false;
+    triangleSource.geometries.push_back(triangle);
+
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  triangleSource, triangleSource),
+              Compatibility::Compatible);
+
+    const auto ExpectTriangleMismatch =
+        [&triangleSource](auto&& mutate,
+                          Compatibility expected,
+                          const char* field)
+    {
+        SCOPED_TRACE(field);
+        VulkanAccelerationStructureBuildSignature update = triangleSource;
+        mutate(update);
+        EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                      triangleSource, update),
+                  expected);
+    };
+
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.type = RHIAccelerationStructureType::TopLevel;
+        },
+        Compatibility::AccelerationStructureTypeMismatch,
+        "acceleration-structure type");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.buildFlags =
+                RHIAccelerationStructureBuildFlags::AllowUpdate |
+                RHIAccelerationStructureBuildFlags::PreferFastBuild;
+        },
+        Compatibility::BuildFlagsMismatch,
+        "build flags");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries.clear(); },
+        Compatibility::GeometryCountMismatch,
+        "geometry count");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].type =
+                VulkanAccelerationStructureSignatureGeometryType::AABBs;
+        },
+        Compatibility::GeometryTypeMismatch,
+        "geometry type");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].flags = RHIRayTracingGeometryFlags::None;
+        },
+        Compatibility::GeometryFlagsMismatch,
+        "geometry flags");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].primitiveCount = 2; },
+        Compatibility::PrimitiveCountMismatch,
+        "primitive count");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].vertexFormat = RHIFormat::RG32_FLOAT;
+        },
+        Compatibility::TriangleVertexFormatMismatch,
+        "triangle vertex format");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].maxVertex = 5; },
+        Compatibility::TriangleMaxVertexMismatch,
+        "triangle max vertex");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].indexFormat = RHIFormat::R16_UINT;
+        },
+        Compatibility::TriangleIndexFormatMismatch,
+        "triangle index type");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].hasTransform = true; },
+        Compatibility::TriangleTransformPresenceMismatch,
+        "triangle transform presence");
+
+    VulkanAccelerationStructureBuildSignature aabbSource = triangleSource;
+    aabbSource.geometries[0] = {};
+    aabbSource.geometries[0].type =
+        VulkanAccelerationStructureSignatureGeometryType::AABBs;
+    aabbSource.geometries[0].flags = RHIRayTracingGeometryFlags::Opaque;
+    aabbSource.geometries[0].primitiveCount = 1;
+    aabbSource.geometries[0].aabbStride = 24;
+    VulkanAccelerationStructureBuildSignature aabbUpdate = aabbSource;
+    aabbUpdate.geometries[0].aabbStride = 32;
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  aabbSource, aabbUpdate),
+              Compatibility::AABBStrideMismatch);
+
+    VulkanAccelerationStructureBuildSignature instanceSource;
+    instanceSource.type = RHIAccelerationStructureType::TopLevel;
+    instanceSource.buildFlags = triangleSource.buildFlags;
+    VulkanAccelerationStructureGeometryBuildSignature instances;
+    instances.type =
+        VulkanAccelerationStructureSignatureGeometryType::Instances;
+    instances.primitiveCount = 1;
+    instances.instancesArrayOfPointers = false;
+    instanceSource.geometries.push_back(instances);
+    VulkanAccelerationStructureBuildSignature instanceUpdate = instanceSource;
+    instanceUpdate.geometries[0].instancesArrayOfPointers = true;
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  instanceSource, instanceUpdate),
+              Compatibility::InstancesArrayOfPointersMismatch);
 }
 
 TEST(VulkanValidation, OptionalShaderBarrierStagesRequireEnabledCapabilities)
@@ -550,6 +2012,7 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
 {
     VulkanRequiredDeviceFeatureSupport supported;
     supported.apiVersion = VK_API_VERSION_1_3;
+    supported.independentBlend = true;
     supported.timelineSemaphore = true;
     supported.dynamicRendering = true;
     supported.synchronization2 = true;
@@ -558,6 +2021,11 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
     VulkanRequiredDeviceFeatureSupport missingApi = supported;
     missingApi.apiVersion = VK_API_VERSION_1_2;
     EXPECT_FALSE(IsVulkanRequiredDeviceConfigurationSupported(missingApi));
+
+    VulkanRequiredDeviceFeatureSupport missingIndependentBlend = supported;
+    missingIndependentBlend.independentBlend = false;
+    EXPECT_FALSE(
+        IsVulkanRequiredDeviceConfigurationSupported(missingIndependentBlend));
 
     VulkanRequiredDeviceFeatureSupport missingTimeline = supported;
     missingTimeline.timelineSemaphore = false;
@@ -572,6 +2040,70 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
     missingSynchronization2.synchronization2 = false;
     EXPECT_FALSE(
         IsVulkanRequiredDeviceConfigurationSupported(missingSynchronization2));
+}
+
+TEST(VulkanValidation,
+     ProductionRayTracingFeatureSelectionRequiresDescriptorIndexingContract)
+{
+    VulkanRayTracingFeatureSupport supported;
+    supported.extensionsAvailable = true;
+    supported.bufferDeviceAddress = true;
+    supported.descriptorIndexing = true;
+    supported.descriptorBindingPartiallyBound = true;
+    supported.runtimeDescriptorArray = true;
+    supported.shaderSampledImageArrayNonUniformIndexing = true;
+    supported.shaderStorageBufferArrayNonUniformIndexing = true;
+    supported.accelerationStructure = true;
+    supported.rayTracingPipeline = true;
+    EXPECT_TRUE(IsVulkanRayTracingFeatureSetSupported(supported));
+
+    const auto expectRejectedWhenMissing =
+        [&supported](bool VulkanRayTracingFeatureSupport::* feature,
+                     const char* featureName)
+    {
+        SCOPED_TRACE(featureName);
+        VulkanRayTracingFeatureSupport missing = supported;
+        missing.*feature = false;
+        EXPECT_FALSE(IsVulkanRayTracingFeatureSetSupported(missing));
+    };
+
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::extensionsAvailable,
+        "extensionsAvailable");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::bufferDeviceAddress,
+        "bufferDeviceAddress");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::descriptorIndexing,
+        "descriptorIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::descriptorBindingPartiallyBound,
+        "descriptorBindingPartiallyBound");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::runtimeDescriptorArray,
+        "runtimeDescriptorArray");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::
+            shaderSampledImageArrayNonUniformIndexing,
+        "shaderSampledImageArrayNonUniformIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::
+            shaderStorageBufferArrayNonUniformIndexing,
+        "shaderStorageBufferArrayNonUniformIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::accelerationStructure,
+        "accelerationStructure");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::rayTracingPipeline,
+        "rayTracingPipeline");
+}
+
+TEST(VulkanValidation, BlendAttachmentSelectionHonorsIndependentBlendContract)
+{
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(false, 0u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(false, 3u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(true, 0u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(true, 3u), 3u);
 }
 
 TEST(VulkanValidation, OptionalMemoryBudgetExtensionSelectionReflectsAvailability)
@@ -603,7 +2135,7 @@ TEST(VulkanValidation, IndexedIndirectCountCapabilityReflectsEnabledDispatch)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
@@ -627,11 +2159,48 @@ TEST(VulkanValidation, IndexedIndirectCountCapabilityReflectsEnabledDispatch)
     }
 }
 
+TEST(VulkanValidation, IndependentFloatBlendCapabilitiesMatchNativeQueries)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    EXPECT_TRUE(capabilities.supportsIndependentColorAttachmentBlend);
+
+    constexpr std::array<std::pair<RHIFormat, VkFormat>, 2> formats = {{
+        {RHIFormat::R16_FLOAT, VK_FORMAT_R16_SFLOAT},
+        {RHIFormat::RGBA16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT},
+    }};
+    for (const auto& [format, nativeFormat] : formats)
+    {
+        VkFormatProperties nativeProperties{};
+        vkGetPhysicalDeviceFormatProperties(
+            vulkanDevice->GetPhysicalDevice(),
+            nativeFormat,
+            &nativeProperties);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachment(format),
+            (nativeProperties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachmentBlend(format),
+            (nativeProperties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0 &&
+                (nativeProperties.optimalTilingFeatures &
+                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0);
+    }
+}
+
 TEST(VulkanValidation, PublishedCapabilitiesReflectEnabledVulkanImplementationState)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
@@ -660,7 +2229,7 @@ TEST(VulkanValidation, ValidationLayerCleanForRawGraphicsSubmitAndPlacedBuffer)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
     ASSERT_NE(vulkanDevice, nullptr);
@@ -697,7 +2266,7 @@ TEST(VulkanValidation, DynamicRenderingHonorsAndBoundsChecksRenderArea)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
     ASSERT_NE(vulkanDevice, nullptr);
@@ -795,7 +2364,7 @@ TEST(VulkanValidation, NativeIndexedIndirectCommandsRecordOnAvailablePath)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
     ASSERT_NE(vulkanDevice, nullptr);
@@ -988,6 +2557,165 @@ TEST(VulkanValidation, NativeIndexedIndirectCommandsRecordOnAvailablePath)
 }
 
 TEST(VulkanValidation,
+     NativeBackCullMirroringAndNoCullFrontFaceProduceExpectedPixels)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    // PipelineCache resolves this exact policy for Vulkan. The engine's
+    // explicit Vulkan clip-Y convention restores the cross-backend canonical
+    // counter-clockwise RHI contract, and mirrored transforms invert it.
+    const NativeCullRasterReadback canonicalBack = ExecuteNativeCullRasterScenario(
+        *device,
+        *vulkanDevice,
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::Back,
+        false,
+        "VulkanCanonicalBackCull");
+    ASSERT_TRUE(canonicalBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(canonicalBack));
+
+    const NativeCullRasterReadback mirroredBack = ExecuteNativeCullRasterScenario(
+        *device,
+        *vulkanDevice,
+        RHIFrontFace::Clockwise,
+        RHICullMode::Back,
+        true,
+        "VulkanMirroredBackCull");
+    ASSERT_TRUE(mirroredBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(mirroredBack));
+
+    const NativeCullRasterReadback noCullFront = ExecuteNativeCullRasterScenario(
+        *device,
+        *vulkanDevice,
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::None,
+        false,
+        "VulkanNoCullFrontFace");
+    ASSERT_TRUE(noCullFront.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(noCullFront));
+
+    const NativeCullRasterReadback noCullBack = ExecuteNativeCullRasterScenario(
+        *device,
+        *vulkanDevice,
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::None,
+        true,
+        "VulkanNoCullBackFace");
+    ASSERT_TRUE(noCullBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterRed(noCullBack));
+}
+
+TEST(VulkanValidation, NativeMaterialConstantReconstructionCopiesEveryField)
+{
+    RHIDeviceDesc desc;
+    desc.enableDebugLayer = true;
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, desc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* native = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(native, nullptr);
+    const auto correct = ExecuteNativeSurfaceAlphaMaskScenario(
+        *device, *native, "DefaultLit.hlsl", "PSMaterialCopyProbe", false, "VulkanMaterialCopy");
+    const auto missing = ExecuteNativeSurfaceAlphaMaskScenario(
+        *device, *native, "DefaultLit.hlsl", "PSMaterialCopyMissingFieldProbe", false, "VulkanMaterialCopyMissing");
+    ASSERT_TRUE(correct.completed);
+    ASSERT_TRUE(missing.completed);
+    EXPECT_EQ(correct.centerPixel, (std::array<uint8, 4>{255, 255, 255, 255}));
+    EXPECT_EQ(missing.centerPixel, (std::array<uint8, 4>{0, 255, 0, 255}));
+}
+
+TEST(VulkanValidation,
+     NativeSurfaceMaterialAlphaSilhouetteMatchesMainDepthShadowAndVelocityConsumers)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    NativeSurfaceAlphaMaskReadback main;
+    NativeSurfaceAlphaMaskReadback depth;
+    NativeSurfaceAlphaMaskReadback shadow;
+    NativeSurfaceAlphaMaskReadback velocity;
+    NativeSurfaceAlphaMaskReadback uv0Control;
+    try
+    {
+        main = ExecuteNativeSurfaceAlphaMaskScenario(
+            *device, *vulkanDevice, "DefaultLit.hlsl", "PSMain", true,
+            "VulkanSurfaceAlphaMain");
+    }
+    catch (const std::exception& error)
+    {
+        FAIL() << "Vulkan main surface alpha path threw: " << error.what();
+    }
+    try
+    {
+        depth = ExecuteNativeSurfaceAlphaMaskScenario(
+            *device, *vulkanDevice, "DepthOnly.hlsl", "PSMainMasked", true,
+            "VulkanSurfaceAlphaDepth");
+    }
+    catch (const std::exception& error)
+    {
+        FAIL() << "Vulkan depth surface alpha path threw: " << error.what();
+    }
+    // Shadow shares the exact production masked-depth contract. Execute it as
+    // a separate native submission so its evidence remains independently named.
+    try
+    {
+        shadow = ExecuteNativeSurfaceAlphaMaskScenario(
+            *device, *vulkanDevice, "DepthOnly.hlsl", "PSMainMasked", true,
+            "VulkanSurfaceAlphaShadow");
+    }
+    catch (const std::exception& error)
+    {
+        FAIL() << "Vulkan shadow surface alpha path threw: " << error.what();
+    }
+    try
+    {
+        velocity = ExecuteNativeSurfaceAlphaMaskScenario(
+            *device, *vulkanDevice, "ObjectVelocity.hlsl", "PSMainMasked", true,
+            "VulkanSurfaceAlphaVelocity");
+    }
+    catch (const std::exception& error)
+    {
+        FAIL() << "Vulkan velocity surface alpha path threw: " << error.what();
+    }
+    try
+    {
+        uv0Control = ExecuteNativeSurfaceAlphaMaskScenario(
+            *device, *vulkanDevice, "DefaultLit.hlsl", "PSMain", false,
+            "VulkanSurfaceAlphaUV0Control");
+    }
+    catch (const std::exception& error)
+    {
+        FAIL() << "Vulkan UV0 control surface alpha path threw: " << error.what();
+    }
+
+    ASSERT_TRUE(main.completed);
+    ASSERT_TRUE(depth.completed);
+    ASSERT_TRUE(shadow.completed);
+    ASSERT_TRUE(velocity.completed);
+    ASSERT_TRUE(uv0Control.completed);
+    EXPECT_EQ(main.coverage, depth.coverage);
+    EXPECT_EQ(main.coverage, shadow.coverage);
+    EXPECT_EQ(main.coverage, velocity.coverage);
+    EXPECT_NE(main.coverage, uv0Control.coverage);
+    const size_t coveredPixelCount = static_cast<size_t>(std::count(
+        main.coverage.begin(), main.coverage.end(), static_cast<uint8>(1u)));
+    EXPECT_GT(coveredPixelCount, NativeSurfaceAlphaMaskReadback::Extent);
+    EXPECT_LT(coveredPixelCount,
+              NativeSurfaceAlphaMaskReadback::Extent *
+                  (NativeSurfaceAlphaMaskReadback::Extent - 1u));
+}
+
+TEST(VulkanValidation,
      IndexedIndirectCountFirstInstanceRasterMatchesDirectInstanceInput)
 {
     constexpr uint32 kWidth = 64;
@@ -997,20 +2725,15 @@ TEST(VulkanValidation,
 
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
     ASSERT_NE(vulkanDevice, nullptr);
 
-    const RHIIndexedIndirectExecutionCapabilities& indirectCapabilities =
-        device->GetCapabilities().indexedIndirectExecution;
-    if (!indirectCapabilities.supportsFirstInstance ||
-        !indirectCapabilities.supportsCountBuffer ||
-        indirectCapabilities.maxDrawCount < 3u)
+    if (!CanRunOptionalIndexedIndirectQualification(
+            device->GetCapabilities()))
     {
-        GTEST_SKIP() << "Vulkan drawIndirectFirstInstance/count support or its "
-                     << "three-draw limit is unavailable; the test intentionally "
-                     << "has no fixed-count fallback.";
+        return;
     }
 
     constexpr const char* kVertexShaderSource = R"(
@@ -1338,7 +3061,7 @@ TEST(VulkanValidation, InvalidIndexedIndirectCallsAreRejectedBeforeNativeRecordi
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
@@ -1413,7 +3136,7 @@ TEST(VulkanValidation, InvalidIndexedIndirectCallsAreRejectedBeforeNativeRecordi
 TEST(VulkanValidation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIBufferDesc bufferDesc;
@@ -1460,7 +3183,7 @@ TEST(VulkanValidation, RHIBufferUploadUsesObservableCommitAndPreflightsBounds)
 TEST(VulkanValidation, UploadBuffer)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIBufferDesc bufferDesc;
@@ -1485,7 +3208,7 @@ TEST(VulkanValidation, UploadBuffer)
 TEST(VulkanValidation, RangeMappedWriteReportsActualHostVisibility)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIBufferDesc bufferDesc;
@@ -1567,7 +3290,7 @@ TEST(VulkanValidation, RangeMappedWriteReportsActualHostVisibility)
 TEST(VulkanValidation, StagingCommitWriteRejectsInvalidAccessAndEndsMappedAccess)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIStagingBufferDesc desc;
@@ -1588,7 +3311,7 @@ TEST(VulkanValidation, StagingMapUsesAllocationBaseForUnalignedSubranges)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -1730,7 +3453,7 @@ TEST(VulkanValidation, HostMemorySynchronizationContract)
 TEST(VulkanValidation, HostVisibleBufferRoundTrip)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -1802,7 +3525,7 @@ TEST(VulkanValidation, PlacedHostVisibleBuffersShareTheirHeapMapping)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -1898,7 +3621,7 @@ TEST(VulkanValidation, PlacedBufferRejectsMismatchedHeapAndMemoryTypes)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -1950,7 +3673,7 @@ TEST(VulkanValidation, PlacedBufferRejectsInvalidBindOffsets)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -1990,7 +3713,7 @@ TEST(VulkanValidation, PlacedBufferRejectsInvalidBindOffsets)
 TEST(VulkanValidation, HostVisibleHeapSynchronizationRejectsInvalidRange)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIHeapDesc heapDesc;
@@ -2015,7 +3738,7 @@ TEST(VulkanValidation, HostVisibleHeapSynchronizationRejectsInvalidRange)
 TEST(VulkanValidation, TextureCreation)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto textureDesc = RHITextureDesc::Texture2D(512, 512, RHIFormat::RGBA8_UNORM);
@@ -2026,10 +3749,70 @@ TEST(VulkanValidation, TextureCreation)
     EXPECT_EQ(texture->GetHeight(), 512u);
 }
 
+TEST(VulkanValidation, TextureCopyAspectContractFailsClosed)
+{
+    const VulkanTextureCopyContract colorCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::RGBA8_UNORM,
+            RHIFormat::RGBA8_UNORM);
+    EXPECT_TRUE(colorCopy.IsValid());
+    EXPECT_EQ(colorCopy.status, VulkanTextureCopyContractStatus::Compatible);
+    EXPECT_EQ(colorCopy.aspectMask, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    const VulkanTextureCopyContract depthCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D32_FLOAT,
+            RHIFormat::D32_FLOAT);
+    EXPECT_TRUE(depthCopy.IsValid());
+    EXPECT_EQ(depthCopy.status, VulkanTextureCopyContractStatus::Compatible);
+    EXPECT_EQ(depthCopy.aspectMask, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    const VulkanTextureCopyContract aspectMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D32_FLOAT,
+            RHIFormat::RGBA8_UNORM);
+    EXPECT_FALSE(aspectMismatch.IsValid());
+    EXPECT_EQ(aspectMismatch.status,
+              VulkanTextureCopyContractStatus::AspectMismatch);
+    EXPECT_EQ(aspectMismatch.aspectMask, 0u);
+
+    const VulkanTextureCopyContract colorFormatMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::RGBA8_UNORM,
+            RHIFormat::BGRA8_UNORM);
+    EXPECT_FALSE(colorFormatMismatch.IsValid());
+    EXPECT_EQ(colorFormatMismatch.status,
+              VulkanTextureCopyContractStatus::FormatMismatch);
+
+    const VulkanTextureCopyContract depthFormatMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D16_UNORM,
+            RHIFormat::D32_FLOAT);
+    EXPECT_FALSE(depthFormatMismatch.IsValid());
+    EXPECT_EQ(depthFormatMismatch.status,
+              VulkanTextureCopyContractStatus::FormatMismatch);
+
+    const VulkanTextureCopyContract unknownFormat =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::Unknown,
+            RHIFormat::Unknown);
+    EXPECT_FALSE(unknownFormat.IsValid());
+    EXPECT_EQ(unknownFormat.status,
+              VulkanTextureCopyContractStatus::UnknownFormat);
+
+    const VulkanTextureCopyContract depthStencilCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D24_UNORM_S8_UINT,
+            RHIFormat::D24_UNORM_S8_UINT);
+    EXPECT_FALSE(depthStencilCopy.IsValid());
+    EXPECT_EQ(depthStencilCopy.status,
+              VulkanTextureCopyContractStatus::UnsupportedStencilAspect);
+}
+
 TEST(VulkanValidation, RenderTargetTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto textureDesc = RHITextureDesc::RenderTarget(1920, 1080, RHIFormat::RGBA16_FLOAT);
@@ -2042,7 +3825,7 @@ TEST(VulkanValidation, RenderTargetTexture)
 TEST(VulkanValidation, DepthStencilTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto textureDesc = RHITextureDesc::DepthStencil(1920, 1080, RHIFormat::D24_UNORM_S8_UINT);
@@ -2055,7 +3838,7 @@ TEST(VulkanValidation, DepthStencilTexture)
 TEST(VulkanValidation, TextureView)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto textureDesc = RHITextureDesc::Texture2D(256, 256, RHIFormat::RGBA8_UNORM);
@@ -2071,7 +3854,7 @@ TEST(VulkanValidation, TextureView)
 TEST(VulkanValidation, TextureViewRolesAreExplicit)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto sampledTextureDesc = RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM);
@@ -2102,7 +3885,7 @@ TEST(VulkanValidation, TextureViewRolesAreExplicit)
 TEST(VulkanValidation, Sampler)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHISamplerDesc samplerDesc;
@@ -2117,7 +3900,7 @@ TEST(VulkanValidation, Sampler)
 TEST(VulkanValidation, CommandContext)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
@@ -2133,7 +3916,7 @@ TEST(VulkanValidation, CommandContext)
 TEST(VulkanValidation, QueryCapabilitiesReportUnsupportedUntilImplemented)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     const RHICapabilities& caps = device->GetCapabilities();
@@ -2154,7 +3937,7 @@ TEST(VulkanValidation, QueryCapabilitiesReportUnsupportedUntilImplemented)
 TEST(VulkanValidation, SynchronizationCapabilities)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     const RHICapabilities& caps = device->GetCapabilities();
@@ -2215,7 +3998,7 @@ TEST(VulkanValidation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
 
@@ -2269,15 +4052,16 @@ TEST(VulkanValidation,
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
-    if (vulkanDevice->GetComputeQueueFamily() ==
-        vulkanDevice->GetGraphicsQueueFamily())
+    if (!CanRunOptionalDedicatedComputeQualification(
+            *vulkanDevice,
+            device->GetCapabilities()))
     {
-        GTEST_SKIP() << "Adapter has no dedicated Compute queue family";
+        return;
     }
     const VulkanValidationMessageCounts validationBefore =
         vulkanDevice->GetValidationMessageCounts();
@@ -2378,7 +4162,7 @@ TEST(VulkanValidation, UploadGatewayTransfersCopyOwnershipToGraphics)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
@@ -2415,15 +4199,16 @@ TEST(VulkanValidation, UploadGatewayTransfersCopyOwnershipToGraphics)
 TEST(VulkanValidation, PairedBufferOwnershipTransferComputeToGraphics)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
     ASSERT_NE(vulkanDevice, nullptr);
-    if (vulkanDevice->GetComputeQueueFamily() ==
-        vulkanDevice->GetGraphicsQueueFamily())
+    if (!CanRunOptionalDedicatedComputeQualification(
+            *vulkanDevice,
+            device->GetCapabilities()))
     {
-        GTEST_SKIP() << "Adapter has no dedicated Compute queue family";
+        return;
     }
 
     const VulkanValidationMessageCounts validationBefore =
@@ -2520,7 +4305,7 @@ TEST(VulkanValidation, PairedBufferOwnershipTransferComputeToGraphics)
 TEST(VulkanValidation, DescriptorAndBarrierCapabilities)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     const RHICapabilities& caps = device->GetCapabilities();
@@ -2536,7 +4321,7 @@ TEST(VulkanValidation, DescriptorAndBarrierCapabilities)
 TEST(VulkanValidation, DescriptorValidationRejectsInvalidInputs)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIDescriptorSetLayoutDesc duplicateLayout;
@@ -2568,6 +4353,27 @@ TEST(VulkanValidation, DescriptorValidationRejectsInvalidInputs)
     ASSERT_NE(nullptr, set.Get());
     EXPECT_TRUE(set->Update({}));
 
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    RHIDescriptorSetDesc zeroRangeSetDesc;
+    zeroRangeSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 0);
+    EXPECT_EQ(device->CreateDescriptorSet(zeroRangeSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetDesc offsetPastEndSetDesc;
+    offsetPastEndSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 256);
+    EXPECT_EQ(device->CreateDescriptorSet(offsetPastEndSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetDesc rangePastEndSetDesc;
+    rangePastEndSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 128, 129);
+    EXPECT_EQ(device->CreateDescriptorSet(rangePastEndSetDesc).Get(), nullptr);
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+
     RHIDescriptorBinding unknownBinding;
     unknownBinding.binding = 99;
     EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding}));
@@ -2580,7 +4386,7 @@ TEST(VulkanValidation, DescriptorValidationRejectsInvalidInputs)
 TEST(VulkanValidation, SubmitReturnsMonotonicFenceValues)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto fence = device->CreateFence(0);
@@ -2608,7 +4414,7 @@ TEST(VulkanValidation, SubmitReturnsMonotonicFenceValues)
 TEST(VulkanValidation, BarrierNoWorkInputsAreSafe)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Compute);
@@ -2651,7 +4457,7 @@ TEST(VulkanValidation, BarrierNoWorkInputsAreSafe)
 TEST(VulkanValidation, BarrierBatching)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     // Create multiple textures
@@ -2688,7 +4494,7 @@ TEST(VulkanValidation, BarrierBatching)
 TEST(VulkanValidation, Fence)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto fence = device->CreateFence(0);
@@ -2703,7 +4509,7 @@ TEST(VulkanValidation, Fence)
 TEST(VulkanValidation, Heap)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIHeapDesc heapDesc;
@@ -2720,7 +4526,7 @@ TEST(VulkanValidation, Heap)
 TEST(VulkanValidation, PlacedTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIHeapDesc heapDesc;
@@ -2744,7 +4550,7 @@ TEST(VulkanValidation, PlacedTexture)
 TEST(VulkanValidation, PlacedBuffer)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     RHIHeapDesc heapDesc;
@@ -2770,7 +4576,7 @@ TEST(VulkanValidation, PlacedBuffer)
 TEST(VulkanValidation, ComputeContext)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Compute);
@@ -2786,7 +4592,7 @@ TEST(VulkanValidation, ComputeContext)
 TEST(VulkanValidation, CopyContext)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Copy);

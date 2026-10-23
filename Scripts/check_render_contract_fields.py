@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from architecture_gate_common import GateInputError
+from module_policy import add_policy_arguments, load_manifest, load_policy, manifest_argument
 
-DEFAULT_ENTRIES = (
+
+_DEFAULT_ENTRIES = (
     "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderViewSnapshot",
     "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderSubmeshMaterialBinding",
     "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderSkinningPaletteMetadata",
@@ -43,6 +46,14 @@ DEFAULT_ENTRIES = (
     "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
 )
 
+# Keep declarations logical: the Manifest v2 resolves RenderContracts to its
+# physical include root.  The literal list remains compact and is not coupled
+# to the current directory layout.
+DEFAULT_ENTRIES = tuple(
+    entry.replace("RenderContracts/Include/RenderContracts/", "RenderContracts/", 1)
+    for entry in _DEFAULT_ENTRIES
+)
+
 TOKEN_PATTERN = re.compile(
     r"::|&&|<=>|->|[A-Za-z_]\w*|0[xX][0-9A-Fa-f]+|\d+(?:\.\d*)?|"
     r"[{}()\[\];,:<>=*&~]"
@@ -58,6 +69,17 @@ class InputError(RuntimeError):
 
 class ParseError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class IncludePolicy:
+    """The manifest-only subset needed to resolve quoted public includes."""
+
+    modules: dict
+    prefixes: dict[str, str]
+
+    def module_for_prefix(self, prefix: str) -> str | None:
+        return self.prefixes.get(prefix.casefold())
 
 
 @dataclass(frozen=True)
@@ -113,37 +135,23 @@ def find_matching(tokens: Sequence[str], start: int, opening: str, closing: str)
     raise ParseError(f"unmatched {opening!r} token")
 
 
-def resolve_include(root: Path, including: Path, include: str) -> Path:
+def resolve_include(root: Path, including: Path, include: str, policy=None) -> Path:
     include_parts = Path(include).parts
-    module_candidate = (
-        root / include_parts[0] / "Include" / Path(*include_parts)
-        if include_parts
-        else root / include
-    )
-    direct_candidates = (including.parent / include, root / include, module_candidate)
+    module_candidate = None
+    if include_parts and policy is not None:
+        module_id = policy.module_for_prefix(include_parts[0])
+        if module_id is not None:
+            module_candidate = root / policy.modules[module_id].path / "Include" / Path(*include_parts)
+    direct_candidates = [including.parent / include, root / include]
+    if module_candidate is not None:
+        direct_candidates.append(module_candidate)
     for candidate in direct_candidates:
         if candidate.is_file():
             return candidate.resolve()
-
-    matches = []
-    for candidate in root.rglob(include_parts[-1]):
-        if not candidate.is_file():
-            continue
-        if tuple(candidate.parts[-len(include_parts):]) == include_parts:
-            matches.append(candidate.resolve())
-    unique_matches = sorted(set(matches))
-    if len(unique_matches) == 1:
-        return unique_matches[0]
-    if not unique_matches:
-        raise ParseError(
-            f"missing quoted include: {include} included from {including}"
-        )
-    raise ParseError(
-        f"ambiguous quoted include: {include} included from {including}"
-    )
+    raise ParseError(f"missing quoted include: {include} included from {including}")
 
 
-def load_include_graph(root: Path, entry_paths: Iterable[Path]) -> dict[Path, str]:
+def load_include_graph(root: Path, entry_paths: Iterable[Path], policy=None) -> dict[Path, str]:
     loaded: dict[Path, str] = {}
 
     def load(path: Path) -> None:
@@ -158,7 +166,7 @@ def load_include_graph(root: Path, entry_paths: Iterable[Path]) -> dict[Path, st
             raise ParseError(f"unable to read {resolved}: {error}") from error
         loaded[resolved] = source
         for include in QUOTED_INCLUDE_PATTERN.findall(source):
-            load(resolve_include(root, resolved, include))
+            load(resolve_include(root, resolved, include, policy))
 
     for entry_path in entry_paths:
         load(entry_path)
@@ -693,6 +701,7 @@ FUNDAMENTAL_LEAVES = {
     "std::uint64_t",
 }
 MATH_LEAVES = {
+    "glm::uvec2",
     "glm::vec2",
     "glm::vec3",
     "glm::vec4",
@@ -944,18 +953,23 @@ class ContractWalker:
             )
 
 
-def parse_entry(root: Path, raw_entry: str) -> tuple[Path, str]:
+def parse_entry(root: Path, raw_entry: str, policy=None) -> tuple[Path, str]:
     if ":" not in raw_entry:
         raise InputError(f"entry must be HEADER:TYPE: {raw_entry}")
     raw_header, root_type = raw_entry.rsplit(":", 1)
     if not raw_header or not root_type or not re.fullmatch(r"[A-Za-z_]\w*", root_type):
         raise InputError(f"entry must be HEADER:TYPE: {raw_entry}")
     header = Path(raw_header)
-    if not header.is_absolute():
-        header = root / header
-    if not header.is_file():
-        raise InputError(f"contract root header does not exist: {header}")
-    return header.resolve(), root_type
+    candidates = [header] if header.is_absolute() else [root / header]
+    parts = header.parts
+    if not header.is_absolute() and parts and policy is not None:
+        module_id = policy.module_for_prefix(parts[0])
+        if module_id is not None:
+            candidates.append(root / policy.modules[module_id].path / "Include" / header)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve(), root_type
+    raise InputError(f"contract root header does not exist: {header}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -977,6 +991,7 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Root declaration in HEADER:TYPE form; may be repeated.",
     )
+    add_policy_arguments(parser, inventory_required=False)
     return parser.parse_args()
 
 
@@ -985,9 +1000,31 @@ def main() -> int:
     root = Path(args.root).resolve()
     if not root.is_dir():
         raise InputError(f"repository root does not exist: {root}")
+    if not args.entries and not args.module_inventory:
+        raise InputError("default render-contract entries require --module-inventory")
+    policy = None
+    if args.module_inventory:
+        try:
+            policy = load_policy(root, args)
+        except GateInputError as error:
+            raise InputError(str(error)) from error
+    elif args.entries:
+        # Isolated parser fixtures have no repository manifest.  When a
+        # manifest is present, however, still use its global public-prefix map
+        # rather than falling back to a filesystem-wide include search.
+        raw_manifest = Path(manifest_argument(args))
+        manifest_path = raw_manifest if raw_manifest.is_absolute() else root / raw_manifest
+        if manifest_path.is_file():
+            try:
+                modules, prefixes, _ = load_manifest(root, str(manifest_path))
+            except GateInputError as error:
+                raise InputError(str(error)) from error
+            policy = IncludePolicy(modules=modules, prefixes=prefixes)
+        elif args.manifest:
+            raise InputError(f"module manifest does not exist: {manifest_path}")
     raw_entries = args.entries or list(DEFAULT_ENTRIES)
-    entries = [parse_entry(root, raw_entry) for raw_entry in raw_entries]
-    files = load_include_graph(root, (entry[0] for entry in entries))
+    entries = [parse_entry(root, raw_entry, policy) for raw_entry in raw_entries]
+    files = load_include_graph(root, (entry[0] for entry in entries), policy)
     index = build_index(files)
 
     failed = False

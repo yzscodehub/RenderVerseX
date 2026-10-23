@@ -2,6 +2,7 @@
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "Resources/RenderUploadProcessor.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
@@ -11,6 +12,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <vector>
@@ -165,6 +168,15 @@ namespace
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        struct BufferCopy
+        {
+            RHIBuffer* source = nullptr;
+            RHIBuffer* destination = nullptr;
+            uint64 sourceOffset = 0;
+            uint64 destinationOffset = 0;
+            uint64 size = 0;
+        };
+
         explicit FakeCommandContext(RHICommandQueueType queueType)
             : m_queueType(queueType)
         {
@@ -211,13 +223,15 @@ namespace
         void DrawIndexedIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
         void Dispatch(uint32, uint32, uint32) override {}
         void DispatchIndirect(RHIBuffer*, uint64) override {}
-        void CopyBuffer(RHIBuffer*,
-                        RHIBuffer*,
-                        uint64,
-                        uint64,
-                        uint64) override
+        void CopyBuffer(RHIBuffer* source,
+                        RHIBuffer* destination,
+                        uint64 sourceOffset,
+                        uint64 destinationOffset,
+                        uint64 size) override
         {
             ++copyBufferCount;
+            bufferCopies.push_back(
+                {source, destination, sourceOffset, destinationOffset, size});
         }
         void CopyTexture(RHITexture*,
                          RHITexture*,
@@ -256,6 +270,7 @@ namespace
         uint32 endCount = 0;
         uint32 copyBufferCount = 0;
         uint32 copyTextureCount = 0;
+        std::vector<BufferCopy> bufferCopies;
         std::vector<RHIBufferTextureCopyDesc> textureCopies;
 
     private:
@@ -620,9 +635,11 @@ namespace
     ResourceUploadRequestCreateInfo MakeMaterialInfo(
         AssetId assetId,
         RenderResourceHandle handle,
-        const std::vector<RenderResourceHandle>& textures)
+        const std::vector<RenderResourceHandle>& textures,
+        const MaterialStaticDescriptor& staticDescriptor = {})
     {
         MaterialUploadPayload payload;
+        payload.staticDescriptor = staticDescriptor;
         for (size_t index = 0; index < textures.size(); ++index)
         {
             MaterialUploadTextureBinding binding;
@@ -631,6 +648,10 @@ namespace
                                : MaterialUploadTextureSlot::Normal;
             binding.texture = textures[index];
             payload.textureBindings.push_back(binding);
+            payload.sourceData.textureFlags |=
+                1U << static_cast<uint32>(binding.slot);
+            payload.staticDescriptor.featureMask |=
+                1ull << static_cast<uint32>(binding.slot);
         }
 
         ResourceUploadRequestCreateInfo info;
@@ -898,6 +919,62 @@ namespace
     }
 
     TEST_F(RenderResourceRuntimeFixture,
+           MeshUV1AvailabilityIsExactAndMissingUV1FailsClosed)
+    {
+        const auto makeInfo = [](AssetId asset,
+                                 RenderResourceHandle handle,
+                                 bool includeUV1)
+        {
+            MeshUploadPayload payload;
+            payload.createInfo.vertexCount = 3;
+            payload.createInfo.boundsMin = Vec3(-1.0f);
+            payload.createInfo.boundsMax = Vec3(1.0f);
+            payload.bytes.resize(includeUV1 ? 84U : 60U, 7U);
+            payload.positionRange = UploadByteRange{0, 36, 12};
+            payload.uvRange = UploadByteRange{36, 24, 8};
+            if (includeUV1)
+            {
+                payload.uv1Range = UploadByteRange{60, 24, 8};
+            }
+
+            ResourceUploadRequestCreateInfo info;
+            info.sequence = asset.value;
+            info.assetId = asset;
+            info.handle = handle;
+            info.kind = RenderResourceKind::Mesh;
+            info.payload = std::move(payload);
+            info.declaredPayloadBytes = includeUV1 ? 84U : 60U;
+            return info;
+        };
+
+        const RenderResourceHandle missingUV1Handle =
+            Reserve(AssetId{403}, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef missingUV1Owner = CreateAndQueue(
+            makeInfo(AssetId{403}, missingUV1Handle, false));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const MeshGPUBuffers missingUV1 =
+            registry.ResolveMeshBuffers(missingUV1Handle);
+        EXPECT_TRUE(missingUV1.HasTextureCoordinateSet(0));
+        EXPECT_FALSE(missingUV1.HasTextureCoordinateSet(1));
+        EXPECT_FALSE(missingUV1.HasTextureCoordinateSet(2));
+
+        const RenderResourceHandle authoredUV1Handle =
+            Reserve(AssetId{404}, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef authoredUV1Owner = CreateAndQueue(
+            makeInfo(AssetId{404}, authoredUV1Handle, true));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const MeshGPUBuffers authoredUV1 =
+            registry.ResolveMeshBuffers(authoredUV1Handle);
+        EXPECT_TRUE(authoredUV1.HasTextureCoordinateSet(0));
+        EXPECT_TRUE(authoredUV1.HasTextureCoordinateSet(1));
+        EXPECT_NE(authoredUV1.uv1Buffer, nullptr);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
            RayTracingMeshUploadsDeclareImmutableGeometryUsage)
     {
         device.capabilities.supportsRaytracing = true;
@@ -954,6 +1031,195 @@ namespace
         ASSERT_NE(dependencies, nullptr);
         ASSERT_EQ(dependencies->size(), 1U);
         EXPECT_EQ((*dependencies)[0], textureHandle);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           MaterialUploadEncodesTheFullSharedGPUConstantsABI)
+    {
+        const AssetId textureAsset{35};
+        const RenderResourceHandle textureHandle =
+            Reserve(textureAsset, RenderResourceKind::Texture);
+        ResourceUploadRequestRef textureOwner = CreateAndQueue(
+            MakeTextureInfo(textureAsset, textureHandle));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const AssetId materialAsset{36};
+        const RenderResourceHandle materialHandle =
+            Reserve(materialAsset, RenderResourceKind::Material);
+        ResourceUploadRequestCreateInfo info = MakeMaterialInfo(
+            materialAsset, materialHandle, {textureHandle});
+        MaterialUploadPayload& payload =
+            std::get<MaterialUploadPayload>(info.payload);
+        ASSERT_EQ(payload.textureBindings.size(), 1U);
+        MaterialUploadTextureBinding& baseColor = payload.textureBindings.front();
+        baseColor.uvSet = 1;
+        baseColor.scale = {2.0f, 3.0f};
+        baseColor.offset = {0.25f, -0.5f};
+        baseColor.rotation = 0.5f;
+        payload.sourceData.baseColorFactor = {0.1f, 0.2f, 0.3f, 0.4f};
+        payload.sourceData.metallicFactor = 0.7f;
+        payload.sourceData.roughnessFactor = 0.8f;
+
+        ResourceUploadRequestRef materialOwner = CreateAndQueue(std::move(info));
+        const size_t bufferCountBeforeMaterial = device.createdBufferDescs.size();
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+
+        ASSERT_EQ(device.createdBufferDescs.size(), bufferCountBeforeMaterial + 1U);
+        const RHIBufferDesc& constantsBuffer =
+            device.createdBufferDescs[bufferCountBeforeMaterial];
+        constexpr uint64 alignedMaterialConstantsSize =
+            (sizeof(MaterialGPUConstants) + 255u) & ~uint64{255u};
+        EXPECT_EQ(constantsBuffer.size, alignedMaterialConstantsSize);
+        EXPECT_TRUE(HasFlag(constantsBuffer.usage, RHIBufferUsage::Constant));
+        EXPECT_TRUE(HasFlag(constantsBuffer.usage, RHIBufferUsage::CopyDst));
+
+        ASSERT_NE(device.lastStaging, nullptr);
+        const std::vector<uint8>& staging = device.lastStaging->GetStorage();
+        ASSERT_EQ(staging.size(), sizeof(MaterialGPUConstants));
+        MaterialGPUConstants constants{};
+        std::memcpy(&constants, staging.data(), sizeof(constants));
+        EXPECT_EQ(constants.baseColorFactor,
+                  (Vec4{0.1f, 0.2f, 0.3f, 0.4f}));
+        EXPECT_FLOAT_EQ(constants.metallicFactor, 0.7f);
+        EXPECT_FLOAT_EQ(constants.roughnessFactor, 0.8f);
+        EXPECT_EQ(constants.uvTransforms[0].scaleOffset,
+                  (Vec4{2.0f, 3.0f, 0.25f, -0.5f}));
+        EXPECT_NEAR(constants.uvTransforms[0].rotationUVSet.x,
+                    std::cos(0.5f),
+                    1.0e-6f);
+        EXPECT_NEAR(constants.uvTransforms[0].rotationUVSet.y,
+                    std::sin(0.5f),
+                    1.0e-6f);
+        EXPECT_FLOAT_EQ(constants.uvTransforms[0].rotationUVSet.z, 1.0f);
+
+        // Slots without a binding retain the identity transform and UV0.
+        EXPECT_EQ(constants.uvTransforms[1].scaleOffset,
+                  (Vec4{1.0f, 1.0f, 0.0f, 0.0f}));
+        EXPECT_EQ(constants.uvTransforms[1].rotationUVSet,
+                  (Vec4{1.0f, 0.0f, 0.0f, 0.0f}));
+
+        const auto copyContext = std::find_if(
+            device.commandContexts.rbegin(),
+            device.commandContexts.rend(),
+            [](const RHICommandContextRef& candidate)
+            {
+                const auto* context =
+                    static_cast<const FakeCommandContext*>(candidate.Get());
+                return !context->bufferCopies.empty();
+            });
+        ASSERT_NE(copyContext, device.commandContexts.rend());
+        const auto* context =
+            static_cast<const FakeCommandContext*>(copyContext->Get());
+        ASSERT_EQ(context->bufferCopies.size(), 1U);
+        EXPECT_EQ(context->bufferCopies[0].sourceOffset, 0U);
+        EXPECT_EQ(context->bufferCopies[0].destinationOffset, 0U);
+        EXPECT_EQ(context->bufferCopies[0].size, sizeof(MaterialGPUConstants));
+
+        CompleteAndPoll();
+        const RenderMaterialResourceData* material =
+            registry.ResolveMaterial(materialHandle);
+        ASSERT_NE(material, nullptr);
+        ASSERT_NE(material->constants, nullptr);
+        EXPECT_EQ(material->constants->GetSize(),
+                  alignedMaterialConstantsSize);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           MaterialUploadPreservesStaticDescriptorInRegistry)
+    {
+        MaterialStaticDescriptor expected;
+        expected.shadingModel = MaterialShadingModel::ToonLit;
+        expected.programFamily =
+            std::string(GetMaterialProgramFamily(expected.shadingModel));
+        expected.cullMode = MaterialCullMode::NoCull;
+        expected.shadowPolicy = MaterialShadowPolicy::Receive;
+        expected.sortPriority = 17;
+
+        const AssetId materialAsset{33};
+        const RenderResourceHandle materialHandle =
+            Reserve(materialAsset, RenderResourceKind::Material);
+        ResourceUploadRequestCreateInfo info =
+            MakeMaterialInfo(materialAsset, materialHandle, {}, expected);
+        std::get<MaterialUploadPayload>(info.payload).sourceData.doubleSided =
+            true;
+        ResourceUploadRequestRef materialOwner = CreateAndQueue(std::move(info));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderMaterialResourceData* material =
+            registry.ResolveMaterial(materialHandle);
+        ASSERT_NE(material, nullptr);
+        const MaterialStaticDescriptor& observed = material->staticDescriptor;
+        EXPECT_EQ(observed.domain, expected.domain);
+        EXPECT_EQ(observed.shadingModel, expected.shadingModel);
+        EXPECT_EQ(observed.blendMode, expected.blendMode);
+        EXPECT_EQ(observed.cullMode, expected.cullMode);
+        EXPECT_EQ(observed.shadowPolicy, expected.shadowPolicy);
+        EXPECT_EQ(observed.translucencyPhase, expected.translucencyPhase);
+        EXPECT_EQ(observed.sortPriority, expected.sortPriority);
+        EXPECT_EQ(observed.featureMask, expected.featureMask);
+        EXPECT_EQ(observed.programFamily, expected.programFamily);
+        EXPECT_EQ(observed.parameterLayoutHash, expected.parameterLayoutHash);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           RegistryRejectsDirectMaterialMetadataMismatch)
+    {
+        const AssetId materialAsset{34};
+        const RenderResourceHandle materialHandle =
+            Reserve(materialAsset, RenderResourceKind::Material);
+        ASSERT_TRUE(gateway->GetStatusTable().CompareExchange(
+            materialHandle,
+            PackedRenderResourceStatus{materialHandle.generation,
+                                       RenderResourcePublicState::Reserved,
+                                       RenderResourceFailureCode::None},
+            PackedRenderResourceStatus{materialHandle.generation,
+                                       RenderResourcePublicState::UploadQueued,
+                                       RenderResourceFailureCode::None},
+            RenderStatusWriter::Update));
+        ASSERT_TRUE(gateway->GetStatusTable().CompareExchange(
+            materialHandle,
+            PackedRenderResourceStatus{materialHandle.generation,
+                                       RenderResourcePublicState::UploadQueued,
+                                       RenderResourceFailureCode::None},
+            PackedRenderResourceStatus{materialHandle.generation,
+                                       RenderResourcePublicState::Uploading,
+                                       RenderResourceFailureCode::None},
+            RenderStatusWriter::Render));
+        ASSERT_TRUE(registry.BeginPending(materialHandle,
+                                          RenderResourceKind::Material,
+                                          {},
+                                          materialAsset));
+
+        MaterialUploadPayload payload;
+        payload.staticDescriptor.parameterLayoutHash ^= 0x1ull;
+        EXPECT_FALSE(registry.SetPendingMaterialMetadata(materialHandle,
+                                                         payload));
+
+        payload = {};
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        binding.uvSet = 2;
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        EXPECT_FALSE(registry.SetPendingMaterialMetadata(materialHandle,
+                                                         payload));
+
+        binding.uvSet = 0;
+        payload.textureBindings.front() = binding;
+        payload.sourceData.textureFlags = 0U;
+        EXPECT_FALSE(registry.SetPendingMaterialMetadata(materialHandle,
+                                                         payload));
+
+        payload = {};
+        payload.staticDescriptor.featureMask =
+            1ull << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+        EXPECT_FALSE(registry.SetPendingMaterialMetadata(materialHandle,
+                                                         payload));
+        EXPECT_TRUE(registry.HasPending(materialHandle));
+        EXPECT_TRUE(registry.RetirePending(materialHandle));
     }
 
     TEST_F(RenderResourceRuntimeFixture, TextureUploadUsesSafeFootprintsAndExpandsRGB8)
@@ -1414,6 +1680,87 @@ namespace
         ASSERT_NE(device.lastStaging, nullptr);
         EXPECT_EQ(device.lastStaging->GetCommitCount(), 1U);
         EXPECT_EQ(device.lastStaging->GetUnmapCount(), 0U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           MaterialReplacementPublishesDescriptorAndFailedReplacePreservesIt)
+    {
+        const AssetId asset{504};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Material);
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(MakeMaterialInfo(asset, handle, {}));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderMaterialResourceData* const initial =
+            registry.ResolveMaterial(handle);
+        ASSERT_NE(initial, nullptr);
+        const std::string initialProgramFamily =
+            initial->staticDescriptor.programFamily;
+        const uint64 initialContentRevision =
+            registry.GetContentRevision(handle);
+
+        MaterialStaticDescriptor unlitDescriptor;
+        unlitDescriptor.shadingModel = MaterialShadingModel::Unlit;
+        unlitDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(unlitDescriptor.shadingModel));
+        unlitDescriptor.sortPriority = 17;
+        ResourceUploadRequestCreateInfo replacement =
+            MakeMaterialInfo(asset, handle, {}, unlitDescriptor);
+        std::get<MaterialUploadPayload>(replacement.payload)
+            .sourceData.workflow = MaterialSourceWorkflow::Unlit;
+        replacement.sequence = 505;
+        replacement.operation = RenderResourceContentOperation::Replace;
+        replacement.sourceRevision = 1;
+        ResourceUploadRequestRef replacementOwner =
+            CreateAndQueue(std::move(replacement));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderMaterialResourceData* const replaced =
+            registry.ResolveMaterial(handle);
+        ASSERT_NE(replaced, nullptr);
+        EXPECT_EQ(replaced->staticDescriptor.shadingModel,
+                  MaterialShadingModel::Unlit);
+        EXPECT_EQ(replaced->staticDescriptor.programFamily,
+                  GetMaterialProgramFamily(MaterialShadingModel::Unlit));
+        EXPECT_NE(replaced->staticDescriptor.programFamily,
+                  initialProgramFamily);
+        EXPECT_EQ(replaced->staticDescriptor.sortPriority, 17);
+        const uint64 replacedContentRevision =
+            registry.GetContentRevision(handle);
+        EXPECT_GT(replacedContentRevision, initialContentRevision);
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 1U);
+
+        MaterialStaticDescriptor failedDescriptor;
+        failedDescriptor.shadingModel = MaterialShadingModel::ToonLit;
+        failedDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(failedDescriptor.shadingModel));
+        failedDescriptor.sortPriority = 99;
+        ResourceUploadRequestCreateInfo failedReplacement =
+            MakeMaterialInfo(asset, handle, {}, failedDescriptor);
+        failedReplacement.sequence = 506;
+        failedReplacement.operation = RenderResourceContentOperation::Replace;
+        failedReplacement.sourceRevision = 2;
+        ResourceUploadRequestRef failedOwner =
+            CreateAndQueue(std::move(failedReplacement));
+        device.failNextStagingCommit = true;
+
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+        EXPECT_FALSE(registry.HasPending(handle));
+        const RenderMaterialResourceData* const preserved =
+            registry.ResolveMaterial(handle);
+        ASSERT_NE(preserved, nullptr);
+        EXPECT_EQ(preserved->staticDescriptor.shadingModel,
+                  MaterialShadingModel::Unlit);
+        EXPECT_EQ(preserved->staticDescriptor.programFamily,
+                  GetMaterialProgramFamily(MaterialShadingModel::Unlit));
+        EXPECT_EQ(preserved->staticDescriptor.sortPriority, 17);
+        EXPECT_EQ(registry.GetContentRevision(handle), replacedContentRevision);
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 1U);
+        EXPECT_EQ(registry.GetPendingSourceRevision(handle), 0U);
     }
 
     TEST_F(RenderResourceRuntimeFixture,

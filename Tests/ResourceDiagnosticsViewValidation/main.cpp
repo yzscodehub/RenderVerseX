@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <thread>
 
 namespace
@@ -22,6 +23,14 @@ namespace
         ::testing::AddGlobalTestEnvironment(new LogEnvironment());
 
     TEST(ResourceDiagnosticsViewValidation,
+         RequiresExplicitRuntimeDependencies)
+    {
+        ResourceSubsystem subsystem;
+        EXPECT_THROW(subsystem.Initialize(), std::logic_error);
+        EXPECT_FALSE(subsystem.GetManager().IsInitialized());
+    }
+
+    TEST(ResourceDiagnosticsViewValidation,
          ReturnsUnavailableOutsideTheInitializedLifetime)
     {
         ResourceSubsystem subsystem;
@@ -35,7 +44,7 @@ namespace
         EXPECT_FALSE(beforeInitialize.snapshot.IsAvailable());
         EXPECT_FALSE(beforeInitialize.snapshot.GetReason().empty());
 
-        subsystem.Initialize();
+        subsystem.Initialize({}, {});
         ASSERT_TRUE(view.QueryResourceDiagnostics().IsAvailable());
         subsystem.Deinitialize();
 
@@ -51,7 +60,7 @@ namespace
          ReturnsACompleteValueSnapshotOnTheUpdateOwnerThread)
     {
         ResourceSubsystem subsystem;
-        subsystem.Initialize();
+        subsystem.Initialize({}, {});
         const IResourceDiagnosticsView& view = subsystem;
 
         const ResourceDiagnosticsQueryResult result =
@@ -80,7 +89,7 @@ namespace
          RejectsWrongThreadBeforeReadingUpdateOwnedState)
     {
         ResourceSubsystem subsystem;
-        subsystem.Initialize();
+        subsystem.Initialize({}, {});
         const IResourceDiagnosticsView& view = subsystem;
 
         ResourceDiagnosticsQueryResult workerResult;

@@ -141,6 +141,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.95f, 0.86f),
                 .intensity = PhysicsSandboxDirectionalLightIntensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.001f,
                 .castsShadows = true,
             };
@@ -352,7 +353,8 @@ namespace RVX
         context.renderSettings.shadows.atlasResolution = 1024u;
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
 
         if (!m_lastRuntime.available || !m_lastRuntime.initialized ||
             !m_lastRuntime.physicsInitialized ||

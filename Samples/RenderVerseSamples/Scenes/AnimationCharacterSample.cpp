@@ -121,6 +121,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.95f, 0.86f),
                 .intensity = 2.8f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.001f,
                 .castsShadows = true,
             };
@@ -297,7 +298,12 @@ namespace RVX
         context.renderSettings.shadows.atlasResolution = 1024u;
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        // GFX09 qualifies presentation-bound current/previous skinning
+        // palettes through an explicit velocity output request. This sample
+        // remains on FXAA; the temporal-aa sample owns the TAA contract.
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
+        context.renderSettings.postProcess.enableVelocityOutput = true;
         context.renderSettings.postProcess.enableBloom = false;
 
         const float32 aspect =

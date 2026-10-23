@@ -227,25 +227,26 @@ TEST(RenderVisibilityValidation,
     RenderCandidateSet candidates;
     RenderVisibilityCandidate sceneCandidate = MakeCandidate(
         0, RenderPassKind::None, RVX_INVALID_INDEX, bounds);
-    sceneCandidate.objectVisible = IsRenderLayerVisible(
-        objectLayerMask, viewCullingMask);
+    sceneCandidate.layerMask = objectLayerMask;
     ASSERT_NE(RVX_INVALID_INDEX, candidates.Add(sceneCandidate));
 
     GPUVisibilityProvider gpuProvider;
     RenderVisibilityResult gpuResult;
-    gpuProvider.Evaluate(candidates, TestRequest(), gpuResult);
+    RenderVisibilityRequest request = TestRequest();
+    request.cullingMask = viewCullingMask;
+    gpuProvider.Evaluate(candidates, request, gpuResult);
 
     const uint32 firstPassCandidate = static_cast<uint32>(
         candidates.GetCandidates().size());
     RenderVisibilityCandidate directCandidate = MakeCandidate(
         0, RenderPassKind::Opaque, 0, bounds);
-    directCandidate.objectVisible = sceneCandidate.objectVisible;
+    directCandidate.layerMask = objectLayerMask;
     ASSERT_NE(RVX_INVALID_INDEX, candidates.Add(directCandidate));
     gpuProvider.AppendPassCandidates(candidates, firstPassCandidate, gpuResult);
 
     CPUVisibilityProvider directProvider;
     RenderVisibilityResult directResult;
-    directProvider.Evaluate(candidates, TestRequest(), directResult);
+    directProvider.Evaluate(candidates, request, directResult);
 
     EXPECT_TRUE(directResult.cpuVisibleObjectIndices.empty());
     EXPECT_TRUE(gpuResult.cpuVisibleObjectIndices.empty());

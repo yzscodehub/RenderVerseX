@@ -9,7 +9,7 @@
 #include "Render/RenderDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/RenderFramePacket.h"
-#include "RHI/RHINativeSurface.h"
+#include "HAL/Window/NativeSurface.h"
 
 #include <memory>
 
@@ -51,7 +51,7 @@ struct EditorRenderRuntimeAdapterStartResult
 {
     bool started = false;
     RHIBackendType backend = RHIBackendType::None;
-    NativeSurfaceDesc surface{};
+    HAL::NativeSurfaceDesc surface{};
     RenderRuntimeResult runtime{};
 
     explicit operator bool() const noexcept { return started; }
@@ -86,14 +86,13 @@ public:
         EditorRenderFeature feature) const noexcept;
 
 private:
-    [[nodiscard]] static NativeSurfaceDesc CaptureSurface(
+    [[nodiscard]] static HAL::NativeSurfaceDesc CaptureSurface(
         GLFWwindow* window,
         RHIBackendType backend,
-        bool vsync,
         uint64 generation);
 
     std::unique_ptr<RenderSubsystem> m_render;
-    NativeSurfaceDesc m_surface{};
+    HAL::NativeSurfaceDesc m_surface{};
     RenderRuntimeResult m_lastRuntime{};
     RenderShutdownResult m_lastShutdown{};
 };

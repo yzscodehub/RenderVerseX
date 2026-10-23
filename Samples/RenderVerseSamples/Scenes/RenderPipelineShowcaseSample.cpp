@@ -85,6 +85,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.96f, 0.88f),
                 .intensity = 5.0f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.0008f,
                 .castsShadows = true,
             };
@@ -165,13 +166,17 @@ namespace RVX
         context.renderSettings.shadows.normalBias = 0.02f;
 
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableBloom = true;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.toneMappingOperator =
             RenderToneMappingOperator::ACES;
-        context.renderSettings.postProcess.exposure = 1.0f;
+        context.renderSettings.postProcess.exposureSettings.mode =
+            RenderExposureMode::ManualEV100;
+        context.renderSettings.postProcess.exposureSettings.manualEV100 = 0.0f;
+        context.renderSettings.postProcess.exposureSettings.exposureCompensationEV =
+            0.0f;
         context.renderSettings.postProcess.gamma = 2.2f;
         context.renderSettings.postProcess.bloomThreshold = 0.65f;
         context.renderSettings.postProcess.bloomIntensity = 0.35f;

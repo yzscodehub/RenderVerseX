@@ -21,7 +21,14 @@ namespace
         std::string renderPath;
         std::string assetMode;
         uint64_t expectedTextureCount = 27;
-        uint64_t expectedVisibleObjectCount = 75;
+        uint64_t expectedDrawPacketCount = 1;
+        uint64_t expectedVisibleObjectCount = 1;
+        uint64_t expectedOpaqueDrawCount = 1;
+        uint64_t expectedModelMeshCount = 0;
+        uint64_t expectedModelMaterialCount = 0;
+        uint64_t expectedModelNodeCount = 0;
+        uint64_t expectedModelMaterialExtensionFeatureMask = 0;
+        uint64_t requiredPresentedMaterialFeatureMask = 0;
         uint64_t maximumFirstPresentMs = 5000;
         bool requireResize = false;
     };
@@ -127,6 +134,85 @@ namespace
                     !ParseUnsigned(parsed, options.expectedVisibleObjectCount))
                 {
                     std::cerr << "Invalid --expected-visible-objects\n";
+                    return false;
+                }
+            }
+            else if (argument == "--expected-draw-packets")
+            {
+                const char* parsed = value("--expected-draw-packets");
+                if (!parsed ||
+                    !ParseUnsigned(parsed, options.expectedDrawPacketCount))
+                {
+                    std::cerr << "Invalid --expected-draw-packets\n";
+                    return false;
+                }
+            }
+            else if (argument == "--expected-opaque-draws")
+            {
+                const char* parsed = value("--expected-opaque-draws");
+                if (!parsed ||
+                    !ParseUnsigned(parsed, options.expectedOpaqueDrawCount))
+                {
+                    std::cerr << "Invalid --expected-opaque-draws\n";
+                    return false;
+                }
+            }
+            else if (argument == "--expected-model-meshes")
+            {
+                const char* parsed = value("--expected-model-meshes");
+                if (!parsed ||
+                    !ParseUnsigned(parsed, options.expectedModelMeshCount))
+                {
+                    std::cerr << "Invalid --expected-model-meshes\n";
+                    return false;
+                }
+            }
+            else if (argument == "--expected-model-materials")
+            {
+                const char* parsed = value("--expected-model-materials");
+                if (!parsed ||
+                    !ParseUnsigned(parsed, options.expectedModelMaterialCount))
+                {
+                    std::cerr << "Invalid --expected-model-materials\n";
+                    return false;
+                }
+            }
+            else if (argument == "--expected-model-nodes")
+            {
+                const char* parsed = value("--expected-model-nodes");
+                if (!parsed ||
+                    !ParseUnsigned(parsed, options.expectedModelNodeCount))
+                {
+                    std::cerr << "Invalid --expected-model-nodes\n";
+                    return false;
+                }
+            }
+            else if (argument == "--required-presented-material-feature-mask")
+            {
+                const char* parsed =
+                    value("--required-presented-material-feature-mask");
+                if (!parsed ||
+                    !ParseUnsigned(
+                        parsed,
+                        options.requiredPresentedMaterialFeatureMask))
+                {
+                    std::cerr
+                        << "Invalid --required-presented-material-feature-mask\n";
+                    return false;
+                }
+            }
+            else if (argument ==
+                     "--expected-model-material-extension-feature-mask")
+            {
+                const char* parsed =
+                    value("--expected-model-material-extension-feature-mask");
+                if (!parsed ||
+                    !ParseUnsigned(
+                        parsed,
+                        options.expectedModelMaterialExtensionFeatureMask))
+                {
+                    std::cerr
+                        << "Invalid --expected-model-material-extension-feature-mask\n";
                     return false;
                 }
             }
@@ -270,6 +356,27 @@ namespace
         return passed;
     }
 
+    std::vector<uint64_t> ReadUnsignedFieldValues(
+        const std::string& json,
+        std::string_view field)
+    {
+        const std::string marker = "\"" + std::string(field) + "\":";
+        std::vector<uint64_t> values;
+        size_t cursor = 0;
+        while ((cursor = json.find(marker, cursor)) != std::string::npos)
+        {
+            const std::optional<uint64_t> value =
+                ReadUnsignedField(json, field, cursor);
+            if (!value)
+            {
+                return {};
+            }
+            values.push_back(*value);
+            cursor += marker.size();
+        }
+        return values;
+    }
+
     std::vector<TraceEvent> ParseTraceEvents(const std::string& json)
     {
         std::vector<TraceEvent> events;
@@ -327,28 +434,35 @@ namespace
                                   "backend metadata");
 
         const std::vector<TraceEvent> events = ParseTraceEvents(json);
+        const TraceEvent* processStart =
+            RequireUniqueEvent(events, "ProcessStart", passed);
+        const TraceEvent* assetResolve =
+            RequireUniqueEvent(events, "AssetResolve", passed);
+        const TraceEvent* engineInitialize =
+            RequireUniqueEvent(events, "EngineInitialize", passed);
+        const TraceEvent* windowReady =
+            RequireUniqueEvent(events, "WindowReady", passed);
+        const TraceEvent* renderRuntimeReady =
+            RequireUniqueEvent(events, "EcsRenderRuntimeReady", passed);
+        const TraceEvent* sampleSetup =
+            RequireUniqueEvent(events, "SampleSetup", passed);
+        const TraceEvent* resourcePrepare =
+            RequireUniqueEvent(events, "ResourcePrepare", passed);
         const TraceEvent* setup = RequireUniqueEvent(events, "SetupReturned", passed);
-        const TraceEvent* firstPublished =
-            RequireUniqueEvent(events, "FirstFramePublished", passed);
         const TraceEvent* firstSubmitted =
             RequireUniqueEvent(events, "FirstFrameSubmitted", passed);
         const TraceEvent* firstPresent =
             RequireUniqueEvent(events, "FirstSwapchainPresentAccepted", passed);
         const TraceEvent* cpuPublish = RequireUniqueEvent(events, "CPUPublish", passed);
-        const TraceEvent* sceneInstantiate =
-            RequireUniqueEvent(events, "SceneInstantiate", passed);
-        const TraceEvent* minimumResident =
-            RequireUniqueEvent(events, "MinimumResident", passed);
-        const TraceEvent* fullyResident =
-            RequireUniqueEvent(events, "FullyResident", passed);
+        const TraceEvent* cpuPublishCommitted =
+            RequireUniqueEvent(events, "CPUPublishCommitted", passed);
         const TraceEvent* modelPresented =
             RequireUniqueEvent(events, "FirstModelFramePresented", passed);
 
-        for (const std::string_view required : {
-                 "ProcessStart", "EngineInitialize", "WindowReady",
-                 "RenderRuntimeReady", "SwapchainReady", "SampleSetup",
-                 "AssetResolve", "ModelIO", "CPUPrepare", "UploadQueued",
-                 "UploadSubmitted"})
+        for (const std::string_view required :
+             {"Render.Runtime.Start", "Render.Thread.Initialize",
+              "Resource.Manager.Initialize", "UploadQueued",
+              "UploadSubmitted"})
         {
             if (FindEvents(events, required).empty())
             {
@@ -357,17 +471,25 @@ namespace
             }
         }
 
-        if (setup && firstPublished && firstSubmitted && firstPresent && cpuPublish &&
-            sceneInstantiate && minimumResident && fullyResident && modelPresented)
+        if (processStart && assetResolve && engineInitialize && windowReady &&
+            renderRuntimeReady && sampleSetup && resourcePrepare && setup &&
+            firstSubmitted && firstPresent && cpuPublish &&
+            cpuPublishCommitted && modelPresented)
         {
-            if (!(setup->timestampNs <= firstPublished->timestampNs &&
-                  firstPublished->timestampNs <= firstSubmitted->timestampNs &&
+            if (!(processStart->timestampNs <= assetResolve->timestampNs &&
+                  assetResolve->timestampNs <= engineInitialize->timestampNs &&
+                  engineInitialize->timestampNs <= windowReady->timestampNs &&
+                  windowReady->timestampNs <=
+                      renderRuntimeReady->timestampNs &&
+                  renderRuntimeReady->timestampNs <= sampleSetup->timestampNs &&
+                  sampleSetup->timestampNs <= setup->timestampNs &&
+                  setup->timestampNs <= firstSubmitted->timestampNs &&
                   firstSubmitted->timestampNs <= firstPresent->timestampNs &&
                   firstPresent->timestampNs < cpuPublish->timestampNs &&
-                  cpuPublish->timestampNs <= sceneInstantiate->timestampNs &&
-                  sceneInstantiate->timestampNs <= minimumResident->timestampNs &&
-                  minimumResident->timestampNs <= fullyResident->timestampNs &&
-                  fullyResident->timestampNs <= modelPresented->timestampNs))
+                  cpuPublish->timestampNs <=
+                      cpuPublishCommitted->timestampNs &&
+                  cpuPublishCommitted->timestampNs <=
+                      modelPresented->timestampNs))
             {
                 std::cerr << "Startup, first-frame and residency milestones are out of order\n";
                 passed = false;
@@ -380,8 +502,18 @@ namespace
                           << " ms after SetupReturned\n";
                 passed = false;
             }
-            passed &= RequireUnsigned(firstPublished->json, "sequence", 1);
+            passed &= RequireContains(
+                resourcePrepare->json,
+                options.assetMode == "cooked" ? ".rva" : ".gltf",
+                "resource preparation product kind");
             passed &= RequireUnsigned(firstPresent->json, "sequence", 1);
+            const std::optional<uint64_t> modelFrame =
+                ReadUnsignedField(modelPresented->json, "frameSequence");
+            if (!modelFrame || *modelFrame == 0)
+            {
+                std::cerr << "FirstModelFramePresented has no frame identity\n";
+                passed = false;
+            }
         }
 
         const std::vector<const TraceEvent*> encodedReads =
@@ -390,10 +522,12 @@ namespace
             FindEvents(events, "TextureDecode");
         const std::vector<const TraceEvent*> parses =
             FindEvents(events, "GltfParse");
+        const uint64_t expectedEncodedReadCount =
+            options.assetMode == "source" ? options.expectedTextureCount : 0;
         const uint64_t expectedDecodeCount =
             options.assetMode == "source" ? options.expectedTextureCount : 0;
         const uint64_t expectedParseCount = options.assetMode == "source" ? 1 : 0;
-        if (encodedReads.size() != options.expectedTextureCount ||
+        if (encodedReads.size() != expectedEncodedReadCount ||
             decodes.size() != expectedDecodeCount ||
             parses.size() != expectedParseCount)
         {
@@ -511,7 +645,7 @@ namespace
         passed &= RequireContains(json,
                                   "\"schemaId\": \"RVX.SampleReport\"",
                                   "sample report schema");
-        passed &= RequireContains(json, "\"schemaVersion\": 2", "sample schema version");
+        passed &= RequireContains(json, "\"schemaVersion\": 36", "sample schema version");
         passed &= RequireContains(json, "\"sampleName\": \"model-viewer\"", "sample name");
         passed &= RequireContains(json,
                                   "\"backend\": \"" + options.backend + "\"",
@@ -536,19 +670,100 @@ namespace
         passed &= RequireUnsigned(json,
                                   "visibleObjectCount",
                                   options.expectedVisibleObjectCount);
-        passed &= RequireUnsigned(json, "opaqueMaterialBindingCount", 51);
+        passed &= RequireUnsigned(
+            json, "drawPacketEntryCount", options.expectedDrawPacketCount);
+        passed &= RequireUnsigned(
+            json, "opaqueMaterialBindingCount", options.expectedOpaqueDrawCount);
         passed &= RequireUnsigned(json, "opaqueMaterialFallbackBindingCount", 0);
-        passed &= RequireContains(json, "model meshes=75", "model mesh topology");
-        passed &= RequireContains(json, "model materials=14", "model material topology");
-        passed &= RequireContains(json, "model nodes=141", "model node topology");
+        if (options.expectedModelMeshCount != 0)
+        {
+            passed &= RequireContains(
+                json,
+                "model meshes=" +
+                    std::to_string(options.expectedModelMeshCount),
+                "model mesh topology");
+        }
+        if (options.expectedModelMaterialCount != 0)
+        {
+            passed &= RequireContains(
+                json,
+                "model materials=" +
+                    std::to_string(options.expectedModelMaterialCount),
+                "model material topology");
+        }
+        passed &= RequireContains(
+            json,
+            "model textures=" + std::to_string(options.expectedTextureCount),
+            "model texture dependencies");
+        if (options.expectedModelNodeCount != 0)
+        {
+            passed &= RequireContains(
+                json,
+                "model nodes=" +
+                    std::to_string(options.expectedModelNodeCount),
+                "model node topology");
+        }
+        if (options.expectedModelMaterialExtensionFeatureMask != 0)
+        {
+            passed &= RequireContains(
+                json,
+                "model material extension feature mask=" +
+                    std::to_string(
+                        options.expectedModelMaterialExtensionFeatureMask),
+                "model Material V2 extension identity");
+        }
+        passed &= RequireContains(
+            json,
+            "\"deterministicQualification\": true",
+            "deterministic qualification contract");
+        if (options.assetMode == "cooked")
+        {
+            passed &= RequireContains(
+                json,
+                "CookedModelRasterActualExecutionQualified",
+                "presented cooked-model raster capability");
+        }
         passed &= RequireContains(json,
                                   "QualificationCaptureReset",
                                   "deterministic capture reset");
 
+        const size_t presentedBegin =
+            json.find("\"presentedMaterialBindings\": [");
+        const size_t presentedEnd = presentedBegin == std::string::npos
+            ? std::string::npos
+            : json.find("],", presentedBegin);
+        uint64_t presentedFeatureMask = 0;
+        if (presentedBegin != std::string::npos &&
+            presentedEnd != std::string::npos)
+        {
+            const std::vector<uint64_t> featureMasks =
+                ReadUnsignedFieldValues(
+                    json.substr(
+                        presentedBegin, presentedEnd - presentedBegin),
+                    "featureMask");
+            for (const uint64_t featureMask : featureMasks)
+            {
+                presentedFeatureMask |= featureMask;
+            }
+        }
+        if ((presentedFeatureMask &
+             options.requiredPresentedMaterialFeatureMask) !=
+            options.requiredPresentedMaterialFeatureMask)
+        {
+            std::cerr
+                << "Presented materials do not cover required feature mask "
+                << options.requiredPresentedMaterialFeatureMask << "\n";
+            passed = false;
+        }
+
         if (options.renderPath == "direct")
         {
-            passed &= RequireUnsigned(json, "opaqueExecutedDrawCount", 51);
-            passed &= RequireUnsigned(json, "gpuDrivenOpaqueDirectDrawCount", 51);
+            passed &= RequireUnsigned(
+                json, "opaqueExecutedDrawCount", options.expectedOpaqueDrawCount);
+            passed &= RequireUnsigned(
+                json,
+                "gpuDrivenOpaqueDirectDrawCount",
+                options.expectedOpaqueDrawCount);
             passed &= RequireUnsigned(json, "gpuDrivenOpaqueIndirectBatchCount", 0);
             passed &= RequireContains(json,
                                       "\"gpuDrivenOpaqueIndirectSubmitted\": false",
@@ -559,9 +774,15 @@ namespace
         }
         else
         {
-            passed &= RequireUnsigned(json, "gpuDrivenCpuReferenceVisibleCount", 51);
+            passed &= RequireUnsigned(
+                json,
+                "gpuDrivenCpuReferenceVisibleCount",
+                options.expectedOpaqueDrawCount);
             passed &= RequireUnsigned(json, "gpuDrivenOpaqueDirectDrawCount", 0);
-            passed &= RequireUnsigned(json, "gpuDrivenOpaqueIndirectBatchCount", 51);
+            passed &= RequireUnsigned(
+                json,
+                "gpuDrivenOpaqueIndirectBatchCount",
+                options.expectedOpaqueDrawCount);
             passed &= RequireContains(json,
                                       "\"gpuDrivenExecutionRecorded\": true",
                                       "GPU-driven execution");

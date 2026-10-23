@@ -1,6 +1,6 @@
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Samples/SampleAssetCatalog.h"
 #include "Samples/SampleContext.h"
 
@@ -20,6 +20,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -65,7 +66,8 @@ namespace
     };
 
     std::string MakeCatalog(const std::string& entries,
-                            uint32_t schemaVersion = 1)
+                            uint32_t schemaVersion =
+                                RVX::RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
     {
         return "{\n"
                "  \"schemaId\": \"RVX.SampleAssetCatalog\",\n"
@@ -82,6 +84,8 @@ namespace
         return "{"
                "\"id\":\"" + id + "\","
                "\"kind\":\"model\","
+               "\"usagePolicy\":\"required-qualification\","
+               "\"qualificationEligible\":true,"
                "\"path\":\"" + path + "\","
                "\"license\":{"
                "\"spdxId\":\"LicenseRef-Test\","
@@ -134,7 +138,7 @@ namespace
         return HashContents(ReadFileContents(path));
     }
 
-    std::string MakeV3Entry(const std::string& id,
+    std::string MakeV4Entry(const std::string& id,
                             const std::string& path,
                             const std::vector<ManifestFile>& files,
                             const std::string& additionalFields = {},
@@ -172,6 +176,8 @@ namespace
         return "{"
                "\"id\":\"" + id + "\","
                "\"kind\":\"" + kind + "\","
+               "\"usagePolicy\":\"required-qualification\","
+               "\"qualificationEligible\":true,"
                "\"path\":\"" + path + "\","
                "\"license\":{"
                "\"spdxId\":\"LicenseRef-Test\","
@@ -280,20 +286,46 @@ namespace
     {
         TemporaryCatalog catalog;
         std::filesystem::path manifestPath;
+        std::string sourcePath;
+        std::string outputPath;
+        std::string sourceContents;
+        std::string artifactContents;
+        std::string assetId;
+        std::string assetKind;
+        RVX::Resource::CookAssetType assetType =
+            RVX::Resource::CookAssetType::Model;
         RVX::Resource::ResourceContentIdentity sourceIdentity;
         RVX::Resource::ResourceContentIdentity cookedIdentity;
         RVX::Resource::ResourceContentIdentity manifestIdentity;
+        RVX::Resource::ResourceContentIdentity artifactIdentity;
         std::string cookSettingsHash;
         std::string recipeHash;
 
-        CookAdmissionFixture()
+        CookAdmissionFixture(
+            const RVX::Resource::CookAssetType inAssetType =
+                RVX::Resource::CookAssetType::Model,
+            std::string inSourcePath = "models/model.gltf",
+            std::string inOutputPath = "models/model.rva",
+            std::string inArtifactContents = "cooked-model-v1",
+            std::string inAssetId = "model",
+            std::string inAssetKind = "model")
+            : sourcePath(std::move(inSourcePath))
+            , outputPath(std::move(inOutputPath))
+            , sourceContents("{\"asset\":{\"version\":\"2.0\"}}")
+            , artifactContents(std::move(inArtifactContents))
+            , assetId(std::move(inAssetId))
+            , assetKind(std::move(inAssetKind))
+            , assetType(inAssetType)
         {
-            constexpr std::string_view SourceContents =
-                "{\"asset\":{\"version\":\"2.0\"}}";
-            constexpr std::string_view ArtifactContents = "cooked-model-v1";
-            catalog.Write("models/model.gltf", std::string(SourceContents));
+            catalog.Write(sourcePath, sourceContents);
             catalog.Write("license.txt", "test license");
-            catalog.Write("cooked/models/model.rva", std::string(ArtifactContents));
+            catalog.Write("cooked/" + outputPath, artifactContents);
+            artifactIdentity = MakeContentIdentity(
+                RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
+                RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
+                HashContents(artifactContents),
+                artifactContents.size(),
+                1);
 
             RVX::Resource::CookManifest manifest;
             manifest.schema = RVX::Resource::CookManifest::SchemaName;
@@ -305,18 +337,20 @@ namespace
             manifest.recursive = true;
 
             RVX::Resource::CookManifestEntry entry;
-            entry.sourcePath = "models/model.gltf";
-            entry.outputPath = "models/model.rva";
-            entry.type = RVX::Resource::CookAssetType::Model;
+            entry.sourcePath = sourcePath;
+            entry.outputPath = outputPath;
+            entry.type = assetType;
             entry.success = true;
             entry.importerName = "FixtureImporter";
             entry.sourceContent = MakeCookFileIdentity(entry.sourcePath,
-                                                        std::string(SourceContents));
+                                                        sourceContents);
             entry.canonicalCookSettings =
-                "settingsSchema=RVX_COOK_SETTINGS_V1\nassetType=Model\noptions=fixture\n";
+                "settingsSchema=RVX_COOK_SETTINGS_V1\nassetType=" +
+                std::string(RVX::Resource::GetCookAssetTypeName(assetType)) +
+                "\noptions=fixture\n";
             entry.cookSettingsHash = HashContents(entry.canonicalCookSettings);
             entry.artifacts.push_back(MakeCookFileIdentity(entry.outputPath,
-                                                            std::string(ArtifactContents)));
+                                                            artifactContents));
             entry.recipeHash = BuildCookRecipeHash(entry);
             cookSettingsHash = entry.cookSettingsHash;
             recipeHash = entry.recipeHash;
@@ -348,15 +382,18 @@ namespace
 
         std::string MakeCookDeclaration(const std::string& manifestPathText =
                                             "cooked/CookManifest.rvxmanifest",
-                                        const std::string& cookedRootText = "cooked") const
+                                        const std::string& cookedRootText = "cooked",
+                                        const bool packageOnly = false) const
         {
             return "\"cook\":{"
                    "\"manifestPath\":\"" + manifestPathText + "\","
                    "\"cookedRoot\":\"" + cookedRootText + "\","
+                   "\"packageOnly\":" + (packageOnly ? "true," : "false,") +
                    "\"selector\":{"
-                   "\"sourcePath\":\"models/model.gltf\","
-                   "\"outputPath\":\"models/model.rva\","
-                   "\"type\":\"Model\"},"
+                   "\"sourcePath\":\"" + sourcePath + "\","
+                   "\"outputPath\":\"" + outputPath + "\","
+                   "\"type\":\"" +
+                   std::string(RVX::Resource::GetCookAssetTypeName(assetType)) + "\"},"
                    "\"sourceContentIdentity\":" + MakeIdentityJson(sourceIdentity) + ","
                    "\"cookedContentIdentity\":" + MakeIdentityJson(cookedIdentity) + ","
                    "\"manifestContentIdentity\":" + MakeIdentityJson(manifestIdentity) + ","
@@ -369,28 +406,81 @@ namespace
         void WriteCatalog(const std::string& cookDeclaration)
         {
             const std::vector<ManifestFile> files{
-                {"models/model.gltf",
+                {sourcePath,
                  "runtime-root",
-                 "{\"asset\":{\"version\":\"2.0\"}}"}};
+                 sourceContents}};
+            const std::string entryFields =
+                cookDeclaration.find("\"packageOnly\":true") != std::string::npos
+                    ? "\"contentIdentity\":" +
+                          MakeIdentityJson(artifactIdentity) + "," +
+                          cookDeclaration
+                    : cookDeclaration;
             catalog.Write("catalog.json",
-                          MakeCatalog(MakeV3Entry("model",
-                                                  "models/model.gltf",
+                          MakeCatalog(MakeV4Entry(assetId,
+                                                  sourcePath,
                                                   files,
-                                                  cookDeclaration),
-                                      3));
+                                                  entryFields,
+                                                  {},
+                                      assetKind),
+                                      4));
+        }
+
+        void WritePackageOnlyCatalog(const std::string& runtimeOutputPath = {},
+                                     const std::string& selectorOutputPath = {})
+        {
+            const std::string declaredRuntimeOutputPath =
+                runtimeOutputPath.empty() ? outputPath : runtimeOutputPath;
+            const std::string declaredSelectorOutputPath =
+                selectorOutputPath.empty() ? outputPath : selectorOutputPath;
+            catalog.Write("cooked/" + declaredRuntimeOutputPath, artifactContents);
+            const std::vector<ManifestFile> files{
+                {"cooked/CookManifest.rvxmanifest",
+                 "cook-manifest",
+                 ReadFileContents(manifestPath)},
+                {"cooked/" + declaredRuntimeOutputPath,
+                 "runtime-root",
+                 artifactContents}};
+            const std::string declaration = MakeCookDeclaration(
+                "cooked/CookManifest.rvxmanifest", "cooked", true);
+            const std::string selectorField = "\"outputPath\":\"" + outputPath + "\"";
+            const size_t selectorPosition = declaration.find(selectorField);
+            EXPECT_NE(selectorPosition, std::string::npos);
+            std::string adjustedDeclaration = declaration;
+            adjustedDeclaration.replace(selectorPosition,
+                                        selectorField.size(),
+                                        "\"outputPath\":\"" +
+                                            declaredSelectorOutputPath + "\"");
+            const std::string entryFields =
+                "\"contentIdentity\":" + MakeIdentityJson(artifactIdentity) +
+                "," + adjustedDeclaration;
+            catalog.Write("catalog.json",
+                          MakeCatalog(MakeV4Entry(assetId,
+                                                  "cooked/" + declaredRuntimeOutputPath,
+                                                  files,
+                                                  entryFields,
+                                                  {},
+                                                  assetKind),
+                                      4));
         }
     };
 
     TEST(SampleAssetCatalogValidation, LoadsCompleteCatalogDeterministically)
     {
         TemporaryCatalog fixture;
-        fixture.Write("models/zeta.gltf", "zeta");
-        fixture.Write("models/alpha.gltf", "alpha");
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/zeta.gltf", std::string(MinimalGltf));
+        fixture.Write("models/alpha.gltf", std::string(MinimalGltf));
         fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> zetaFiles{
+            {"models/zeta.gltf", "runtime-root", std::string(MinimalGltf)}};
+        const std::vector<ManifestFile> alphaFiles{
+            {"models/alpha.gltf", "runtime-root", std::string(MinimalGltf)}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("zeta", "models/zeta.gltf") +
-                                  "," +
-                                  MakeEntry("alpha", "models/alpha.gltf")));
+                      MakeCatalog(
+                          MakeV4Entry("zeta", "models/zeta.gltf", zetaFiles) +
+                          "," +
+                          MakeV4Entry("alpha", "models/alpha.gltf", alphaFiles)));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -416,16 +506,24 @@ namespace
     {
         TemporaryCatalog fixture;
         fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> escapedFiles{
+            {"../outside.gltf", "runtime-root", "unused"}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("escape", "../outside.gltf")));
+                      MakeCatalog(MakeV4Entry("escape",
+                                              "../outside.gltf",
+                                              escapedFiles)));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("traversal-free"), std::string::npos) << error;
 
+        const std::vector<ManifestFile> missingFiles{
+            {"models/missing.gltf", "runtime-root", "unused"}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("missing", "models/missing.gltf")));
+                      MakeCatalog(MakeV4Entry("missing",
+                                              "models/missing.gltf",
+                                              missingFiles)));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("Missing asset file"), std::string::npos) << error;
@@ -434,9 +532,14 @@ namespace
     TEST(SampleAssetCatalogValidation, RejectsDuplicateAndIncompleteProvenance)
     {
         TemporaryCatalog fixture;
-        fixture.Write("models/model.gltf", "model");
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/model.gltf", std::string(MinimalGltf));
         fixture.Write("license.txt", "test license");
-        const std::string entry = MakeEntry("model", "models/model.gltf");
+        const std::vector<ManifestFile> files{
+            {"models/model.gltf", "runtime-root", std::string(MinimalGltf)}};
+        const std::string entry =
+            MakeV4Entry("model", "models/model.gltf", files);
         fixture.Write("catalog.json", MakeCatalog(entry + "," + entry));
 
         RVX::SampleAssetCatalog catalog;
@@ -448,6 +551,8 @@ namespace
             "catalog.json",
             MakeCatalog(
                 "{\"id\":\"model\",\"kind\":\"model\","
+                "\"usagePolicy\":\"required-qualification\","
+                "\"qualificationEligible\":true,"
                 "\"path\":\"models/model.gltf\","
                 "\"redistributable\":true}"));
         error.clear();
@@ -460,17 +565,15 @@ namespace
         TemporaryCatalog fixture;
         fixture.Write("environments/studio.hdr", "hdr fixture");
         fixture.Write("license.txt", "test license");
-        fixture.Write(
-            "catalog.json",
-            MakeCatalog(
-                "{\"id\":\"studio\",\"kind\":\"environment\","
-                "\"path\":\"environments/studio.hdr\","
-                "\"license\":{\"spdxId\":\"CC0-1.0\","
-                "\"file\":\"license.txt\"},"
-                "\"source\":{\"name\":\"studio fixture\","
-                "\"uri\":\"repo://studio\","
-                "\"author\":\"RenderVerseX tests\"},"
-                "\"redistributable\":true}"));
+        const std::vector<ManifestFile> files{
+            {"environments/studio.hdr", "runtime-root", "hdr fixture"}};
+        fixture.Write("catalog.json",
+                      MakeCatalog(MakeV4Entry("studio",
+                                              "environments/studio.hdr",
+                                              files,
+                                              {},
+                                              {},
+                                              "environment")));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -483,40 +586,44 @@ namespace
     }
 
     TEST(SampleAssetCatalogValidation,
-         PreservesV1CompatibilityAndParsesStrictV2ContentIdentity)
+         RejectsLegacySchemaVersions)
     {
         TemporaryCatalog fixture;
-        fixture.Write("models/model.gltf", "test");
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/model.gltf", std::string(MinimalGltf));
         fixture.Write("license.txt", "test license");
 
-        fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("model", "models/model.gltf")));
         RVX::SampleAssetCatalog catalog;
         std::string error;
-        ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
-            << error;
-        ASSERT_NE(catalog.Find("model"), nullptr);
-        EXPECT_TRUE(catalog.Find("model")->contentIdentity.IsEmpty());
+        fixture.Write("catalog.json",
+                      MakeCatalog(MakeEntry("model", "models/model.gltf"), 1));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("schema/version"), std::string::npos) << error;
 
-        const std::string v2Entry =
-            MakeEntry("model", "models/model.gltf");
-        const std::string entryWithIdentity = v2Entry.substr(0, v2Entry.size() - 1) +
-            "," + MakeContentIdentity() + "}";
-        fixture.Write("catalog.json", MakeCatalog(entryWithIdentity, 2));
-        ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
-            << error;
-        const RVX::SampleAssetEntry* entry = catalog.Find("model");
-        ASSERT_NE(entry, nullptr);
-        EXPECT_TRUE(entry->contentIdentity.IsValid());
-        EXPECT_EQ(entry->contentIdentity.byteCount, 4u);
-        EXPECT_EQ(entry->contentIdentity.fileCount, 1u);
+        error.clear();
+        fixture.Write("catalog.json",
+                      MakeCatalog(MakeEntry("model", "models/model.gltf"), 2));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("schema/version"), std::string::npos) << error;
+
+        const std::vector<ManifestFile> files{
+            {"models/model.gltf", "runtime-root", std::string(MinimalGltf)}};
+        error.clear();
+        fixture.Write("catalog.json",
+                      MakeCatalog(
+                          MakeV4Entry("model", "models/model.gltf", files), 3));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("schema/version"), std::string::npos) << error;
     }
 
     TEST(SampleAssetCatalogValidation,
-         RejectsInvalidV2IdentityAndDuplicateCanonicalAssetPath)
+         RejectsLegacySchemaAndDuplicateCanonicalAssetPath)
     {
         TemporaryCatalog fixture;
-        fixture.Write("models/model.gltf", "test");
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/model.gltf", std::string(MinimalGltf));
         fixture.Write("license.txt", "test license");
 
         const std::string entry = MakeEntry("model", "models/model.gltf");
@@ -527,21 +634,23 @@ namespace
         RVX::SampleAssetCatalog catalog;
         std::string error;
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
-        EXPECT_NE(error.find("contentIdentity"), std::string::npos) << error;
+        EXPECT_NE(error.find("schema/version"), std::string::npos) << error;
 
+        const std::vector<ManifestFile> files{
+            {"models/model.gltf", "runtime-root", std::string(MinimalGltf)}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("first", "models/model.gltf") +
+                      MakeCatalog(MakeV4Entry("first", "models/model.gltf", files) +
                                       "," +
-                                      MakeEntry("second", "models/model.gltf")));
+                                      MakeV4Entry("second", "models/model.gltf", files)));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("Duplicate canonical"), std::string::npos) << error;
     }
 
     TEST(SampleAssetCatalogValidation,
-         LoadsAndVerifiesCompleteSchemaV3Package)
+         LoadsAndVerifiesCompleteSchemaV4Package)
     {
-        EXPECT_EQ(RVX::RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION, 3u);
+        EXPECT_EQ(RVX::RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION, 4u);
         TemporaryCatalog fixture;
         const std::string gltf =
             "{\"asset\":{\"version\":\"2.0\"},"
@@ -556,7 +665,7 @@ namespace
         fixture.Write(
             "catalog.json",
             MakeCatalog(
-                MakeV3Entry(
+                MakeV4Entry(
                     "model",
                     "models/model.gltf",
                     files,
@@ -566,7 +675,7 @@ namespace
                     "\"toolVersion\":\"1.0\","
                     "\"recipeHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"),
-                3));
+                4));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -583,13 +692,16 @@ namespace
         EXPECT_EQ(entry->source.archiveSha256.size(), 64u);
         EXPECT_EQ(entry->attribution, "fixture attribution");
         EXPECT_EQ(entry->modificationNotice, "No modifications.");
+        EXPECT_EQ(entry->usagePolicy,
+                  RVX::SampleAssetUsagePolicy::RequiredQualification);
+        EXPECT_TRUE(entry->qualificationEligible);
         ASSERT_EQ(entry->derivedFrom.size(), 1u);
         EXPECT_EQ(entry->derivedFrom.front(), "fixture-source-v1");
         EXPECT_EQ(entry->generation.recipe, "fixture-generator");
     }
 
     TEST(SampleAssetCatalogValidation,
-         ParsesSchemaV3AnimationAndRegistryRejectsWrongKind)
+         ParsesSchemaV4AnimationAndRegistryRejectsWrongKind)
     {
         TemporaryCatalog fixture;
         constexpr std::string_view AnimationBytes = "animation fixture";
@@ -600,13 +712,13 @@ namespace
             {"animations/walk.rvxanim", "runtime-root",
              std::string(AnimationBytes)}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("walk",
+                      MakeCatalog(MakeV4Entry("walk",
                                               "animations/walk.rvxanim",
                                               files,
                                               {},
                                               {},
                                               "animation"),
-                                  3));
+                                  4));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -620,12 +732,13 @@ namespace
         EXPECT_TRUE(entry->assetContentId.IsValid());
         EXPECT_EQ(entry->files.front().resolvedPath, entry->resolvedPath);
 
-        RVX::SampleAssetRegistry registry({
-            {entry->id,
-             entry->kind,
-             entry->resolvedPath,
-             entry->contentIdentity,
-             entry->assetContentId}});
+        RVX::SampleAssetRegistryEntry registryEntry;
+        registryEntry.id = entry->id;
+        registryEntry.kind = entry->kind;
+        registryEntry.resolvedPath = entry->resolvedPath;
+        registryEntry.contentIdentity = entry->contentIdentity;
+        registryEntry.assetContentId = entry->assetContentId;
+        RVX::SampleAssetRegistry registry({std::move(registryEntry)});
         const RVX::SampleAssetRegistryLookupResult animationLookup =
             registry.Lookup("walk", RVX::SampleAssetKind::Animation);
         ASSERT_TRUE(animationLookup.IsFound());
@@ -647,7 +760,135 @@ namespace
     }
 
     TEST(SampleAssetCatalogValidation,
-         RejectsUnsortedSchemaV3ManifestAndContentDrift)
+         RejectsMissingUnknownAndContradictoryUsagePolicy)
+    {
+        TemporaryCatalog fixture;
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/model.gltf", std::string(MinimalGltf));
+        fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> files{
+            {"models/model.gltf", "runtime-root", std::string(MinimalGltf)}};
+        const std::string validEntry =
+            MakeV4Entry("model", "models/model.gltf", files);
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        fixture.Write("catalog.json",
+                      MakeCatalog(RemoveField(
+                          validEntry,
+                          "\"usagePolicy\":\"required-qualification\",")));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("usagePolicy"), std::string::npos) << error;
+
+        error.clear();
+        fixture.Write("catalog.json",
+                      MakeCatalog(RemoveField(
+                          validEntry,
+                          "\"qualificationEligible\":true,")));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("qualificationEligible"), std::string::npos) << error;
+
+        std::string unknownPolicy = validEntry;
+        const size_t policyPosition = unknownPolicy.find(
+            "required-qualification");
+        ASSERT_NE(policyPosition, std::string::npos);
+        unknownPolicy.replace(policyPosition,
+                              std::string("required-qualification").size(),
+                              "unreviewed-policy");
+        error.clear();
+        fixture.Write("catalog.json", MakeCatalog(unknownPolicy));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("usagePolicy"), std::string::npos) << error;
+
+        std::string contradictoryPolicy = validEntry;
+        const size_t eligibilityPosition = contradictoryPolicy.find(
+            "\"qualificationEligible\":true");
+        ASSERT_NE(eligibilityPosition, std::string::npos);
+        contradictoryPolicy.replace(eligibilityPosition,
+                                    std::string("\"qualificationEligible\":true").size(),
+                                    "\"qualificationEligible\":false");
+        error.clear();
+        fixture.Write("catalog.json", MakeCatalog(contradictoryPolicy));
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("must agree"), std::string::npos) << error;
+
+        std::string developmentPolicy = validEntry;
+        const size_t developmentPolicyPosition = developmentPolicy.find(
+            "required-qualification");
+        ASSERT_NE(developmentPolicyPosition, std::string::npos);
+        developmentPolicy.replace(developmentPolicyPosition,
+                                  std::string("required-qualification").size(),
+                                  "development-only");
+        const size_t developmentEligibilityPosition = developmentPolicy.find(
+            "\"qualificationEligible\":true");
+        ASSERT_NE(developmentEligibilityPosition, std::string::npos);
+        developmentPolicy.replace(developmentEligibilityPosition,
+                                  std::string("\"qualificationEligible\":true").size(),
+                                  "\"qualificationEligible\":false");
+        error.clear();
+        fixture.Write("catalog.json", MakeCatalog(developmentPolicy));
+        ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
+            << error;
+        const RVX::SampleAssetEntry* development = catalog.Find("model");
+        ASSERT_NE(development, nullptr);
+        EXPECT_EQ(development->usagePolicy,
+                  RVX::SampleAssetUsagePolicy::DevelopmentOnly);
+        EXPECT_FALSE(development->qualificationEligible);
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         ParsesSchemaV4EffectAndRejectsUnknownOrDuplicateEffectKind)
+    {
+        TemporaryCatalog fixture;
+        constexpr std::string_view EffectBytes = "cooked effect fixture";
+        fixture.Write("effects/fire/effect.rvxvfx", std::string(EffectBytes));
+        fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> files{
+            {"effects/fire/effect.rvxvfx", "runtime-root",
+             std::string(EffectBytes)}};
+        const std::string effectEntry = MakeV4Entry(
+            "particle-fire-v1", "effects/fire/effect.rvxvfx", files,
+            {}, {}, "effect");
+        fixture.Write("catalog.json", MakeCatalog(effectEntry, 4));
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("particle-fire-v1");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(entry->kind, RVX::SampleAssetKind::Effect);
+        EXPECT_EQ(entry->path.generic_string(), "effects/fire/effect.rvxvfx");
+
+        RVX::SampleAssetRegistryEntry registryEntry;
+        registryEntry.id = entry->id;
+        registryEntry.kind = entry->kind;
+        registryEntry.resolvedPath = entry->resolvedPath;
+        registryEntry.contentIdentity = entry->contentIdentity;
+        registryEntry.assetContentId = entry->assetContentId;
+        RVX::SampleAssetRegistry registry({std::move(registryEntry)});
+        EXPECT_TRUE(registry.Lookup("particle-fire-v1",
+                                    RVX::SampleAssetKind::Effect).IsFound());
+        EXPECT_EQ(registry.Lookup("particle-fire-v1",
+                                  RVX::SampleAssetKind::Model).code,
+                  RVX::SampleAssetRegistryLookupCode::KindMismatch);
+
+        fixture.Write("catalog.json", MakeCatalog(
+            MakeV4Entry("particle-fire-v1", "effects/fire/effect.rvxvfx",
+                        files, {}, {}, "not-an-effect"), 4));
+        error.clear();
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("kind"), std::string::npos) << error;
+
+        fixture.Write("catalog.json", MakeCatalog(effectEntry + "," + effectEntry, 4));
+        error.clear();
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("Duplicate"), std::string::npos) << error;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         RejectsUnsortedSchemaV4ManifestAndContentDrift)
     {
         TemporaryCatalog fixture;
         fixture.Write("models/model.gltf", "{}");
@@ -658,10 +899,10 @@ namespace
             {"models/z.bin", "dependency", "z"},
             {"models/model.gltf", "root", "{}"}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/model.gltf",
                                               unsortedFiles),
-                                  3));
+                                  4));
         RVX::SampleAssetCatalog catalog;
         std::string error;
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
@@ -669,35 +910,35 @@ namespace
 
         const std::vector<ManifestFile> files{
             {"models/model.gltf", "root", "{}"}};
-        std::string fileDrift = MakeV3Entry("model", "models/model.gltf", files);
+        std::string fileDrift = MakeV4Entry("model", "models/model.gltf", files);
         const std::string fileDigest = HashContents("{}");
         const size_t fileDigestPosition = fileDrift.find(fileDigest);
         ASSERT_NE(fileDigestPosition, std::string::npos);
         fileDrift.replace(fileDigestPosition, fileDigest.size(),
                           "cccccccccccccccccccccccccccccccc"
                           "cccccccccccccccccccccccccccccccc");
-        fixture.Write("catalog.json", MakeCatalog(fileDrift, 3));
+        fixture.Write("catalog.json", MakeCatalog(fileDrift, 4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("hash or byte count drift"), std::string::npos) << error;
 
         fixture.Write("catalog.json",
                       MakeCatalog(
-                          MakeV3Entry(
+                          MakeV4Entry(
                               "model",
                               "models/model.gltf",
                               files,
                               {},
                               "dddddddddddddddddddddddddddddddd"
                               "dddddddddddddddddddddddddddddddd"),
-                          3));
+                          4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("assetContentId"), std::string::npos) << error;
     }
 
     TEST(SampleAssetCatalogValidation,
-         RejectsSchemaV3UnsafePathAndSymlinkEscape)
+         RejectsSchemaV4UnsafePathAndSymlinkEscape)
     {
         TemporaryCatalog fixture;
         fixture.Write("models/model.gltf", "{}");
@@ -705,15 +946,15 @@ namespace
         const std::vector<ManifestFile> unsafeFiles{
             {"models/../model.gltf", "root", "{}"}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/../model.gltf",
                                               unsafeFiles),
-                                  3));
+                                  4));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
-        EXPECT_NE(error.find("Schema-v3"), std::string::npos) << error;
+        EXPECT_NE(error.find("Schema-v4"), std::string::npos) << error;
 
         const std::filesystem::path outside =
             fixture.Root().parent_path() /
@@ -736,10 +977,10 @@ namespace
             {"models/escape.bin", "dependency", "outside fixture"},
             {"models/model.gltf", "root", "{}"}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/model.gltf",
                                               symlinkFiles),
-                                  3));
+                                  4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("escapes asset root"), std::string::npos) << error;
@@ -747,7 +988,7 @@ namespace
     }
 
     TEST(SampleAssetCatalogValidation,
-         RejectsRemoteAndUnlistedSchemaV3GltfDependencies)
+         RejectsRemoteAndUnlistedSchemaV4GltfDependencies)
     {
         TemporaryCatalog fixture;
         fixture.Write("license.txt", "test license");
@@ -757,10 +998,10 @@ namespace
         const std::vector<ManifestFile> remoteFiles{
             {"models/model.gltf", "root", remoteGltf}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/model.gltf",
                                               remoteFiles),
-                                  3));
+                                  4));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -774,17 +1015,17 @@ namespace
         const std::vector<ManifestFile> unlistedFiles{
             {"models/model.gltf", "root", unlistedGltf}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/model.gltf",
                                               unlistedFiles),
-                                  3));
+                                  4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("not listed"), std::string::npos) << error;
     }
 
     TEST(SampleAssetCatalogValidation,
-         RejectsIncompleteSchemaV3LicenseAndDerivationMetadata)
+         RejectsIncompleteSchemaV4LicenseAndDerivationMetadata)
     {
         TemporaryCatalog fixture;
         fixture.Write("models/model.gltf", "{}");
@@ -792,23 +1033,23 @@ namespace
         const std::vector<ManifestFile> files{
             {"models/model.gltf", "root", "{}"}};
         const std::string validEntry =
-            MakeV3Entry("model", "models/model.gltf", files);
+            MakeV4Entry("model", "models/model.gltf", files);
 
         fixture.Write("catalog.json",
                       MakeCatalog(RemoveField(validEntry,
                                               ",\"coverage\":\"full-package\""),
-                                  3));
+                                  4));
         RVX::SampleAssetCatalog catalog;
         std::string error;
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("coverage"), std::string::npos) << error;
 
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeV3Entry("model",
+                      MakeCatalog(MakeV4Entry("model",
                                               "models/model.gltf",
                                               files,
                                               "\"derivedFrom\":[\"fixture-source\"]"),
-                                  3));
+                                  4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("derivedFrom and generation"), std::string::npos) << error;
@@ -816,7 +1057,7 @@ namespace
         fixture.Write("catalog.json",
                       MakeCatalog(RemoveField(validEntry,
                                               "\"modificationNotice\":\"No modifications.\","),
-                                  3));
+                                  4));
         error.clear();
         EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
         EXPECT_NE(error.find("modificationNotice"), std::string::npos) << error;
@@ -849,22 +1090,28 @@ namespace
     }
 
     TEST(SampleAssetCatalogValidation,
-         QualificationCookAdmissionFailsClosedForLegacyAndMissingDeclarations)
+         QualificationCookAdmissionFailsClosedForMissingDeclarationsAndLegacySchemas)
     {
         TemporaryCatalog fixture;
-        fixture.Write("models/model.gltf", "legacy model");
+        constexpr std::string_view MinimalGltf =
+            "{\"asset\":{\"version\":\"2.0\"}}";
+        fixture.Write("models/model.gltf", std::string(MinimalGltf));
         fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> files{
+            {"models/model.gltf", "runtime-root", std::string(MinimalGltf)}};
         fixture.Write("catalog.json",
-                      MakeCatalog(MakeEntry("legacy", "models/model.gltf")));
+                      MakeCatalog(MakeV4Entry("no-cook",
+                                              "models/model.gltf",
+                                              files)));
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
         ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
             << error;
-        const RVX::SampleCookedAssetAdmissionReceipt legacy =
-            catalog.RequireCookedAdmission("legacy");
-        EXPECT_FALSE(legacy.IsAccepted());
-        EXPECT_EQ(legacy.code,
+        const RVX::SampleCookedAssetAdmissionReceipt noCook =
+            catalog.RequireCookedAdmission("no-cook");
+        EXPECT_FALSE(noCook.IsAccepted());
+        EXPECT_EQ(noCook.code,
                   RVX::SampleCookedAssetAdmissionCode::CookDataMissing);
 
         const RVX::SampleCookedAssetAdmissionReceipt unknown =
@@ -879,18 +1126,15 @@ namespace
              "runtime-root",
              "{\"asset\":{\"version\":\"2.0\"}}"}};
         v3Fixture.catalog.Write("catalog.json",
-                                MakeCatalog(MakeV3Entry("v3-model",
+                                MakeCatalog(MakeV4Entry("v3-model",
                                                         "models/model.gltf",
                                                         v3Files),
                                             3));
-        ASSERT_TRUE(catalog.Load(v3Fixture.catalog.CatalogPath(),
-                                 v3Fixture.catalog.Root(),
-                                 &error))
-            << error;
-        const RVX::SampleCookedAssetAdmissionReceipt v3Missing =
-            catalog.RequireCookedAdmission("v3-model");
-        EXPECT_EQ(v3Missing.code,
-                  RVX::SampleCookedAssetAdmissionCode::CookDataMissing);
+        error.clear();
+        EXPECT_FALSE(catalog.Load(v3Fixture.catalog.CatalogPath(),
+                                  v3Fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("schema/version"), std::string::npos) << error;
     }
 
     TEST(SampleAssetCatalogValidation,
@@ -952,6 +1196,125 @@ namespace
                   RVX::Resource::CookManifestAdmissionCode::MountedContentMismatch);
     }
 
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionAllowsExplicitPackageOnlyCatalogAfterSourceRemoval)
+    {
+        CookAdmissionFixture fixture;
+        fixture.WritePackageOnlyCatalog();
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.catalog.CatalogPath(),
+                                 fixture.catalog.Root(),
+                                 &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("model");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_TRUE(entry->cook.packageOnly);
+
+        std::error_code removeError;
+        std::filesystem::remove(fixture.catalog.Root() / "models/model.gltf",
+                                removeError);
+        ASSERT_FALSE(removeError) << removeError.message();
+        const RVX::SampleCookedAssetAdmissionReceipt receipt =
+            catalog.RequireCookedAdmission("model");
+        EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionAllowsExplicitPackageOnlyEnvironmentArtifact)
+    {
+        CookAdmissionFixture fixture(
+            RVX::Resource::CookAssetType::Environment,
+            "environments/studio.hdr",
+            "environments/studio.rva",
+            "cooked-environment-v1",
+            "studio",
+            "environment");
+        fixture.WritePackageOnlyCatalog();
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.catalog.CatalogPath(),
+                                 fixture.catalog.Root(),
+                                 &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("studio");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(entry->kind, RVX::SampleAssetKind::Environment);
+        EXPECT_EQ(entry->path.generic_string(),
+                  "cooked/environments/studio.rva");
+        EXPECT_TRUE(entry->cook.packageOnly);
+        EXPECT_EQ(entry->cook.selector.type,
+                  RVX::Resource::CookAssetType::Environment);
+
+        const RVX::SampleCookedAssetAdmissionReceipt receipt =
+            catalog.RequireCookedAdmission("studio");
+        EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         CatalogLoadRejectsPackageOnlyEnvironmentWithNonRvaArtifact)
+    {
+        CookAdmissionFixture fixture(
+            RVX::Resource::CookAssetType::Environment,
+            "environments/studio.hdr",
+            "environments/studio.rva",
+            "cooked-environment-v1",
+            "studio",
+            "environment");
+        fixture.WritePackageOnlyCatalog("environments/studio.rvxvfx",
+                                        "environments/studio.rvxvfx");
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("Package-only sample asset"), std::string::npos)
+            << error;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionRejectsPackageOnlyCatalogPointingToSourceModel)
+    {
+        CookAdmissionFixture fixture;
+        // The CookManifest and every other package-only declaration field are
+        // valid; only the runtime catalog path incorrectly names a .gltf.
+        fixture.WriteCatalog(fixture.MakeCookDeclaration(
+            "cooked/CookManifest.rvxmanifest", "cooked", true));
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("Package-only"), std::string::npos) << error;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         CatalogLoadRejectsPackageOnlyArtifactIdentityMismatch)
+    {
+        CookAdmissionFixture fixture;
+        fixture.WritePackageOnlyCatalog();
+
+        std::string catalogText = ReadFileContents(fixture.catalog.CatalogPath());
+        const size_t identityPosition = catalogText.find(fixture.artifactIdentity.digest);
+        ASSERT_NE(identityPosition, std::string::npos);
+        catalogText.replace(identityPosition,
+                            fixture.artifactIdentity.digest.size(),
+                            std::string(64, 'f'));
+        fixture.catalog.Write("catalog.json", catalogText);
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("hash or byte count drift"), std::string::npos)
+            << error;
+    }
+
 #if defined(RVX_SOURCE_DIR)
     TEST(SampleAssetCatalogValidation, LoadsVendoredProductionCatalogOffline)
     {
@@ -978,7 +1341,7 @@ namespace
 
         requireAsset("water-bottle", RVX::SampleAssetKind::Model, 1u);
         requireAsset("corset", RVX::SampleAssetKind::Model, 1u);
-        requireAsset("casual-female", RVX::SampleAssetKind::Model, 5u);
+        requireAsset("casual-female", RVX::SampleAssetKind::Model, 11u);
         requireAsset("crytek-sponza", RVX::SampleAssetKind::Model, 26u);
         requireAsset("kloofendal-48d-partly-cloudy-pure-sky",
                      RVX::SampleAssetKind::Environment,
@@ -988,7 +1351,7 @@ namespace
     TEST(SampleAssetCatalogValidation,
          PinsProductionCasualFemaleCatalogAndSkeletalSourceContract)
     {
-        EXPECT_EQ(RVX::RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION, 3u);
+        EXPECT_EQ(RVX::RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION, 4u);
         const std::filesystem::path assetRoot =
             std::filesystem::path(RVX_SOURCE_DIR) /
             "Samples" / "RenderVerseSamples" / "Assets";
@@ -1007,6 +1370,9 @@ namespace
                   "LICENSE.quaternius-cc0.txt");
         EXPECT_TRUE(std::filesystem::is_regular_file(entry->license.resolvedFile));
         EXPECT_TRUE(entry->redistributable);
+        EXPECT_EQ(entry->usagePolicy,
+                  RVX::SampleAssetUsagePolicy::DevelopmentOnly);
+        EXPECT_FALSE(entry->qualificationEligible);
 
         constexpr std::string_view SourceUriId =
             "1E79ks2jbMt5iIrI8Ag9lRgA0VRnfU4pk";
@@ -1033,11 +1399,11 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "42dec4e0c8ed81f540f666943f7823e500f53d22c9eccc7a9750cc9c1324dee5");
-        EXPECT_EQ(entry->assetContentId.byteCount, 3595794u);
-        EXPECT_EQ(entry->assetContentId.fileCount, 5u);
+                  "8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca");
+        EXPECT_EQ(entry->assetContentId.byteCount, 3598370u);
+        EXPECT_EQ(entry->assetContentId.fileCount, 11u);
 
-        ASSERT_EQ(entry->files.size(), 5u);
+        ASSERT_EQ(entry->files.size(), 11u);
         for (const RVX::SampleAssetFile& declaredFile : entry->files)
         {
             EXPECT_TRUE(std::filesystem::is_regular_file(declaredFile.resolvedPath));
@@ -1069,15 +1435,15 @@ namespace
         EXPECT_EQ(entry->cook.selector.type,
                   RVX::Resource::CookAssetType::Model);
         EXPECT_EQ(entry->cook.cookedContentIdentity.digest,
-                  "c91215f2751eb272b6750de1a03829d2599577a13842fa76dc488e621a94ce89");
-        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534789u);
-        EXPECT_EQ(entry->cook.cookedContentIdentity.fileCount, 3u);
+                  "e9da09c36544ffae0834156cd6878cfdab25f4fd0ab5d58c667349fa19496b7d");
+        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534489u);
+        EXPECT_EQ(entry->cook.cookedContentIdentity.fileCount, 9u);
         EXPECT_EQ(entry->cook.manifestContentIdentity.digest,
-                  "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096");
+                  "b003138d5c8ca4f216c1aede8628d64bb17d94549d328b2de6f4ef3075895a2a");
         EXPECT_EQ(entry->cook.cookSettingsHash,
-                  "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa");
+                  "10cfaf4149306c1992cd93a0448e877c360ab41cd3551a7586ad74060ce62fa3");
         EXPECT_EQ(entry->cook.recipeHash,
-                  "815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5");
+                  "2f98a9441e3e96806c084147666253bf3c310f7274539a719055dd0809c7015a");
         const RVX::SampleCookedAssetAdmissionReceipt admission =
             catalog.RequireCookedAdmission("casual-female");
         EXPECT_TRUE(admission.IsAccepted()) << admission.detail;
@@ -1174,7 +1540,7 @@ namespace
                   "rvx-animation-root-motion-derive-v1");
         EXPECT_EQ(entry->generation.toolVersion, "1.0.0");
         EXPECT_EQ(entry->generation.recipeHash,
-                  "3f12412b0a93123d4727c06ab91a87c5e86d7c1055b1db511de0f62e9eab21e3");
+                  "f7572d945849c7b9ddca2bb40501dfcd59f2a3e8855bda2096d01a9676befd76");
 
         const auto expectIdentity =
             [](const RVX::Resource::ResourceContentIdentity& identity,
@@ -1200,8 +1566,8 @@ namespace
             entry->contentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca",
-            54462u,
+            "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca",
+            54464u,
             1u);
 
         EXPECT_TRUE(entry->assetContentId.IsValid());
@@ -1209,8 +1575,8 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "3e32fb4c332021590f3841ddb7fe858e09c8240246bfbf16e67bb8b795413360");
-        EXPECT_EQ(entry->assetContentId.byteCount, 56156u);
+                  "a1237867f0594b079b1e87269684cead024c7e598d94613c954b59742c9b3164");
+        EXPECT_EQ(entry->assetContentId.byteCount, 56159u);
         EXPECT_EQ(entry->assetContentId.fileCount, 2u);
 
         ASSERT_EQ(entry->files.size(), 2u);
@@ -1218,9 +1584,9 @@ namespace
         EXPECT_EQ(manifestFile.path.generic_string(),
                   "cooked/casual-female-root-motion/CookManifest.rvxmanifest");
         EXPECT_EQ(manifestFile.purpose, "cook-manifest");
-        EXPECT_EQ(manifestFile.byteCount, 1694u);
+        EXPECT_EQ(manifestFile.byteCount, 1695u);
         EXPECT_EQ(manifestFile.sha256,
-                  "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17");
+                  "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289");
         EXPECT_TRUE(std::filesystem::is_regular_file(manifestFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(manifestFile.resolvedPath),
                   manifestFile.byteCount);
@@ -1231,9 +1597,9 @@ namespace
                   "cooked/casual-female-root-motion/"
                   "casual-female-walk-root-motion.rvxanim");
         EXPECT_EQ(artifactFile.purpose, "runtime-root");
-        EXPECT_EQ(artifactFile.byteCount, 54462u);
+        EXPECT_EQ(artifactFile.byteCount, 54464u);
         EXPECT_EQ(artifactFile.sha256,
-                  "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca");
+                  "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca");
         EXPECT_TRUE(std::filesystem::is_regular_file(artifactFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(artifactFile.resolvedPath),
                   artifactFile.byteCount);
@@ -1262,20 +1628,20 @@ namespace
             entry->cook.cookedContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "b820610acdfb55f6f182d753ddeabdc0d73d635816d0b14d93b8ae899b16acbb",
-            54462u,
+            "da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e",
+            54464u,
             1u);
         expectIdentity(
             entry->cook.manifestContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookManifest,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17",
-            1694u,
+            "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289",
+            1695u,
             1u);
         EXPECT_EQ(entry->cook.cookSettingsHash,
-                  "0618f669053ab678745f85251fe13a8db9966f8196a30f955ea1585bc2c81963");
+                  "8eb7720e13e68209be75e55b81ab4ee0d731dda72389f53cffe2391e77da3a27");
         EXPECT_EQ(entry->cook.recipeHash,
-                  "2984a9d350b89ae24050cbcc3087c4714f66aafca654ea8cef9b7bc5a8dcd709");
+                  "bc445631a2989716a9c08158b45dc7ee73293e0eb9afe43156e003beab5e6070");
         EXPECT_EQ(entry->cook.toolName, "RVXCook");
         EXPECT_EQ(entry->cook.toolVersion, "2.0.0");
 

@@ -33,6 +33,21 @@ path. The external suite is development evidence only. Closing a production
 qualification gate requires a small, redistributable, attribution-complete
 asset checked into the repository with deterministic capture expectations.
 
+assets/catalog.json is a strict RVX.SampleAssetCatalog V4 document. Its three
+entries are all optional-nightly and explicitly ineligible for required
+qualification. Regenerate and verify it only from this repository's assets/
+root; the generator rejects missing source files, unsafe relative paths, and
+catalog byte drift:
+
+    & "C:\Users\yinzs\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" .\Scripts\Assets\generate_external_asset_catalog_v4.py
+    & "C:\Users\yinzs\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" .\Scripts\Assets\generate_external_asset_catalog_v4.py --verify
+
+The V4 assetContentId covers every declared package file, including license
+records. contentIdentity deliberately covers only runtime-consumed bytes: the
+Porsche glTF dependency closure, or one HDRI file. This preserves complete
+package provenance without binding a runtime resource identity to a
+machine-local absolute path or an unrelated license text change.
+
 Generated imports, compressed textures, mesh optimization output, thumbnails,
 and shader caches belong under the build or derived-data directory, never next
 to the immutable source asset.

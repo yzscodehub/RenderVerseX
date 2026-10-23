@@ -1,236 +1,763 @@
 param(
     [string]$ConfigurePreset = "win_x64_debug",
     [string]$BuildPreset = "win_x64_debug",
-    [string]$TestPreset = "win_x64_debug_unit_lint",
+    [string[]]$LaneTestPresets = @(),
     [string]$BuildDir = "build\win_x64_debug",
     [string]$Configuration = "Debug",
     [string]$BaseRef = "master",
-    [string]$NativeTestRegex = "",
     [string]$RequiredNativeBackend = "",
+    [switch]$AllowSoftwareAdapter,
     [switch]$Fresh
 )
 
+# Some Windows launchers expose a pwsh shim that actually starts Windows
+# PowerShell. Re-enter through a real PowerShell 7 binary before computing
+# fingerprints or publishing immutable validation receipts.
+if ($PSVersionTable.PSVersion.Major -lt 7)
+{
+    $forward = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+        "-ConfigurePreset", $ConfigurePreset,
+        "-BuildPreset", $BuildPreset,
+        "-BuildDir", $BuildDir,
+        "-Configuration", $Configuration,
+        "-BaseRef", $BaseRef
+    )
+    if (-not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+    {
+        $forward += @("-RequiredNativeBackend", $RequiredNativeBackend)
+    }
+    if ($LaneTestPresets.Count -gt 0)
+    {
+        $forward += @("-LaneTestPresets", ($LaneTestPresets -join ","))
+    }
+    if ($AllowSoftwareAdapter) { $forward += "-AllowSoftwareAdapter" }
+    if ($Fresh) { $forward += "-Fresh" }
+
+    $candidates = @(Get-Command pwsh -All -ErrorAction SilentlyContinue |
+        ForEach-Object Source | Select-Object -Unique)
+    foreach ($candidate in $candidates)
+    {
+        $major = & $candidate -NoProfile -Command (
+            "[Console]::Write(`$PSVersionTable.PSVersion.Major)") 2>$null
+        if ($LASTEXITCODE -eq 0 -and [string]$major -match "^\s*(\d+)\s*$" -and
+            [int]$Matches[1] -ge 7)
+        {
+            Write-Warning "The first pwsh is PowerShell $($PSVersionTable.PSVersion); re-launching with '$candidate'."
+            & $candidate @forward
+            exit $LASTEXITCODE
+        }
+    }
+    throw "PowerShell 7 or newer is required, but no usable pwsh 7 executable was found"
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+Import-Module (Join-Path $PSScriptRoot "BuildTruth\ValidationProcessEnvironment.psm1") -Force
+
+# MSBuild rejects a Windows inherited environment block containing both PATH
+# and Path. Re-enter exactly once with a clean child environment rather than
+# mutating this host process's environment in place.
+$canonicalizationArguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+    "-ConfigurePreset", $ConfigurePreset,
+    "-BuildPreset", $BuildPreset,
+    "-BuildDir", $BuildDir,
+    "-Configuration", $Configuration,
+    "-BaseRef", $BaseRef
+)
+if (-not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+{
+    $canonicalizationArguments += @("-RequiredNativeBackend", $RequiredNativeBackend)
+}
+if ($LaneTestPresets.Count -gt 0)
+{
+    $canonicalizationArguments += @("-LaneTestPresets", ($LaneTestPresets -join ","))
+}
+if ($AllowSoftwareAdapter) { $canonicalizationArguments += "-AllowSoftwareAdapter" }
+if ($Fresh) { $canonicalizationArguments += "-Fresh" }
+$environmentCanonicalization = Invoke-ValidationProcessEnvironmentCanonicalization `
+    -WorkingDirectory (Get-Location).Path `
+    -InvocationArguments $canonicalizationArguments
+if ($environmentCanonicalization.relaunched)
+{
+    exit $environmentCanonicalization.exitCode
+}
+
+Import-Module (Join-Path $PSScriptRoot "BuildTruth\BuildTruthV3.psm1") -Force
+
+function Add-BuildTruthCommand
+{
+    param(
+        [System.Collections.Generic.List[object]]$Commands,
+        [Parameter(Mandatory)][string]$Name,
+        [string]$FailureCategory = "Command",
+        [Parameter(Mandatory)][scriptblock]$Action
+    )
+
+    $started = Get-Date
+    try
+    {
+        $result = & $Action
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0)
+        {
+            Throw-BuildTruthFailure -Category $FailureCategory -Message "$Name failed with exit code $exitCode"
+        }
+        return $result
+    }
+    catch
+    {
+        Throw-BuildTruthFailure -Category $FailureCategory -Message (
+            "$Name threw: $($_.Exception.Message)")
+    }
+    finally
+    {
+        $Commands.Add([ordered]@{
+            name = $Name
+            exitCode = $LASTEXITCODE
+            durationMs = [int]((Get-Date) - $started).TotalMilliseconds
+        })
+    }
+}
+
+function Get-BuildTruthLanePresetList
+{
+    param([string[]]$Values, [string]$ConfigurePreset)
+
+    $presets = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in $Values)
+    {
+        foreach ($item in ($value -split ","))
+        {
+            $trimmed = $item.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed))
+            {
+                $presets.Add($trimmed)
+            }
+        }
+    }
+    if ($presets.Count -eq 0)
+    {
+        foreach ($lane in @("architecture", "unit", "integration", "native"))
+        {
+            $presets.Add("${ConfigurePreset}_${lane}")
+        }
+    }
+    return @($presets)
+}
+
+function Get-BuildTruthRepositoryRelativeDirectory
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $absolutePath = Resolve-BuildTruthContainedPath `
+        -Root $RepositoryRoot `
+        -Path $Path
+    if (-not (Test-Path -LiteralPath $absolutePath -PathType Container))
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Directory '$Path' is not an existing repository-contained directory")
+    }
+    return Get-BuildTruthRepositoryRelativePath `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $absolutePath
+}
+
+function Publish-BuildTruthImmutableReceipt
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$RunId,
+        [Parameter(Mandatory)][string]$ReportPath,
+        [Parameter(Mandatory)][string]$BuildPath,
+        [Parameter(Mandatory)][string]$BaseRef,
+        [Parameter(Mandatory)][string]$ConfigurePreset,
+        [Parameter(Mandatory)][string]$BuildPreset,
+        [Parameter(Mandatory)][string[]]$LaneTestPresets,
+        [Parameter(Mandatory)][string]$Configuration,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$RequiredNativeBackend,
+        [Parameter(Mandatory)][bool]$Fresh,
+        [Parameter(Mandatory)][string]$SourceCommit,
+        [Parameter(Mandatory)][object]$SourceFingerprintAtStart,
+        [Parameter(Mandatory)][object]$SourceFingerprintAtEnd,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$LaneReports,
+        [Parameter(Mandatory)][hashtable]$LaneRuntimeEvidence,
+        [AllowNull()][object]$NativeEvidence,
+        [AllowNull()][object]$NativeRuntimeEvidence,
+        [Parameter(Mandatory)][bool]$SoftwareAdapterAllowed,
+        [Parameter(Mandatory)][string]$NativeLifecyclePath,
+        [Parameter(Mandatory)][string]$NativeEvidencePath
+    )
+
+    $junitLanes = [System.Collections.Generic.List[object]]::new()
+    $lanes = [System.Collections.Generic.List[object]]::new()
+    foreach ($laneReport in $LaneReports)
+    {
+        if (-not $LaneRuntimeEvidence.ContainsKey($laneReport.lane))
+        {
+            Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+                "A passed Build Truth lane has no captured runtime evidence: $($laneReport.lane)")
+        }
+        $runtimeEvidence = $LaneRuntimeEvidence[$laneReport.lane]
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Evidence $runtimeEvidence.junit `
+            -Context "Build Truth lane '$($laneReport.lane)' JUnit"
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Evidence $runtimeEvidence.inventory `
+            -Context "Build Truth lane '$($laneReport.lane)' inventory"
+        $currentJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $laneReport.junitPath
+        Assert-BuildTruthJUnitOutcome `
+            -Outcome $currentJUnitOutcome `
+            -ExpectedTestCount $laneReport.selectedTestCount `
+            -Context "Build Truth lane '$($laneReport.lane)' receipt"
+        Assert-BuildTruthJUnitOutcomeMatches `
+            -Expected $runtimeEvidence.outcome `
+            -Actual $currentJUnitOutcome `
+            -Context "Build Truth lane '$($laneReport.lane)' JUnit"
+        $junitLanes.Add([ordered]@{
+            lane = $laneReport.lane
+            testPreset = $laneReport.testPreset
+            selectedTestCount = $laneReport.selectedTestCount
+            path = $runtimeEvidence.junit.path
+            sha256 = $runtimeEvidence.junit.sha256
+            outcome = $runtimeEvidence.outcome
+        })
+        $lanes.Add([ordered]@{
+            lane = $laneReport.lane
+            testPreset = $laneReport.testPreset
+            selectedTestCount = $laneReport.selectedTestCount
+            inventory = $runtimeEvidence.inventory
+            durationMs = $laneReport.durationMs
+        })
+    }
+    if ($junitLanes.Count -eq 0)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "A passed Build Truth run has no lane JUnit evidence")
+    }
+
+    $nativeReceiptEvidence = $null
+    if ($null -ne $NativeEvidence)
+    {
+        if ($null -eq $NativeRuntimeEvidence)
+        {
+            Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+                "A passed Build Truth native lane has no captured runtime evidence")
+        }
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Evidence $NativeRuntimeEvidence.raw `
+            -Context "Build Truth native raw evidence"
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Evidence $NativeRuntimeEvidence.normalized `
+            -Context "Build Truth native normalized evidence"
+        $currentNativeEvidence = Get-BuildTruthNativeEvidence `
+            -Path $NativeLifecyclePath `
+            -SourceCommit $SourceCommit `
+            -TestPreset $NativeRuntimeEvidence.testPreset `
+            -RequestedBackend $RequiredNativeBackend `
+            -SoftwareAdapterAllowed $SoftwareAdapterAllowed
+        Assert-BuildTruthNativeEvidenceIdentity `
+            -Expected $NativeRuntimeEvidence.identity `
+            -Actual $currentNativeEvidence `
+            -Context "Build Truth native evidence"
+        $nativeReceiptEvidence = [ordered]@{
+            raw = $NativeRuntimeEvidence.raw
+            normalized = $NativeRuntimeEvidence.normalized
+            requestedBackend = $RequiredNativeBackend
+            actualBackend = $NativeEvidence.actualBackend
+            fallback = $NativeEvidence.fallback
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+    {
+        Throw-BuildTruthFailure -Category "NativeEvidenceMissing" -Message (
+            "A passed Build Truth run requested native evidence but did not produce it")
+    }
+
+    $relativeBuildDirectory = Get-BuildTruthRepositoryRelativeDirectory `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $BuildPath
+    $runnerDigest = Get-BuildTruthRunnerDigest `
+        -RepositoryRoot $RepositoryRoot `
+        -Paths @(
+            "Scripts/run_build_truth.ps1",
+            "Scripts/BuildTruth/ValidationProcessEnvironment.psm1",
+            "Scripts/BuildTruth/BuildTruthV3.psm1"
+        )
+    $receiptPath = ".agent-harness/receipts/BuildTruth.$RunId.json"
+    $receipt = [ordered]@{
+        schema = "RVX.AgentHarness.BuildTruthReceipt"
+        schemaVersion = 3
+        runId = $RunId
+        immutableReceiptPath = $receiptPath
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        request = [ordered]@{
+            baseRef = $BaseRef
+            configurePreset = $ConfigurePreset
+            buildPreset = $BuildPreset
+            laneTestPresets = @($LaneTestPresets)
+            buildDir = $relativeBuildDirectory
+            configuration = $Configuration
+            requiredNativeBackend = $RequiredNativeBackend
+            softwareAdapterAllowed = $SoftwareAdapterAllowed
+            fresh = $Fresh
+            runnerDigest = $runnerDigest
+        }
+        source = [ordered]@{
+            commit = $SourceCommit
+            fingerprintBefore = $SourceFingerprintAtStart
+            fingerprintAfter = $SourceFingerprintAtEnd
+        }
+        report = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Path $ReportPath
+        junit = [ordered]@{
+            lanes = @($junitLanes)
+        }
+        lanes = @($lanes)
+        nativeEvidence = $nativeReceiptEvidence
+    }
+    $immutableReceipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $RepositoryRoot `
+        -ReceiptKind "BuildTruth" `
+        -RunId $RunId `
+        -Value $receipt `
+        -Status "passed"
+    $latestPointer = Write-BuildTruthReceiptPointer `
+        -RepositoryRoot $RepositoryRoot `
+        -ReceiptKind "BuildTruth" `
+        -PointerFileName "BuildTruth.latest.json" `
+        -RunId $immutableReceipt.runId `
+        -ImmutableReceiptPath $immutableReceipt.immutableReceiptPath `
+        -ImmutableReceiptSha256 $immutableReceipt.sha256
+    return [ordered]@{
+        runId = $immutableReceipt.runId
+        immutableReceiptPath = $immutableReceipt.immutableReceiptPath
+        sha256 = $immutableReceipt.sha256
+        latestPointerPath = $latestPointer.path
+        latestPointerSha256 = $latestPointer.sha256
+    }
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $gitSafeDirectory = $repoRoot.Replace([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $buildPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDir))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build"))
-$buildRootPrefix = $buildRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $reportDir = Join-Path $buildPath "BuildTruth"
 $reportPath = Join-Path $reportDir "BuildTruth.json"
-$baselineReport = Join-Path $reportDir "ArchitectureBaseline.json"
-$nativeReport = Join-Path $reportDir "NativeRenderLifecycle.json"
-$commands = [Collections.Generic.List[object]]::new()
+$inventoryPath = Join-Path $reportDir "CTestInventory.json"
+$nativeLifecyclePath = Join-Path $reportDir "NativeRenderLifecycle.raw.json"
+$nativeEvidencePath = Join-Path $reportDir "NativeEvidence.json"
+$commands = [System.Collections.Generic.List[object]]::new()
+$laneReports = [System.Collections.Generic.List[object]]::new()
+$laneRuntimeEvidence = @{}
 $status = "failed"
 $failure = ""
-$testCount = 0
+$failureCategory = ""
 $sourceCommit = ""
+$sourceCommitAtStart = ""
+$sourceFingerprintAtStart = $null
+$sourceFingerprintAtEnd = $null
 $nativeEvidence = $null
+$nativeRuntimeEvidence = $null
+$fullInventory = $null
+$runId = [guid]::NewGuid().ToString("N")
+$receiptInfo = $null
+$runLock = $null
+$laneTestPresets = Get-BuildTruthLanePresetList -Values $LaneTestPresets -ConfigurePreset $ConfigurePreset
 
-function Invoke-Checked([string]$Name, [scriptblock]$Command) {
-    $started = Get-Date
-    try {
-        & $Command
-        $exitCode = $LASTEXITCODE
-    }
-    catch {
-        $exitCode = 1
-        $commands.Add([ordered]@{
-            name = $Name
-            exitCode = $exitCode
-            durationMs = [int]((Get-Date) - $started).TotalMilliseconds
-        })
-        throw
-    }
-    $commands.Add([ordered]@{
-        name = $Name
-        exitCode = $exitCode
-        durationMs = [int]((Get-Date) - $started).TotalMilliseconds
-    })
-    if ($exitCode -ne 0) {
-        throw "$Name failed with exit code $exitCode"
-    }
-}
+$null = Resolve-BuildTruthContainedPath `
+    -Root $buildRoot `
+    -Path $buildPath `
+    -AllowMissing
 
-if (-not $buildPath.StartsWith($buildRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "BuildDir must resolve below '$buildRoot': $buildPath"
-}
-
-Push-Location $repoRoot
-try {
-    Invoke-Checked "verify-base-ref" {
+$runLock = Enter-BuildTruthRunLock -BuildPath $buildPath
+$locationPushed = $false
+try
+{
+    Push-Location $repoRoot
+    $locationPushed = $true
+    Add-BuildTruthCommand -Commands $commands -Name "verify-base-ref" -FailureCategory "BaseRef" -Action {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse --verify "$BaseRef^{commit}" | Out-Null
-    }
-    $sourceCommitLines = Invoke-Checked "source-commit" {
+    } | Out-Null
+    $sourceCommitLines = Add-BuildTruthCommand -Commands $commands -Name "source-commit" -FailureCategory "SourceCommit" -Action {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse HEAD
     }
-    $sourceCommit = ($sourceCommitLines -join "`n").Trim()
+    $sourceCommit = ($sourceCommitLines -join [Environment]::NewLine).Trim()
+    $sourceCommitAtStart = $sourceCommit
+    Add-BuildTruthCommand -Commands $commands -Name "build-truth-v3-self-test" -FailureCategory "SelfTest" -Action {
+        & (Join-Path $PSScriptRoot "BuildTruth\Test-BuildTruthV3.ps1")
+        if ($LASTEXITCODE -ne 0)
+        {
+            Throw "module self-test exited with code $LASTEXITCODE"
+        }
+    } | Out-Null
+    Add-BuildTruthCommand -Commands $commands -Name "validation-process-environment-self-test" -FailureCategory "SelfTest" -Action {
+        & (Join-Path $PSScriptRoot "BuildTruth\Test-ValidationProcessEnvironment.ps1")
+        if ($LASTEXITCODE -ne 0)
+        {
+            Throw "validation process environment self-test exited with code $LASTEXITCODE"
+        }
+    } | Out-Null
+    $sourceFingerprintAtStart = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $repoRoot `
+        -GitSafeDirectory $gitSafeDirectory
 
-    if ($Fresh -and (Test-Path -LiteralPath $buildPath)) {
+    if ($Fresh -and (Test-Path -LiteralPath $buildPath))
+    {
         Remove-Item -LiteralPath $buildPath -Recurse -Force
     }
 
-    Invoke-Checked "configure" {
+    Add-BuildTruthCommand -Commands $commands -Name "configure" -FailureCategory "Configure" -Action {
         cmake --preset $ConfigurePreset
+    } | Out-Null
+    $cachePath = Join-Path $buildPath "CMakeCache.txt"
+    $requiredValidationSettings = @(
+        "RVX_BUILD_DEVELOPER:BOOL=ON",
+        "RVX_BUILD_PROGRAMS:BOOL=ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS:BOOL=OFF",
+        "RVX_BUILD_EDITOR:BOOL=OFF",
+        "RVX_BUILD_SAMPLES:BOOL=ON",
+        "RVX_BUILD_TESTS:BOOL=ON"
+    )
+    foreach ($requiredSetting in $requiredValidationSettings)
+    {
+        $setting = Select-String `
+            -LiteralPath $cachePath `
+            -Pattern "^$([regex]::Escape($requiredSetting))$"
+        if (-not $setting)
+        {
+            Throw-BuildTruthFailure -Category "Configuration" -Message (
+                "Build Truth validation profile requires $requiredSetting")
+        }
     }
-    $editorSetting = Select-String `
-        -LiteralPath (Join-Path $buildPath "CMakeCache.txt") `
-        -Pattern "^RVX_BUILD_EDITOR:BOOL=OFF$"
-    if (-not $editorSetting) {
-        throw "M0 build truth requires RVX_BUILD_EDITOR=OFF"
-    }
-    Invoke-Checked "build" {
-        cmake --build --preset $BuildPreset
-    }
-    Invoke-Checked "validation-inventory-target" {
-        cmake --build $buildPath --config $Configuration --target RVXValidationInventory
-    }
+    Add-BuildTruthCommand -Commands $commands -Name "build-validation-all" -FailureCategory "Build" -Action {
+        cmake --build --preset $BuildPreset --target RVXValidationAll
+    } | Out-Null
 
     New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-    $inventoryLog = Join-Path $reportDir "CTestInventory.txt"
-    $inventoryStarted = Get-Date
-    $inventoryLines = & ctest --test-dir $buildPath -C $Configuration -N 2>&1
-    $inventoryExit = $LASTEXITCODE
-    $inventoryLines | Set-Content -LiteralPath $inventoryLog -Encoding utf8
-    $commands.Add([ordered]@{
-        name = "ctest-inventory"
-        exitCode = $inventoryExit
-        durationMs = [int]((Get-Date) - $inventoryStarted).TotalMilliseconds
-    })
-    if ($inventoryExit -ne 0) {
-        throw "CTest inventory command failed with exit code $inventoryExit"
-    }
-    $inventoryText = $inventoryLines -join "`n"
-    if ($inventoryText -match "NOT_BUILT|Could not find executable") {
-        throw "CTest inventory contains unavailable executables; see $inventoryLog"
-    }
-    $totalMatch = [regex]::Match($inventoryText, "Total Tests:\s+(\d+)")
-    $testCount = if ($totalMatch.Success) { [int]$totalMatch.Groups[1].Value } else { 0 }
-    if ($testCount -eq 0) {
-        throw "CTest inventory reported zero tests"
-    }
+    $fullInventory = Get-BuildTruthCTestInventory -BuildPath $buildPath -Configuration $Configuration
+    Assert-BuildTruthInventoryLanes -Inventory $fullInventory -Context "full inventory"
+    Write-BuildTruthJson -Value $fullInventory -Path $inventoryPath
 
-    Invoke-Checked "architecture-baseline" {
-        & pwsh -NoProfile -File (Join-Path $PSScriptRoot "run_architecture_baseline.ps1") `
-            -BuildDir $BuildDir `
+    $encounteredLanes = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    foreach ($testPreset in $laneTestPresets)
+    {
+        $laneInventory = Get-BuildTruthCTestInventory `
+            -BuildPath $buildPath `
             -Configuration $Configuration `
-            -ReportPath $baselineReport
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($TestPreset)) {
-        Invoke-Checked "unit-lint" {
-            ctest --preset $TestPreset
+            -TestPreset $testPreset
+        $selectedTests = @($laneInventory.tests)
+        if ($selectedTests.Count -eq 0)
+        {
+            Throw-BuildTruthFailure -Category "ZeroTests" -Message (
+                "Required lane preset '$testPreset' selects zero tests")
         }
-    }
-
-    $hasNativeRegex = -not [string]::IsNullOrWhiteSpace($NativeTestRegex)
-    $hasRequiredNativeBackend =
-        -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend)
-    if ($hasNativeRegex -ne $hasRequiredNativeBackend) {
-        throw "NativeTestRegex and RequiredNativeBackend must be supplied together"
-    }
-    if ($hasNativeRegex) {
-        if (Test-Path -LiteralPath $nativeReport) {
-            Remove-Item -LiteralPath $nativeReport -Force
+        Assert-BuildTruthInventoryLanes -Inventory $laneInventory -Context "lane preset '$testPreset'"
+        $lanes = @(
+            $selectedTests |
+                ForEach-Object { Get-BuildTruthTestLanes -Test $_ } |
+                Select-Object -Unique
+        )
+        if ($lanes.Count -ne 1)
+        {
+            Throw-BuildTruthFailure -Category "LaneClassification" -Message (
+                "Lane preset '$testPreset' selects multiple lanes: $($lanes -join ', ')")
         }
-        $previousNativeReport = $env:RVX_NATIVE_LIFECYCLE_REPORT
-        $env:RVX_NATIVE_LIFECYCLE_REPORT = $nativeReport
-        try {
-            Invoke-Checked "native-render-lifecycle" {
-                ctest --test-dir $buildPath -C $Configuration `
-                    -R $NativeTestRegex --output-on-failure
+        $lane = $lanes[0].Substring("lane.".Length)
+        if (-not $encounteredLanes.Add($lane))
+        {
+            Throw-BuildTruthFailure -Category "DuplicateLane" -Message (
+                "Lane '$lane' is selected more than once")
+        }
+
+        $laneInventoryPath = Join-Path $reportDir "CTestInventory.$lane.json"
+        $junitPath = Join-Path $reportDir "JUnit.$lane.xml"
+        Write-BuildTruthJson -Value $laneInventory -Path $laneInventoryPath
+        $laneInventoryEvidence = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $repoRoot `
+            -Path $laneInventoryPath
+
+        $isNativeLane = $lane -eq "native"
+        if ($isNativeLane -and [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+        {
+            Throw-BuildTruthFailure -Category "NativeEvidenceMissing" -Message (
+                "Native lane '$testPreset' requires RequiredNativeBackend so lifecycle evidence cannot be skipped")
+        }
+        $previousNativeLifecyclePath = $env:RVX_NATIVE_LIFECYCLE_REPORT
+        $previousValidationSourceCommit =
+            $env:RVX_VALIDATION_SOURCE_COMMIT
+        $previousValidationPreset = $env:RVX_VALIDATION_PRESET
+        $previousSoftwareAdapterAllowed = $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER
+        $env:RVX_VALIDATION_SOURCE_COMMIT = $sourceCommit
+        $env:RVX_VALIDATION_PRESET = $testPreset
+        if ($AllowSoftwareAdapter)
+        {
+            $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER = "1"
+        }
+        else
+        {
+            Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER -ErrorAction SilentlyContinue
+        }
+        if ($isNativeLane -and -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+        {
+            $nativeLifecycleTests = @(
+                $selectedTests | Where-Object {
+                    $_.name -eq "NativeRenderLifecycleValidation.RequiredBackendPresentsResizesAndStops"
+                }
+            )
+            if ($nativeLifecycleTests.Count -ne 1)
+            {
+                Throw-BuildTruthFailure -Category "NativeEvidenceMissing" -Message (
+                    "Native lane '$testPreset' must discover exactly one required lifecycle test")
+            }
+            if (Test-Path -LiteralPath $nativeLifecyclePath)
+            {
+                Remove-Item -LiteralPath $nativeLifecyclePath -Force
+            }
+            $env:RVX_NATIVE_LIFECYCLE_REPORT = $nativeLifecyclePath
+        }
+        try
+        {
+            $laneRun = Invoke-BuildTruthCTestLane `
+                -TestPreset $testPreset `
+                -JUnitPath $junitPath `
+                -ExpectedTestCount $selectedTests.Count `
+                -Lane $lane
+        }
+        finally
+        {
+            if ($null -eq $previousNativeLifecyclePath)
+            {
+                Remove-Item Env:RVX_NATIVE_LIFECYCLE_REPORT -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_NATIVE_LIFECYCLE_REPORT = $previousNativeLifecyclePath
+            }
+            if ($null -eq $previousValidationSourceCommit)
+            {
+                Remove-Item Env:RVX_VALIDATION_SOURCE_COMMIT -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_VALIDATION_SOURCE_COMMIT = $previousValidationSourceCommit
+            }
+            if ($null -eq $previousValidationPreset)
+            {
+                Remove-Item Env:RVX_VALIDATION_PRESET -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_VALIDATION_PRESET = $previousValidationPreset
+            }
+            if ($null -eq $previousSoftwareAdapterAllowed)
+            {
+                Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER = $previousSoftwareAdapterAllowed
             }
         }
-        finally {
-            if ($null -eq $previousNativeReport) {
-                Remove-Item Env:RVX_NATIVE_LIFECYCLE_REPORT `
-                    -ErrorAction SilentlyContinue
+
+        $laneJUnitEvidence = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $repoRoot `
+            -Path $junitPath
+        $capturedJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $junitPath
+        Assert-BuildTruthJUnitOutcome `
+            -Outcome $capturedJUnitOutcome `
+            -ExpectedTestCount $selectedTests.Count `
+            -Context "Build Truth lane '$lane' captured evidence"
+        Assert-BuildTruthJUnitOutcomeMatches `
+            -Expected $laneRun.outcome `
+            -Actual $capturedJUnitOutcome `
+            -Context "Build Truth lane '$lane' captured JUnit"
+        $laneRuntimeEvidence[$lane] = [ordered]@{
+            inventory = $laneInventoryEvidence
+            junit = $laneJUnitEvidence
+            outcome = $capturedJUnitOutcome
+        }
+
+        $laneReports.Add([ordered]@{
+            lane = $lane
+            testPreset = $testPreset
+            selectedTestCount = $selectedTests.Count
+            inventoryPath = $laneInventoryPath
+            junitPath = $junitPath
+            outcome = $laneRun.outcome
+            durationMs = $laneRun.durationMs
+        })
+
+        if ($isNativeLane -and -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+        {
+            $nativeEvidence = Get-BuildTruthNativeEvidence `
+                -Path $nativeLifecyclePath `
+                -SourceCommit $sourceCommit `
+                -TestPreset $testPreset `
+                -RequestedBackend $RequiredNativeBackend `
+                -SoftwareAdapterAllowed ([bool]$AllowSoftwareAdapter)
+            Write-BuildTruthJson -Value $nativeEvidence -Path $nativeEvidencePath
+            $nativeRuntimeEvidence = [ordered]@{
+                raw = Get-BuildTruthReceiptFileEvidence `
+                    -RepositoryRoot $repoRoot `
+                    -Path $nativeLifecyclePath
+                normalized = Get-BuildTruthReceiptFileEvidence `
+                    -RepositoryRoot $repoRoot `
+                    -Path $nativeEvidencePath
+                identity = $nativeEvidence
+                testPreset = $testPreset
             }
-            else {
-                $env:RVX_NATIVE_LIFECYCLE_REPORT = $previousNativeReport
-            }
-        }
-        if (-not (Test-Path -LiteralPath $nativeReport)) {
-            throw "Required native lifecycle evidence is missing: $nativeReport"
-        }
-        try {
-            $nativeEvidence =
-                Get-Content -LiteralPath $nativeReport -Raw |
-                    ConvertFrom-Json
-        }
-        catch {
-            throw "Required native lifecycle evidence is invalid JSON: $($_.Exception.Message)"
-        }
-        if ($nativeEvidence.schema -ne "RVX.M1.NativeRenderLifecycle" -or
-            $nativeEvidence.schemaVersion -ne 1 -or
-            $nativeEvidence.status -ne "passed") {
-            throw "Required native lifecycle evidence has an invalid schema or verdict"
-        }
-        if ($nativeEvidence.requiredBackend -ne $RequiredNativeBackend) {
-            throw "Required native lifecycle backend mismatch: expected '$RequiredNativeBackend', got '$($nativeEvidence.requiredBackend)'"
-        }
-        if ([string]::IsNullOrWhiteSpace($nativeEvidence.adapterName) -or
-            $nativeEvidence.mainThreadIdentityHash -eq 0 -or
-            $nativeEvidence.renderThreadIdentityHash -eq 0 -or
-            $nativeEvidence.mainThreadIdentityHash -eq
-                $nativeEvidence.renderThreadIdentityHash -or
-            $nativeEvidence.surfaceGeneration -lt 2 -or
-            $nativeEvidence.lastPresentedFrameSequence -lt 2 -or
-            $nativeEvidence.resizeAcceptedCount -lt 1 -or
-            $nativeEvidence.shutdownCode -ne 1) {
-            throw "Required native lifecycle evidence is incomplete"
         }
     }
 
-    Invoke-Checked "branch-diff-hygiene" {
+    if (-not [string]::IsNullOrWhiteSpace($RequiredNativeBackend) -and $null -eq $nativeEvidence)
+    {
+        Throw-BuildTruthFailure -Category "NativeEvidenceMissing" -Message (
+            "RequiredNativeBackend was supplied but no native lane was executed")
+    }
+
+    $sourceCommitAtEnd = (& git -c "safe.directory=$gitSafeDirectory" -C $repoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceCommitAtEnd -ne $sourceCommitAtStart)
+    {
+        Throw-BuildTruthFailure -Category "SourceChanged" -Message (
+            "HEAD changed while Build Truth was running")
+    }
+    $sourceFingerprintAtEnd = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $repoRoot `
+        -GitSafeDirectory $gitSafeDirectory
+    if ($sourceFingerprintAtEnd.digest -ne $sourceFingerprintAtStart.digest -or
+        $sourceFingerprintAtEnd.fileCount -ne $sourceFingerprintAtStart.fileCount)
+    {
+        Throw-BuildTruthFailure -Category "SourceChanged" -Message (
+            "Tracked or non-ignored untracked working-source content changed while Build Truth was running")
+    }
+    Add-BuildTruthCommand -Commands $commands -Name "branch-diff-hygiene" -FailureCategory "DiffHygiene" -Action {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --check "$BaseRef...HEAD"
-    }
-    Invoke-Checked "working-diff-hygiene" {
+    } | Out-Null
+    Add-BuildTruthCommand -Commands $commands -Name "working-diff-hygiene" -FailureCategory "DiffHygiene" -Action {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --check
-    }
-    Invoke-Checked "staged-diff-hygiene" {
+    } | Out-Null
+    Add-BuildTruthCommand -Commands $commands -Name "staged-diff-hygiene" -FailureCategory "DiffHygiene" -Action {
         git -c "safe.directory=$gitSafeDirectory" -C $repoRoot diff --cached --check
-    }
+    } | Out-Null
     $status = "passed"
 }
-catch {
+catch
+{
     $failure = $_.Exception.Message
+    $failureCategory = Get-BuildTruthFailureCategory -Message $failure
     throw
 }
-finally {
-    New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-    $report = [ordered]@{
-        schema = "RVX.BuildTruth.Report"
-        schemaVersion = 2
-        sourceCommit = $sourceCommit
-        baseRef = $BaseRef
-        configurePreset = $ConfigurePreset
-        buildPreset = $BuildPreset
-        testPreset = $TestPreset
-        buildDir = $buildPath
-        configuration = $Configuration
-        fresh = [bool]$Fresh
-        ctestInventoryCount = $testCount
-        architectureBaselineReport = $baselineReport
-        pureEcsArchitectureGate = "Architecture.PureEcsRuntime"
-        nativeLifecycle = if ($null -eq $nativeEvidence) {
-            $null
-        } else {
-            [ordered]@{
-                testRegex = $NativeTestRegex
-                requiredBackend = $RequiredNativeBackend
-                reportPath = $nativeReport
-                evidence = $nativeEvidence
+finally
+{
+    try
+    {
+        New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+        $report = [ordered]@{
+            schema = "RVX.BuildTruth.Report"
+            schemaVersion = 3
+            sourceCommit = $sourceCommit
+            baseRef = $BaseRef
+            configurePreset = $ConfigurePreset
+            buildPreset = $BuildPreset
+            laneTestPresets = $laneTestPresets
+            buildDir = $buildPath
+            configuration = $Configuration
+            fresh = [bool]$Fresh
+            sourceFingerprint = if ($null -eq $sourceFingerprintAtStart) { $null } else { [ordered]@{
+                start = $sourceFingerprintAtStart
+                end = $sourceFingerprintAtEnd
+            }}
+            inventory = if ($null -eq $fullInventory) { $null } else { [ordered]@{
+                path = $inventoryPath
+                testCount = @($fullInventory.tests).Count
+            }}
+            lanes = $laneReports
+            nativeEvidence = if ($null -eq $nativeEvidence) { $null } else { [ordered]@{
+                rawPath = $nativeLifecyclePath
+                path = $nativeEvidencePath
+                requestedBackend = $RequiredNativeBackend
+                actualBackend = $nativeEvidence.actualBackend
+                fallback = $nativeEvidence.fallback
+            }}
+            status = $status
+            failure = if ([string]::IsNullOrWhiteSpace($failure)) { $null } else { [ordered]@{
+                category = $failureCategory
+                message = $failure
+            }}
+            commands = $commands
+        }
+        Write-BuildTruthJson -Value $report -Path $reportPath
+
+        if ($status -eq "passed")
+        {
+            try
+            {
+                $receiptInfo = Publish-BuildTruthImmutableReceipt `
+                    -RepositoryRoot $repoRoot `
+                    -RunId $runId `
+                    -ReportPath $reportPath `
+                    -BuildPath $buildPath `
+                    -BaseRef $BaseRef `
+                    -ConfigurePreset $ConfigurePreset `
+                    -BuildPreset $BuildPreset `
+                    -LaneTestPresets $laneTestPresets `
+                    -Configuration $Configuration `
+                    -RequiredNativeBackend $RequiredNativeBackend `
+                    -Fresh ([bool]$Fresh) `
+                    -SourceCommit $sourceCommit `
+                    -SourceFingerprintAtStart $sourceFingerprintAtStart `
+                    -SourceFingerprintAtEnd $sourceFingerprintAtEnd `
+                    -LaneReports $laneReports.ToArray() `
+                    -LaneRuntimeEvidence $laneRuntimeEvidence `
+                    -NativeEvidence $nativeEvidence `
+                    -NativeRuntimeEvidence $nativeRuntimeEvidence `
+                    -SoftwareAdapterAllowed ([bool]$AllowSoftwareAdapter) `
+                    -NativeLifecyclePath $nativeLifecyclePath `
+                    -NativeEvidencePath $nativeEvidencePath
+            }
+            catch
+            {
+                $status = "failed"
+                $failureCategory = "ReceiptPublication"
+                $failure = "BT3.ReceiptPublication: $($_.Exception.Message)"
+                $report.status = $status
+                $report.failure = [ordered]@{
+                    category = $failureCategory
+                    message = $failure
+                }
+                Write-BuildTruthJson -Value $report -Path $reportPath
+                Throw-BuildTruthFailure -Category $failureCategory -Message $failure
             }
         }
-        status = $status
-        failure = $failure
-        commands = $commands
     }
-    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
-    Pop-Location
+    finally
+    {
+        try
+        {
+            if ($locationPushed)
+            {
+                Pop-Location
+            }
+        }
+        finally
+        {
+            Exit-BuildTruthRunLock -Lock $runLock
+        }
+    }
 }
 
-Write-Host "Build truth passed. Report: $reportPath"
+Write-Host "Build Truth v3 passed. Report: $reportPath"
+Write-Host "Immutable receipt: $($receiptInfo.immutableReceiptPath) (runId=$($receiptInfo.runId), sha256=$($receiptInfo.sha256))"
+Write-Host "Latest pointer: $($receiptInfo.latestPointerPath) (sha256=$($receiptInfo.latestPointerSha256))"

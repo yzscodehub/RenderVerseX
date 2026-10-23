@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://renderversex.local/schemas/agent-feature-list-v1.json",
+  "title": "RenderVerseX Agent Feature List",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "updatedAt",
+    "activeFeature",
+    "features"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "RVX.AgentFeatureList"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "activeFeature": {
+      "type": ["string", "null"]
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/feature"
+      }
+    }
+  },
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["include", "exclude"],
+      "properties": {
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "layer",
+        "command",
+        "required",
+        "expectedArtifact",
+        "expectedReceipt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "layer": {
+          "enum": [
+            "static",
+            "focused",
+            "architecture",
+            "integration",
+            "e2e",
+            "native",
+            "shipping"
+          ]
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "expectedArtifact": {
+          "type": ["string", "null"]
+        },
+        "expectedReceipt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/architectureReceiptExpectation"
+            },
+            {
+              "$ref": "#/$defs/buildTruthReceiptExpectation"
+            },
+            {
+              "$ref": "#/$defs/requiredSuiteReceiptExpectation"
+            }
+          ]
+        }
+      }
+    },
+    "architectureReceiptExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "baseRef",
+        "preset",
+        "testPreset",
+        "buildDir",
+        "configuration",
+        "buildTarget",
+        "requiredLabel",
+        "allowConfigure"
+      ],
+      "properties": {
+        "kind": { "const": "Architecture" },
+        "baseRef": { "type": "string", "minLength": 1 },
+        "preset": { "type": "string", "minLength": 1 },
+        "testPreset": { "type": "string", "minLength": 1 },
+        "buildDir": { "type": "string", "minLength": 1 },
+        "configuration": { "enum": ["Debug", "Release"] },
+        "buildTarget": { "type": "string", "minLength": 1 },
+        "requiredLabel": { "type": "string", "minLength": 1 },
+        "allowConfigure": { "type": "boolean" }
+      }
+    },
+    "buildTruthReceiptExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "baseRef",
+        "configurePreset",
+        "buildPreset",
+        "laneTestPresets",
+        "buildDir",
+        "configuration",
+        "requiredNativeBackend",
+        "softwareAdapterAllowed",
+        "fresh"
+      ],
+      "properties": {
+        "kind": { "const": "BuildTruth" },
+        "baseRef": { "type": "string", "minLength": 1 },
+        "configurePreset": { "type": "string", "minLength": 1 },
+        "buildPreset": { "type": "string", "minLength": 1 },
+        "laneTestPresets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "buildDir": { "type": "string", "minLength": 1 },
+        "configuration": { "enum": ["Debug", "Release"] },
+        "requiredNativeBackend": { "type": "string" },
+        "softwareAdapterAllowed": { "type": "boolean" },
+        "fresh": { "type": "boolean" }
+      }
+    },
+    "requiredSuiteReceiptExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "baseRef",
+        "configurePreset",
+        "buildPreset",
+        "testPreset",
+        "buildDir",
+        "configuration",
+        "buildTargets",
+        "requiredLabel",
+        "expectedTestCount",
+        "fresh",
+        "skipConfigure",
+        "requiredSemanticArtifacts"
+      ],
+      "properties": {
+        "kind": { "const": "RequiredSuite" },
+        "baseRef": { "type": "string", "minLength": 1 },
+        "configurePreset": { "type": "string", "minLength": 1 },
+        "buildPreset": { "type": "string", "minLength": 1 },
+        "testPreset": { "type": "string", "minLength": 1 },
+        "buildDir": { "type": "string", "minLength": 1 },
+        "configuration": { "enum": ["Debug", "Release"] },
+        "buildTargets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredLabel": { "type": "string", "minLength": 1 },
+        "expectedTestCount": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 1 }
+          ]
+        },
+        "fresh": { "type": "boolean" },
+        "skipConfigure": { "type": "boolean" },
+        "requiredSemanticArtifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verificationId",
+        "command",
+        "result",
+        "exitCode",
+        "recordedAt",
+        "artifact",
+        "notes"
+      ],
+      "properties": {
+        "verificationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": ["passed", "failed", "skipped"]
+        },
+        "exitCode": {
+          "type": ["integer", "null"]
+        },
+        "recordedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "artifact": {
+          "type": ["string", "null"]
+        },
+        "artifactSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runId": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "sourceCommit": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "sourceDigest": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "coordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "scope", "verificationResponsibility"],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verificationResponsibility": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "behavior",
+        "owner",
+        "scope",
+        "dependencies",
+        "acceptanceCriteria",
+        "verification",
+        "coordination",
+        "status",
+        "evidence",
+        "blocker",
+        "nextStep",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "behavior": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "acceptanceCriteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verification": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/verification"
+          }
+        },
+        "coordination": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/coordination"
+          }
+        },
+        "status": {
+          "enum": [
+            "not_started",
+            "active",
+            "blocked",
+            "passing",
+            "cancelled"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "blocker": {
+          "type": ["string", "null"]
+        },
+        "nextStep": {
+          "type": "string",
+          "minLength": 1
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "blocked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocker": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passing"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

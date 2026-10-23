@@ -22,7 +22,6 @@ struct EditorWindowCreateDesc
     const char* title = "RenderVerseX Editor";
     RHIBackendType backendType = RHIBackendType::None;
     bool maximized = true;
-    bool vsync = true;
 };
 
 struct EditorWindowCreateResult

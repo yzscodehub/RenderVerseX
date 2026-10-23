@@ -26,6 +26,28 @@ using namespace RVX::SceneECS;
     return MakeFrozenSceneObjectId(sceneRuntimeId, entity, type, slot);
 }
 
+[[nodiscard]] RenderFeatureSourceIdentity MakeFeatureSource(
+    ECS::SceneRuntimeId sceneRuntimeId,
+    ECS::EntityHandle entity)
+{
+    return {
+        .sceneRuntimeId = sceneRuntimeId.GetValue(),
+        .entitySlot = entity.GetIndex(),
+        .entityGeneration = entity.GetGeneration(),
+    };
+}
+
+[[nodiscard]] RenderSceneObjectSourceIdentity MakeObjectSource(
+    ECS::SceneRuntimeId sceneRuntimeId,
+    ECS::EntityHandle entity)
+{
+    return {
+        .sceneRuntimeId = sceneRuntimeId.GetValue(),
+        .entitySlot = entity.GetIndex(),
+        .entityGeneration = entity.GetGeneration(),
+    };
+}
+
 [[nodiscard]] FrozenSceneMesh MakeMesh(ECS::SceneRuntimeId sceneRuntimeId,
                                        ECS::EntityHandle entity,
                                        uint64 meshAssetId = 101)
@@ -91,6 +113,7 @@ using namespace RVX::SceneECS;
     camera.source.farPlane = 800.0f;
     camera.source.aspectRatio = 1.5f;
     camera.source.exposure = 2.5f;
+    camera.source.cutRevision = 23;
     camera.source.normalizedViewport = {0.1f, 0.2f, 0.7f, 0.6f};
     camera.source.clearColor = {0.2f, 0.3f, 0.4f, 1.0f};
     camera.source.cullingMask = 0x0au;
@@ -111,6 +134,8 @@ using namespace RVX::SceneECS;
     light.source.type = LightType::Spot;
     light.source.color = {0.1f, 0.2f, 0.3f};
     light.source.intensity = 8.0f;
+    light.source.intensityUnit = LightIntensityUnit::Candela;
+    light.source.colorTemperatureKelvin = 4300.0f;
     light.source.range = 42.0f;
     light.source.innerConeRadians = 0.25f;
     light.source.outerConeRadians = 0.5f;
@@ -148,6 +173,10 @@ using namespace RVX::SceneECS;
     particle.state.systemId = 702;
     particle.state.systemAssetId = {.value = 401};
     particle.payloadRevision = 61;
+    particle.state.header.captureSequence = 1;
+    particle.state.header.configurationRevision = particle.payloadRevision;
+    particle.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, particle.sourceEntity);
     snapshot.particles.push_back(particle);
 
     FrozenSceneWater water;
@@ -155,10 +184,40 @@ using namespace RVX::SceneECS;
                       ECS::EntityHandle::Create(8, 12),
                       FrozenSceneObjectType::Water);
     water.sourceEntity = water.id.entity;
+    water.state.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
     water.state.componentId = 801;
     water.state.surfaceAssetId = {.value = 501};
     water.state.materialAssetId = {.value = 502};
+    water.state.worldBounds = AABB({-5.8f, -4.5f, -10.8f}, {5.8f, 0.5f, 10.8f});
+    water.state.size = {10.0f, 20.0f};
+    water.state.depth = 4.0f;
+    water.state.gerstnerWaves.waveCount = 1;
+    water.state.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.5f,
+        .wavelength = 8.0f, .steepness = 0.5f,
+        .speed = 1.0f, .phaseOffsetRadians = 0.0f,
+    };
+    static_cast<void>(CanonicalizeWaterGerstnerWaveSet(water.state.gerstnerWaves));
+    water.state.shallowColor = {0.02f, 0.24f, 0.30f};
+    water.state.deepColor = {0.005f, 0.04f, 0.10f};
+    water.state.foamColor = {0.92f, 0.96f, 1.0f};
+    water.state.absorptionCoefficient = {0.15f, 0.06f, 0.02f};
+    water.state.transparency = 0.72f;
+    water.state.reflectionStrength = 0.65f;
+    water.state.refractionStrength = 0.08f;
+    water.state.roughness = 0.08f;
+    water.state.normalScale = 1.0f;
+    water.state.foamIntensity = 1.0f;
+    water.state.foamCrestThreshold = 0.62f;
+    water.state.reflectionEnabled = true;
+    water.state.refractionEnabled = true;
+    water.state.foamEnabled = true;
+    water.state.contentHash = water.state.ComputeContentHash();
     water.payloadRevision = 62;
+    water.state.header.captureSequence = 1;
+    water.state.header.configurationRevision = water.payloadRevision;
+    water.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, water.sourceEntity);
     snapshot.water.push_back(water);
 
     FrozenSceneTerrain terrain;
@@ -170,8 +229,41 @@ using namespace RVX::SceneECS;
     terrain.state.heightmapAssetId = {.value = 601};
     terrain.state.materialAssetId = {.value = 602};
     terrain.payloadRevision = 63;
+    terrain.state.header.captureSequence = 1;
+    terrain.state.header.configurationRevision = terrain.payloadRevision;
+    terrain.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, terrain.sourceEntity);
     snapshot.terrain.push_back(terrain);
     return snapshot;
+}
+
+[[nodiscard]] FrozenSceneReflectionProbe MakeReflectionProbe(
+    ECS::SceneRuntimeId runtimeId,
+    ECS::EntityHandle entity)
+{
+    FrozenSceneReflectionProbe probe;
+    probe.id = MakeId(runtimeId, entity, FrozenSceneObjectType::Probe);
+    probe.sourceEntity = entity;
+    probe.source.shape = SceneECS::ReflectionProbeShape::Box;
+    probe.source.assetSource = SceneECS::ReflectionProbeAssetSource::Custom;
+    probe.source.bakedCubemapAssetId = {.value = 701};
+    probe.source.customCubemapAssetId = {.value = 702};
+    probe.source.influenceExtent = {2.0f, 3.0f, 4.0f};
+    probe.source.blendDistance = 0.25f;
+    probe.source.boxProjectionSize = {5.0f, 6.0f, 7.0f};
+    probe.source.boxProjectionOffset = {0.5f, 1.0f, 1.5f};
+    probe.source.priority = 42;
+    probe.source.nearClip = 0.2f;
+    probe.source.farClip = 60.0f;
+    probe.source.useBoxProjection = true;
+    probe.source.useHDR = true;
+    probe.source.hasValidData = true;
+    probe.visibility.layerMask = 0x44u;
+    probe.visibility.visible = true;
+    probe.worldTransform = MakeTranslation(8.0f, 9.0f, 10.0f);
+    probe.transformSourceRevision = 77;
+    probe.visibilityWriteVersion = 78;
+    return probe;
 }
 
 void AddMeshSource(ECS::Registry& registry, ECS::EntityHandle entity, uint64 assetId)
@@ -249,6 +341,8 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
         output.primitiveTemporalValues.front();
     EXPECT_EQ(temporal.primitiveId.value, primitive.id.value);
     EXPECT_EQ(temporal.sourceEntity, snapshot.meshes.front().sourceEntity);
+    EXPECT_EQ(temporal.source,
+              MakeObjectSource(snapshot.sceneRuntimeId, temporal.sourceEntity));
     EXPECT_EQ(temporal.visibilityWriteVersion, 47U);
     EXPECT_FLOAT_EQ(temporal.previousWorldTransform[3].x, 9.0f);
     EXPECT_EQ(temporal.worldTransformSourceRevision, 31u);
@@ -262,11 +356,17 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     EXPECT_FLOAT_EQ(proxyLight.position.y, 3.0f);
     EXPECT_FLOAT_EQ(proxyLight.direction.z, -1.0f);
     EXPECT_FLOAT_EQ(proxyLight.intensity, 8.0f);
+    EXPECT_EQ(proxyLight.intensityUnit, RenderLightIntensityUnit::Candela);
+    ASSERT_TRUE(proxyLight.colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*proxyLight.colorTemperatureKelvin, 4300.0f);
     EXPECT_FLOAT_EQ(proxyLight.range, 42.0f);
     EXPECT_TRUE(proxyLight.castsShadow);
     ASSERT_EQ(output.lightValues.size(), 1u);
     EXPECT_EQ(output.lightValues.front().sourceEntity,
               snapshot.lights.front().sourceEntity);
+    EXPECT_EQ(output.lightValues.front().source,
+              MakeObjectSource(snapshot.sceneRuntimeId,
+                               output.lightValues.front().sourceEntity));
     EXPECT_EQ(output.lightValues.front().layerMask, 0x20u);
     EXPECT_TRUE(output.lightValues.front().visible);
     EXPECT_EQ(output.lightValues.front().transformSourceRevision, 22u);
@@ -275,6 +375,16 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     ASSERT_TRUE(output.selectedCameraId.has_value());
     const EcsFrozenSceneCameraValue& camera = output.cameras.front();
     EXPECT_EQ(*output.selectedCameraId, camera.id);
+    EXPECT_EQ(camera.sourceSceneRuntimeId, snapshot.sceneRuntimeId);
+    EXPECT_EQ(camera.sourceEntity, snapshot.cameras.front().id.entity);
+    EXPECT_EQ(camera.cutRevision, 23U);
+    EXPECT_EQ(camera.view.identity.sceneRuntimeId,
+              snapshot.sceneRuntimeId.GetValue());
+    EXPECT_EQ(camera.view.identity.cameraEntityPacked,
+              snapshot.cameras.front().id.entity.GetPackedValue());
+    EXPECT_EQ(camera.view.identity.subViewIndex, 0U);
+    EXPECT_EQ(camera.view.identity.role, ViewRole::Main);
+    EXPECT_EQ(camera.view.cameraCutRevision, 23U);
     EXPECT_FLOAT_EQ(camera.view.cameraPosition.x, 5.0f);
     EXPECT_FLOAT_EQ(camera.view.viewMatrix[3].x, -5.0f);
     EXPECT_FLOAT_EQ(camera.view.nearPlane, 0.25f);
@@ -312,6 +422,10 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     EXPECT_EQ(particle.state.systemAssetId,
               snapshot.particles.front().state.systemAssetId);
     EXPECT_EQ(particle.payloadRevision, 61U);
+    EXPECT_EQ(particle.source,
+              MakeObjectSource(snapshot.sceneRuntimeId, particle.sourceEntity));
+    EXPECT_EQ(particle.state.header.source,
+              MakeFeatureSource(snapshot.sceneRuntimeId, particle.sourceEntity));
 
     ASSERT_EQ(output.water.size(), 1U);
     const EcsFrozenSceneWaterValue& water = output.water.front();
@@ -323,6 +437,10 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     EXPECT_EQ(water.state.materialAssetId,
               snapshot.water.front().state.materialAssetId);
     EXPECT_EQ(water.payloadRevision, 62U);
+    EXPECT_EQ(water.source,
+              MakeObjectSource(snapshot.sceneRuntimeId, water.sourceEntity));
+    EXPECT_EQ(water.state.header.source,
+              MakeFeatureSource(snapshot.sceneRuntimeId, water.sourceEntity));
 
     ASSERT_EQ(output.terrain.size(), 1U);
     const EcsFrozenSceneTerrainValue& terrain = output.terrain.front();
@@ -334,6 +452,147 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     EXPECT_EQ(terrain.state.materialAssetId,
               snapshot.terrain.front().state.materialAssetId);
     EXPECT_EQ(terrain.payloadRevision, 63U);
+    EXPECT_EQ(terrain.source,
+              MakeObjectSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
+    EXPECT_EQ(terrain.state.header.source,
+              MakeFeatureSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     MapsVisibleReflectionProbeToAnUnresolvedProvenanceBoundValue)
+{
+    FrozenSceneSnapshot snapshot;
+    snapshot.sceneRuntimeId = ECS::SceneRuntimeId{203};
+    snapshot.revision = 1;
+    const ECS::EntityHandle entity = ECS::EntityHandle::Create(19, 4);
+    snapshot.reflectionProbes.push_back(MakeReflectionProbe(
+        snapshot.sceneRuntimeId, entity));
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    ASSERT_EQ(result.reflectionProbeCount, 1u);
+    ASSERT_EQ(output.reflectionProbes.size(), 1u);
+    const EcsFrozenSceneReflectionProbeValue& probe =
+        output.reflectionProbes.front();
+    EXPECT_EQ(probe.id, EcsFrozenSceneBridge::DeriveRenderId(
+                            snapshot.reflectionProbes.front().id));
+    EXPECT_EQ(probe.source, MakeObjectSource(snapshot.sceneRuntimeId, entity));
+    EXPECT_EQ(probe.sourceEntity, entity);
+    EXPECT_EQ(probe.kind, RenderProbeKind::Reflection);
+    EXPECT_EQ(probe.shape, RVX::RenderProbeShape::Box);
+    EXPECT_EQ(probe.mode, RVX::RenderProbeMode::Custom);
+    EXPECT_EQ(probe.cubemapAssetId.value, 702u);
+    EXPECT_EQ(probe.layerMask, 0x44u);
+    EXPECT_EQ(probe.priority, 42);
+    EXPECT_TRUE(probe.useBoxProjection);
+    EXPECT_TRUE(probe.useHDR);
+    EXPECT_TRUE(probe.hasValidData);
+    EXPECT_FLOAT_EQ(probe.worldTransform[3].z, 10.0f);
+
+    snapshot.reflectionProbes.front().visibility.visible = false;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_EQ(result.reflectionProbeCount, 0u);
+    EXPECT_TRUE(output.reflectionProbes.empty());
+
+    snapshot.reflectionProbes.front().visibility.visible = true;
+    snapshot.reflectionProbes.front().source.farClip =
+        snapshot.reflectionProbes.front().source.nearClip;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidReflectionProbeSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
+    EXPECT_TRUE(output.reflectionProbes.empty());
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     RejectsUnspecifiedOrIncompatibleSourceLightPhotometricUnits)
+{
+    FrozenSceneSnapshot unspecified = MakeCompleteSnapshot();
+    unspecified.lights.front().source.intensityUnit =
+        LightIntensityUnit::Unspecified;
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(unspecified, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidLightSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
+
+    FrozenSceneSnapshot incompatible = MakeCompleteSnapshot();
+    incompatible.lights.front().source.intensityUnit = LightIntensityUnit::Lux;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(incompatible, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidLightSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     RejectsEveryFeatureChannelWithMismatchedProvenanceOrSchema)
+{
+    const auto expectReject = [](const auto& mutate)
+    {
+        FrozenSceneSnapshot snapshot = MakeCompleteSnapshot();
+        mutate(snapshot);
+        EcsFrozenSceneBridgeOutput output;
+        EcsFrozenSceneBridgeResult result;
+        EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+        EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::SourceIdentityMismatch);
+        EXPECT_FALSE(output.renderProxies.metadata.complete);
+    };
+
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.particles.front().state.header.source.entitySlot++;
+    });
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.particles.front().state.header.schemaVersion++;
+    });
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.water.front().state.header.source.entityGeneration++;
+    });
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.water.front().state.header.schemaVersion++;
+    });
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.terrain.front().state.header.source.sceneRuntimeId++;
+    });
+    expectReject([](FrozenSceneSnapshot& snapshot)
+    {
+        snapshot.terrain.front().state.header.schemaVersion++;
+    });
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     CanonicalDisabledWaterIsSuppressedBeforeRetainedSceneIdentityAssignment)
+{
+    FrozenSceneSnapshot snapshot = MakeCompleteSnapshot();
+    ASSERT_EQ(snapshot.water.size(), 1U);
+    WaterRenderSnapshotItem disabled;
+    disabled.header = snapshot.water.front().state.header;
+    ASSERT_TRUE(disabled.IsCanonicalDisabled());
+    snapshot.water.front().state = disabled;
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    EXPECT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_TRUE(output.water.empty());
+    EXPECT_TRUE(output.renderProxies.metadata.complete);
+}
+
+TEST(EcsFrozenSceneBridgeValidation, RejectsCameraWithoutExplicitCutRevision)
+{
+    FrozenSceneSnapshot snapshot = MakeCompleteSnapshot();
+    ASSERT_EQ(snapshot.cameras.size(), 1U);
+    snapshot.cameras.front().source.cutRevision = 0;
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidSourceIdentity);
+    EXPECT_TRUE(output.cameras.empty());
+    EXPECT_FALSE(output.selectedCameraId.has_value());
 }
 
 TEST(EcsFrozenSceneBridgeValidation, IdentitiesAreDeterministicAndGenerationQualified)
@@ -393,10 +652,16 @@ TEST(EcsFrozenSceneBridgeValidation,
 
     snapshot.particles.front().id.entity = ECS::EntityHandle::Create(7, 99);
     snapshot.particles.front().sourceEntity = snapshot.particles.front().id.entity;
+    snapshot.particles.front().state.header.source = MakeFeatureSource(
+        snapshot.sceneRuntimeId, snapshot.particles.front().sourceEntity);
     snapshot.water.front().id.entity = ECS::EntityHandle::Create(8, 99);
     snapshot.water.front().sourceEntity = snapshot.water.front().id.entity;
+    snapshot.water.front().state.header.source = MakeFeatureSource(
+        snapshot.sceneRuntimeId, snapshot.water.front().sourceEntity);
     snapshot.terrain.front().id.entity = ECS::EntityHandle::Create(9, 99);
     snapshot.terrain.front().sourceEntity = snapshot.terrain.front().id.entity;
+    snapshot.terrain.front().state.header.source = MakeFeatureSource(
+        snapshot.sceneRuntimeId, snapshot.terrain.front().sourceEntity);
 
     EcsFrozenSceneBridgeOutput generationChangedOutput;
     ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, generationChangedOutput));

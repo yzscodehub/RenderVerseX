@@ -1,0 +1,58 @@
+# =============================================================================
+# Scripting Module - Lua scripting integration with sol2
+# =============================================================================
+add_library(RVX_Scripting STATIC)
+
+# MSVC needs /bigobj for sol2 bindings due to large template instantiations
+if(MSVC)
+    target_compile_options(RVX_Scripting PRIVATE /bigobj)
+endif()
+
+target_sources(RVX_Scripting PRIVATE
+    Private/LuaState.cpp
+    Private/ScriptEngine.cpp
+    Private/ECS/ScriptEcsBridge.cpp
+    Private/Bindings/CoreBindings.cpp
+    Private/Bindings/MathBindings.cpp
+    Private/Bindings/InputBindings.cpp
+)
+
+target_include_directories(RVX_Scripting PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Find Lua (vcpkg provides lua as unofficial::lua::lua)
+find_package(lua CONFIG REQUIRED)
+find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp" REQUIRED)
+
+target_link_libraries(RVX_Scripting PUBLIC
+    RVX::Core
+    RVX::RuntimeServices
+    RVX::Scene
+)
+
+# Link Lua - try different target names used by vcpkg
+if(TARGET lua::lua)
+    target_link_libraries(RVX_Scripting PUBLIC lua::lua)
+elseif(TARGET lua)
+    target_link_libraries(RVX_Scripting PUBLIC lua)
+else()
+    # Fallback to find_package variables
+    find_package(Lua REQUIRED)
+    target_link_libraries(RVX_Scripting PUBLIC ${LUA_LIBRARIES})
+    target_include_directories(RVX_Scripting PRIVATE ${LUA_INCLUDE_DIR})
+endif()
+
+target_include_directories(RVX_Scripting PUBLIC
+    ${SOL2_INCLUDE_DIRS}
+)
+
+# Alias for cleaner target names
+add_library(RVX::Scripting ALIAS RVX_Scripting)
+
+rvx_register_module_target(
+    TARGET RVX_Scripting
+    MODULE Scripting
+    ALIASES RVX::Scripting
+)

@@ -1,8 +1,11 @@
 #include "Core/Log.h"
 #include "Engine/Engine.h"
+#include "Resource/ResourceSubsystem.h"
 #include "World/World.h"
 
 #include <gtest/gtest.h>
+
+#include <type_traits>
 
 namespace
 {
@@ -22,6 +25,9 @@ concept HasLegacyRetirementService = requires(T& value)
 
 static_assert(!HasIndependentRenderShutdown<Engine>);
 static_assert(!HasLegacyRetirementService<Engine>);
+static_assert(!std::is_default_constructible_v<Engine>);
+static_assert(!std::is_copy_constructible_v<EngineRuntimeDependencies>);
+static_assert(std::is_nothrow_move_constructible_v<EngineRuntimeDependencies>);
 
 class LogEnvironment final : public ::testing::Environment
 {
@@ -34,9 +40,22 @@ public:
     ::testing::AddGlobalTestEnvironment(new LogEnvironment());
 
 TEST(EngineEcsWorldOwnershipValidation,
+     RejectsAResourceSubsystemWithoutRuntimeDependencies)
+{
+    Engine engine(EngineRuntimeDependencies{});
+    EngineConfig config;
+    config.enableJobSystem = false;
+    engine.SetConfig(config);
+    ASSERT_NE(engine.AddSubsystem<Resource::ResourceSubsystem>(), nullptr);
+
+    EXPECT_FALSE(engine.Initialize());
+    EXPECT_FALSE(engine.IsInitialized());
+}
+
+TEST(EngineEcsWorldOwnershipValidation,
      RefusesToPublishAWorldWithoutTheSingleGlobalEcsRenderComposition)
 {
-    Engine engine;
+    Engine engine(EngineRuntimeDependencies{});
     EngineConfig config;
     config.enableJobSystem = false;
     engine.SetConfig(config);

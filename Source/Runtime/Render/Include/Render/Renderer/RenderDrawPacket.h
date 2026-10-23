@@ -1,0 +1,151 @@
+#pragma once
+
+/**
+ * @file RenderDrawPacket.h
+ * @brief Stable value keys and arguments for material draw submission.
+ */
+
+#include "Core/Types.h"
+#include "Render/Material/MaterialClassification.h"
+#include "Render/Material/MaterialGPUData.h"
+#include "Render/Policy/RenderPolicyTypes.h"
+#include "Render/Renderer/MeshBatch.h"
+#include "RenderContracts/RenderMaterial.h"
+
+#include <cstddef>
+
+namespace RVX
+{
+    struct PipelineKey
+    {
+        MaterialPipelineVariant materialVariant =
+            MaterialPipelineVariant::Opaque;
+        MaterialCullMode cullMode = MaterialCullMode::Back;
+        MaterialShadowPolicy shadowPolicy =
+            MaterialShadowPolicy::CastAndReceive;
+        /** Static blend policy. This is a graphics-pipeline identity. */
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        /** Static shading-model identity consumed by the forward shader family. */
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        /**
+         * The one renderer path selected from the immutable material
+         * descriptor.  It is deliberately part of the frozen packet identity:
+         * a draw must never drift between deferred and forward after scene
+         * classification.
+         */
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::Unsupported;
+        MeshUploadPrimitiveTopology topology =
+            MeshUploadPrimitiveTopology::Triangles;
+        bool skinned = false;
+        /** True when the canonical material policy was resolved successfully. */
+        bool materialPolicyValid = true;
+        /** True when at least one active material texture selects TEXCOORD1. */
+        bool requiresUV1 = false;
+        /**
+         * True only for a back-face culled packet whose object-to-world
+         * transform reverses triangle winding.  This selects the opposite RHI
+         * front-face convention without weakening material culling policy.
+         */
+        bool reverseWinding = false;
+
+        [[nodiscard]] bool operator==(const PipelineKey& other) const noexcept;
+    };
+
+    struct GeometryBindingKey
+    {
+        RenderResourceHandle mesh;
+        uint32 submeshIndex = 0;
+        MeshUploadIndexType indexType = MeshUploadIndexType::UInt32;
+
+        [[nodiscard]] bool operator==(const GeometryBindingKey& other) const noexcept;
+    };
+
+    struct MaterialBindingKey
+    {
+        RenderResourceHandle material;
+        RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
+
+        [[nodiscard]] bool operator==(const MaterialBindingKey& other) const noexcept;
+    };
+
+    struct RenderDrawArguments
+    {
+        uint32 indexCount = 0;
+        uint32 instanceCount = 1;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+        uint32 firstInstance = 0;
+
+        [[nodiscard]] bool operator==(const RenderDrawArguments& other) const noexcept = default;
+    };
+
+    enum class RenderDrawFlags : uint32
+    {
+        None = 0,
+        Skinned = 1U << 0U,
+        Masked = 1U << 1U,
+        Transparent = 1U << 2U,
+        CastsShadow = 1U << 3U,
+        ReceivesShadow = 1U << 4U,
+        MissingMaterial = 1U << 5U,
+    };
+
+    constexpr RenderDrawFlags operator|(RenderDrawFlags lhs,
+                                        RenderDrawFlags rhs) noexcept
+    {
+        return static_cast<RenderDrawFlags>(
+            static_cast<uint32>(lhs) | static_cast<uint32>(rhs));
+    }
+
+    /** @brief Apply immutable material shadow policy to object-level flags. */
+    [[nodiscard]] RenderDrawFlags ApplyMaterialShadowPolicy(
+        RenderDrawFlags flags,
+        bool materialPolicyValid,
+        MaterialShadowPolicy shadowPolicy) noexcept;
+
+    struct RenderDrawPacket
+    {
+        RenderObjectId objectId = 0;
+        PrimitiveDataIndex primitiveData = RVX_INVALID_PRIMITIVE_DATA_INDEX;
+        uint32 submeshIndex = 0;
+        RenderPassKind pass = RenderPassKind::None;
+        PipelineKey pipelineKey;
+        GeometryBindingKey geometryKey;
+        MaterialBindingKey materialKey;
+        MaterialInstanceBindingKey materialInstanceKey;
+        RenderDrawArguments arguments;
+        RenderDrawFlags flags = RenderDrawFlags::None;
+        /**
+         * Translucency ordering policy. It deliberately is not part of
+         * PipelineKey: changing authoring priority must not manufacture a new
+         * graphics pipeline.
+         */
+        int32 translucencySortPriority = 0;
+
+        [[nodiscard]] bool operator==(const RenderDrawPacket& other) const noexcept = default;
+    };
+
+    [[nodiscard]] uint64 GetStableHash(const PipelineKey& key) noexcept;
+    [[nodiscard]] uint64 GetStableHash(const GeometryBindingKey& key) noexcept;
+    [[nodiscard]] uint64 GetStableHash(const MaterialBindingKey& key) noexcept;
+
+    struct PipelineKeyHasher
+    {
+        [[nodiscard]] size_t operator()(const PipelineKey& key) const noexcept;
+    };
+
+    struct GeometryBindingKeyHasher
+    {
+        [[nodiscard]] size_t operator()(const GeometryBindingKey& key) const noexcept;
+    };
+
+    struct MaterialBindingKeyHasher
+    {
+        [[nodiscard]] size_t operator()(const MaterialBindingKey& key) const noexcept;
+    };
+
+    /** @brief Adapt one MeshBatch into its legacy material-pass packet. */
+    [[nodiscard]] RenderDrawPacket BuildLegacyMaterialDrawPacket(
+        const MeshBatch& batch) noexcept;
+} // namespace RVX

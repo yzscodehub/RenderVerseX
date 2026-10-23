@@ -480,6 +480,32 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
             )
             self.assert_forbidden(root, "raw pointer")
 
+    def test_unsigned_glm_vec2_is_an_owned_leaf_but_unknown_vectors_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_header(
+                root,
+                "Root.h",
+                """
+                namespace glm { struct uvec2; struct uvec3; }
+                using UVec2 = glm::uvec2;
+                using UVec3 = glm::uvec3;
+                struct OwnedRoot { UVec2 tiles; };
+                struct UnknownRoot { UVec3 dimensions; };
+                """,
+            )
+            owned = run_checker(root, "Root.h:OwnedRoot")
+            self.assertEqual(owned.returncode, 0, owned.stdout + owned.stderr)
+
+            unknown = run_checker(root, "Root.h:UnknownRoot")
+            self.assertNotEqual(unknown.returncode, 0, unknown.stdout + unknown.stderr)
+            self.assertIn(
+                "unresolved reachable type: glm::uvec3",
+                unknown.stdout + unknown.stderr,
+            )
+
     def test_missing_root_and_bad_cli_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "missing"
@@ -491,11 +517,11 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
     def test_real_render_contract_roots_are_owned_values(self) -> None:
         result = run_checker(
             REPO_ROOT,
-            "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
-            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
-            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
-            "RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
-            "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         counts = [

@@ -161,6 +161,15 @@ TEST(RenderDrawPacketValidation, KeysUseCompleteExactIdentityAndStableHashing)
     EXPECT_EQ(GetStableHash(pipelineA), GetStableHash(pipelineB));
     pipelineB.skinned = false;
     EXPECT_NE(pipelineA, pipelineB);
+    pipelineB = pipelineA;
+    pipelineB.reverseWinding = true;
+    EXPECT_NE(pipelineA, pipelineB);
+    EXPECT_NE(GetStableHash(pipelineA), GetStableHash(pipelineB));
+    pipelineB = pipelineA;
+    pipelineB.surfacePathEligibility =
+        SurfacePathEligibility::DeferredOpaque;
+    EXPECT_NE(pipelineA, pipelineB);
+    EXPECT_NE(GetStableHash(pipelineA), GetStableHash(pipelineB));
 
     GeometryBindingKey geometryA{
         RenderResourceHandle{8, 2}, 1, MeshUploadIndexType::UInt16};
@@ -185,6 +194,45 @@ TEST(RenderDrawPacketValidation, KeysUseCompleteExactIdentityAndStableHashing)
     EXPECT_EQ(first.materialKey, repeated.materialKey);
     EXPECT_EQ(first.arguments, repeated.arguments);
     EXPECT_EQ(first, repeated);
+    EXPECT_EQ(SurfacePathEligibility::ForwardSpecialOpaque,
+              first.pipelineKey.surfacePathEligibility);
+}
+
+TEST(RenderDrawPacketValidation,
+     MirroredWorldTransformsRetainASeparateBackCullPacketIdentity)
+{
+    RenderScene scene;
+    RenderObject object;
+    object.entityId = 71;
+    object.drawable = true;
+    object.meshBatchesAuthoritative = true;
+    object.meshBatches = {MakeBatch(RenderMaterialMode::Opaque, 0)};
+    // A negative X scale has a negative affine 3x3 determinant and therefore
+    // reverses the mesh's winding in world space.
+    object.worldMatrix[0][0] = -1.0f;
+    scene.AddObject(object);
+
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    BuildMaterialDrawLists(scene, {0}, Vec3{0.0f}, opaque, masked, transparent);
+
+    ASSERT_EQ(1u, opaque.size());
+    EXPECT_TRUE(opaque[0].packet.pipelineKey.reverseWinding);
+    EXPECT_EQ(MaterialCullMode::Back, opaque[0].packet.pipelineKey.cullMode);
+
+    RenderObject unmirrored = object;
+    unmirrored.entityId = 72;
+    unmirrored.worldMatrix = Mat4Identity();
+    RenderScene unmirroredScene;
+    unmirroredScene.AddObject(unmirrored);
+    std::vector<RenderDrawItem> unmirroredOpaque;
+    BuildMaterialDrawLists(unmirroredScene, {0}, Vec3{0.0f}, unmirroredOpaque,
+                           masked, transparent);
+    ASSERT_EQ(1u, unmirroredOpaque.size());
+    EXPECT_FALSE(unmirroredOpaque[0].packet.pipelineKey.reverseWinding);
+    EXPECT_NE(opaque[0].packet.pipelineKey,
+              unmirroredOpaque[0].packet.pipelineKey);
 }
 
 TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
@@ -192,6 +240,7 @@ TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
     RenderScene scene;
     RenderObject authoritative;
     authoritative.entityId = 1;
+    authoritative.drawable = true;
     authoritative.meshBatchesAuthoritative = true;
     authoritative.meshBatches = {
         MakeBatch(RenderMaterialMode::Opaque, 0),
@@ -201,11 +250,13 @@ TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
 
     RenderObject authoritativeEmpty;
     authoritativeEmpty.entityId = 2;
+    authoritativeEmpty.drawable = true;
     authoritativeEmpty.meshBatchesAuthoritative = true;
     scene.AddObject(authoritativeEmpty);
 
     RenderObject legacy;
     legacy.entityId = 3;
+    legacy.drawable = true;
     legacy.mesh = RenderResourceHandle{31, 1};
     legacy.material = RenderResourceHandle{32, 1};
     legacy.materialModes = {RenderMaterialMode::Opaque};
@@ -240,6 +291,7 @@ TEST(RenderDrawPacketValidation,
     {
         RenderObject object;
         object.entityId = objectId;
+        object.drawable = true;
         object.meshBatchesAuthoritative = true;
         MeshBatch batch = MakeBatch(RenderMaterialMode::Transparent, submeshIndex);
         batch.objectId = objectId;

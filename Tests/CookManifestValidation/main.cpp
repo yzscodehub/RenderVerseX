@@ -1,3 +1,4 @@
+#include "Common/FilesystemLinkTestSupport.h"
 #include "Core/Hash/SHA256.h"
 #include "Resource/CookManifest.h"
 
@@ -311,16 +312,47 @@ TEST_F(CookManifestValidationFixture, AdmissionVerifiesMountedContentAndEveryExp
               CookManifestAdmissionCode::MountedContentMismatch);
 }
 
+TEST_F(CookManifestValidationFixture,
+       CookedOnlyAdmissionBindsSourceIdentityWithoutMountingAuthoringSource)
+{
+    const std::string text = SaveText(MakeManifest());
+    CookManifest manifest;
+    std::string error;
+    ASSERT_TRUE(ParseCookManifest(text, manifest, error)) << error;
+
+    CookManifestExpectation expected;
+    expected.selector.outputPath = "models/model.rva";
+    expected.selector.type = CookAssetType::Model;
+    expected.expectedSourceContentIdentity =
+        MakeSourceContentIdentity(manifest.entries.front().sourceContent);
+    expected.verifyMountedSource = false;
+
+    fs::remove_all(m_sourceRoot);
+    const CookManifestAdmissionReceipt accepted =
+        VerifyCookedAssetAdmission(manifest, m_sourceRoot, m_cookedRoot, expected);
+    EXPECT_TRUE(accepted.IsAccepted()) << accepted.detail;
+    EXPECT_EQ(accepted.observedSourceContentIdentity,
+              expected.expectedSourceContentIdentity);
+
+    CookManifestExpectation unbound = expected;
+    unbound.expectedSourceContentIdentity = {};
+    EXPECT_EQ(VerifyCookedAssetAdmission(manifest, m_sourceRoot, m_cookedRoot, unbound).code,
+              CookManifestAdmissionCode::SourceIdentityMismatch);
+
+    WriteFile(m_cookedRoot / "models/model.rva", "tampered-artifact");
+    EXPECT_EQ(VerifyCookedAssetAdmission(manifest, m_sourceRoot, m_cookedRoot, expected).code,
+              CookManifestAdmissionCode::MountedContentMismatch);
+}
+
 TEST_F(CookManifestValidationFixture, AdmissionFailsClosedWhenMountedSymlinkEscapesTheCookedRoot)
 {
     const fs::path outsideRoot = m_root / "outside";
+    const fs::path linkPath = m_cookedRoot / "zzz";
     WriteFile(outsideRoot / "escape.rva", "outside-product");
     std::error_code linkError;
-    fs::create_directory_symlink(outsideRoot, m_cookedRoot / "zzz", linkError);
-    if (linkError)
-    {
-        GTEST_SKIP() << "The current test host does not permit directory symlink creation: " << linkError.message();
-    }
+    ASSERT_TRUE(RVX::TestSupport::CreateDirectoryLink(
+        outsideRoot, linkPath, linkError)) << linkError.message();
+    const RVX::TestSupport::ScopedDirectoryLink linkCleanup(linkPath);
 
     CookManifest manifest = MakeManifest();
     CookManifestEntry& entry = manifest.entries.front();

@@ -19,7 +19,7 @@ namespace RVX
 {
     inline constexpr const char* RVX_SAMPLE_ASSET_CATALOG_SCHEMA_ID =
         "RVX.SampleAssetCatalog";
-    inline constexpr uint32 RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION = 3;
+    inline constexpr uint32 RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION = 4;
     inline constexpr uint32 RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION = 1;
 
     enum class SampleAssetKind : uint8
@@ -27,7 +27,24 @@ namespace RVX
         Model = 0,
         Texture,
         Environment,
-        Animation
+        Animation,
+        /** @brief Strict cooked CPU billboard effect package (.rvxvfx). */
+        Effect
+    };
+
+    /**
+     * @brief Declares where an asset may be used by Sample product policy.
+     *
+     * Qualification assets are candidates for a deterministic required suite;
+     * this is an admission policy, not evidence that a visual golden has been
+     * approved. Development-only and optional-nightly assets must not silently
+     * enter a required qualification run.
+     */
+    enum class SampleAssetUsagePolicy : uint8
+    {
+        RequiredQualification = 0,
+        DevelopmentOnly,
+        OptionalNightly,
     };
 
     struct SampleAssetLicense
@@ -66,7 +83,7 @@ namespace RVX
         [[nodiscard]] bool IsValid() const noexcept;
     };
 
-    /** @brief One independently hashed file in a schema-v3 asset package. */
+    /** @brief One independently hashed file in a schema-v4 asset package. */
     struct SampleAssetFile
     {
         std::filesystem::path path;
@@ -94,6 +111,14 @@ namespace RVX
     struct SampleAssetCook
     {
         bool declared = false;
+        /**
+         * @brief Admit a staged package without mounting its authoring source.
+         *
+         * This must be explicitly declared by a schema-v4 catalog entry.  The
+         * catalog still binds the source identity recorded by RVXCook, while
+         * Resource verifies the complete cooked closure below @ref cookedRoot.
+         */
+        bool packageOnly = false;
         std::filesystem::path manifestPath;
         std::filesystem::path cookedRoot;
         Resource::CookAssetSelector selector;
@@ -135,6 +160,15 @@ namespace RVX
     {
         std::string id;
         SampleAssetKind kind = SampleAssetKind::Model;
+        SampleAssetUsagePolicy usagePolicy =
+            SampleAssetUsagePolicy::DevelopmentOnly;
+        /**
+         * @brief True only when @ref usagePolicy is RequiredQualification.
+         *
+         * Eligibility admits an asset to qualification selection; it does not
+         * assert that the asset has already passed a visual qualification.
+         */
+        bool qualificationEligible = false;
         std::filesystem::path path;
         std::filesystem::path resolvedPath;
         SampleAssetLicense license;
@@ -146,9 +180,9 @@ namespace RVX
          * declares the field must contain a valid Resource identity.
          */
         Resource::ResourceContentIdentity contentIdentity;
-        /** @brief Required complete-package identity for schema-v3 entries. */
+        /** @brief Required complete-package identity for schema-v4 entries. */
         AssetContentId assetContentId;
-        /** @brief Required, normalized, complete file manifest for schema-v3. */
+        /** @brief Required, normalized, complete file manifest for schema-v4. */
         std::vector<SampleAssetFile> files;
         std::string attribution;
         std::string modificationNotice;
@@ -160,6 +194,8 @@ namespace RVX
     };
 
     const char* GetSampleAssetKindName(SampleAssetKind kind) noexcept;
+    const char* GetSampleAssetUsagePolicyName(
+        SampleAssetUsagePolicy policy) noexcept;
     const char* GetSampleCookedAssetAdmissionCodeName(
         SampleCookedAssetAdmissionCode code) noexcept;
 
@@ -167,10 +203,11 @@ namespace RVX
      * @brief Loads a complete catalog and validates every path and license.
      *
      * Catalog-relative paths must remain under assetRoot after canonicalization.
-     * Schema v3 independently rehashes each declared package file and verifies
+     * Schema v4 independently rehashes each declared package file and verifies
      * its AssetContentId. Missing files, unsafe paths, duplicate ids/canonical
-     * paths, incomplete provenance, malformed glTF dependencies, or any hash
-     * drift fail. Schema v1/v2 remain readable for existing catalogs.
+     * paths, incomplete provenance or usage policy, malformed glTF
+     * dependencies, or any hash drift fail. Legacy schema versions are
+     * rejected so a required qualification policy cannot be inferred.
      */
     class SampleAssetCatalog final
     {
@@ -185,10 +222,8 @@ namespace RVX
         /**
          * @brief Revalidates a cooked asset against its catalog declaration.
          *
-         * Legacy schema v1/v2 entries and schema-v3 entries without a cook
-         * block remain loadable for development, but fail closed here.  This
-         * method is deliberately not cached: it detects manifest, artifact,
-         * and mount-path tampering that occurs after Load().
+         * This method is deliberately not cached: it detects manifest,
+         * artifact, and mount-path tampering that occurs after Load().
          */
         [[nodiscard]] SampleCookedAssetAdmissionReceipt
         RequireCookedAdmission(std::string_view id) const;

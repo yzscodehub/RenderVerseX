@@ -1,0 +1,1402 @@
+{
+    "$schema":  "./feature_list.schema.json",
+    "schema":  "RVX.AgentFeatureList",
+    "schemaVersion":  1,
+    "updatedAt":  "2026-10-02T08:10:18.451Z",
+    "activeFeature":  "gfx-24",
+    "features":  [
+                     {
+                         "id":  "gfx-22a",
+                         "name":  "Renderer ownership and composition convergence",
+                         "behavior":  "RenderComposition owns renderer feature and pass bundles behind narrow services, SceneRenderer orchestrates immutable frame data instead of caching mutable feature/pass pointers, and a new feature can be composed without extending a central hard-coded pass list.",
+                         "owner":  "primary-coordinator",
+                         "scope":  {
+                                       "include":  [
+                                                       "Source/Runtime/Render/Include/Render/Features/**",
+                                                       "Source/Runtime/Render/Private/Features/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/**",
+                                                       "Source/Runtime/Render/Private/Renderer/**",
+                                                       "Source/Runtime/Render/Include/Render/Passes/**",
+                                                       "Source/Runtime/Render/Private/Passes/**",
+                                                       "Source/Runtime/Render/CMakeLists.txt",
+                                                       "Scripts/check_renderer_feature_ownership.py",
+                                                       "Scripts/test_renderer_feature_ownership.py",
+                                                       "Tests/RenderFeatureValidation/**",
+                                                       "Tests/RenderPassValidation/**",
+                                                       "Tests/RendererCompositionLinkClosureValidation/**",
+                                                       "Tests/GPUDrivenValidation/main.cpp",
+                                                       "Tests/PipelineCacheValidation/main.cpp",
+                                                       "Tests/WaterRenderValidation/main.cpp",
+                                                       "Tests/CMake/ArchitectureTests.cmake",
+                                                       "feature_list.json",
+                                                       "progress.md",
+                                                       "session-handoff.md"
+                                                   ],
+                                       "exclude":  [
+                                                       "AGENTS.md",
+                                                       "CLAUDE.md",
+                                                       "Docs/README.md",
+                                                       "Docs/engine-capabilities.json",
+                                                       ".agent-harness/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+                                                       "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+                                                       "Samples/**",
+                                                       "Source/Runtime/RHI*/**",
+                                                       "Source/Runtime/ResourceRuntime/**",
+                                                       "Source/Developer/**",
+                                                       "Source/Programs/**",
+                                                       "assets/**",
+                                                       "build/**"
+                                                   ]
+                                   },
+                         "dependencies":  [
+
+                                          ],
+                         "acceptanceCriteria":  [
+                                                    "RenderComposition is the sole construction owner for built-in renderer features and their pass bundles; SceneRenderer no longer constructs the built-in pass list.",
+                                                    "Feature adapters do not retain mutable RenderPassRegistry, IRenderPass, or concrete pass pointers; cross-feature exchange uses typed graph resources and immutable frame plans.",
+                                                    "SceneRenderer remains the frame orchestrator but no longer caches built-in feature adapter pointers or concrete built-in pass pointers for composition-time wiring.",
+                                                    "Forward+, Deferred, Hybrid RT, particles, water, transparency, post-process, and existing execution receipts remain behaviorally equivalent.",
+                                                    "A fail-closed architecture checker rejects reintroduction of central built-in pass construction or mutable pass pointer ownership in feature adapters.",
+                                                    "Focused renderer tests, Architecture, full Windows Build Truth, Shipping cooked-only closure, and diff hygiene pass without touching protected user files."
+                                                ],
+                         "verification":  [
+                                              {
+                                                  "id":  "ownership-static",
+                                                  "layer":  "static",
+                                                  "command":  "\u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\test_renderer_feature_ownership.py; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; \u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\check_renderer_feature_ownership.py --root .",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "focused-build",
+                                                  "layer":  "focused",
+                                                  "command":  "cmake --build --preset win_x64_debug --target RenderFeatureValidation RenderPassValidation RendererCompositionLinkClosureValidation",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "focused-tests",
+                                                  "layer":  "focused",
+                                                  "command":  "ctest --test-dir build\\win_x64_debug -C Debug --output-on-failure -R \"^(RenderFeatureValidation|RenderPassValidation|Architecture.RendererTargetClosure)(\\\\.|$)\"",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "architecture-required-suite",
+                                                  "layer":  "architecture",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/Architecture.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "Architecture",
+                                                                          "baseRef":  "master",
+                                                                          "preset":  "win_x64_debug",
+                                                                          "testPreset":  "win_x64_debug_architecture",
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "buildTarget":  "RVXValidationArchitecture",
+                                                                          "requiredLabel":  "lane.architecture",
+                                                                          "allowConfigure":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "full-debug-build-truth",
+                                                  "layer":  "integration",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/BuildTruth.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "BuildTruth",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_debug",
+                                                                          "buildPreset":  "win_x64_debug",
+                                                                          "laneTestPresets":  [
+                                                                                                  "win_x64_debug_architecture",
+                                                                                                  "win_x64_debug_unit",
+                                                                                                  "win_x64_debug_integration",
+                                                                                                  "win_x64_debug_native"
+                                                                                              ],
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "requiredNativeBackend":  "DX12",
+                                                                          "softwareAdapterAllowed":  false,
+                                                                          "fresh":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "shipping-required-suite",
+                                                  "layer":  "shipping",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_shipping_release",
+                                                                          "buildPreset":  "win_x64_shipping_release",
+                                                                          "testPreset":  "win_x64_shipping_release_shipping",
+                                                                          "buildDir":  "build/win_x64_shipping_release",
+                                                                          "configuration":  "Release",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationSuiteRequiredShipping"
+                                                                                           ],
+                                                                          "requiredLabel":  "suite.required-shipping",
+                                                                          "expectedTestCount":  5,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  true,
+                                                                          "requiredSemanticArtifacts":  [
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+                                                                                                        ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "diff-hygiene",
+                                                  "layer":  "static",
+                                                  "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              }
+                                          ],
+                         "coordination":  [
+                                              {
+                                                  "owner":  "primary-coordinator",
+                                                  "scope":  [
+                                                                "Source/Runtime/Render/Include/Render/Renderer/**",
+                                                                "Source/Runtime/Render/Private/Renderer/**",
+                                                                "Source/Runtime/Render/Private/Features/DefaultForwardComposition.cpp",
+                                                                "Source/Runtime/Render/CMakeLists.txt",
+                                                                "feature_list.json",
+                                                                "progress.md",
+                                                                "session-handoff.md"
+                                                            ],
+                                                  "verificationResponsibility":  "Own the architecture, central integration, control plane, and final evidence; preserve protected user changes."
+                                              },
+                                              {
+                                                  "owner":  "feature-ownership-worker",
+                                                  "scope":  [
+                                                                "Source/Runtime/Render/Private/Features/**",
+                                                                "Source/Runtime/Render/Include/Render/Features/**",
+                                                                "Tests/RenderFeatureValidation/**"
+                                                            ],
+                                                  "verificationResponsibility":  "Refactor feature/pass ownership within the assigned feature files without editing SceneRenderer, CMake, global ledger, or protected user files."
+                                              },
+                                              {
+                                                  "owner":  "ownership-gate-worker",
+                                                  "scope":  [
+                                                                "Scripts/check_renderer_feature_ownership.py",
+                                                                "Scripts/test_renderer_feature_ownership.py",
+                                                                "Tests/CMake/ArchitectureTests.cmake"
+                                                            ],
+                                                  "verificationResponsibility":  "Add the fail-closed ownership checker and self-tests without editing renderer implementation or global ledger files."
+                                              }
+                                          ],
+                         "status":  "passing",
+                         "evidence":  [
+                                          {
+                                              "verificationId":  "ownership-static",
+                                              "command":  "\u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\test_renderer_feature_ownership.py; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; \u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\check_renderer_feature_ownership.py --root .",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "The checker self-test passed 8/8 and the live fail-closed ownership scan passed."
+                                          },
+                                          {
+                                              "verificationId":  "focused-build",
+                                              "command":  "cmake --build --preset win_x64_debug --target RenderFeatureValidation RenderPassValidation RendererCompositionLinkClosureValidation",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "All three focused renderer validation targets built successfully."
+                                          },
+                                          {
+                                              "verificationId":  "focused-tests",
+                                              "command":  "ctest --test-dir build\\win_x64_debug -C Debug --output-on-failure -R \"^(RenderFeatureValidation|RenderPassValidation|Architecture.RendererTargetClosure)(\\\\.|$)\"",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "Focused renderer and target-closure tests passed 76/76."
+                                          },
+                                          {
+                                              "verificationId":  "architecture-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:03:03.1695286Z",
+                                              "artifact":  ".agent-harness/receipts/Architecture.cf5b78aa8e3844a7a292b463584323b0.json",
+                                              "artifactSha256":  "90104ad92b2c1e6cd01a8773233557b4122bbfd4a5423436a3e5db6a23c92ce8",
+                                              "runId":  "cf5b78aa8e3844a7a292b463584323b0",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "Architecture required suite passed 63/63 with zero skipped, disabled, or not-run tests."
+                                          },
+                                          {
+                                              "verificationId":  "full-debug-build-truth",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:01:59.3150396Z",
+                                              "artifact":  ".agent-harness/receipts/BuildTruth.39091256f2a842b6b4a0744fe5c7aece.json",
+                                              "artifactSha256":  "57095bd01b76f0e297f7d0b84af6c54c9d0b13aad6e1ed5d0d2d9b68328c1473",
+                                              "runId":  "39091256f2a842b6b4a0744fe5c7aece",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "Configure, validation build, branch and working diff hygiene, Architecture 63/63, Unit 1947/1947, Integration 745/745, and real DX12 Native 61/61 all passed with no backend fallback or software adapter."
+                                          },
+                                          {
+                                              "verificationId":  "shipping-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:04:08.9930246Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.5952324bc2bf44ac997a6606527d728f.json",
+                                              "artifactSha256":  "50f8a3fa8e32af2c297530e62f2acfa4df8b9c73fca7a7a1064c01744ea3df2b",
+                                              "runId":  "5952324bc2bf44ac997a6606527d728f",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "Windows Release Shipping target closure, host cook fixture, cooked-only smoke, evidence validation, and dynamic dependency scan passed 5/5."
+                                          },
+                                          {
+                                              "verificationId":  "diff-hygiene",
+                                              "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T09:01:59.3150396Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
+                                              "notes":  "The current unstaged GFX22A worktree diff has no whitespace errors; protected user-owned paths remain excluded."
+                                          }
+                                      ],
+                         "blocker":  null,
+                         "nextStep":  "GFX22A is complete. Claim GFX23 as a separate feature before implementing froxel volumetric lighting.",
+                         "updatedAt":  "2026-08-29T09:06:39.2449807Z"
+                     },
+                     {
+                         "id":  "gfx-23",
+                         "name":  "Froxel volumetric lighting",
+                         "behavior":  "The renderer integrates a bounded view-relative froxel volume from frozen frame inputs, clustered lights, and shared shadow evidence; temporal reprojection is generation-safe, transparent/water/particle consumers share the same immutable volume contract, and zero density is an exact identity.",
+                         "owner":  "primary-coordinator",
+                         "scope":  {
+                                       "include":  [
+                                                       "Source/Runtime/Render/Include/Render/Lighting/**",
+                                                       "Source/Runtime/Render/Private/Lighting/**",
+                                                       "Source/Runtime/Render/Include/Render/PipelineCache.h",
+                                                       "Source/Runtime/Render/Private/PipelineCache.cpp",
+                                                       "Source/Runtime/Render/Include/Render/PostProcess/VolumetricLighting.h",
+                                                       "Source/Runtime/Render/Private/PostProcess/VolumetricLighting.cpp",
+                                                       "Source/Runtime/Render/Include/Render/Passes/**",
+                                                       "Source/Runtime/Render/Private/Passes/**",
+                                                       "Source/Runtime/Render/Include/Render/Features/**",
+                                                       "Source/Runtime/Render/Private/Features/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+                                                       "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+                                                       "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+                                                       "Source/Runtime/Render/Shaders/DefaultLit.hlsl",
+                                                       "Source/Runtime/Render/Shaders/Particle/ParticleBillboard.hlsl",
+                                                       "Source/Runtime/Render/Shaders/PostProcess/VolumetricLighting.hlsl",
+                                                       "Source/Runtime/Render/Shaders/Volumetric/**",
+                                                       "Source/Runtime/Render/Shaders/Water/WaterSurface.hlsl",
+                                                       "Source/Runtime/Render/CMakeLists.txt",
+                                                       "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameTypes.h",
+                                                       "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameValidation.h",
+                                                       "Source/Runtime/ShaderContracts/Include/ShaderContracts/GLSLBindingABI.h",
+                                                       "Source/Runtime/ShaderContracts/Include/ShaderContracts/ShaderArtifact.h",
+                                                       "Source/Developer/ShaderCompiler/Include/ShaderCompiler/ShaderCacheFormat.h",
+                                                       "Source/Runtime/RHI_DX12/Private/DX12Resources.cpp",
+                                                       "Tests/DX12Validation/main.cpp",
+                                                       "Tests/FroxelVolumetricLightingValidation/**",
+                                                       "Tests/RHIResourceValidation/**",
+                                                       "Tests/RenderFeatureValidation/main.cpp",
+                                                       "Tests/RenderHonestyValidation/main.cpp",
+                                                       "Tests/RenderPassValidation/main.cpp",
+                                                       "Tests/ShaderCompilerValidation/main.cpp",
+                                                       "Tests/PipelineCacheValidation/main.cpp",
+                                                       "Tests/ParticleRenderValidation/main.cpp",
+                                                       "Tests/WaterRenderValidation/main.cpp",
+                                                       "Tests/CMake/UnitTests.cmake",
+                                                       "Tests/CMake/IntegrationTests.cmake",
+                                  "Tests/CMake/NativeTests.cmake",
+                                  "Scripts/rhi_ownership_inventory_m1.json",
+                                  "feature_list.json",
+                                                       "progress.md",
+                                                       "session-handoff.md"
+                                                   ],
+                                       "exclude":  [
+                                                       "AGENTS.md",
+                                                       "CLAUDE.md",
+                                                       "Docs/README.md",
+                                                       "Docs/engine-capabilities.json",
+                                                       ".agent-harness/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+                                                       "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+                                                       "Samples/**",
+                                                       "Source/Runtime/RHI_DX11/**",
+                                                       "Source/Runtime/RHI_Metal/**",
+                                                       "Source/Runtime/RHI_OpenGL/**",
+                                                       "Source/Runtime/RHI_Vulkan/**",
+                                                       "Source/Programs/**",
+                                                       "assets/**",
+                                                       "build/**"
+                                                   ]
+                                   },
+                         "dependencies":  [
+                                              "gfx-22a"
+                                          ],
+                         "acceptanceCriteria":  [
+                                                    "A bounded froxel grid is derived deterministically from immutable frame/view identity and validated camera/depth parameters.",
+                                                    "Directional and local clustered lights integrate with shared shadow readiness without backend-specific renderer branching.",
+                                                    "Temporal reprojection accepts only exact compatible history and resets on camera cut, resize, surface, format, or scene discontinuity.",
+                                                    "The composition publishes one typed immutable volumetric output consumed consistently by translucency, water, and particles.",
+                                                    "Zero fog density is an exact identity and invalid dimensions, resource edges, or missing required inputs fail closed.",
+                                                    "Focused tests, Architecture, complete Windows Debug Build Truth, Shipping cooked-only closure, and diff hygiene pass without touching protected user files."
+                                                ],
+                         "verification":  [
+                                              {
+                                                  "id":  "focused-build",
+                                                  "layer":  "focused",
+                                                  "command":  "cmake --build --preset win_x64_debug --target FroxelVolumetricLightingValidation RenderFeatureValidation RenderPassValidation",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "focused-tests",
+                                                  "layer":  "focused",
+                                                  "command":  "ctest --test-dir build\\win_x64_debug -C Debug --output-on-failure -R \"^(FroxelVolumetricLightingValidation|RenderFeatureValidation|RenderPassValidation)(\\\\.|$)\"",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "architecture-required-suite",
+                                                  "layer":  "architecture",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/Architecture.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "Architecture",
+                                                                          "baseRef":  "master",
+                                                                          "preset":  "win_x64_debug",
+                                                                          "testPreset":  "win_x64_debug_architecture",
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "buildTarget":  "RVXValidationArchitecture",
+                                                                          "requiredLabel":  "lane.architecture",
+                                                                          "allowConfigure":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "full-debug-build-truth",
+                                                  "layer":  "integration",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/BuildTruth.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "BuildTruth",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_debug",
+                                                                          "buildPreset":  "win_x64_debug",
+                                                                          "laneTestPresets":  [
+                                                                                                  "win_x64_debug_architecture",
+                                                                                                  "win_x64_debug_unit",
+                                                                                                  "win_x64_debug_integration",
+                                                                                                  "win_x64_debug_native"
+                                                                                              ],
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "requiredNativeBackend":  "DX12",
+                                                                          "softwareAdapterAllowed":  false,
+                                                                          "fresh":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "shipping-host-cooker",
+                                                  "layer":  "shipping",
+                                                  "command":  "cmake --build --preset win_x64_shipping_host_release --target RVXCook --config Release",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "shipping-required-suite",
+                                                  "layer":  "shipping",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_shipping_release",
+                                                                          "buildPreset":  "win_x64_shipping_release",
+                                                                          "testPreset":  "win_x64_shipping_release_shipping",
+                                                                          "buildDir":  "build/win_x64_shipping_release",
+                                                                          "configuration":  "Release",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationSuiteRequiredShipping"
+                                                                                           ],
+                                                                          "requiredLabel":  "suite.required-shipping",
+                                                                          "expectedTestCount":  5,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  true,
+                                                                          "requiredSemanticArtifacts":  [
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+                                                                                                        ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "diff-hygiene",
+                                                  "layer":  "static",
+                                                  "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              }
+                                          ],
+                         "coordination":  [
+                                              {
+                                                  "owner":  "primary-coordinator",
+                                                  "scope":  [
+                                                                "Source/Runtime/Render/**",
+                                                                "Tests/FroxelVolumetricLightingValidation/**",
+                                                                "Tests/RenderFeatureValidation/main.cpp",
+                                                                "Tests/RenderPassValidation/main.cpp",
+                                                                "Tests/CMake/**",
+                                                                "feature_list.json",
+                                                                "progress.md",
+                                                                "session-handoff.md"
+                                                            ],
+                                                  "verificationResponsibility":  "Own GFX23 architecture, implementation integration, final review, evidence, and preservation of protected user changes."
+                                              }
+                                          ],
+                         "status":  "passing",
+                         "evidence":  [
+                                          {
+                                              "verificationId":  "focused-build",
+                                              "command":  "cmake --build --preset win_x64_debug --target FroxelVolumetricLightingValidation RenderFeatureValidation RenderPassValidation",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:35:28.5698579Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "The three focused GFX23 validation targets built successfully after the final native ABI repair."
+                                          },
+                                          {
+                                              "verificationId":  "focused-tests",
+                                              "command":  "ctest --test-dir build\\win_x64_debug -C Debug --output-on-failure -R \"^(FroxelVolumetricLightingValidation|RenderFeatureValidation|RenderPassValidation)(\\\\.|$)\"",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:35:28.5698579Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "The exact focused CTest selection passed 87/87; direct full RenderFeatureValidation and RenderPassValidation executable runs had also passed 68/68 and 317/317 during implementation."
+                                          },
+                                          {
+                                              "verificationId":  "architecture-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:33:23.6462121Z",
+                                              "artifact":  ".agent-harness/receipts/Architecture.1c65bbce6280414980aaff74aac78cda.json",
+                                              "artifactSha256":  "edf8426ced34c5f7e2c7d8b80acf56e60759fea474911f9bd570eb6beabe9c32",
+                                              "runId":  "1c65bbce6280414980aaff74aac78cda",
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "Architecture required suite passed 63/63 with zero skipped, disabled, or not-run tests."
+                                          },
+                                          {
+                                              "verificationId":  "full-debug-build-truth",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:24:39.1015436Z",
+                                              "artifact":  ".agent-harness/receipts/BuildTruth.f88d608b7a534a89a7e2c7d0ae536821.json",
+                                              "artifactSha256":  "27ff87f803e3a3c7c9060840bfba79934dc7c1977265439127427ce24515102e",
+                                              "runId":  "f88d608b7a534a89a7e2c7d0ae536821",
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "Architecture 63/63, Unit 1960/1960, Integration 745/745, and real DX12 Native 61/61 passed with no backend fallback or software adapter."
+                                          },
+                                          {
+                                              "verificationId":  "shipping-host-cooker",
+                                              "command":  "cmake --build --preset win_x64_shipping_host_release --target RVXCook --config Release",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:30:47.0000000Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "The independent Release host RVXCook was rebuilt before Shipping so the fixture was recooked with shader artifact compiler ABI 16 without introducing a Shipping-to-Developer link edge."
+                                          },
+                                          {
+                                              "verificationId":  "shipping-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:31:53.0975325Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.940ea3f530fa492782179ee4a656d6cd.json",
+                                              "artifactSha256":  "40125efb11bb5e8c69bab78d08f0785c21a16734f1b45cd24c09951897a33ada",
+                                              "runId":  "940ea3f530fa492782179ee4a656d6cd",
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "Windows Release Shipping target closure, host cook fixture, cooked-only eight-frame smoke, evidence validation, and dynamic dependency scan passed 5/5."
+                                          },
+                                          {
+                                              "verificationId":  "diff-hygiene",
+                                              "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-29T12:35:28.5698579Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "3ec14f177447bf0ab0828143b94b0d556184e09a",
+                                              "sourceDigest":  "d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1",
+                                              "notes":  "The complete working diff has no whitespace errors; protected user-owned paths remain unstaged and unmodified by GFX23."
+                                          }
+                                      ],
+                         "blocker":  null,
+                         "nextStep":  "GFX23 is complete. Claim GFX24 as a separate feature before implementing RenderQualityLab and the graphics qualification foundation; Linux Vulkan and macOS Metal remain remote PR-CI obligations.",
+                         "updatedAt":  "2026-08-29T12:35:28.5698579Z"
+                     },
+                     {
+                         "id":  "gfx-24",
+                         "name":  "Graphics qualification, GFX25-C, VAL-R and GFX-T0",
+                         "behavior":  "Continue GFX26-A: correct thin-transmission projection and sampling, separate roughness filtering from ray direction, reject screen-edge and foreground candidates using shared scene inputs, then integrate presentation-qualified transparent temporal producers. Preserve GFX25-C/VAL-R/T0 evidence and protected user changes. Golden approval, Shipping refresh and remote/fixed-GPU qualification remain pending.",
+                         "owner":  "primary-coordinator",
+                         "scope":  {
+                                       "include":  [
+                    "Source/Runtime/RenderContracts/Include/RenderContracts/**",
+                                  "Source/Runtime/Engine/Private/Engine.cpp",
+                                  "Source/Runtime/Engine/Private/ECS/EcsRenderRuntimeComposition.cpp",
+                    "Source/Runtime/ShaderContracts/Include/ShaderContracts/GLSLBindingABI.h",
+                                                       "Source/Runtime/RenderExtraction/Private/ECS/EcsFrameExtractor.cpp",
+                                                       "Source/Runtime/Render/Include/Render/Qualification/**",
+                                                       "Source/Runtime/Render/Private/Qualification/**",
+                                                       "Source/Runtime/Render/Include/Render/Features/**",
+                                                       "Source/Runtime/Render/Private/Features/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+                                                       "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+                                                       "Source/Runtime/Render/Include/Render/RenderSubsystem.h",
+                                                       "Source/Runtime/Render/Private/RenderSubsystem.cpp",
+                                                       "Source/Runtime/Render/Include/Render/RenderGraph/**",
+                                                       "Source/Runtime/Render/Private/RenderGraph/**",
+                                                       "Source/Runtime/Render/Include/Render/PostProcess/**",
+                                                       "Source/Runtime/Render/Private/PostProcess/**",
+                                                       "Source/Runtime/Render/**",
+                                  "Source/Runtime/Render/CMakeLists.txt",
+                    "Source/Runtime/RHI/Include/RHI/RHICommandContext.h",
+                    "Source/Runtime/RHI_DX12/Private/DX12Device.cpp",
+                                  "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+                                  "Source/Runtime/RHI_DX12/Private/DX12CommandContext.cpp",
+                                  "Source/Developer/AssetPipeline/Private/AssetPipeline.cpp",
+                                  "Source/Developer/AssetImport/**",
+                                  "Source/Runtime/Geometry/**",
+                                  "Source/Runtime/ResourceRuntime/**",
+                                  "Samples/Common/**",
+                                  "Samples/RenderVerseSamples/**",
+                                  "assets/catalog.json",
+                                                       "Scripts/check_render_quality_*.py",
+                                                       "Scripts/test_render_quality_qualification.py",
+                                                       "Scripts/run_render_quality_*.ps1",
+                                                       "Scripts/run_required_suite.ps1",
+                                                       "Scripts/run_build_truth.ps1",
+                                                       "Scripts/BuildTruth/**",
+                                                       "init.ps1",
+                                                       "Scripts/BuildTruth/Test-RequiredSuiteV1.ps1",
+                                                       "Scripts/check_ci_workflows.py",
+                                                       "Scripts/test_ci_workflows.py",
+                                                       "Scripts/check_sample_cooked_product_closure.py",
+                                                       "Scripts/test_sample_cooked_product_closure.py",
+                                                       "Scripts/rhi_ownership_inventory_m1.json",
+                                                       "Scripts/test_rhi_ownership_inventory_checker.py",
+                                                       "Scripts/test_engine_capability_contract.py",
+                                                       "Tests/**",
+                                                       "Tests/RenderQuality*/**",
+                                                       "Tests/EcsRenderFramePipelineValidation/main.cpp",
+                                                       "Tests/Sample*Validation/**",
+                                                       "Tests/CMake/UnitTests.cmake",
+                                                       "Tests/CMake/IntegrationTests.cmake",
+                                                       "Tests/CMake/QualificationTests.cmake",
+                                                       "Tests/CMake/ArchitectureTests.cmake",
+                                                       "CMakePresets.json",
+                                                       ".github/workflows/ci.yml",
+                                                       "Docs/render-quality-lab.md",
+                                                       "feature_list.json",
+                                                       "progress.md",
+                                                       "session-handoff.md"
+                                                   ],
+                                       "exclude":  [
+                                                       "AGENTS.md",
+                                                       "BACKEND_ANALYSIS.md",
+                                                       "CLAUDE.md",
+                                                       "Docs/README.md",
+                                                       "Docs/engine-capabilities.json",
+                                                       ".agent-harness/**",
+                                                       "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+                                                       "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+                                                       "Source/Programs/**",
+                                                       "Source/Runtime/RHI_DX11/**",
+                                  "Source/Runtime/RHI_Metal/**",
+                                                       "Source/Runtime/RHI_OpenGL/**",
+                                                       "Source/Runtime/RHI_Vulkan/**",
+                                  "build/**"
+                                                   ]
+                                   },
+                         "dependencies":  [
+                                              "gfx-23"
+                                          ],
+                         "acceptanceCriteria":  [
+                                                    "RenderQualityLab is a deterministic cooked-only Sample scenario that uses only public World, Entity, Light, Camera, asset, profile, and diagnostics contracts and never reaches RHI, RenderGraph, or renderer-private APIs.",
+                                                    "One immutable qualification capture bundle binds BeautyLDR, PreToneHDR, LinearDepth, Normal, Velocity, AO, and Reactive attachments to the exact frame/view/scene/configuration identity and graph provenance.",
+                                                    "Capture readback is submission-completion owned and polled without WaitIdle; missing, partial, stale, duplicate, or cross-frame attachments fail the entire bundle closed.",
+                                                    "Visual qualification supports per-attachment ROI policies, mean and maximum absolute error, PSNR, SSIM, diff heatmaps, and deterministic temporal flicker after warmup.",
+                                                    "Performance qualification separates warmup from at least 300 completion-owned samples and records CPU phases, the conservative Graphics qualification span, ordered per-pass GPU timing, upload bytes, memory classes, and post-warmup resource-growth invariants against exact hardware baselines.",
+                               "A dedicated GFX24 required suite validates the scenario, bundle, metrics, budgets, provenance, Shipping closure, and evidence schema without fabricating unsupported cross-platform results.",
+                               "MaterialStaticDescriptor V2 and CookedMaterialArtifact V2 carry specular, clearcoat, transmission, volume, IOR, and emissive-strength semantics through deterministic cook and strict runtime load with no V1 reader.",
+                               "Forward+ and Deferred consume one canonical material table and BRDF contract; clearcoat is a separately gated lobe and unsupported source workflows fail closed.",
+                               "model-viewer and pbr-materials are deterministic cooked-only qualification scenarios with real execution receipts, stable camera bookmarks, and no runtime importer or shader compiler closure.",
+                               "The approved GFX24 DX12 Goldens remain required; fixed-GPU A4 and Windows/Linux/macOS plus DX12/Vulkan RT qualification run after GFX25 implementation as one final evidence closure.",
+                               "Focused tests, Architecture, complete Windows Debug Build Truth, DX12 qualification, Shipping cooked-only closure, and diff hygiene pass; Linux Vulkan and macOS Metal remain explicit PR-CI obligations."
+                                                ],
+                         "verification":  [
+{
+  "id": "gfx26-logger-free-diagnostics",
+  "layer": "integration",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^EcsRenderRuntimeCompositionValidation[.]' --output-junit gfx26-logger-guard.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-logger-guard.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-performance-calibration",
+  "layer": "native",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File Scripts/run_render_quality_performance_calibration.ps1 -SkipConfigure -PythonExecutable D:/Programs/Python/Python312/python.exe",
+  "required": true,
+  "expectedArtifact": "build/gfx24_perf_calibration/PerformanceCalibration/510404e7cb584129949ec7d913a948b5/candidate/baseline-record.json",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-temporal-graph",
+  "layer": "integration",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'RenderPassValidationFixture.Transparent|TransparentTemporal' --output-junit gfx26-resumed-focused-built.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-resumed-focused-built.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-temporal-raster",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'TransparentTemporal' --output-junit gfx26-temporal-final.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-temporal-final.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-mesh-history",
+  "layer": "integration",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^RenderSceneValidation[.]' --output-junit gfx26-mesh-history.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-mesh-history.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-material-reconstruction",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'NativeMaterialConstantReconstruction|NativeSurfaceMaterialAlphaSilhouette|NativeThinTransmission|GFX06SurfaceShadersCompile|GFX22WeightedBlendedOITShadersCompile|DX11DefaultLitPixelReflection' --output-junit gfx26-material-copy-final.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-material-copy-final.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-guarded-pixel",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure --no-tests=error -R 'TransmissionFootprint|NativeThinTransmission|DX11DefaultLitPixelReflection|GFX06SurfaceShadersCompileAsDXBC|GFX22WeightedBlendedOITShadersCompileAsDXBC' --output-junit gfx26-pixel-dxbc.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-pixel-dxbc.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-cooked-forward-series",
+  "layer": "e2e",
+  "command": "D:/Programs/Python/Python312/python.exe Scripts/check_render_quality_series.py --series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series.json --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json --expected-source-commit 31b28d0cdae6b833b5659aaed5f276e0313d7dcb --expected-run-id gfx26-current-final-20261002-forward --expected-preset win_x64_debug --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series-validation.json",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series-validation.json",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-cooked-deferred-series",
+  "layer": "e2e",
+  "command": "D:/Programs/Python/Python312/python.exe Scripts/check_render_quality_series.py --series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series.json --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json --expected-source-commit 31b28d0cdae6b833b5659aaed5f276e0313d7dcb --expected-run-id gfx26-current-final-20261002-deferred --expected-preset win_x64_debug --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series-validation.json",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series-validation.json",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-pyramid-integration",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure --no-tests=error -R 'Transmission|SceneDepthSnapshot|LightingBindingSnapshot|RenderPassValidationFixture.Transparent' --output-junit gfx26-pyramid-focused-final.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-pyramid-focused-final.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-footprint-reference",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'TransmissionFootprint' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-footprint-focused.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-footprint-focused.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-native-diagnostics",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'DX12Validation.NativeDiagnostics|ShadowPassSingleCascade|OpaquePassDeferredGBuffer|RenderFeatureValidation\\.' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-diagnostics-and-barrier-final.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-diagnostics-and-barrier-final.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-diagnostics-vulkan",
+  "layer": "native",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^VulkanValidation[.].*(Transmission|TransparentTemporal)' --output-junit gfx26-final-vulkan.xml",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/gfx26-final-vulkan.xml",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-forward-diagnostics",
+  "layer": "native",
+  "command": "$p='build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-forward-final-20260922'; $q=Get-Content \"$p/native-queue.json\" -Raw | ConvertFrom-Json; $r=Get-Content \"$p/report.json\" -Raw | ConvertFrom-Json; if($q.schema -ne 'RVX.DX12DebugQueue' -or $q.schemaVersion -ne 1 -or -not $q.debugLayerEnabled -or -not $q.available -or -not $q.readComplete -or -not $q.criticalMessagesVisible -or $q.coverage -ne 'warning-error-corruption' -or $q.warningCount -ne 0 -or $q.errorCount -ne 0 -or $q.corruptionCount -ne 0 -or $q.discardedMessageCount -ne 0 -or @($q.messages).Count -ne 0 -or -not $q.passed -or -not $r.pass -or $r.backend -ne 'dx12' -or $r.sampleName -ne 'transparent-materials' -or $r.width -ne 640 -or $r.height -ne 360 -or $r.renderDiagnostics.transparentThinTransmissionDrawCount -lt 1 -or $r.renderDiagnostics.transparentFallbackCount -ne 0 -or $r.runtimeComposition.shaderProgramProvider -ne 'Development'){throw 'GFX26 development diagnostics evidence invalid'}",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-forward-final-20260922/native-queue.json",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-deferred-diagnostics",
+  "layer": "native",
+  "command": "$p='build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-deferred-final-20260922'; $q=Get-Content \"$p/native-queue.json\" -Raw | ConvertFrom-Json; $r=Get-Content \"$p/report.json\" -Raw | ConvertFrom-Json; if($q.schema -ne 'RVX.DX12DebugQueue' -or $q.schemaVersion -ne 1 -or -not $q.debugLayerEnabled -or -not $q.available -or -not $q.readComplete -or -not $q.criticalMessagesVisible -or $q.coverage -ne 'warning-error-corruption' -or $q.warningCount -ne 0 -or $q.errorCount -ne 0 -or $q.corruptionCount -ne 0 -or $q.discardedMessageCount -ne 0 -or @($q.messages).Count -ne 0 -or -not $q.passed -or -not $r.pass -or $r.backend -ne 'dx12' -or $r.sampleName -ne 'transparent-materials' -or $r.width -ne 640 -or $r.height -ne 360 -or $r.renderDiagnostics.transparentThinTransmissionDrawCount -lt 1 -or $r.renderDiagnostics.transparentFallbackCount -ne 0 -or $r.runtimeComposition.shaderProgramProvider -ne 'Development'){throw 'GFX26 development diagnostics evidence invalid'}",
+  "required": true,
+  "expectedArtifact": "build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-deferred-final-20260922/native-queue.json",
+  "expectedReceipt": null
+},
+{
+  "id": "gfx26-depth-native-reference",
+                                              "layer": "native",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'Transmission|TransparentPass|SceneDepthSnapshot|LightingBindingSnapshot|GFX06SurfaceShadersCompile|DX11DefaultLitPixelReflection|OpenGLForwardTranslucency|GLSL.*Binding' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-depth-final-focused.xml",
+                                              "required": true,
+                                              "expectedArtifact": "build/win_x64_debug/gfx26-depth-final-focused.xml",
+                                              "expectedReceipt": null
+                                          },
+                                          {
+                                              "id": "t0-depth-native-reference",
+                                              "layer": "native",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R '^(TransparentTemporalPolicy\\.|RenderFeatureValidation\\.|RenderPassValidationFixture.TAAUsesShaderResourceInitialStateAfterSuccessfulHistoryCommit$|DX12Validation.TransparentTemporal|VulkanValidation.TransparentTemporal)' --output-on-failure > build/win_x64_debug/t0-depth-focused.log 2>&1",
+                                              "required": true,
+                                              "expectedArtifact": "build/win_x64_debug/t0-depth-focused.log",
+                                              "expectedReceipt": null
+                                          },
+                                          {
+                                              "id": "valr-t0-reference",
+                                              "layer": "focused",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R \"^(SampleCLIValidation|RenderContractsValidation|TransparentTemporalPolicy|RenderViewHistoryValidation|Gfx25CandidateRunIsolationSelfTest)(\\.|$)\" --output-on-failure",
+                                              "required": true,
+                                              "expectedArtifact": null,
+                                              "expectedReceipt": null
+                                          },
+                                          {
+                                              "id": "gfx25c-candidate",
+                                              "layer": "native",
+                                              "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx25_candidate -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx25Candidate -RequiredLabel suite.gfx25-candidate -ExpectedTestCount 16 -BaseRef master -SkipConfigure",
+                                              "required": true,
+                                              "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                              "expectedReceipt": {
+                                                  "kind": "RequiredSuite",
+                                                  "baseRef": "master",
+                                                  "configurePreset": "win_x64_debug",
+                                                  "buildPreset": "win_x64_debug",
+                                                  "testPreset": "win_x64_debug_gfx25_candidate",
+                                                  "buildDir": "build/win_x64_debug",
+                                                  "configuration": "Debug",
+                                                  "buildTargets": [
+                                                      "RVXValidationSuiteGfx25Candidate"
+                                                  ],
+                                                  "requiredLabel": "suite.gfx25-candidate",
+                                                  "expectedTestCount": 16,
+                                                  "fresh": false,
+                                                  "skipConfigure": true,
+                                                  "requiredSemanticArtifacts": []
+                                              }
+                                          },
+                                              {
+                                                  "id":  "focused-build",
+                                                  "layer":  "focused",
+                                                  "command":  "cmake --build --preset win_x64_debug --target RenderQualityCaptureValidation RenderQualityMetricsValidation RenderQualityLabSampleValidation RVXValidationSuiteGfx24Qualification --config Debug",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "gfx24-required-suite",
+                                                  "layer":  "native",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx24_qualification -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx24Qualification -RequiredLabel suite.gfx24-qualification -BaseRef master -SkipConfigure",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_debug",
+                                                                          "buildPreset":  "win_x64_debug",
+                                                                          "testPreset":  "win_x64_debug_gfx24_qualification",
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationSuiteGfx24Qualification"
+                                                                                           ],
+                                                                          "requiredLabel":  "suite.gfx24-qualification",
+                                                                          "expectedTestCount":  null,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  true,
+                                                                          "requiredSemanticArtifacts":  [
+
+                                                                                                        ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "gfx24-native-candidate-suite",
+                                                  "layer":  "native",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_gfx24_candidate_release -BuildPreset win_x64_gfx24_candidate_release -TestPreset win_x64_gfx24_candidate_release_gfx24_candidate -BuildDir build\\gfx24_rel -Configuration Release -BuildTarget RVXValidationSuiteGfx24Candidate -RequiredLabel suite.gfx24-candidate -ExpectedTestCount 3 -RequiredEvidence 'Tests/Gfx24Candidate/Release/DX12DeferredHighTick120/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighTick360/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighPerformance/performance.json' -BaseRef master -SkipConfigure",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_gfx24_candidate_release",
+                                                                          "buildPreset":  "win_x64_gfx24_candidate_release",
+                                                                          "testPreset":  "win_x64_gfx24_candidate_release_gfx24_candidate",
+                                                                          "buildDir":  "build/gfx24_rel",
+                                                                          "configuration":  "Release",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationSuiteGfx24Candidate"
+                                                                                           ],
+                                                                          "requiredLabel":  "suite.gfx24-candidate",
+                                                                          "expectedTestCount":  3,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  true,
+                                                                          "requiredSemanticArtifacts":  [
+                                                                                                               "build/gfx24_rel/Tests/Gfx24Candidate/Release/DX12DeferredHighTick120/bundle.json",
+                                                                                                               "build/gfx24_rel/Tests/Gfx24Candidate/Release/DX12DeferredHighTick360/bundle.json",
+                                                                                                               "build/gfx24_rel/Tests/Gfx24Candidate/Release/DX12DeferredHighPerformance/performance.json"
+                                                                                                           ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "pr-smoke-required-suite",
+                                                  "layer":  "native",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json' -BaseRef master",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_pr_debug",
+                                                                          "buildPreset":  "win_x64_pr_debug",
+                                                                          "testPreset":  "win_x64_pr_debug_smoke",
+                                                                          "buildDir":  "build/win_x64_pr_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationSuitePrSmoke"
+                                                                                           ],
+                                                                          "requiredLabel":  "suite.pr-smoke",
+                                                                          "expectedTestCount":  3,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  false,
+                                                                          "requiredSemanticArtifacts":  [
+                                                                                                               "build/win_x64_pr_debug/Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm",
+                                                                                                               "build/win_x64_pr_debug/Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json",
+                                                                                                               "build/win_x64_pr_debug/Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json"
+                                                                                                           ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "architecture-required-suite",
+                                                  "layer":  "architecture",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/Architecture.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "Architecture",
+                                                                          "baseRef":  "master",
+                                                                          "preset":  "win_x64_debug",
+                                                                          "testPreset":  "win_x64_debug_architecture",
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "buildTarget":  "RVXValidationArchitecture",
+                                                                          "requiredLabel":  "lane.architecture",
+                                                                          "allowConfigure":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "full-debug-build-truth",
+                                                  "layer":  "integration",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/BuildTruth.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "BuildTruth",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_debug",
+                                                                          "buildPreset":  "win_x64_debug",
+                                                                          "laneTestPresets":  [
+                                                                                                  "win_x64_debug_architecture",
+                                                                                                  "win_x64_debug_unit",
+                                                                                                  "win_x64_debug_integration",
+                                                                                                  "win_x64_debug_native"
+                                                                                              ],
+                                                                          "buildDir":  "build/win_x64_debug",
+                                                                          "configuration":  "Debug",
+                                                                          "requiredNativeBackend":  "DX12",
+                                                                          "softwareAdapterAllowed":  false,
+                                                                          "fresh":  false
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "shipping-host-cooker",
+                                                  "layer":  "shipping",
+                                                  "command":  "cmake --build --preset win_x64_shipping_host_release --target RVXCook --config Release",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              },
+                                              {
+                                                  "id":  "shipping-required-suite",
+                                                  "layer":  "shipping",
+                                                  "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationShipping -RequiredLabel lane.shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+                                                  "required":  true,
+                                                  "expectedArtifact":  ".agent-harness/receipts/RequiredSuite.{runId}.json",
+                                                  "expectedReceipt":  {
+                                                                          "kind":  "RequiredSuite",
+                                                                          "baseRef":  "master",
+                                                                          "configurePreset":  "win_x64_shipping_release",
+                                                                          "buildPreset":  "win_x64_shipping_release",
+                                                                          "testPreset":  "win_x64_shipping_release_shipping",
+                                                                          "buildDir":  "build/win_x64_shipping_release",
+                                                                          "configuration":  "Release",
+                                                                          "buildTargets":  [
+                                                                                               "RVXValidationShipping"
+                                                                                           ],
+                                                                          "requiredLabel":  "lane.shipping",
+                                                                          "expectedTestCount":  5,
+                                                                          "fresh":  false,
+                                                                          "skipConfigure":  true,
+                                                                          "requiredSemanticArtifacts":  [
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+                                                                                                            "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+                                                                                                        ]
+                                                                      }
+                                              },
+                                              {
+                                                  "id":  "diff-hygiene",
+                                                  "layer":  "static",
+                                                  "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                                  "required":  true,
+                                                  "expectedArtifact":  null,
+                                                  "expectedReceipt":  null
+                                              }
+                                          ],
+                         "coordination":  [
+                                              {
+                                                  "owner":  "primary-coordinator",
+                                                  "scope":  [
+                                                                "Source/Runtime/Render/**",
+                                                                "Source/Runtime/RenderContracts/**",
+                                                                "Tests/CMake/**",
+                                                                "CMakePresets.json",
+                                                                ".github/workflows/ci.yml",
+                                                                "feature_list.json",
+                                                                "progress.md",
+                                                                "session-handoff.md"
+                                                            ],
+                                                  "verificationResponsibility":  "Own public qualification contracts, renderer integration, required-suite/CI wiring, final evidence, and preservation of protected user changes."
+                                              },
+                                              {
+                                                  "owner":  "quality-lab-sample-worker",
+                                                  "scope":  [
+                                                                "Samples/RenderVerseSamples/**",
+                                                                "Tests/RenderQualityLabSampleValidation/**"
+                                                            ],
+                                                  "verificationResponsibility":  "Implement the deterministic cooked-only scenario and its RHI-private-boundary tests without editing renderer internals or global control-plane files."
+                                              },
+                                              {
+                                                  "owner":  "quality-capture-worker",
+                                                  "scope":  [
+                                                                "Source/Runtime/RenderContracts/Include/RenderContracts/QualificationCapture.h",
+                                                                "Source/Runtime/Render/Include/Render/Qualification/**",
+                                                                "Source/Runtime/Render/Private/Qualification/**",
+                                                                "Tests/RenderQualityCaptureValidation/**"
+                                                            ],
+                                                  "verificationResponsibility":  "Implement immutable same-frame capture bundle state/provenance and completion-owned lifecycle contracts without central integration edits."
+                                              },
+                                              {
+                                                  "owner":  "quality-metrics-worker",
+                                                  "scope":  [
+                                                                "Scripts/check_render_quality_*.py",
+                                                                "Scripts/run_render_quality_*.ps1",
+                                                                "Tests/RenderQualityMetricsValidation/**",
+                                                                "Docs/render-quality-lab.md"
+                                                            ],
+                                                  "verificationResponsibility":  "Implement deterministic visual/temporal/performance report validators and negative fixtures without editing renderer or Sample code."
+                                              }
+                                          ],
+                         "status": "active",
+                         "evidence":  [
+{
+  "verificationId": "gfx26-logger-free-diagnostics",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^EcsRenderRuntimeCompositionValidation[.]' --output-junit gfx26-logger-guard.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-02T07:45:29.245Z",
+  "artifact": "build/win_x64_debug/gfx26-logger-guard.xml",
+  "artifactSha256": "801767d0504c21f7ea5aa3080dffb9a0e416b8a813038211e7266cec0874ceba",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "e04366456e0c90e3c11aa31e131c2504b6e5bafb4ad98961198e88daf44065a7",
+  "notes": "All 9 composition cases passed. Optional diagnostics require an existing logger; loading/publication/shutdown semantics unchanged. Initial failure evidence retained in gfx26-final-build-truth-current.log."
+},
+{
+  "verificationId": "gfx26-performance-calibration",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File Scripts/run_render_quality_performance_calibration.ps1 -SkipConfigure -PythonExecutable D:/Programs/Python/Python312/python.exe",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-02T07:45:29.245Z",
+  "artifact": "build/gfx24_perf_calibration/PerformanceCalibration/510404e7cb584129949ec7d913a948b5/candidate/baseline-record.json",
+  "artifactSha256": "5eb0863aa3c1c6b2f1c5ea34d6c92d19e0ba364da8536e23260b14572909a83a",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "ba7dfd0e55aa31bb2336249cbf1084902b6d16a5b6b07ace043694a42364bc04",
+  "notes": "Five 60+300 fixed-hardware runs passed absolute budgets. Whole-span p95 6.689792..13.596672 ms, median candidate 11.462656 ms. User deferred approval to idle calibration. Pre-logger-guard source, not current-source relative-performance approval."
+},
+{
+  "verificationId": "full-debug-build-truth",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-22T14:55:59.011Z",
+  "artifact": ".agent-harness/receipts/BuildTruth.83350e06bfb3458f92a86607ee2d043a.json",
+  "artifactSha256": "7e63a4c40dee3ab150385bb87f39c821fea84f76b7ccacfe820499cd29d57e09",
+  "runId": "83350e06bfb3458f92a86607ee2d043a",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "5ef58e538affffc3c74ca42c8a614a3d99786f82a7da5ae79e4a46d13723638b",
+  "notes": "Architecture 65, Unit 2172, Integration 771, DX12 Native 83 passed. Current local evidence only; not Golden, performance approval or remote CI."
+},
+{
+  "verificationId": "gfx26-temporal-graph",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'RenderPassValidationFixture.Transparent|TransparentTemporal' --output-junit gfx26-resumed-focused-built.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T15:10:26.0126125Z",
+  "artifact": "build/win_x64_debug/gfx26-resumed-focused-built.xml",
+  "artifactSha256": "01b36c87a68a7e7ec738ad575bdcbeec3d32d3f7224be0bf65fc2a0f5eb50024",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "6c7958f03df16e9496f643839d8a15fc61fdd6cc26cd05cb4188127fe8772393",
+  "notes": "All related targets rebuilt, 22/22 focused cases pass. Exact counts and dependency order replace invalid absolute indices; graph OIT/retention assertions remain. Failed r2 logs retained. Not main-frame admission or complete GFX26 evidence."
+},
+{
+  "verificationId": "gfx26-temporal-raster",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'TransparentTemporal' --output-junit gfx26-temporal-final.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T14:12:49.2345304Z",
+  "artifact": "build/win_x64_debug/gfx26-temporal-final.xml",
+  "artifactSha256": "f078777ab6c51c72012f9e1d2037dd88a884a32bb35ebd44e7b06ff7b1a165f2",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "154b6159df7eda1aa1068a4ebf1767de98f49f705edaa755857a28710eb004ad",
+  "notes": "11 focused cases passed: policy, DX12/Vulkan real rigid/skinned MRT raster and resolver/reset, and all four entries compiled for enabled DX11/DX12/Vulkan/OpenGL. Raw marker 128 remains rejected; this is not main-frame admission or visual/Shipping qualification."
+},
+{
+  "verificationId": "gfx26-mesh-history",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^RenderSceneValidation[.]' --output-junit gfx26-mesh-history.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T09:40:51.3497272Z",
+  "artifact": "build/win_x64_debug/gfx26-mesh-history.xml",
+  "artifactSha256": "d021b12eb757406219b9e1ba89aaa803987c5800655e58d0208fdfd179885580",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "d2ed336e07b375a2204390ac64c392abb0d2228fad0ef5d5e698b1be658e4042",
+  "notes": "52/52 RenderScene integration cases, including five new regressions: mesh switch/abandoned frame recovery, same-handle replacement vs unrelated resource changes, fallback-to-preferred transition, generation/revision/deformation-mode identity, and renderer cache not resurrecting rejected history. Existing sequence-gap and rejected-presentation cases remain passing. Transform admission only, not per-pixel transparency qualification."
+},
+{
+  "verificationId": "gfx26-material-reconstruction",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R 'NativeMaterialConstantReconstruction|NativeSurfaceMaterialAlphaSilhouette|NativeThinTransmission|GFX06SurfaceShadersCompile|GFX22WeightedBlendedOITShadersCompile|DX11DefaultLitPixelReflection' --output-junit gfx26-material-copy-final.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T08:52:35.5859626Z",
+  "artifact": "build/win_x64_debug/gfx26-material-copy-final.xml",
+  "artifactSha256": "3badd93058a2d193c695107f649298c87d171b81be470ebf5abc029882124c25",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "268cb056db7181baf865e7b530fecd0e52dd848ff6a3ab9942d8f491c1656b8a",
+  "notes": "14/14 focused cases. DX12/Vulkan on-disk production resolver compares all 49 declared fields against nonzero cbuffer sentinels; deliberately omitted specular field is rejected. Main/depth/shadow/velocity silhouettes and DX11/other enabled shader compile checks pass without suppressing native diagnostics."
+},
+{
+  "verificationId": "gfx26-guarded-pixel",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure --no-tests=error -R 'TransmissionFootprint|NativeThinTransmission|DX11DefaultLitPixelReflection|GFX06SurfaceShadersCompileAsDXBC|GFX22WeightedBlendedOITShadersCompileAsDXBC' --output-junit gfx26-pixel-dxbc.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T07:22:25.9173846Z",
+  "artifact": "build/win_x64_debug/gfx26-pixel-dxbc.xml",
+  "artifactSha256": "b61376188ee416def6b64ecf8a66f06bd5f08bc3343566514dd8eb84f709769b",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "f78184d73a9e76b88c54dcc30f70ea8129dc1ce752daee1db148813bc5f63585",
+  "notes": "20/20 focused cases. DX12/Vulkan pixels cover candidate accepted, base accepted, both rejected, unprojected/offscreen candidate, invalid exit, fractional-LOD occlusion and candidate priority using the actual production helper. Full DX11 producer/consumer entries included."
+},
+{
+  "verificationId": "gfx26-cooked-forward-series",
+  "command": "D:/Programs/Python/Python312/python.exe Scripts/check_render_quality_series.py --series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series.json --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json --expected-source-commit 31b28d0cdae6b833b5659aaed5f276e0313d7dcb --expected-run-id gfx26-current-final-20261002-forward --expected-preset win_x64_debug --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series-validation.json",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-02T07:56:13.3983766Z",
+  "artifact": "build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series-validation.json",
+  "artifactSha256": "e6b74250efee126583d2408c03eec89b436f78d66b5662970b04088ab1b4c817",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "e04366456e0c90e3c11aa31e131c2504b6e5bafb4ad98961198e88daf44065a7",
+  "notes": "Latest cooked host produced same-process ticks 120/360/361, seven attachments and clean DX12 debug queue. Run id gfx26-current-final-20261002-forward. Exact tick120 payload hashes match the unapproved five-series forward candidate. Producer arguments: --sample transparent-materials --backend dx12 --pipeline forward-plus --render-path direct --quality high --smoke --wait-ready --ready-timeout-ms 120000 --ready-max-frames 2400 --view hero --fixed-delta 0.0166666666666667 --width 1280 --height 720 --qualification-series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/series.json --diagnostics --validation --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-forward/report.json; cooked shader root Tests/Fixtures/Gfx25CandidateShaders/DX12. Not formal Golden approval."
+},
+{
+  "verificationId": "gfx26-cooked-deferred-series",
+  "command": "D:/Programs/Python/Python312/python.exe Scripts/check_render_quality_series.py --series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series.json --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json --expected-source-commit 31b28d0cdae6b833b5659aaed5f276e0313d7dcb --expected-run-id gfx26-current-final-20261002-deferred --expected-preset win_x64_debug --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series-validation.json",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-02T07:57:16.1775866Z",
+  "artifact": "build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series-validation.json",
+  "artifactSha256": "09facb8599cb31f718fad779e8049f4eb7d46929bcc5745048204160fdee8918",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "e04366456e0c90e3c11aa31e131c2504b6e5bafb4ad98961198e88daf44065a7",
+  "notes": "Latest cooked host produced same-process ticks 120/360/361, seven attachments and clean DX12 debug queue. Run id gfx26-current-final-20261002-deferred. Exact tick120 payload hashes match the unapproved five-series deferred candidate. Producer arguments: --sample transparent-materials --backend dx12 --pipeline deferred --render-path direct --quality high --smoke --wait-ready --ready-timeout-ms 120000 --ready-max-frames 2400 --view hero --fixed-delta 0.0166666666666667 --width 1280 --height 720 --qualification-series build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/series.json --diagnostics --validation --report build/win_x64_debug/Tests/Gfx26Completion/current-final-20261002-deferred/report.json; cooked shader root Tests/Fixtures/Gfx25CandidateShaders/DX12. Not formal Golden approval."
+},
+{
+  "verificationId": "gfx26-pyramid-integration",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure --no-tests=error -R 'Transmission|SceneDepthSnapshot|LightingBindingSnapshot|RenderPassValidationFixture.Transparent' --output-junit gfx26-pyramid-focused-final.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-26T06:12:16.8541789Z",
+  "artifact": "build/win_x64_debug/gfx26-pyramid-focused-final.xml",
+  "artifactSha256": "4e58aa497b12864139db0104da24efe0bfb2c31c77654df35d7ae3605a00da39",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "7ea6f7cb5c0ad13f4785ee4febb4b983f6cf9ddad62467467880cdcf7e9ca998",
+  "notes": "60/60 focused cases; real graph-generated High/Ultra standard/reverse-Z GPU mip readback on DX12/Vulkan, binding/provenance negatives, mixed WBOIT/sorted integration, production guard shader compile matrix. Initial and repair logs retained. Dedicated pixel candidate/base rejection matrix and full-resolution visual qualification remain pending."
+},
+                                          {
+
+  "verificationId": "gfx26-footprint-reference",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'TransmissionFootprint' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-footprint-focused.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-22T16:23:13.1618851Z",
+  "artifact": "build/win_x64_debug/gfx26-footprint-focused.xml",
+  "artifactSha256": "1cae014548413ddcf591ce0a1fec350722ff75a202536489338cf86ac54d043a",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "d20f1bf665425205779c3587eb961fa6c75b7ba0d5822e26ffa01d46737aea8f",
+  "notes": "16 cases: seven independent CPU support/negative tests, one compile matrix (DX11/DX12/Vulkan/OpenGL locally), eight DX12/Vulkan native standard/reverse-Z guard-band and positive-color-contributor cases. No failures/errors/skips; native warning/error/corruption zero. Native reduction and mip queries use production helper but prebuilt input mip data, not a composed renderer producer."
+},
+{
+  "verificationId": "gfx26-native-diagnostics",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'DX12Validation.NativeDiagnostics|ShadowPassSingleCascade|OpaquePassDeferredGBuffer|RenderFeatureValidation\\.' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-diagnostics-and-barrier-final.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-22T15:23:13.6062550Z",
+  "artifact": "build/win_x64_debug/gfx26-diagnostics-and-barrier-final.xml",
+  "artifactSha256": "6222b70c4be169d14739f8a49437e0f5c5baa2f5ac94814cbeded2fd06db0471",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "bf3ad4268c2f655e48b4c1b35217ff0679ce13e8af2bc6c6ed70dd499890d481",
+  "notes": "82 cases; no failure/error/skip. Includes loss/escaping/critical-filter policy, overlapping barrier batches and real DX12 chained transitions plus clear/feature contracts."
+},
+{
+  "verificationId": "gfx26-diagnostics-vulkan",
+  "command": "ctest --test-dir build/win_x64_debug -C Debug --no-tests=error --output-on-failure -R '^VulkanValidation[.].*(Transmission|TransparentTemporal)' --output-junit gfx26-final-vulkan.xml",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-02T08:10:18.451Z",
+  "artifact": "build/win_x64_debug/gfx26-final-vulkan.xml",
+  "artifactSha256": "e6d13db62d8f32335ba3d83ab39bdb26ad5dd63a73907dca5ad1985b9a763f3e",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "e04366456e0c90e3c11aa31e131c2504b6e5bafb4ad98961198e88daf44065a7",
+  "notes": "Latest-source Windows Vulkan transmission depth/pyramid/footprint and transparent temporal raster/admission native cases passed 15/15. This is not Linux OS or Metal runtime evidence."
+},
+{
+  "verificationId": "gfx26-forward-diagnostics",
+  "command": "$p='build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-forward-final-20260922'; $q=Get-Content \"$p/native-queue.json\" -Raw | ConvertFrom-Json; $r=Get-Content \"$p/report.json\" -Raw | ConvertFrom-Json; if($q.schema -ne 'RVX.DX12DebugQueue' -or $q.schemaVersion -ne 1 -or -not $q.debugLayerEnabled -or -not $q.available -or -not $q.readComplete -or -not $q.criticalMessagesVisible -or $q.coverage -ne 'warning-error-corruption' -or $q.warningCount -ne 0 -or $q.errorCount -ne 0 -or $q.corruptionCount -ne 0 -or $q.discardedMessageCount -ne 0 -or @($q.messages).Count -ne 0 -or -not $q.passed -or -not $r.pass -or $r.backend -ne 'dx12' -or $r.sampleName -ne 'transparent-materials' -or $r.width -ne 640 -or $r.height -ne 360 -or $r.renderDiagnostics.transparentThinTransmissionDrawCount -lt 1 -or $r.renderDiagnostics.transparentFallbackCount -ne 0 -or $r.runtimeComposition.shaderProgramProvider -ne 'Development'){throw 'GFX26 development diagnostics evidence invalid'}",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-22T15:42:48Z",
+  "artifact": "build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-forward-final-20260922/native-queue.json",
+  "artifactSha256": "3c39844858c18683a258b38d755477f1ccde8eb2b1bc0aef8c8f9c076a711555",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "bf3ad4268c2f655e48b4c1b35217ff0679ce13e8af2bc6c6ed70dd499890d481",
+  "notes": "Development-only Forward+ scene: native warning/error/corruption/discard all zero, exact INFO-only SDK filter exported; one or more real transmission draws, no transparent fallback. Not Cooked-only or Golden qualification. Sample report sha256 cae5b7c857057f65aaae1fdb289d8a5d9e13c69d7e0168923abe19cdde6cf3df."
+},
+{
+  "verificationId": "gfx26-deferred-diagnostics",
+  "command": "$p='build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-deferred-final-20260922'; $q=Get-Content \"$p/native-queue.json\" -Raw | ConvertFrom-Json; $r=Get-Content \"$p/report.json\" -Raw | ConvertFrom-Json; if($q.schema -ne 'RVX.DX12DebugQueue' -or $q.schemaVersion -ne 1 -or -not $q.debugLayerEnabled -or -not $q.available -or -not $q.readComplete -or -not $q.criticalMessagesVisible -or $q.coverage -ne 'warning-error-corruption' -or $q.warningCount -ne 0 -or $q.errorCount -ne 0 -or $q.corruptionCount -ne 0 -or $q.discardedMessageCount -ne 0 -or @($q.messages).Count -ne 0 -or -not $q.passed -or -not $r.pass -or $r.backend -ne 'dx12' -or $r.sampleName -ne 'transparent-materials' -or $r.width -ne 640 -or $r.height -ne 360 -or $r.renderDiagnostics.transparentThinTransmissionDrawCount -lt 1 -or $r.renderDiagnostics.transparentFallbackCount -ne 0 -or $r.runtimeComposition.shaderProgramProvider -ne 'Development'){throw 'GFX26 development diagnostics evidence invalid'}",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-09-22T15:42:48Z",
+  "artifact": "build/win_x64_debug/Tests/Gfx26Diagnostics/dx12-deferred-final-20260922/native-queue.json",
+  "artifactSha256": "a2245a4ddc8bc1a0b7e648d58a7aab8dcbde2bde7ce8fb167a1a093615d6c0fc",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "bf3ad4268c2f655e48b4c1b35217ff0679ce13e8af2bc6c6ed70dd499890d481",
+  "notes": "Development-only Deferred scene: native warning/error/corruption/discard all zero; complete critical diagnostics and real transmission draws without fallback. Not Cooked-only or Golden qualification. Sample report sha256 3eb4610b3f53f89ef224007a42defd2d8b6eb49673a26606277dc366bc06b739."
+},
+{
+  "verificationId": "gfx26-depth-native-reference",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R 'Transmission|TransparentPass|SceneDepthSnapshot|LightingBindingSnapshot|GFX06SurfaceShadersCompile|DX11DefaultLitPixelReflection|OpenGLForwardTranslucency|GLSL.*Binding' --output-junit E:/WorkSpace/RenderVerseX/build/win_x64_debug/gfx26-depth-final-focused.xml",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-22T14:12:49.2537054Z",
+                                              "artifact": "build/win_x64_debug/gfx26-depth-final-focused.xml",
+                                              "artifactSha256": "747cb0f6f0ad6e28ae541c5966149b6c3c7638a3196b8eca4cfdded33d5d11e9" ,
+                                              "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+                                              "sourceDigest": "d76374ce65b55a63930ae149dae7fe837109654b5598ae0a45bb92e20bff979e",
+                                              "notes": "41 focused cases passed on final source, including real DX12/Vulkan Texture.Load and readback, reverse-Z, copied shared-depth staged binding, and DXIL/DXBC/SPIRV/GLSL compilation. Wider rough-mip footprint, temporal producers, Metal and Cooked-only scene qualification remain pending."
+                                          },
+                                          {
+                                              "verificationId": "t0-depth-native-reference",
+                                              "command": "ctest --test-dir build/win_x64_debug -C Debug -R '^(TransparentTemporalPolicy\\.|RenderFeatureValidation\\.|RenderPassValidationFixture.TAAUsesShaderResourceInitialStateAfterSuccessfulHistoryCommit$|DX12Validation.TransparentTemporal|VulkanValidation.TransparentTemporal)' --output-on-failure > build/win_x64_debug/t0-depth-focused.log 2>&1",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-21T15:06:35.1239112Z",
+                                              "artifact": "build/win_x64_debug/t0-depth-focused.log",
+                                              "artifactSha256": "8d9260082f6ea55b2d5ae1e980d065f92bb338dd81389a833465c51a7cb94e7a",
+                                              "sourceCommit": "95b2c8657fb0cc8cea7fd7a29accc81cb0452de8",
+                                              "notes": "83/83: CPU/feature/depth-domain reference plus DX12 and Vulkan GPU readback, with and without history. Eight pixel cases verify selected depth and preserved opaque motion. Metal pending."
+                                          },
+                                          {
+                                              "verificationId": "gfx25c-candidate",
+                                              "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx25_candidate -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx25Candidate -RequiredLabel suite.gfx25-candidate -ExpectedTestCount 16 -BaseRef master -SkipConfigure",
+                                              "result": "passed",
+                                              "exitCode": 0,
+                                              "recordedAt": "2026-09-12T08:13:49.9857237Z",
+                                              "artifact": ".agent-harness/receipts/RequiredSuite.285f561f8c8848f18adbe2bb7367800e.json",
+                                              "artifactSha256": "2159e609dd0a4c0e2ecab9f48fe79d4aa5950e425312786112c6f928437dc71e",
+                                              "runId": "285f561f8c8848f18adbe2bb7367800e",
+                                              "sourceCommit": "2f83c4ee0ec6851b85f72fc2739db84377bdc709",
+                                              "sourceDigest": "66a43e39b3b7f4d9a0cc7a36561a5bbfd3cc13dab6a2027f8262e02464083859",
+                                              "notes": "16/16 passed before checkpoint commits. ModelViewer uses the cooked reference environment. This historical receipt is not a current-HEAD release claim. Previous run f7ef5d48647745da84b71a979769f5bf failed with EngineStopped and remains preserved."
+                                          },
+                                          {
+                                              "verificationId":  "focused-build",
+                                              "command":  "cmake --build --preset win_x64_debug --target RenderQualityCaptureValidation RenderQualityMetricsValidation RenderQualityLabSampleValidation RVXValidationSuiteGfx24Qualification --config Debug",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-30T10:42:20.9393625Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
+                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
+                                              "notes":  "The focused qualification targets built successfully; CI policy self-tests also passed 27/27 after separating visual API validation from performance timing."
+                                          },
+{
+  "verificationId": "gfx24-required-suite",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx24_qualification -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx24Qualification -RequiredLabel suite.gfx24-qualification -BaseRef master -SkipConfigure",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-22T14:55:59.430Z",
+  "artifact": ".agent-harness/receipts/RequiredSuite.9d6b2a37b39a4696bfca23e39298538c.json",
+  "artifactSha256": "af49c59767a4d8df947e8a969dc509fbf674629b885533d28e5ca05b5fdb57d0",
+  "runId": "9d6b2a37b39a4696bfca23e39298538c",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "5ef58e538affffc3c74ca42c8a614a3d99786f82a7da5ae79e4a46d13723638b",
+  "notes": "Qualification 117/117 passed. Current local evidence only; not Golden, performance approval or remote CI."
+},
+                                          {
+                                              "verificationId":  "shipping-host-cooker",
+                                              "command":  "cmake --build --preset win_x64_shipping_host_release --target RVXCook --config Release",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-30T10:42:20.9393625Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "ce0846ba7c923c35f8203aa632639dc031c2139a",
+                                              "sourceDigest":  "5739a865b911c2e7b40ca736553759b845e820f5413bd59612532360d7336e5a",
+                                              "notes":  "The independent Release host cooker was rebuilt before the current Shipping suite without adding a Shipping-to-Developer dependency."
+                                          },
+                                          {
+                                              "verificationId":  "pr-smoke-required-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_pr_debug -BuildPreset win_x64_pr_debug -TestPreset win_x64_pr_debug_smoke -BuildDir build\\win_x64_pr_debug -Configuration Debug -BuildTarget RVXValidationSuitePrSmoke -RequiredLabel suite.pr-smoke -ExpectedTestCount 3 -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json' -BaseRef master",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T04:47:07.1033606Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.00b281f989a744909407f96612beab62.json",
+                                              "artifactSha256":  "d326f1bba0a43272995183a110eabc118fc709beb1e076e3afba6871ca2bb34c",
+                                              "runId":  "00b281f989a744909407f96612beab62",
+                                              "sourceCommit":  "49ae950dd1b2f3d3903bc76fcefc7503d01a2671",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "The fixed DX12 SceneLifecycle Direct 320x180 Low eight-frame producer, image validator, and schema-35 report validator passed 3/3."
+                                          },
+{
+  "verificationId": "shipping-required-suite",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationShipping -RequiredLabel lane.shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-22T14:55:59.806Z",
+  "artifact": ".agent-harness/receipts/RequiredSuite.0ecc60d488b446b897a2cdef53acfc1d.json",
+  "artifactSha256": "592194fddb7d5cfae9320e3146f798479f15b71e94b6ede2930caf483e62f8c3",
+  "runId": "0ecc60d488b446b897a2cdef53acfc1d",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "5ef58e538affffc3c74ca42c8a614a3d99786f82a7da5ae79e4a46d13723638b",
+  "notes": "Windows Shipping 5/5 passed. Current local evidence only; not Golden, performance approval or remote CI."
+},
+{
+  "verificationId": "architecture-required-suite",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+  "result": "passed",
+  "exitCode": 0,
+  "recordedAt": "2026-10-22T14:58:45.166Z",
+  "artifact": ".agent-harness/receipts/Architecture.30cf349262e6403ca7813053beabef11.json",
+  "artifactSha256": "4240eedfd1863a1f82d29d813765560a191534334bc40a5d2ef79fb32165ee8d",
+  "runId": "30cf349262e6403ca7813053beabef11",
+  "sourceCommit": "31b28d0cdae6b833b5659aaed5f276e0313d7dcb",
+  "sourceDigest": "5ef58e538affffc3c74ca42c8a614a3d99786f82a7da5ae79e4a46d13723638b",
+  "notes": "Canonical Verify passed on final GFX26 product source; local evidence only."
+},
+                                          {
+                                              "verificationId":  "gfx24-native-candidate-suite",
+                                              "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_gfx24_candidate_release -BuildPreset win_x64_gfx24_candidate_release -TestPreset win_x64_gfx24_candidate_release_gfx24_candidate -BuildDir build\\gfx24_rel -Configuration Release -BuildTarget RVXValidationSuiteGfx24Candidate -RequiredLabel suite.gfx24-candidate -ExpectedTestCount 3 -RequiredEvidence 'Tests/Gfx24Candidate/Release/DX12DeferredHighTick120/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighTick360/bundle.json;Tests/Gfx24Candidate/Release/DX12DeferredHighPerformance/performance.json' -BaseRef master -SkipConfigure",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T05:01:05.1237073Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.96116d630e9d485693940cb638f758ac.json",
+                                              "artifactSha256":  "d708d7d4a6c5e6b3449d326c868e6657ec332ebff8f2caa1bf8a970559579226",
+                                              "runId":  "96116d630e9d485693940cb638f758ac",
+                                              "sourceCommit":  "0aaddeaf3fe839d0fbae7efd4508aa44f5f07022",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Post-commit DX12 Candidate passed 3/3. The 60+300 report records 11.141120 ms Graphics qualification p95, 10.852352 ms RenderGraph envelope p95, 44 stable transient textures, 689563800 stable transient bytes, and no post-warmup resource or footprint growth. The baseline identity remains unapproved."
+                                          },
+                                          {
+                                              "verificationId":  "diff-hygiene",
+                                              "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
+                                              "result":  "passed",
+                                              "exitCode":  0,
+                                              "recordedAt":  "2026-08-31T05:03:01.4452721Z",
+                                              "artifact":  null,
+                                              "sourceCommit":  "0aaddeaf3fe839d0fbae7efd4508aa44f5f07022",
+                                              "sourceDigest":  "a3fbd9c8d3fc0b492fd1776d7d740733735955b4c732720e1d078173e94be90f",
+                                              "notes":  "Product commits are clean and protected user-owned paths plus generated evidence remain unstaged."
+                                          }
+                                      ],
+            "nextStep": "GFX26 local closure: glass-local MAE <= 0.0005 unchanged, both recipes pass. Full Debug, Shipping 5/5, qualification 117/117, Vulkan transparency 16/16 and deterministic cook passed. Refresh Architecture, review owned diff and commit GFX26 only; no push. Pause GFX27+. Golden promotion, idle performance-baseline approval and remote CI remain unapproved/unverified. Preserve protected user changes.",
+                         "blocker": null,
+            "updatedAt": "2026-09-26T15:11:23.4639097Z"
+                     }
+                 ]
+}

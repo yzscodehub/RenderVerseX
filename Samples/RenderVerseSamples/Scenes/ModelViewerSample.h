@@ -15,6 +15,8 @@ namespace RVX
     {
     public:
         [[nodiscard]] const SampleInfo& GetInfo() const noexcept override;
+        [[nodiscard]] SampleAssessmentContract
+            GetAssessmentContract() const override;
         bool Setup(SampleContext& context, std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
@@ -24,6 +26,8 @@ namespace RVX
         bool PrepareQualificationCapture(SampleContext& context,
                                          std::string& outError) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
+        void ObserveDiagnostics(const SampleRenderDiagnostics& diagnostics,
+                                SampleAssessmentChannel& assessment) override;
         SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
@@ -50,5 +54,7 @@ namespace RVX
         bool m_qualificationCapturePrepared = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
+        bool m_cookedRasterExecutionObserved = false;
+        bool m_cookedRasterCapabilityPublished = false;
     };
 } // namespace RVX

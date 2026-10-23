@@ -4,7 +4,6 @@
 #include "Core/Serialization/Serialization.h"
 #include "Render/Debug/GPUProfiler.h"
 #include "Render/Material/MaterialBinder.h"
-#include "Render/Material/MaterialTemplate.h"
 #include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
@@ -15,25 +14,27 @@
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/MotionBlur.h"
-#include "Render/PostProcess/SSAO.h"
 #include "Render/PostProcess/SSR.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
-#include "Render/PostProcess/VolumetricLighting.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Sky/AtmosphericScattering.h"
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Resource/CookManifest.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "AssetImport/TextureLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/ShaderResource.h"
+#include "ResourceSource/ResourceSourceComposition.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHI.h"
 #include "Geometry/Asset/Mesh.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include "Terrain/Heightmap.h"
 #include "Terrain/TerrainLOD.h"
 #include "Terrain/TerrainMaterial.h"
@@ -53,7 +54,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,6 +64,49 @@
 namespace
 {
     namespace fs = std::filesystem;
+
+    RVX::Resource::TextureHandle PrepareCookedTexture(
+        RVX::Resource::CookedTextureLoader& loader,
+        const fs::path& path,
+        std::string& outError)
+    {
+        RVX::Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = RVX::Resource::MakeAssetKey(
+            context.requestedPath, RVX::Resource::ResourceType::Texture);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = RVX::Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+
+        RVX::Resource::PreparedResourceBundle bundle;
+        RVX::Resource::ResourceLoadError error;
+        if (!loader.Prepare(context, bundle, error))
+        {
+            outError = error.message;
+            return {};
+        }
+
+        std::vector<RVX::Resource::IResource*> resources;
+        resources.reserve(bundle.GetEntries().size());
+        for (const RVX::Resource::PreparedResourceEntry& entry :
+             bundle.GetEntries())
+        {
+            resources.push_back(entry.resource.Get());
+        }
+        RVX::Resource::ResourceCache publicationCache;
+        if (!publicationCache.StorePreparedBatch(resources))
+        {
+            outError = "Could not publish prepared cooked texture bundle.";
+            return {};
+        }
+
+        auto* texture = dynamic_cast<RVX::Resource::TextureResource*>(
+            bundle.GetRoot().Get());
+        if (!texture)
+            outError = "Cooked texture bundle root has the wrong type.";
+        return RVX::Resource::TextureHandle(texture);
+    }
 
     class NullDevice : public RVX::IRHIDevice
     {
@@ -212,16 +258,26 @@ namespace
                                            RVX::uint64 gpuVirtualAddress = 0x1000)
             : m_type(type)
             , m_gpuVirtualAddress(gpuVirtualAddress)
+            , m_storageBuffer(RVX::MakeRef<FakeBuffer>(
+                  RVX::RHIBufferUsage::AccelerationStructureStorage |
+                      RVX::RHIBufferUsage::UnorderedAccess |
+                      RVX::RHIBufferUsage::DeviceAddress,
+                  4096))
         {
         }
 
         RVX::RHIAccelerationStructureType GetType() const override { return m_type; }
         RVX::uint64 GetSize() const override { return 4096; }
         RVX::uint64 GetGPUVirtualAddress() const override { return m_gpuVirtualAddress; }
+        RVX::RHIBuffer* GetStorageBuffer() const override
+        {
+            return m_storageBuffer.Get();
+        }
 
     private:
         RVX::RHIAccelerationStructureType m_type = RVX::RHIAccelerationStructureType::BottomLevel;
         RVX::uint64 m_gpuVirtualAddress = 0x1000;
+        RVX::RHIBufferRef m_storageBuffer;
     };
 
     class FakeShader final : public RVX::RHIShader
@@ -342,7 +398,8 @@ namespace
         fs::path cursor = fs::current_path();
         for (uint32_t i = 0; i < 8; ++i)
         {
-            if (fs::exists(cursor / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h"))
+            if (fs::exists(cursor / "Source" / "Runtime" / "Render" / "Include" /
+                           "Render" / "Renderer" / "SceneRenderer.h"))
             {
                 return cursor;
             }
@@ -367,6 +424,32 @@ namespace
         fs::create_directories(path.parent_path());
         std::ofstream file(path, std::ios::binary);
         file << text;
+    }
+
+    void InitializeBuiltinResources(
+        RVX::Resource::ResourceManager& manager,
+        const RVX::Resource::ResourceManagerConfig& config = {})
+    {
+        manager.Initialize(
+            config,
+            RVX::Resource::CreateRuntimeResourceManagerDependencies());
+    }
+
+    void InitializeDevelopmentResources(
+        RVX::Resource::ResourceManager& manager,
+        const RVX::Resource::ResourceManagerConfig& config = {})
+    {
+        RVX::Resource::ResourceManagerDependencies dependencies =
+            RVX::Resource::CreateRuntimeResourceManagerDependencies();
+        std::string compositionError;
+        if (!RVX::ResourceSource::AddSourceResourceDependencies(
+                dependencies, compositionError))
+        {
+            throw std::runtime_error(
+                "Failed to compose source resource dependencies: " +
+                compositionError);
+        }
+        manager.Initialize(config, std::move(dependencies));
     }
 
     void WriteBinaryFile(const fs::path& path, const std::vector<uint8_t>& bytes)
@@ -1572,12 +1655,21 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(manifestText.find("entry.0.source=Meshes/Quad.gltf"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.output=Meshes/Quad.rva"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.type=Model"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.dependency.0.path=Meshes/Quad.rvdeps/meshes.rva"),
+    EXPECT_NE(manifestText.find("entry.0.dependencyCount=2"), std::string::npos);
+    EXPECT_NE(manifestText.find(
+                  "entry.0.dependency.0.path=Meshes/Quad.rvdeps/material_0.rvmat"),
               std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.dependency.0.sha256="), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.1.path=Meshes/Quad.rvdeps/meshes.rva"),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.1.sha256="), std::string::npos);
 
     const std::string modelArtifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
-    EXPECT_NE(modelArtifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    EXPECT_NE(modelArtifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
+    const std::string materialArtifact = ReadBinaryFile(
+        outputRoot / "Meshes" / "Quad.rvdeps" / "material_0.rvmat");
+    EXPECT_NE(materialArtifact.find("RVX_MATERIAL_ARTIFACT_V2"),
+              std::string::npos);
     const std::string artifact =
         ReadBinaryFile(outputRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(artifact.find("RVX_MESH_PREBAKE_V1"), std::string::npos);
@@ -1653,10 +1745,11 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesBC7TextureArtifact)
     EXPECT_NEAR(decodedPixels[0][2], rgba[2], 80);
     EXPECT_NEAR(decodedPixels[0][3], rgba[3], 2);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(artifactPath.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, artifactPath, loadError);
+    ASSERT_TRUE(texture) << loadError;
     EXPECT_EQ(texture->GetFormat(), RVX::Resource::TextureFormat::BC7);
     EXPECT_EQ(texture->GetUsage(), RVX::Resource::TextureUsage::Color);
     EXPECT_TRUE(texture->IsSRGB());
@@ -1782,7 +1875,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(rewrittenModel.string());
@@ -1793,10 +1886,10 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     ASSERT_TRUE(material);
     RVX::Resource::ResourceHandle<RVX::Resource::TextureResource> albedo = material->GetAlbedoTexture();
     ASSERT_TRUE(albedo);
-    EXPECT_EQ(RVX::Resource::TextureFormat::BC1, albedo->GetFormat());
+    EXPECT_EQ(RVX::Resource::TextureFormat::RGBA8, albedo->GetFormat());
     EXPECT_EQ(RVX::Resource::TextureUsage::Color, albedo->GetUsage());
     EXPECT_TRUE(albedo->IsSRGB());
-    EXPECT_FALSE(albedo->IsDefaultFallback());
+    EXPECT_TRUE(albedo->IsStreamingPlaceholder());
 
     manager.Shutdown();
     fs::remove_all(dir);
@@ -1909,7 +2002,7 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedMipArtifact)
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
+TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedTextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_texture_loader_cooked_artifact");
     const fs::path source = dir / "Albedo.tga";
@@ -1932,11 +2025,15 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
     const RVX::Tools::ImportResult importResult = importer.Import(source, output, &importOptions);
     ASSERT_TRUE(importResult.success) << importResult.error;
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    EXPECT_TRUE(loader.CanLoad(output.string()));
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    RVX::Resource::CookedTextureLoader loader;
+    EXPECT_TRUE(loader.Supports({
+        RVX::Resource::ResourceType::Texture,
+        RVX::Resource::ResourceLoadDomain::Cooked,
+        output.string()}));
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
     EXPECT_FALSE(texture->IsDefaultFallback());
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
@@ -1957,7 +2054,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifact)
+TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedBC1TextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_texture_loader_bc1_artifact");
     const fs::path source = dir / "Albedo.tga";
@@ -1981,10 +2078,11 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifac
     ASSERT_TRUE(importResult.success) << importResult.error;
     EXPECT_TRUE(importResult.warnings.empty());
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2000,7 +2098,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifac
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureArtifact)
+TEST_F(RenderHonestyValidationFixture, SourceModelLoaderDoesNotDecodeExternalCookedTextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_model_loader_cooked_texture_uri");
     const fs::path source = dir / "Albedo.tga";
@@ -2097,7 +2195,7 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(modelPath.string());
@@ -2108,19 +2206,16 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     ASSERT_TRUE(material);
     RVX::Resource::ResourceHandle<RVX::Resource::TextureResource> albedo = material->GetAlbedoTexture();
     ASSERT_TRUE(albedo);
-    EXPECT_EQ(RVX::Resource::TextureFormat::BC1, albedo->GetFormat());
+    EXPECT_TRUE(albedo->IsStreamingPlaceholder());
     EXPECT_EQ(RVX::Resource::TextureUsage::Color, albedo->GetUsage());
-    EXPECT_TRUE(albedo->IsSRGB());
-    EXPECT_EQ(24u, albedo->GetData().size());
-    EXPECT_FALSE(albedo->IsDefaultFallback());
 
     manager.Shutdown();
 
-    // Prepared model loading must recognize an RVA texture as an already
-    // cooked CPU product. It is published directly and never enters the
-    // source-image fallback/decode streaming state machine.
+    // A source model loader never decodes an RVA dependency. The source
+    // composition publishes an observable placeholder and leaves it pending;
+    // cooked model loading owns cooked texture resolution.
     RVX::Resource::ResourceManager preparedManager;
-    preparedManager.Initialize(config);
+    InitializeDevelopmentResources(preparedManager, config);
     auto preparedRequest =
         preparedManager.RequestAsync<RVX::Resource::ModelResource>(
             modelPath.string());
@@ -2130,15 +2225,15 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
         preparedModel = preparedRequest.TryGet();
     ASSERT_TRUE(preparedModel);
     EXPECT_EQ(preparedModel->GetTextureStreamingSnapshot().stage,
-              RVX::Resource::ModelTextureStreamingStage::None);
+              RVX::Resource::ModelTextureStreamingStage::AwaitingMinimumResident);
     ASSERT_EQ(preparedModel->GetMaterialCount(), 1u);
     auto preparedAlbedo =
         preparedModel->GetMaterial(0)->GetAlbedoTexture();
     ASSERT_TRUE(preparedAlbedo);
     EXPECT_EQ(preparedAlbedo->GetFormat(),
-              RVX::Resource::TextureFormat::BC1);
-    EXPECT_EQ(preparedAlbedo->GetData().size(), 24u);
-    EXPECT_FALSE(preparedAlbedo->IsStreamingPlaceholder());
+              RVX::Resource::TextureFormat::RGBA8);
+    EXPECT_EQ(preparedAlbedo->GetData().size(), 4u);
+    EXPECT_TRUE(preparedAlbedo->IsStreamingPlaceholder());
     EXPECT_EQ(preparedManager.GetModelTextureStreamingStats().completedDecodes,
               0u);
     preparedManager.Shutdown();
@@ -2179,10 +2274,11 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC3AlphaArtifa
     EXPECT_NE(artifact.find("compression=BC3"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2295,10 +2391,11 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC5NormalArtif
     EXPECT_NE(artifact.find("compression=BC5"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2331,7 +2428,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerDispatchesCookedTextureArt
     ASSERT_TRUE(importer.Import(source, output, &importOptions).success);
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -2357,7 +2454,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerRejectsUnknownCookedArtifa
     WriteTextFile(artifact, "RVX_UNKNOWN_PREBAKE_V1\n");
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     EXPECT_EQ(manager.LoadResource(artifact.string()), nullptr);
 
@@ -2446,6 +2543,441 @@ TEST_F(RenderHonestyValidationFixture, MeshGenerateTangentsUsesUInt16Indices)
     EXPECT_NEAR(std::abs(tangentData[3]), 1.0f, 1.0e-4f);
 }
 
+TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsUsesMikkAndDeterministicDegenerateFallback)
+{
+    const auto makeMesh = []()
+    {
+        RVX::Mesh mesh;
+        mesh.SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {2.0f, 0.0f, 0.0f},
+            {3.0f, 0.0f, 0.0f},
+            {2.0f, 1.0f, 0.0f},
+        });
+        mesh.SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+        });
+        mesh.SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u});
+        return mesh;
+    };
+
+    RVX::Mesh first = makeMesh();
+    RVX::Mesh second = makeMesh();
+    const RVX::TangentGenerationResult firstResult =
+        first.GenerateTangentsDetailed();
+    const RVX::TangentGenerationResult secondResult =
+        second.GenerateTangentsDetailed();
+    ASSERT_TRUE(firstResult.success);
+    ASSERT_TRUE(secondResult.success);
+    EXPECT_EQ(firstResult.triangleCount, 2u);
+    EXPECT_EQ(firstResult.mikkTriangleCount, 1u);
+    EXPECT_EQ(firstResult.fallbackTriangleCount, 1u);
+    EXPECT_EQ(firstResult.degenerateGeometryTriangleCount, 0u);
+    EXPECT_EQ(firstResult.degenerateUVTriangleCount, 1u);
+    EXPECT_EQ(firstResult.fallbackCornerCount, 3u);
+
+    const RVX::VertexAttribute* firstTangents =
+        first.GetAttribute(RVX::VertexBufferNames::Tangent);
+    const RVX::VertexAttribute* secondTangents =
+        second.GetAttribute(RVX::VertexBufferNames::Tangent);
+    ASSERT_NE(firstTangents, nullptr);
+    ASSERT_NE(secondTangents, nullptr);
+    ASSERT_EQ(firstTangents->GetVertexCount(), 6u);
+    ASSERT_EQ(secondTangents->GetVertexCount(), 6u);
+    const float* firstData = static_cast<const float*>(firstTangents->GetData());
+    const float* secondData = static_cast<const float*>(secondTangents->GetData());
+    ASSERT_NE(firstData, nullptr);
+    ASSERT_NE(secondData, nullptr);
+    EXPECT_GT(firstData[0], 0.9f);
+    EXPECT_NEAR(firstData[1], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(firstData[2], 0.0f, 1.0e-4f);
+    EXPECT_EQ(0, std::memcmp(
+        firstData,
+        secondData,
+        sizeof(float) * firstTangents->GetVertexCount() * 4u));
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsSplitsOnlyConflictingCornerTopology)
+{
+    EXPECT_EQ(RVX::ClassifyMikkGenerationResult(false),
+              RVX::TangentGenerationFailure::MikkGenerationFailed);
+    EXPECT_EQ(RVX::ClassifyMikkGenerationResult(true),
+              RVX::TangentGenerationFailure::None);
+
+    const auto makeConflictMesh = []()
+    {
+        RVX::Mesh mesh;
+        mesh.SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {-1.0f, 0.0f, 0.0f},
+        });
+        mesh.SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+            {1.0f, 0.0f},
+        });
+        mesh.SetUVs({
+            {0.0f, 0.0f},
+            {0.0f, 1.0f},
+            {1.0f, 1.0f},
+            {1.0f, 0.0f},
+        }, RVX::VertexBufferNames::UV1);
+        mesh.SetColors({
+            {1.0f, 0.0f, 0.0f, 1.0f},
+            {0.0f, 1.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f, 1.0f},
+        });
+        mesh.SetBoneData(
+            {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}, {12, 13, 14, 15}},
+            {{1.0f, 0.0f, 0.0f, 0.0f},
+             {0.5f, 0.5f, 0.0f, 0.0f},
+             {0.0f, 0.5f, 0.5f, 0.0f},
+             {0.0f, 0.0f, 0.5f, 0.5f}});
+        mesh.SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u, 0u, 2u, 3u});
+        RVX::SubMesh subMesh;
+        subMesh.indexOffset = 0u;
+        subMesh.indexCount = 6u;
+        subMesh.materialId = 17u;
+        subMesh.name = "ConflictMesh";
+        mesh.AddSubMesh(subMesh);
+        mesh.ComputeBoundingBox();
+        return mesh;
+    };
+
+    RVX::Mesh unchanged = makeConflictMesh();
+    const RVX::TangentGenerationResult rejected =
+        unchanged.GenerateTangentsDetailed();
+    EXPECT_FALSE(rejected.success);
+    EXPECT_EQ(rejected.failure,
+              RVX::TangentGenerationFailure::ConflictingCornerBasis);
+    EXPECT_EQ(unchanged.GetVertexCount(), 4u);
+    EXPECT_FALSE(unchanged.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh split = makeConflictMesh();
+    const RVX::TangentGenerationResult result =
+        split.GenerateTangentsDetailed(0u, true);
+    ASSERT_TRUE(result.success);
+    EXPECT_TRUE(result.topologySplit);
+    EXPECT_EQ(result.originalVertexCount, 4u);
+    EXPECT_EQ(result.publishedVertexCount, 6u);
+    EXPECT_EQ(result.splitVertexCount, 2u);
+    EXPECT_EQ(split.GetIndices32(),
+              (std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u}));
+    ASSERT_EQ(split.GetSubMeshes().size(), 1u);
+    EXPECT_EQ(split.GetSubMeshes()[0].indexOffset, 0u);
+    EXPECT_EQ(split.GetSubMeshes()[0].indexCount, 6u);
+    EXPECT_EQ(split.GetSubMeshes()[0].materialId, 17u);
+    ASSERT_TRUE(split.GetBoundingBox().has_value());
+    EXPECT_EQ(split.GetBoundingBox()->GetMin(), RVX::Vec3(-1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(split.GetBoundingBox()->GetMax(), RVX::Vec3(1.0f, 1.0f, 0.0f));
+
+    const std::vector<RVX::uint32> sourceCornerIndices{
+        0u, 1u, 2u, 0u, 2u, 3u};
+    for (const char* name : {RVX::VertexBufferNames::Position,
+                             RVX::VertexBufferNames::Normal,
+                             RVX::VertexBufferNames::UV,
+                             RVX::VertexBufferNames::UV1,
+                             RVX::VertexBufferNames::Color,
+                             RVX::VertexBufferNames::BoneIndices,
+                             RVX::VertexBufferNames::BoneWeights})
+    {
+        const RVX::VertexAttribute* source = unchanged.GetAttribute(name);
+        const RVX::VertexAttribute* published = split.GetAttribute(name);
+        ASSERT_NE(source, nullptr) << name;
+        ASSERT_NE(published, nullptr) << name;
+        ASSERT_EQ(published->GetVertexCount(), sourceCornerIndices.size())
+            << name;
+        const auto* sourceBytes = static_cast<const RVX::uint8*>(source->GetData());
+        const auto* publishedBytes =
+            static_cast<const RVX::uint8*>(published->GetData());
+        ASSERT_NE(sourceBytes, nullptr);
+        ASSERT_NE(publishedBytes, nullptr);
+        for (size_t corner = 0; corner < sourceCornerIndices.size(); ++corner)
+        {
+            EXPECT_EQ(0, std::memcmp(
+                publishedBytes + corner * published->GetStride(),
+                sourceBytes +
+                    static_cast<size_t>(sourceCornerIndices[corner]) *
+                        source->GetStride(),
+                source->GetStride())) << name << " corner=" << corner;
+        }
+    }
+
+    const RVX::VertexAttribute* tangents =
+        split.GetAttribute(RVX::VertexBufferNames::Tangent);
+    ASSERT_NE(tangents, nullptr);
+    const auto* tangentValues = static_cast<const float*>(tangents->GetData());
+    ASSERT_NE(tangentValues, nullptr);
+    for (size_t corner = 0; corner < tangents->GetVertexCount(); ++corner)
+    {
+        const size_t offset = corner * 4u;
+        const float lengthSquared =
+            tangentValues[offset] * tangentValues[offset] +
+            tangentValues[offset + 1u] * tangentValues[offset + 1u] +
+            tangentValues[offset + 2u] * tangentValues[offset + 2u];
+        EXPECT_NEAR(lengthSquared, 1.0f, 1.0e-5f);
+        EXPECT_NEAR(tangentValues[offset + 2u], 0.0f, 1.0e-5f);
+        EXPECT_NEAR(std::abs(tangentValues[offset + 3u]), 1.0f, 1.0e-5f);
+    }
+
+    RVX::Mesh::Ptr alreadySplit = split.Clone();
+    ASSERT_NE(alreadySplit, nullptr);
+    const RVX::TangentGenerationResult repeated =
+        alreadySplit->GenerateTangentsDetailed(0u, true);
+    EXPECT_TRUE(repeated.success);
+    EXPECT_FALSE(repeated.topologySplit);
+    EXPECT_EQ(repeated.originalVertexCount, 6u);
+    EXPECT_EQ(repeated.publishedVertexCount, 6u);
+    EXPECT_EQ(repeated.splitVertexCount, 0u);
+
+    RVX::Mesh limited = makeConflictMesh();
+    const RVX::TangentGenerationResult limitedResult =
+        limited.GenerateTangentsDetailed(0u, true, 5u);
+    EXPECT_FALSE(limitedResult.success);
+    EXPECT_EQ(limitedResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitLimitExceeded);
+    EXPECT_EQ(limited.GetVertexCount(), 4u);
+    EXPECT_FALSE(limited.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh nonZeroBaseVertex = makeConflictMesh();
+    std::vector<RVX::SubMesh> baseVertexSubMeshes =
+        nonZeroBaseVertex.GetSubMeshes();
+    ASSERT_EQ(baseVertexSubMeshes.size(), 1u);
+    baseVertexSubMeshes[0].baseVertex = 1;
+    nonZeroBaseVertex.SetSubMeshes(std::move(baseVertexSubMeshes));
+    const RVX::TangentGenerationResult baseVertexResult =
+        nonZeroBaseVertex.GenerateTangentsDetailed(0u, true);
+    EXPECT_FALSE(baseVertexResult.success);
+    EXPECT_EQ(baseVertexResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitBaseVertexUnsupported);
+    EXPECT_EQ(nonZeroBaseVertex.GetVertexCount(), 4u);
+    EXPECT_FALSE(nonZeroBaseVertex.HasAttribute(
+        RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh byteBudgetLimited = makeConflictMesh();
+    const RVX::TangentGenerationResult byteBudgetResult =
+        byteBudgetLimited.GenerateTangentsDetailed(
+            0u,
+            true,
+            RVX::RVX_DEFAULT_TANGENT_TOPOLOGY_SPLIT_VERTEX_LIMIT,
+            1u);
+    EXPECT_FALSE(byteBudgetResult.success);
+    EXPECT_EQ(byteBudgetResult.failure,
+              RVX::TangentGenerationFailure::TopologySplitByteBudgetExceeded);
+    EXPECT_EQ(byteBudgetLimited.GetVertexCount(), 4u);
+    EXPECT_FALSE(byteBudgetLimited.HasAttribute(
+        RVX::VertexBufferNames::Tangent));
+
+    RVX::Mesh deterministic = makeConflictMesh();
+    const RVX::TangentGenerationResult deterministicResult =
+        deterministic.GenerateTangentsDetailed(0u, true);
+    ASSERT_TRUE(deterministicResult.success);
+    EXPECT_TRUE(deterministicResult.topologySplit);
+    EXPECT_EQ(deterministic.GetIndices32(), split.GetIndices32());
+    for (const char* name : {RVX::VertexBufferNames::Position,
+                             RVX::VertexBufferNames::Normal,
+                             RVX::VertexBufferNames::UV,
+                             RVX::VertexBufferNames::UV1,
+                             RVX::VertexBufferNames::Color,
+                             RVX::VertexBufferNames::BoneIndices,
+                             RVX::VertexBufferNames::BoneWeights,
+                             RVX::VertexBufferNames::Tangent})
+    {
+        const RVX::VertexAttribute* first = split.GetAttribute(name);
+        const RVX::VertexAttribute* second = deterministic.GetAttribute(name);
+        ASSERT_NE(first, nullptr) << name;
+        ASSERT_NE(second, nullptr) << name;
+        ASSERT_EQ(first->GetVertexCount(), second->GetVertexCount()) << name;
+        ASSERT_EQ(first->GetStride(), second->GetStride()) << name;
+        EXPECT_EQ(0, std::memcmp(
+            first->GetData(),
+            second->GetData(),
+            first->GetVertexCount() * first->GetStride())) << name;
+    }
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       MeshFlatNormalsSplitCornersAndInvalidateAuthoredTangents)
+{
+    RVX::Mesh mesh;
+    mesh.SetPositions({
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 1.0f},
+    });
+    mesh.SetUVs({
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {0.0f, 1.0f},
+        {1.0f, 1.0f},
+    });
+    mesh.SetTangents({
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+    });
+    mesh.SetIndices(
+        std::vector<RVX::uint32>{0u, 1u, 2u, 0u, 2u, 3u});
+
+    ASSERT_TRUE(mesh.GenerateFlatNormalsTriList());
+    EXPECT_EQ(mesh.GetVertexCount(), 6u);
+    EXPECT_EQ(mesh.GetIndices32(),
+              (std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u}));
+    EXPECT_FALSE(mesh.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    const RVX::VertexAttribute* normals =
+        mesh.GetAttribute(RVX::VertexBufferNames::Normal);
+    ASSERT_NE(normals, nullptr);
+    ASSERT_EQ(normals->GetVertexCount(), 6u);
+    const float* values = static_cast<const float*>(normals->GetData());
+    for (size_t corner = 0; corner < 3u; ++corner)
+    {
+        EXPECT_NEAR(values[corner * 3u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 1u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 2u], 1.0f, 1.0e-6f);
+    }
+    for (size_t corner = 3u; corner < 6u; ++corner)
+    {
+        EXPECT_NEAR(values[corner * 3u], 1.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 1u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 2u], 0.0f, 1.0e-6f);
+    }
+
+    RVX::SubMesh existingSubMesh;
+    existingSubMesh.indexOffset = 0u;
+    existingSubMesh.indexCount = 3u;
+    existingSubMesh.baseVertex = 2;
+    mesh.AddSubMesh(existingSubMesh);
+    const std::vector<RVX::uint32> indicesBeforeRejectedRegeneration =
+        mesh.GetIndices32();
+    EXPECT_FALSE(mesh.GenerateFlatNormalsTriList());
+    EXPECT_EQ(mesh.GetVertexCount(), 6u);
+    EXPECT_EQ(mesh.GetIndices32(), indicesBeforeRejectedRegeneration);
+    ASSERT_EQ(mesh.GetSubMeshes().size(), 1u);
+    EXPECT_EQ(mesh.GetSubMeshes()[0].baseVertex, 2);
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsRejectsMalformedGeometryAndReportsFallbacks)
+{
+    const auto makeTriangle = []()
+    {
+        auto mesh = std::make_unique<RVX::Mesh>();
+        mesh->SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+        });
+        mesh->SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+        });
+        mesh->SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u});
+        return mesh;
+    };
+
+    {
+        auto mesh = makeTriangle();
+        EXPECT_FALSE(mesh->GenerateTangents(2u));
+        EXPECT_FALSE(mesh->GenerateTangents(1u));
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetPrimitiveType(RVX::PrimitiveType::TriangleStrip);
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({{0.0f, 0.0f}, {1.0f, 0.0f}});
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->AddAttribute(
+            RVX::VertexBufferNames::UV,
+            std::vector<RVX::uint32>{0u, 0u, 1u, 0u, 0u, 1u},
+            2u);
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+        });
+        const RVX::TangentGenerationResult result =
+            mesh->GenerateTangentsDetailed();
+        EXPECT_TRUE(result.success);
+        EXPECT_EQ(result.mikkTriangleCount, 0u);
+        EXPECT_EQ(result.fallbackTriangleCount, 1u);
+        EXPECT_EQ(result.degenerateUVTriangleCount, 1u);
+        EXPECT_EQ(result.fallbackCornerCount, 3u);
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetIndices(std::vector<RVX::uint32>{0u, 1u, 3u});
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {std::numeric_limits<float>::infinity(), 0.0f},
+            {0.0f, 1.0f},
+        });
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetNormals({
+            {0.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f},
+        });
+        const RVX::TangentGenerationResult result =
+            mesh->GenerateTangentsDetailed();
+        EXPECT_FALSE(result.success);
+        EXPECT_EQ(result.failure,
+                  RVX::TangentGenerationFailure::InvalidVertexData);
+    }
+}
+
 TEST_F(RenderHonestyValidationFixture, MeshImporterWritesCookedTangentArtifact)
 {
     fs::path dir = MakeTempDir("rvx_mesh_importer_artifact");
@@ -2513,10 +3045,13 @@ TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsModelImporter
     const fs::path importedPath = importedRoot / "Meshes" / "Quad.rva";
     ASSERT_TRUE(fs::exists(importedPath));
     const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    EXPECT_NE(artifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
     const std::string meshArtifact =
         ReadBinaryFile(importedRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
-    EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=1"), std::string::npos);
+    // Model products only require tangent-space data when their material
+    // consumes it. This fixture has no normal texture, so generic reimport
+    // must not fabricate an otherwise unused tangent payload.
+    EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=0"), std::string::npos);
 
     const RVX::Tools::AssetEntry* afterImport = database.GetAsset(guid);
     ASSERT_NE(afterImport, nullptr);
@@ -2543,7 +3078,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedMeshArtifactWit
     ASSERT_TRUE(result.success) << result.error;
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -2599,15 +3134,19 @@ float4 main() : SV_Target
     ASSERT_EQ(1u, result.outputPaths.size());
     EXPECT_EQ(output.string(), result.outputPaths[0]);
 
-    const std::string artifact = ReadBinaryFile(output);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_V1"), std::string::npos);
-    EXPECT_NE(artifact.find("backend=DirectX 12"), std::string::npos);
-    EXPECT_NE(artifact.find("stage=Pixel"), std::string::npos);
-    EXPECT_NE(artifact.find("entry=main"), std::string::npos);
-    EXPECT_NE(artifact.find("bytecodeSize="), std::string::npos);
-    EXPECT_NE(artifact.find("reflectionResources="), std::string::npos);
-    EXPECT_NE(artifact.find("RVX_SHADER_BYTECODE_BEGIN"), std::string::npos);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_END"), std::string::npos);
+    RVX::ShaderArtifact artifact;
+    std::string artifactError;
+    ASSERT_TRUE(RVX::ReadShaderArtifactV2(
+        output, artifact, artifactError)) << artifactError;
+    EXPECT_EQ(artifact.request.logicalAssetId, "Fullscreen.ps.hlsl");
+    EXPECT_EQ(artifact.request.backend, RVX::RHIBackendType::DX12);
+    EXPECT_EQ(artifact.request.stage, RVX::RHIShaderStage::Pixel);
+    EXPECT_EQ(artifact.request.entryPoint, "main");
+    EXPECT_EQ(artifact.runtimeEntryPoint, "main");
+    EXPECT_EQ(artifact.targetProfile, "ps_6_0");
+    EXPECT_FALSE(artifact.code.empty());
+    EXPECT_TRUE(artifact.reflection.valid);
+    EXPECT_NE(artifact.contentHash, 0u);
 
     fs::remove_all(dir);
 }
@@ -2619,36 +3158,27 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
     fs::create_directories(dir);
 
     const std::vector<uint8_t> bytecode = {0x44, 0x58, 0x42, 0x43, 0x00, 0x01, 0x02, 0x03};
-    const std::string glsl = "#version 450\nvoid main() {}\n";
-    const std::string msl = "fragment float4 main0() { return float4(1.0); }\n";
-
-    {
-        std::ofstream file(output, std::ios::binary);
-        ASSERT_TRUE(file.is_open());
-        file << "RVX_SHADER_PREBAKE_V1\n";
-        file << "source=Shaders/Fullscreen.ps.hlsl\n";
-        file << "backend=DirectX 12\n";
-        file << "stage=Pixel\n";
-        file << "entry=main\n";
-        file << "targetProfile=ps_6_0\n";
-        file << "bytecodeSize=" << bytecode.size() << "\n";
-        file << "glslSize=" << glsl.size() << "\n";
-        file << "mslSize=" << msl.size() << "\n";
-        file << "reflectionResources=3\n";
-        file << "sourceHash=123456789\n";
-        file << "RVX_SHADER_BYTECODE_BEGIN\n";
-        file.write(reinterpret_cast<const char*>(bytecode.data()),
-                   static_cast<std::streamsize>(bytecode.size()));
-        file << "\nRVX_SHADER_GLSL_BEGIN\n";
-        file.write(glsl.data(), static_cast<std::streamsize>(glsl.size()));
-        file << "\nRVX_SHADER_MSL_BEGIN\n";
-        file.write(msl.data(), static_cast<std::streamsize>(msl.size()));
-        file << "\nRVX_SHADER_PREBAKE_END\n";
-        ASSERT_TRUE(file.good());
-    }
+    RVX::ShaderArtifact artifact;
+    artifact.request.logicalAssetId = "Shaders/Fullscreen.ps.hlsl";
+    artifact.request.backend = RVX::RHIBackendType::DX12;
+    artifact.request.stage = RVX::RHIShaderStage::Pixel;
+    artifact.request.entryPoint = "main";
+    artifact.targetProfile = "ps_6_0";
+    artifact.runtimeEntryPoint = "main";
+    artifact.contentHash = 123456789u;
+    artifact.code = bytecode;
+    artifact.reflection.valid = true;
+    artifact.reflection.resources = {
+        {"Frame", 0, 0, RVX::RHIBindingType::UniformBuffer, 1},
+        {"Texture", 0, 1, RVX::RHIBindingType::SampledTexture, 1},
+        {"Sampler", 0, 2, RVX::RHIBindingType::Sampler, 1},
+    };
+    std::string artifactError;
+    ASSERT_TRUE(RVX::WriteShaderArtifactV2(
+        output, artifact, artifactError)) << artifactError;
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -2665,10 +3195,10 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
     EXPECT_EQ(shaderResource->GetReflectionResourceCount(), 3u);
     EXPECT_EQ(shaderResource->GetMetadata().sourcePath, "Shaders/Fullscreen.ps.hlsl");
     EXPECT_EQ(shaderResource->GetBytecode(), bytecode);
-    EXPECT_EQ(shaderResource->GetGLSLSource(), glsl);
-    EXPECT_EQ(shaderResource->GetMSLSource(), msl);
+    EXPECT_TRUE(shaderResource->GetGLSLSource().empty());
+    EXPECT_TRUE(shaderResource->GetMSLSource().empty());
     EXPECT_TRUE(shaderResource->HasBytecode());
-    EXPECT_TRUE(shaderResource->HasTranslatedSource());
+    EXPECT_FALSE(shaderResource->HasTranslatedSource());
 
     manager.Shutdown();
     fs::remove_all(dir);
@@ -2703,9 +3233,12 @@ float4 main() : SV_Target
     ASSERT_TRUE(imported);
     const fs::path importedPath = importedRoot / "Shaders" / "Fullscreen.ps.rva";
     ASSERT_TRUE(fs::exists(importedPath));
-    const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_V1"), std::string::npos);
-    EXPECT_NE(artifact.find("stage=Pixel"), std::string::npos);
+    RVX::ShaderArtifact artifact;
+    std::string artifactError;
+    ASSERT_TRUE(RVX::ReadShaderArtifactV2(
+        importedPath, artifact, artifactError)) << artifactError;
+    EXPECT_EQ(artifact.request.stage, RVX::RHIShaderStage::Pixel);
+    EXPECT_EQ(artifact.request.backend, RVX::RHIBackendType::DX12);
 
     const RVX::Tools::AssetEntry* afterImport = database.GetAsset(guid);
     ASSERT_NE(afterImport, nullptr);
@@ -2713,18 +3246,6 @@ float4 main() : SV_Target
     EXPECT_NE(0u, afterImport->importedModTime);
 
     fs::remove_all(dir);
-}
-
-TEST_F(RenderHonestyValidationFixture, MaterialTemplateCompileDoesNotReportPlaceholderSuccess)
-{
-    NullDevice device;
-    RVX::MaterialTemplate materialTemplate("honesty-test");
-    materialTemplate.SetVertexShader("missing_vs.hlsl");
-    materialTemplate.SetPixelShader("missing_ps.hlsl");
-
-    EXPECT_FALSE(materialTemplate.Compile(&device));
-    EXPECT_FALSE(materialTemplate.IsCompiled());
-    EXPECT_FALSE(materialTemplate.GetLastCompileError().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, MaterialBinderRejectsInitializationWithoutDevice)
@@ -3202,7 +3723,7 @@ TEST_F(RenderHonestyValidationFixture, DescriptorValidationHelpersRejectInvalidI
 
 TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)
 {
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference invalidReference;
 
     RVX::Resource::TextureResource* texture = loader.LoadFromReference(invalidReference, "model.gltf");
@@ -3215,20 +3736,16 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)
     EXPECT_FALSE(loader.GetLastLoadError().empty());
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
+TEST_F(RenderHonestyValidationFixture, TextureUtilityLoadsRemainManagerFreeAndResetStatus)
 {
-    RVX::Resource::ResourceManager manager;
-    RVX::Resource::ResourceManagerConfig config;
-    config.asyncThreadCount = 0;
-    manager.Initialize(config);
-
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     std::vector<RVX::uint8> rgba = { 255, 255, 255, 255 };
     const fs::path cachePath = MakeTempDir("rvx_texture_cache") / "cached.png";
 
     RVX::Resource::TextureResource* first = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
     ASSERT_NE(first, nullptr);
+    RVX::Resource::TextureHandle firstHandle(first);
     EXPECT_FALSE(first->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
@@ -3240,7 +3757,10 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* cachedMemory = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
-    EXPECT_EQ(cachedMemory, first);
+    ASSERT_NE(cachedMemory, nullptr);
+    RVX::Resource::TextureHandle cachedMemoryHandle(cachedMemory);
+    EXPECT_NE(cachedMemory, first);
+    EXPECT_EQ(cachedMemory->GetId(), first->GetId());
     EXPECT_FALSE(cachedMemory->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
@@ -3250,11 +3770,10 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     ASSERT_TRUE(loader.WasLastLoadFallback());
 
     RVX::Resource::TextureResource* cachedFile = loader.LoadFromFile(cachePath.string());
-    EXPECT_EQ(cachedFile, first);
-    EXPECT_FALSE(cachedFile->IsDefaultFallback());
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    EXPECT_EQ(cachedFile, nullptr);
+    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Failed);
     EXPECT_FALSE(loader.WasLastLoadFallback());
-    EXPECT_TRUE(loader.GetLastLoadError().empty());
+    EXPECT_FALSE(loader.GetLastLoadError().empty());
 
     std::vector<RVX::uint8> embeddedPixels = { 128, 128, 255, 255 };
     RVX::Resource::TextureReference embedded = RVX::Resource::TextureReference::CreateEmbeddedRaw(
@@ -3262,6 +3781,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* embeddedFirst = loader.LoadFromReference(embedded, "model.gltf");
     ASSERT_NE(embeddedFirst, nullptr);
+    RVX::Resource::TextureHandle embeddedFirstHandle(embeddedFirst);
     EXPECT_FALSE(embeddedFirst->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
@@ -3269,13 +3789,15 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     ASSERT_TRUE(loader.WasLastLoadFallback());
 
     RVX::Resource::TextureResource* embeddedCached = loader.LoadFromReference(embedded, "model.gltf");
-    EXPECT_EQ(embeddedCached, embeddedFirst);
+    ASSERT_NE(embeddedCached, nullptr);
+    RVX::Resource::TextureHandle embeddedCachedHandle(embeddedCached);
+    EXPECT_NE(embeddedCached, embeddedFirst);
+    EXPECT_EQ(embeddedCached->GetId(), embeddedFirst->GetId());
     EXPECT_FALSE(embeddedCached->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
     EXPECT_TRUE(loader.GetLastLoadError().empty());
 
-    manager.Shutdown();
     fs::remove_all(cachePath.parent_path());
 }
 
@@ -3283,7 +3805,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesOrdinaryRgbaMipChai
 {
     std::vector<RVX::uint8> rgba(static_cast<size_t>(4 * 4 * 4), 255u);
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "ordinary_4x4_rgba", RVX::Resource::TextureUsage::Color, true, 4, 4);
 
@@ -3300,7 +3822,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesColorMipsInLinearSp
         0, 0, 0, 255,     255, 255, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "color_srgb_2x2", RVX::Resource::TextureUsage::Color, true, 2, 2);
 
@@ -3322,7 +3844,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesNormalMipsInSignedS
         128, 128, 255, 255,   128, 128, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "normal_2x2", RVX::Resource::TextureUsage::Normal, true, 2, 2);
 
@@ -3345,7 +3867,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesDataMipsWithByteLin
         0, 0, 0, 255,     255, 255, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "data_2x2", RVX::Resource::TextureUsage::Data, true, 2, 2);
 
@@ -3377,9 +3899,9 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceExternalUsageControlsMipP
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference colorRef =
         RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Color, true);
     RVX::Resource::TextureReference normalRef =
@@ -3418,7 +3940,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::IResource* resource = manager.LoadResource(texturePath.string());
     ASSERT_NE(resource, nullptr);
@@ -3439,7 +3961,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     fs::remove_all(temp);
 }
 
-TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExistingPolicyTexture)
+TEST_F(RenderHonestyValidationFixture, ResourceManagerDoesNotAdoptLoaderOwnedPolicyTexture)
 {
     fs::path temp = MakeTempDir("rvx_texture_manager_policy_existing");
     const fs::path texturePath = temp / "shared_texture.tga";
@@ -3455,54 +3977,55 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExi
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeDevelopmentResources(manager, config);
 
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference normalRef =
         RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Normal, false);
 
     RVX::Resource::TextureResource* policyTexture = loader.LoadFromReference(normalRef, modelPath.string());
     ASSERT_NE(policyTexture, nullptr);
+    RVX::Resource::TextureHandle policyTextureHandle(policyTexture);
     const RVX::Resource::ResourceId policyId = policyTexture->GetId();
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
 
     RVX::IResource* genericResource = manager.LoadResource(texturePath.string());
     ASSERT_NE(genericResource, nullptr);
     EXPECT_NE(genericResource, policyTexture);
     EXPECT_EQ(policyTexture->GetId(), policyId);
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
     EXPECT_TRUE(manager.GetCache().Contains(RVX::GenerateResourceId(texturePath.string())));
 
     RVX::Resource::ResourceCache::Stats stats = manager.GetCache().GetStats();
-    EXPECT_EQ(stats.totalResources, 2u);
+    EXPECT_EQ(stats.totalResources, 1u);
 
     manager.Unload(texturePath.string());
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
     EXPECT_EQ(policyTexture->GetId(), policyId);
 
-    RVX::Resource::TextureResource* policyCached = loader.LoadFromReference(normalRef, modelPath.string());
-    EXPECT_EQ(policyCached, policyTexture);
-    EXPECT_EQ(policyCached->GetId(), policyId);
+    RVX::Resource::TextureResource* secondPolicy =
+        loader.LoadFromReference(normalRef, modelPath.string());
+    ASSERT_NE(secondPolicy, nullptr);
+    RVX::Resource::TextureHandle secondPolicyHandle(secondPolicy);
+    EXPECT_NE(secondPolicy, policyTexture);
+    EXPECT_EQ(secondPolicy->GetId(), policyId);
 
     manager.Shutdown();
     fs::remove_all(temp);
 }
 
-TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDisabled)
+TEST_F(RenderHonestyValidationFixture, RemainingPostProcessStubPassesAreUnsupportedAndDisabled)
 {
     RVX::PostProcessSettings settings;
     settings.enableDOF = true;
     settings.enableMotionBlur = true;
-    settings.enableVolumetricLighting = true;
 
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
-    RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
         &dof,
         &motionBlur,
-        &volumetricLighting,
     };
 
     for (RVX::IPostProcessPass* pass : passes)
@@ -3600,18 +4123,19 @@ TEST_F(RenderHonestyValidationFixture, TerrainPlaceholderPathsExposeHonestDiagno
     const fs::path repoRoot = FindRepoRoot();
     ASSERT_FALSE(repoRoot.empty());
 
+    const fs::path terrainRoot = repoRoot / "Source" / "Runtime" / "Terrain";
     const std::string heightmapHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "Heightmap.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "Heightmap.h");
     const std::string heightmapSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Heightmap.cpp");
+        ReadTextFile(terrainRoot / "Private" / "Heightmap.cpp");
     const std::string materialHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "TerrainMaterial.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "TerrainMaterial.h");
     const std::string materialSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "TerrainMaterial.cpp");
+        ReadTextFile(terrainRoot / "Private" / "TerrainMaterial.cpp");
     const std::string lodHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "TerrainLOD.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "TerrainLOD.h");
     const std::string lodSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "TerrainLOD.cpp");
+        ReadTextFile(terrainRoot / "Private" / "TerrainLOD.cpp");
 
     EXPECT_EQ(heightmapSource.find("This is a simplified placeholder"), std::string::npos);
     EXPECT_EQ(heightmapSource.find("Render/GPUUploadService.h"), std::string::npos);
@@ -3641,19 +4165,21 @@ TEST_F(RenderHonestyValidationFixture,
     ASSERT_FALSE(repoRoot.empty());
 
     const std::string header =
-        ReadTextFile(repoRoot / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Include" /
+                     "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(repoRoot / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" /
+                     "Renderer" / "SceneRenderer.cpp");
     const std::string runtimeSource =
-        ReadTextFile(repoRoot / "Render" / "Private" / "Runtime" /
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" / "Runtime" /
                      "RenderThreadRuntime.cpp");
     const std::string renderContractsCMake =
-        ReadTextFile(repoRoot / "RenderContracts" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "CMakeLists.txt");
     const std::string renderFrameValidation =
-        ReadTextFile(repoRoot / "RenderContracts" / "Include" /
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" /
                      "RenderContracts" / "RenderFrameValidation.h");
     const std::string renderExtractionCMake =
-        ReadTextFile(repoRoot / "RenderExtraction" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "CMakeLists.txt");
 
     EXPECT_EQ(std::string::npos, header.find("SetLegacyCollectionFallbackEnabled"));
     EXPECT_EQ(std::string::npos, header.find("IsLegacyCollectionFallbackEnabled"));
@@ -3681,13 +4207,13 @@ TEST_F(RenderHonestyValidationFixture,
                   "#include \"RenderContracts/RenderFramePacket.h\""));
     EXPECT_EQ(std::string::npos,
               renderExtractionCMake.find("Private/RenderFramePacketBuilder.cpp"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Include" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" /
                             "RenderContracts" / "RenderFramePacket.h"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Private" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Private" /
                             "RenderFramePacket.cpp"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Include" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "Include" /
                             "RenderExtraction" / "RenderFramePacketBuilder.h"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Private" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "Private" /
                             "RenderFramePacketBuilder.cpp"));
     EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }
@@ -3763,7 +4289,7 @@ TEST_F(RenderHonestyValidationFixture, ColorGradingRejectsHDRAndLUTRequests)
 TEST_F(RenderHonestyValidationFixture, FXAARequiresResourcesBeforeSupported)
 {
     RVX::PostProcessSettings settings;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RVX::RenderAntiAliasingMode::FXAA;
 
     RVX::FXAAPass fxaa;
     fxaa.Configure(settings);
@@ -3819,16 +4345,11 @@ TEST_F(RenderHonestyValidationFixture, ToneMappingRequiresResourcesBeforeSupport
 TEST_F(RenderHonestyValidationFixture, StandalonePostProcessFeaturesExposeUnsupportedState)
 {
     RVX::TAA taa;
-    RVX::SSAO ssao;
     RVX::SSR ssr;
 
     EXPECT_FALSE(taa.IsSupported());
     EXPECT_FALSE(taa.IsEnabled());
     EXPECT_FALSE(taa.GetUnsupportedReason().empty());
-
-    EXPECT_FALSE(ssao.IsSupported());
-    EXPECT_FALSE(ssao.IsEnabled());
-    EXPECT_FALSE(ssao.GetUnsupportedReason().empty());
 
     EXPECT_FALSE(ssr.IsSupported());
     EXPECT_FALSE(ssr.IsEnabled());
@@ -3884,6 +4405,9 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     instance.Play();
     instance.Simulate(0.016f);
 
+    // GFX16 connects its CPU billboard path through the runtime/ECS
+    // composition.  A directly constructed instance has no simulator and
+    // must remain fail-closed instead of advancing a fictitious simulation.
     EXPECT_FALSE(instance.IsSimulationSupported());
     EXPECT_FALSE(instance.GetSimulationUnsupportedReason().empty());
     EXPECT_EQ(instance.GetSimulationTime(), 0.0f);
@@ -3894,12 +4418,23 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     item.instanceId = 1;
     item.systemId = 1;
     item.systemName = "honesty-particles";
+    item.header = {
+        .channelId = RVX::RenderFeatureChannelId::Particle,
+        .schemaVersion = RVX::ParticleRenderFeatureChannelDescriptor::SchemaVersion,
+        .captureSequence = 1u,
+        .configurationRevision = 1u,
+        .source = {
+            .sceneRuntimeId = 0x484F4E45535459ull,
+            .entitySlot = 1u,
+            .entityGeneration = 1u,
+        },
+    };
     item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
     item.aliveParticleCount = 4;
-    item.renderPayloadAvailable = false;
+    item.maxParticleCount = 4;
     snapshot.items.push_back(item);
-    snapshot.metadata.totalAliveParticles = item.aliveParticleCount;
     snapshot.MarkComplete();
+    ASSERT_TRUE(snapshot.metadata.complete);
 
     RVX::ParticleFeaturePass pass;
     pass.SetSnapshot(&snapshot);

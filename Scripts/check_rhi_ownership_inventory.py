@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from architecture_gate_common import GateInputError, resolve_repo_root, resolve_required_file, run_gate
+from module_policy import add_policy_arguments, load_policy
 
 
-SOURCE_ROOTS = (
+SOURCE_MODULES = (
     "Render",
     "RHI",
     "RHI_DX11",
@@ -21,6 +22,7 @@ SOURCE_ROOTS = (
     "RHI_Vulkan",
     "RHI_Metal",
     "RHI_OpenGL",
+    "ShaderContracts",
 )
 SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl", ".mm"}
 VALID_PHASES = {"pre-delete", "final"}
@@ -52,8 +54,8 @@ FIXED_FRAME_PATTERNS = (
 )
 GLOBAL_SYMBOL = re.compile(r"\b(?:DeferredDeleterRegistry|IDeferredDeleter|FrameResourceManager)\b")
 PRE_DELETE_DEFINITION_PATHS = {
-    "Core/Include/Core/RefCounted.h",
-    "Render/Private/Graph/FrameResourceManager.cpp",
+    "Source/Runtime/Core/Include/Core/RefCounted.h",
+    "Source/Runtime/Render/Private/Graph/FrameResourceManager.cpp",
 }
 ACTIVE_GLOBAL_USE = re.compile(
     r"(?:DeferredDeleterRegistry\s*::\s*Get\s*\(|\.Register\s*\(|\.Unregister\s*\(|"
@@ -100,6 +102,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="With --list-holders, include only paths under this exact prefix.",
     )
+    add_policy_arguments(parser)
     return parser.parse_args()
 
 
@@ -114,14 +117,10 @@ def relative_path(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def iter_production_sources(root: Path):
-    for source_root in SOURCE_ROOTS:
-        directory = root / source_root
-        if not directory.is_dir():
-            continue
-        for path in directory.rglob("*"):
-            if path.is_file() and path.suffix in SOURCE_SUFFIXES:
-                yield path
+def iter_production_sources(policy):
+    # Ownership inventory is cross-platform policy, so disabled backends are
+    # still scanned against their committed entries.
+    yield from policy.source_files(module_id for module_id in SOURCE_MODULES if module_id in policy.modules)
 
 
 def matching_brace(text: str, open_offset: int) -> int:
@@ -164,10 +163,10 @@ def remove_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", blank, text)
 
 
-def discover_holders(root: Path) -> list[Holder]:
+def discover_holders(policy) -> list[Holder]:
     discovered: dict[tuple[str, str, str], Holder] = {}
-    for path in iter_production_sources(root):
-        rel = relative_path(path, root)
+    for path in iter_production_sources(policy):
+        rel = relative_path(path, policy.root)
         text = read_text(path)
         clean = remove_comments(text)
         spans = owner_spans(clean)
@@ -279,28 +278,25 @@ def validate_inventory(inventory: dict, inventory_path: str, holders: list[Holde
     return findings
 
 
-def validate_legacy_paths(root: Path, phase: str) -> list[Finding]:
+def validate_legacy_paths(policy, phase: str) -> list[Finding]:
     findings: list[Finding] = []
-    search_paths = [root / source_root for source_root in ("Core",) + SOURCE_ROOTS if (root / source_root).is_dir()]
-    for directory in search_paths:
-        for path in directory.rglob("*"):
-            if not path.is_file() or (path.suffix not in SOURCE_SUFFIXES and path.name != "CMakeLists.txt"):
-                continue
-            rel = relative_path(path, root)
-            text = read_text(path)
-            for pattern, description in FIXED_FRAME_PATTERNS:
-                for match in pattern.finditer(text):
-                    findings.append(
-                        Finding(rel, text.count("\n", 0, match.start()) + 1, f"forbidden {description}.")
-                    )
+    modules = ("Core",) + SOURCE_MODULES
+    for path in policy.source_files(module_id for module_id in modules if module_id in policy.modules):
+        rel = relative_path(path, policy.root)
+        text = read_text(path)
+        for pattern, description in FIXED_FRAME_PATTERNS:
+            for match in pattern.finditer(text):
+                findings.append(
+                    Finding(rel, text.count("\n", 0, match.start()) + 1, f"forbidden {description}.")
+                )
 
-            for match in GLOBAL_SYMBOL.finditer(text):
-                line = text.count("\n", 0, match.start()) + 1
-                if phase == "pre-delete" and rel in PRE_DELETE_DEFINITION_PATHS:
-                    line_text = text.splitlines()[line - 1]
-                    if not ACTIVE_GLOBAL_USE.search(line_text) and "FrameResourceManager.cpp" not in line_text:
-                        continue
-                findings.append(Finding(rel, line, "forbidden global/frame-count deletion path."))
+        for match in GLOBAL_SYMBOL.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            if phase == "pre-delete" and rel in PRE_DELETE_DEFINITION_PATHS:
+                line_text = text.splitlines()[line - 1]
+                if not ACTIVE_GLOBAL_USE.search(line_text) and "FrameResourceManager.cpp" not in line_text:
+                    continue
+            findings.append(Finding(rel, line, "forbidden global/frame-count deletion path."))
     return findings
 
 
@@ -309,8 +305,9 @@ def main() -> int:
     root = resolve_repo_root(args.root)
     if args.phase not in VALID_PHASES:
         raise GateInputError(f"unsupported RHI ownership phase: {args.phase}")
+    policy = load_policy(root, args)
 
-    holders = discover_holders(root)
+    holders = discover_holders(policy)
     if args.list_holders:
         if args.holder_prefix:
             holders = [holder for holder in holders if holder.path.startswith(args.holder_prefix)]
@@ -319,7 +316,7 @@ def main() -> int:
 
     inventory, inventory_path = load_inventory(root, args.inventory)
     findings = validate_inventory(inventory, inventory_path, holders)
-    findings.extend(validate_legacy_paths(root, args.phase))
+    findings.extend(validate_legacy_paths(policy, args.phase))
     if findings:
         for finding in sorted(findings, key=lambda item: (item.path, item.line, item.message)):
             print(f"{finding.path}:{finding.line}: {finding.message}")

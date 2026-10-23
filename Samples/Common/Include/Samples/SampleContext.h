@@ -6,7 +6,6 @@
  */
 
 #include "Core/Types.h"
-#include "Engine/ECS/IWorldEcsRuntimeServices.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "Resource/ResourceDiagnosticsView.h"
 #include "Resource/ResourcePublicationView.h"
@@ -27,9 +26,11 @@
 namespace RVX
 {
     class InputSubsystem;
+    class IWorldEcsRuntimeServices;
     class SampleAnimationLoader;
     class SampleEnvironmentLoader;
     class SampleModelLoader;
+    class SampleParticleEffectLoader;
     class World;
 
     /** @brief One legacy host-resolved model input; contains no loader policy. */
@@ -50,10 +51,109 @@ namespace RVX
     {
         std::string id;
         SampleAssetKind kind = SampleAssetKind::Model;
+        /**
+         * @brief Physical catalog path retained for evidence and report output.
+         *
+         * This is intentionally never substituted into a mounted runtime
+         * resource request.  Runtime-only compositions consume @ref resourcePath.
+         */
         std::filesystem::path resolvedPath;
+        /**
+         * @brief Logical path presented to Resource/ECS loaders.
+         *
+         * Runtime-only package entries use a strict `cooked://` path rooted at
+         * the runner-mounted Sample asset root.  Legacy compositions leave
+         * this empty and intentionally use @ref resolvedPath.
+         */
+        std::string resourcePath;
+        /**
+         * @brief Reject instead of falling back to a physical path when the
+         * entry is used by a runtime-only composition.
+         */
+        bool requiresCookedResourcePath = false;
         Resource::ResourceContentIdentity contentIdentity;
         AssetContentId assetContentId;
+        /**
+         * @brief Require the runner-admitted entry to be consumed as a staged
+         * cooked artifact rather than as authoring source input.
+         */
+        bool packageOnly = false;
     };
+
+    /**
+     * @brief Validate one package-relative cooked URI without touching disk.
+     *
+     * A mounted runtime root accepts only paths below that root.  Keeping this
+     * validation at the Sample registry boundary prevents absolute catalog
+     * paths, traversal, and alternate schemes from reaching a loader.
+     */
+    [[nodiscard]] inline bool IsStrictSampleCookedResourcePath(
+        const std::string_view resourcePath) noexcept
+    {
+        constexpr std::string_view Prefix = "cooked://";
+        if (!resourcePath.starts_with(Prefix))
+        {
+            return false;
+        }
+        const std::string_view logicalPath = resourcePath.substr(Prefix.size());
+        if (logicalPath.empty() || logicalPath.find("://") != std::string_view::npos ||
+            logicalPath.front() == '/' || logicalPath.front() == '\\')
+        {
+            return false;
+        }
+
+        const std::filesystem::path path{std::string(logicalPath)};
+        if (path.empty() || path.is_absolute() || path.has_root_name() ||
+            path.has_root_directory())
+        {
+            return false;
+        }
+        for (const std::filesystem::path& segment : path)
+        {
+            const std::string value = segment.generic_string();
+            if (value.empty() || value == "." || value == ".." ||
+                value.find(':') != std::string::npos)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief Return the only loader path admitted for a registry entry.
+     *
+     * Runtime-only entries never fall back to their physical evidence path.
+     * This is deliberately shared by model, environment, animation, and
+     * particle-effect loaders so a new catalog type cannot bypass the policy.
+     */
+    [[nodiscard]] inline bool TryGetSampleAssetResourcePath(
+        const SampleAssetRegistryEntry& entry,
+        std::string& outResourcePath,
+        std::string& outError)
+    {
+        if (entry.requiresCookedResourcePath)
+        {
+            if (!IsStrictSampleCookedResourcePath(entry.resourcePath))
+            {
+                outError = "Runtime-only Sample asset has no valid package-relative cooked resource path: " +
+                    entry.id;
+                return false;
+            }
+            outResourcePath = entry.resourcePath;
+            return true;
+        }
+
+        outResourcePath = entry.resourcePath.empty()
+            ? entry.resolvedPath.generic_string()
+            : entry.resourcePath;
+        if (outResourcePath.empty())
+        {
+            outError = "Sample asset has no resource path: " + entry.id;
+            return false;
+        }
+        return true;
+    }
 
     enum class SampleAssetRegistryLookupCode : uint8
     {
@@ -138,6 +238,10 @@ namespace RVX
         std::string environmentAssetId;
         /** @brief Required animation catalog ids in deterministic request order. */
         std::vector<std::string> animationAssetIds;
+        /** @brief Required cooked effect catalog ids in deterministic request order. */
+        std::vector<std::string> effectAssetIds;
+        /** @brief Primary cooked effect id for an effect-focused VFX scenario. */
+        std::string effectAssetId;
 
         // Compatibility-only path fields. New catalog-backed sample scenes must
         // use the ids above with RequestByAssetId().
@@ -149,6 +253,13 @@ namespace RVX
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
+        SampleQualityTier qualityTier = SampleQualityTier::Default;
+        SamplePipelineRecipe pipelineRecipe =
+            SamplePipelineRecipe::ForwardStandard;
+        /** Manifest-owned rational time step for deterministic scenarios. */
+        uint32 fixedTimeNumerator = 0;
+        uint32 fixedTimeDenominator = 0;
+        uint32 deterministicSeed = 0;
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         std::optional<SampleWorkloadProfile> workloadProfile;
         bool smoke = false;
@@ -183,6 +294,8 @@ namespace RVX
         SampleModelLoader& models;
         SampleEnvironmentLoader& environments;
         SampleAnimationLoader& animations;
+        /** Cooked-only CPU billboard effect admission for VFX scenarios. */
+        SampleParticleEffectLoader& particleEffects;
         /** Host-owned scope for direct procedural sample entities only. */
         SampleSceneLifetimeScope& sceneLifetime;
         const SampleSceneOptions& options;

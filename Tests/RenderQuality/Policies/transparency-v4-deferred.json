@@ -1,0 +1,274 @@
+{
+  "schema": "RVX.RenderQualityVisualPolicy",
+  "schemaVersion": 2,
+  "qualificationIdentity": {
+    "sampleId": "transparent-materials",
+    "pipeline": "deferred",
+    "quality": "high",
+    "backend": "dx12",
+    "view": "hero",
+    "visualContractVersion": 4
+  },
+  "attachments": {
+    "BeautyLDR": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "dynamic",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.0001,
+          "maxTemporalMae": 0.005
+        },
+        {
+          "id": "alpha-interior",
+          "normalizedRegionId": "alpha-interior",
+          "x": 160,
+          "y": 280,
+          "width": 130,
+          "height": 120,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0.0005
+        },
+        {
+          "id": "premultiplied-interior",
+          "normalizedRegionId": "premultiplied-interior",
+          "x": 440,
+          "y": 280,
+          "width": 130,
+          "height": 120,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0.0005
+        },
+        {
+          "id": "transmission-clear",
+          "normalizedRegionId": "transmission-clear",
+          "x": 980,
+          "y": 250,
+          "width": 140,
+          "height": 60,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0.0005
+        },
+        {
+          "id": "transmission-rough",
+          "normalizedRegionId": "transmission-rough",
+          "x": 980,
+          "y": 400,
+          "width": 140,
+          "height": 61,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0.0005
+        },
+        {
+          "id": "additive-interior",
+          "normalizedRegionId": "additive-interior",
+          "x": 710,
+          "y": 280,
+          "width": 120,
+          "height": 120,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0
+        },
+        {
+          "id": "smoke-visible",
+          "normalizedRegionId": "smoke-visible",
+          "x": 580,
+          "y": 540,
+          "width": 140,
+          "height": 140,
+          "temporalMode": "dynamic",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.000001,
+          "maxTemporalMae": 0.001
+        }
+      ]
+    },
+    "PreToneHDR": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "dynamic",
+          "dataRange": 16,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.0002,
+          "maxTemporalMae": 0.01
+        },
+        {
+          "id": "smoke-visible",
+          "normalizedRegionId": "smoke-visible",
+          "x": 580,
+          "y": 540,
+          "width": 140,
+          "height": 140,
+          "temporalMode": "dynamic",
+          "dataRange": 16,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 1e-9,
+          "maxTemporalMae": 0.01
+        }
+      ]
+    },
+    "LinearDepth": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "dynamic",
+          "dataRange": 100,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.005,
+          "maxTemporalMae": 0.5
+        }
+      ]
+    },
+    "Normal": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "static",
+          "dataRange": 2,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0
+        }
+      ]
+    },
+    "Velocity": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "dynamic",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.00005,
+          "maxTemporalMae": 0.002
+        }
+      ]
+    },
+    "AmbientOcclusion": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "static",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0,
+          "maxTemporalMae": 0
+        }
+      ]
+    },
+    "ReactiveMask": {
+      "rois": [
+        {
+          "id": "frame",
+          "normalizedRegionId": "frame",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "temporalMode": "dynamic",
+          "dataRange": 1,
+          "maxMae": 0,
+          "maxAbs": 0,
+          "minPsnr": 120,
+          "minSsim": 1,
+          "minTemporalMae": 0.0002,
+          "maxTemporalMae": 0.01
+        }
+      ]
+    }
+  },
+  "temporal": {
+    "warmupCompletedFrames": 120,
+    "goldenCaptureTick": 120,
+    "adjacentCaptureTicks": [
+      360,
+      361
+    ]
+  }
+}

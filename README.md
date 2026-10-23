@@ -1,367 +1,201 @@
 # RenderVerseX
 
-A cross-platform, multi-backend graphics rendering engine written in C++20.
+RenderVerseX is a runtime-first cross-platform game-engine foundation written
+in C++20. It provides an explicit Runtime/Developer/Programs separation, a
+multi-backend RHI, ECS-owned World execution, rendering, cooked assets, and
+fail-closed validation. It is a game-engine foundation under active
+development, not a claim that every product-level game feature is complete.
 
-## Overview
+The machine-readable capability contract is
+[`Docs/engine-capabilities.json`](Docs/engine-capabilities.json). It classifies
+features as `integrated`, `partial`, `experimental`, or `deferred` and links
+each non-deferred claim to repository evidence. The documentation classes are
+explained in [`Docs/README.md`](Docs/README.md).
 
-RenderVerseX is a modern graphics engine designed for flexibility and performance across multiple platforms. It provides a unified API for rendering across DirectX 11, DirectX 12, Vulkan, Metal, and OpenGL backends, with advanced features including:
+## Implemented architecture
 
-- **Multi-Backend RHI Abstraction** - Unified rendering interface across DX11/DX12/Vulkan/Metal/OpenGL
-- **Frame Graph System** - Automatic resource management and barrier insertion
-- **Entity-Component System** - Flexible scene architecture with spatial queries
-- **GPU-Driven Particles** - High-performance particle system
-- **Terrain & Water Rendering** - Advanced heightmap terrain and realistic water simulation
-- **Physics Integration** - Jolt Physics for realistic simulations
-- **AI & Navigation** - RecastNavigation for pathfinding
-- **Scripting System** - Lua scripting via Sol2
-- **Networking** - Asio-based networking for multiplayer support
-- **Audio System** - MiniAudio for cross-platform audio
-- **UI Framework** - Custom UI system with widgets
-- **Asset Pipeline** - Comprehensive resource management and importing
+- Runtime modules contain Shipping-eligible engine code and platform/RHI
+  backends.
+- Developer modules own source asset import, shader compilation, diagnostics,
+  and development composition.
+- Programs contain developer command-line entry points such as `RVXCook`.
+- Engine composes the Runtime graph through explicit move-only dependencies;
+  Shipping has no importer or source-shader fallback.
+- Resource loading is instance-owned and follows
+  `Supports -> Prepare -> Validate -> Publish`.
+- RenderGraph is the independent `RVX::RenderGraph` link target inside the
+  `Render` Manifest module.
+- Model products use only `RVX_MODEL_ARTIFACT_V3`, with standalone
+  `RVX_MATERIAL_ARTIFACT_V2` dependencies; source FBX support is a
+  development-only, feature-gated static subset.
+
+Core/HAL/RHI/Render, Scene/ECS/World, Animation, Built-in Physics, Particle,
+Terrain, Water, and cooked Shader/Resource paths are integrated. Audio,
+Scripting, and UI are partial. AI, Networking, and the Jolt ECS path are
+experimental and are not part of the Engine composition. Editor, PIE,
+LocalPlayer, Replay, and Dedicated Server are deferred.
 
 ## Requirements
 
-- **CMake** 3.21 or higher
-- **C++20** compatible compiler
-  - Windows: Visual Studio 2022
-  - Linux: GCC 11+ or Clang 13+
-  - macOS: Xcode 14+
-- **vcpkg** for dependency management
-- Platform-specific SDKs:
-  - Windows: Windows 10 SDK (for DX12)
-  - Vulkan SDK (when enabling Vulkan backend)
+- CMake 3.25 or newer.
+- A C++20 compiler: Visual Studio 2022, a current GCC/Clang toolchain, or Xcode.
+- vcpkg with `VCPKG_ROOT` set; dependencies are resolved from `vcpkg.json`.
+- Windows SDK for DX11/DX12, Vulkan tooling for Vulkan builds, and Xcode for
+  Metal builds.
+- PowerShell 7 (`pwsh`) for the cross-platform validation runners.
 
-## CMake Presets
+Example environment setup:
 
-The project includes CMakePresets.json for simplified cross-platform configuration. Presets automatically configure appropriate rendering backends for each platform:
+```powershell
+$env:VCPKG_ROOT = "E:/WorkSpace/vcpkg"
+```
 
-### Available Presets
-- `debug` - Windows Debug build (DX11/DX12/Vulkan/OpenGL enabled)
-- `release` - Windows Release build
-- `macos-debug` - macOS Debug build (Metal enabled)
-- `macos-release` - macOS Release build
-
-### Environment Setup
-Presets expect the `VCPKG_ROOT` environment variable:
 ```bash
-# Windows
-set VCPKG_ROOT=E:/WorkSpace/vcpkg
-
-# Linux/macOS
 export VCPKG_ROOT=/path/to/vcpkg
 ```
 
-## Platform Support
+Do not maintain a separate manual dependency-install list. The vcpkg Manifest,
+its feature selection, and the checked-in overlay ports are the dependency
+contract.
 
-| Platform | DX11 | DX12 | Vulkan | Metal | OpenGL |
-|----------|------|------|--------|-------|--------|
-| Windows  | ✓    | ✓    | ✓      | ✗     | ✓      |
-| Linux    | ✗    | ✗    | ✓      | ✗     | ✓      |
-| macOS    | ✗    | ✗    | ✗      | ✓     | ✗      |
-| iOS      | ✗    | ✗    | ✗      | ✓     | ✗      |
+## Configure and build
 
-## Dependencies
+Use the checked-in Presets. Common developer configurations are:
 
-Core dependencies are managed via vcpkg. Key libraries include:
-
-- **spdlog** - Logging framework
-- **GLFW** - Window and input handling
-- **GLM** - Math library
-- **Vulkan** + **VulkanMemoryAllocator** - Vulkan backend
-- **SPIRV-Cross** - Shader cross-compilation
-- **DirectX Shader Compiler** - DXC for HLSL compilation
-- **DirectX12 Agility SDK** + **D3D12MemoryAllocator** - DX12 backend
-- **GLAD** + **OpenGL** - OpenGL backend
-- **tinygltf** - glTF model loading
-- **stb** - Image loading
-- **asio** - Networking
-- **lua** + **sol2** - Scripting
-- **ImGui** + **ImGuizmo** - Editor UI
-- **Jolt Physics** - Physics simulation
-- **RecastNavigation** - AI pathfinding
-- **MiniAudio** - Audio playback
-- **tinyexr** - EXR image support
-
-See [vcpkg.json](vcpkg.json) for the complete dependency list.
-
-## Building
-
-### 1. Install vcpkg
+```powershell
+cmake --preset win_x64_debug
+cmake --build --preset win_x64_debug --target RVXValidationAll
+```
 
 ```bash
-git clone https://github.com/microsoft/vcpkg.git
-cd vcpkg
-.\bootstrap-vcpkg.bat  # Windows
-./bootstrap-vcpkg.sh   # Linux/macOS
+cmake --preset linux_x64_debug
+cmake --build --preset linux_x64_debug --target RVXValidationAll
 ```
-
-### 2. Install Dependencies
 
 ```bash
-# Windows
-vcpkg install spdlog glfw3 glm vulkan vulkan-memory-allocator spirv-reflect spirv-cross directx-dxc directx12-agility d3d12-memory-allocator glad imgui imguizmo lua sol2 asio joltphysics recastnavigation miniaudio tinygltf stb tinyexr miniz --triplet x64-windows
-
-# Linux
-vcpkg install spdlog glfw3 glm vulkan vulkan-memory-allocator spirv-reflect spirv-cross glad asio joltphysics recastnavigation miniaudio tinygltf stb tinyexr miniz imgui imguizmo lua sol2 --triplet x64-linux
-
-# macOS
-vcpkg install spdlog glfw3 glm spirv-cross spirv-cross-glsl spirv-cross-hlsl spirv-cross-msl glslang asio joltphysics recastnavigation miniaudio tinygltf stb tinyexr miniz imgui imguizmo lua sol2 --triplet x64-osx
+cmake --preset mac_arm64_debug
+cmake --build --preset mac_arm64_debug --target RVXValidationAll
 ```
 
-### 3. Configure and Build
+Release, PR smoke, qualification, Nightly compatibility, Weekly soak, TSAN,
+Shipping host, and Shipping product Presets are declared in
+`CMakePresets.json`. `Docs/engine-capabilities.json` mirrors every public
+configure and test Preset; the architecture gate rejects drift.
 
-#### Using CMake Presets (Recommended)
-The project includes CMakePresets.json for easy cross-platform configuration:
+The principal component options are:
 
-```bash
-# Configure and build using presets
-cmake --preset debug      # Debug configuration
-cmake --preset release    # Release configuration
+| Option | Purpose |
+| --- | --- |
+| `RVX_ENABLE_DX11`, `RVX_ENABLE_DX12`, `RVX_ENABLE_VULKAN`, `RVX_ENABLE_METAL`, `RVX_ENABLE_OPENGL` | Select RHI backends supported by the host platform. |
+| `RVX_BUILD_DEVELOPER` | Build source import, shader compilation, diagnostics, and development composition. |
+| `RVX_BUILD_PROGRAMS` | Build developer command-line programs. |
+| `RVX_ENABLE_FBX` | Enable verified development-only static FBX import through the vcpkg feature. |
+| `RVX_BUILD_SAMPLES` | Build Runtime proof applications. |
+| `RVX_BUILD_TESTS` | Build validation targets. |
+| `RVX_BUILD_SHIPPING_PRODUCTS`, `RVX_BUILD_SHIPPING_TESTS` | Build the cooked-only product and its required validation. |
+| `RVX_BUILD_EDITOR` | Deferred; Runtime Presets keep this disabled. |
 
-# macOS presets
-cmake --preset macos-debug   # Debug on macOS
-cmake --preset macos-release # Release on macOS
+Developer base Presets enable the `fbx` vcpkg feature. Shipping host and target
+Presets explicitly disable it, so ufbx and AssetImport cannot enter the
+Shipping closure.
 
-# Build specific targets
-cmake --build --preset debug --target ModelViewer
-cmake --build --preset debug --target BasicRHI
-cmake --build --preset debug --target RenderingShowcase
+## Validation
+
+GoogleTest cases and direct script/product checks are registered through
+CTest. Every test has exactly one primary lane label:
+
+```text
+lane.architecture
+lane.unit
+lane.integration
+lane.native
+lane.qualification
+lane.shipping
 ```
 
-#### Manual Configuration
-```bash
-# Configure with vcpkg toolchain
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=[vcpkg-root]/scripts/buildsystems/vcpkg.cmake
+For a complete local validation, use Build Truth v3. It configures, builds the
+aggregate target, inventories CTest, runs required lanes with independent
+JUnit files, validates semantic evidence, and rejects source changes during
+the run:
 
-# Build Release
-cmake --build build --config Release
-
-# Build Debug
-cmake --build build --config Debug
-
-# Build specific target
-cmake --build build --config Release --target RenderVerseSamples
+```powershell
+Scripts\run_build_truth.ps1 `
+  -ConfigurePreset win_x64_debug `
+  -BuildPreset win_x64_debug `
+  -LaneTestPresets "win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native" `
+  -BuildDir build\win_x64_debug `
+  -Configuration Debug `
+  -RequiredNativeBackend DX12 `
+  -Fresh
 ```
 
-### Build Options
+For one required lane or suite, use the thin fail-closed runner over the same
+Build Truth inventory and evidence implementation:
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-DRVX_ENABLE_DX11=ON/OFF` | ON | DirectX 11 backend (Windows only) |
-| `-DRVX_ENABLE_DX12=ON/OFF` | ON | DirectX 12 backend (Windows only) |
-| `-DRVX_ENABLE_VULKAN=ON/OFF` | ON | Vulkan backend |
-| `-DRVX_ENABLE_METAL=ON/OFF` | OFF | Metal backend (macOS/iOS only) |
-| `-DRVX_ENABLE_OPENGL=ON/OFF` | OFF | OpenGL backend |
-| `-DRVX_BUILD_EDITOR=OFF` | OFF | Required for the pure-ECS Runtime milestone |
-| `-DRVX_BUILD_SAMPLES=ON/OFF` | ON | Build sample applications |
-| `-DRVX_BUILD_TESTS=ON/OFF` | ON | Build validation tests |
-
-## Running Tests
-
-Tests are standalone executables (no GoogleTest framework).
-
-```bash
-# Run individual validation tests
-./build/Tests/Release/RenderGraphValidation.exe
-./build/Tests/Release/EcsEntityValidation.exe
-./build/Tests/Release/EcsSceneOrchestrationValidation.exe
-./build/Tests/Release/EcsCleanupValidation.exe
-
-# Cross-backend validation (requires multiple backends)
-./build/Tests/Release/CrossBackendValidation.exe
+```powershell
+Scripts\run_required_suite.ps1 `
+  -ConfigurePreset win_x64_pr_debug `
+  -BuildPreset win_x64_pr_debug `
+  -TestPreset win_x64_pr_debug_smoke `
+  -BuildDir build\win_x64_pr_debug `
+  -Configuration Debug `
+  -BuildTarget RVXValidationSuitePrSmoke `
+  -RequiredLabel suite.pr-smoke `
+  -ExpectedTestCount 3 `
+  -Fresh
 ```
 
-### Architecture preflight
+The fixed PR smoke is SceneLifecycle, Direct rendering, 320x180, Low quality,
+eight frames, with image and JSON evidence. See
+[`Docs/build-truth.md`](Docs/build-truth.md) and
+[`Docs/shipping-validation.md`](Docs/shipping-validation.md) for the complete
+contracts.
 
-Before architecture implementation work, run the clean M0 gate documented in
-[`Docs/build-truth.md`](Docs/build-truth.md). It is stricter than an ordinary
-incremental build because it rejects missing tests and writes reviewable evidence.
+## Asset workflow
 
-## Sample Applications
+`RVXCook` is built only in a Developer/Programs host-tools configuration.
+Runtime and Shipping read cooked or package artifacts through strict loaders.
+Model cooking converges glTF/GLB and feature-enabled static FBX into the same
+Model Artifact V3 tail. FBX deliberately rejects skin, animation, blend shape,
+embedded texture, missing external texture, and source-root escape cases.
 
-`RenderVerseSamples` is the Runtime product proof surface while the Editor is
-disabled. Each scene uses the same pure-ECS World, resource, render-publication,
-diagnostic, screenshot, and cleanup contracts.
+See [`Docs/rvxcook-workflow.md`](Docs/rvxcook-workflow.md) for commands,
+formats, and deterministic cook/load gates.
 
-| Sample | Description |
-|--------|-------------|
-| **model-rendering** | Entity, transform, camera, light, atomic model adoption, frozen render snapshot |
-| **model-viewer** | Environment loading, visibility, camera control, model activation |
-| **pbr-materials** | Material slots, streamed textures, IBL, fully-resident texture receipts |
-| **gpu-driven** | Direct/GPU-driven scene parity and indirect submission |
-| **lighting-shadows** | Light fragments, shadows, and incremental scene extraction |
-| **asset-gallery** | Multi-model transactions, layout, residency, and retirement |
-| **render-pipeline** | Render passes, post-processing, and snapshot consistency |
-| **scene-lifecycle** | Create, destroy, reparent, generation reuse, and cleanup |
-| **asset-streaming** | Async load, cancel, unload, reload, and resource retirement |
-| **interior-rendering** | Complex hierarchy, multi-light, multi-material environment |
-| **physics-sandbox** | Fixed-step bodies, colliders, transform sync, and cleanup |
-| **animation-character** | Skeleton, pose, root motion, physics intent, skinning receipts |
-| **rendering-stress** | Large entity/query/dirty-update workloads and performance evidence |
+## Repository layout
 
-## Project Structure
-
-```
-RenderVerseX/
-├── Core/                    # Core utilities, handles, math, jobs
-├── ECS/                     # Generic entity/fragment/query/processor kernel
-├── Scene/                   # ECS fragments, hierarchy, spatial index, snapshots
-├── World/                   # One SceneEcsRuntime and ECS camera service
-├── Engine/                  # Per-World ECS composition and render publication
-├── Resource/                # Asset loading, streaming, residency, retirement
-├── ResourceSceneAdapters/   # Prepared batches and ECS asset coordinators
-├── RenderExtraction/        # Frozen ECS snapshots to render contracts
-├── Render/                  # RenderGraph, passes, scene database, GPU-driven path
-├── Physics*/                # Physics runtime and pure ECS bridge
-├── Animation*/              # Animation runtime, evaluator, and pure ECS bridge
-├── Audio/                   # Audio runtime and pure ECS bridge
-├── Particle/                # Particle runtime and pure ECS bridge
-├── Terrain/                 # Terrain runtime and pure ECS bridge
-├── Water/                   # Water runtime and pure ECS bridge
-├── RHI*/                    # Backend-neutral RHI and platform backends
-├── Samples/RenderVerseSamples/
-├── Tests/
-└── Docs/
+```text
+Source/
+  Runtime/       Shipping-eligible engine modules and RHI backends
+  Developer/     Source import, compilation, diagnostics, dev composition
+  Programs/      RVXCook and RVXAnimationDerive entry points
+Editor/          Explicitly deferred authoring product
+Samples/         Runtime proof applications
+Tests/           CTest/GoogleTest and Shipping validation
+Docs/            Current contracts, proposals, and historical evidence
+Scripts/         Build Truth, required-suite, architecture, and product gates
+cmake/           Module inventory and validation registration helpers
 ```
 
-## Code Style Guidelines
+Public includes use logical module prefixes such as `Core/...`, `RHI/...`, and
+`Render/...`; physical `Source/Runtime` or `Source/Developer` paths never form
+part of the public include contract. The module policy is documented in
+[`Docs/module-boundaries.md`](Docs/module-boundaries.md).
 
-### Naming Conventions
+## Sample applications
 
-| Element | Convention | Example |
-|---------|------------|---------|
-| Classes/Structs | PascalCase | `RenderGraph`, `SceneEcsRuntime` |
-| Interfaces | `I` prefix + PascalCase | `IRHIDevice`, `IPhysicsBackend` |
-| Methods | PascalCase | `CreateBuffer()`, `GetName()` |
-| Member variables | `m_` prefix + camelCase | `m_device`, `m_position` |
-| Static members | `s_` prefix + camelCase | `s_nextHandle`, `s_coreLogger` |
-| Local variables | camelCase | `bufferDesc`, `devicePtr` |
-| Constants | `RVX_` prefix + SCREAMING_SNAKE | `RVX_INVALID_INDEX` |
-| Enums | `enum class` PascalCase | `RHIBackendType::Vulkan` |
-
-### Include Order
-
-1. Corresponding header (for .cpp files)
-2. Project headers with `"quotes"` (alphabetized)
-3. External library headers with `<angle brackets>`
-4. Standard library headers with `<angle brackets>`
-
-```cpp
-#include "Scene/ECS/SceneEcsRuntime.h"  // Corresponding header first
-#include "Core/Log.h"           // Project headers
-#include <glm/glm.hpp>          // External libraries
-#include <vector>               // Standard library
-```
-
-### Namespaces
-
-All code resides in the `RVX` namespace with explicit closing comments:
-
-```cpp
-#pragma once
-#include "Core/Types.h"
-
-namespace RVX
-{
-    // All code in RVX namespace
-} // namespace RVX
-```
-
-### Type Definitions
-
-Use type aliases from `Core/Types.h`:
-
-```cpp
-using int8 = std::int8_t;       using uint8  = std::uint8_t;
-using int16 = std::int16_t;     using uint16 = std::uint16_t;
-using int32 = std::int32_t;     using uint32 = std::uint32_t;
-using int64 = std::int64_t;     using uint64 = std::uint64_t;
-using float32 = float;          using float64 = double;
-```
-
-### Enums
-
-Always use `enum class` with explicit underlying type:
-
-```cpp
-enum class RHIBackendType : uint8 { None = 0, Auto, DX11, DX12, Vulkan, Metal, OpenGL };
-```
-
-### Documentation
-
-Doxygen-style comments:
-
-```cpp
-/** @file RenderGraph.h  @brief Frame graph and automatic resource management */
-
-/** @brief Create a buffer  @param desc Buffer description  @return Handle */
-RHIBufferRef CreateBuffer(const RHIBufferDesc& desc);
-```
-
-### Error Handling & Logging
-
-```cpp
-// Module-specific logging
-RVX_CORE_INFO("Initializing engine");
-RVX_RHI_ERROR("Failed to create device: {}", errorMsg);
-
-// Assertions
-RVX_ASSERT(condition);                              // Fatal, always active
-RVX_ASSERT_MSG(condition, "Error: {}", value);      // Fatal with message
-RVX_VERIFY(condition, "Check failed");              // Non-fatal, logs error
-RVX_DEBUG_ASSERT(expensiveCheck());                 // Debug-only, stripped in Release
-RVX_UNREACHABLE();                                  // Mark unreachable code
-```
-
-## Key Modules
-
-### RHI (Rendering Hardware Interface)
-
-All GPU operations go through the `IRHIDevice` interface, providing a unified API across all rendering backends. This allows seamless switching between DX11, DX12, Vulkan, Metal, and OpenGL.
-
-### RenderGraph
-
-The frame graph system handles automatic resource state tracking, lifetime management, and barrier insertion. Simply define your render passes and the graph manages everything else.
-
-### Scene System
-
-The Runtime has one authority path: `Engine -> World -> SceneEcsRuntime`.
-
-- **Entities and fragments** - generation-safe handles plus typed sparse-set data
-- **Processors and barriers** - declared access, deterministic groups, fixed-step phases
-- **Hierarchy and spatial index** - handle-only transform resolution and AABB queries
-- **Frozen snapshots** - RenderExtraction never reads a live mutable Scene
-- **Retirement** - Physics, Animation, Audio, feature, Render, and Resource acknowledgements
-
-### ShaderCompiler
-
-HLSL to SPIR-V compilation with cross-compilation to MSL (Metal) and GLSL (OpenGL) via SPIRV-Cross. Enables write-once shaders across all backends.
-
-## Development Guidelines
-
-- **Always initialize member variables** - Use in-class initialization
-- **Close namespaces with comments** - `} // namespace RVX`
-- **Use `#pragma once`** - Not traditional include guards
-- **Check backend type** - When writing backend-specific code
-- **Use `RVX_INVALID_INDEX`** - For invalid handle checks
-- **Inherit from `NonCopyable`/`NonMovable`** - When appropriate
-- **Prefer smart pointers** - `std::unique_ptr`, `std::shared_ptr`
-- **Use `Ref` type aliases** - For RHI resources: `RHIBufferRef`, `RHITextureRef`
-
-See [AGENTS.md](AGENTS.md) for detailed development guidelines and best practices.
-
-## License
-
-[Specify your license here]
+`RenderVerseSamples` is the current Runtime product proof surface while Editor
+is deferred. The sample registry includes model rendering/viewing, PBR
+materials, GPU-driven rendering, lighting/shadows, asset gallery, render
+pipeline, scene lifecycle, asset streaming, interior rendering, physics,
+animation, and rendering stress scenarios. Samples use the same pure-ECS World,
+resource publication, render extraction, diagnostics, and cleanup contracts as
+the validated Runtime composition.
 
 ## Contributing
 
-[Specify contribution guidelines here]
-
-## Roadmap
-
-See the [Docs/](Docs/) directory for design documents and implementation plans.
-
-## Contact
-
-[Provide contact information here]
+Keep Runtime independent of Developer, Programs, Editor, Tests, and Samples.
+Do not add source-asset or source-shader fallbacks to Shipping. Register tests
+through the validation helpers, assign exactly one primary lane, and update the
+machine capability contract whenever a capability, public Preset, artifact
+format, or required evidence changes.

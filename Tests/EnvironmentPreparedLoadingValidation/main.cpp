@@ -1,6 +1,7 @@
+#include "AssetImport/SourceResourceLoaders.h"
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -154,18 +156,43 @@ namespace
             config.asyncThreadCount = 2;
             config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            ResourceManager::Get().Initialize(config);
+            ResourceManagerDependencies dependencies =
+                CreateRuntimeResourceManagerDependencies();
+            auto sourceLoader =
+                std::make_unique<AssetImport::SourceEnvironmentLoader>();
+            m_environmentLoader = sourceLoader.get();
+            std::string compositionError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::move(sourceLoader),
+                    compositionError))
+            {
+                throw std::runtime_error(
+                    "Failed to compose source environment loader: " +
+                    compositionError);
+            }
+            m_manager.Initialize(config, std::move(dependencies));
         }
 
         ~EnvironmentManagerGuard()
         {
-            if (ResourceManager::Get().IsInitialized())
+            if (m_manager.IsInitialized())
             {
-                ResourceManager::Get().Shutdown();
+                m_manager.Shutdown();
             }
             JobSystem::Get().Shutdown();
             Log::Shutdown();
         }
+
+        EnvironmentLoader* GetEnvironmentLoader() const noexcept
+        {
+            return m_environmentLoader;
+        }
+
+        ResourceManager& GetManager() noexcept { return m_manager; }
+
+    private:
+        ResourceManager m_manager;
+        EnvironmentLoader* m_environmentLoader = nullptr;
     };
 } // namespace
 
@@ -377,8 +404,7 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
     EnvironmentManagerGuard guard;
 
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     EnvironmentLoadOptions options;
     options.quality = HDRIBLQualityProfile::Validation;
@@ -386,7 +412,7 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     loader->SetOptions(options);
 
     auto request =
-        ResourceManager::Get().RequestAsync<EnvironmentResource>(fixture.Get().string());
+        guard.GetManager().RequestAsync<EnvironmentResource>(fixture.Get().string());
     ASSERT_TRUE(request);
     EXPECT_EQ(request.GetSnapshot().assetKey.resourceType, ResourceType::Environment);
     EXPECT_EQ(request.GetSnapshot().assetKey.importOptionsHash,
@@ -395,7 +421,7 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
 
     for (uint32 attempt = 0; attempt < 500 && !request.TryGet(); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
@@ -405,9 +431,9 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     EXPECT_TRUE(environment->GetData().IsValid());
     EXPECT_FLOAT_EQ(environment->GetData().intensity, 1.5f);
     EXPECT_EQ(environment->GetRequiredDependencies().size(), 4u);
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(request.GetSnapshot().assetKey));
+    EXPECT_TRUE(guard.GetManager().IsLoaded(request.GetSnapshot().assetKey));
     EnvironmentHandle synchronous =
-        ResourceManager::Get().Load<EnvironmentResource>(fixture.Get().string());
+        guard.GetManager().Load<EnvironmentResource>(fixture.Get().string());
     EXPECT_EQ(synchronous.Get(), environment.Get());
 
     const ResourceId rootId = environment.GetId();
@@ -416,24 +442,24 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     ASSERT_EQ(dependencyIds.size(), 4u);
     for (ResourceId dependencyId : dependencyIds)
     {
-        ASSERT_TRUE(ResourceManager::Get().GetCache().Contains(dependencyId));
+        ASSERT_TRUE(guard.GetManager().GetCache().Contains(dependencyId));
     }
     request.Cancel();
     environment.Reset();
     synchronous.Reset();
-    ResourceManager::Get().Unload(environmentKey);
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded(rootId));
+    guard.GetManager().Unload(environmentKey);
+    EXPECT_FALSE(guard.GetManager().IsLoaded(rootId));
     for (ResourceId dependencyId : dependencyIds)
     {
-        ASSERT_FALSE(ResourceManager::Get().GetCache().Contains(dependencyId));
+        ASSERT_FALSE(guard.GetManager().GetCache().Contains(dependencyId));
     }
 
     auto reload =
-        ResourceManager::Get().RequestAsync<EnvironmentResource>(fixture.Get().string());
+        guard.GetManager().RequestAsync<EnvironmentResource>(fixture.Get().string());
     ASSERT_TRUE(reload);
     for (uint32 attempt = 0; attempt < 500 && !reload.TryGet(); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
@@ -441,13 +467,13 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     ASSERT_TRUE(reloaded);
     EXPECT_TRUE(reloaded->GetData().IsValid());
     EXPECT_EQ(reloaded->GetData().environment.Get(),
-              ResourceManager::Get().GetCache().Get(dependencyIds[0]));
+              guard.GetManager().GetCache().Get(dependencyIds[0]));
     EXPECT_EQ(reloaded->GetData().irradiance.Get(),
-              ResourceManager::Get().GetCache().Get(dependencyIds[1]));
+              guard.GetManager().GetCache().Get(dependencyIds[1]));
     EXPECT_EQ(reloaded->GetData().prefiltered.Get(),
-              ResourceManager::Get().GetCache().Get(dependencyIds[2]));
+              guard.GetManager().GetCache().Get(dependencyIds[2]));
     EXPECT_EQ(reloaded->GetData().brdfLUT.Get(),
-              ResourceManager::Get().GetCache().Get(dependencyIds[3]));
+              guard.GetManager().GetCache().Get(dependencyIds[3]));
 }
 
 TEST(EnvironmentPreparedLoadingValidation,
@@ -457,8 +483,7 @@ TEST(EnvironmentPreparedLoadingValidation,
     ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
     EnvironmentManagerGuard guard;
 
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     const EnvironmentLoadOptions original = loader->GetOptions();
 
@@ -476,7 +501,7 @@ TEST(EnvironmentPreparedLoadingValidation,
 
     ResourceLoadOptions options;
     options.importOptionsHash = canonicalHash;
-    auto request = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+    auto request = guard.GetManager().RequestAsync<EnvironmentResource>(
         fixture.Get().string(),
         options,
         state);
@@ -485,7 +510,7 @@ TEST(EnvironmentPreparedLoadingValidation,
 
     for (uint32 attempt = 0; attempt < 500 && !request.TryGet(); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     const EnvironmentHandle environment = request.TryGet();
@@ -507,8 +532,7 @@ TEST(EnvironmentPreparedLoadingValidation,
     ASSERT_EQ(expected.fileCount, 1u);
 
     EnvironmentManagerGuard guard;
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     EnvironmentLoadOptions environmentOptions;
     environmentOptions.quality = HDRIBLQualityProfile::Validation;
@@ -516,13 +540,13 @@ TEST(EnvironmentPreparedLoadingValidation,
 
     ResourceLoadOptions verifiedOptions;
     verifiedOptions.expectedContentIdentity = expected;
-    auto verified = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+    auto verified = guard.GetManager().RequestAsync<EnvironmentResource>(
         fixture.Get().string(),
         verifiedOptions);
     ASSERT_TRUE(verified);
     for (uint32 attempt = 0; attempt < 500 && !verified.TryGet(); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     EnvironmentHandle environment = verified.TryGet();
@@ -540,7 +564,7 @@ TEST(EnvironmentPreparedLoadingValidation,
     const AssetKey verifiedKey = verified.GetSnapshot().assetKey;
     verified.Cancel();
     environment.Reset();
-    EXPECT_EQ(ResourceManager::Get().Unload(verifiedKey),
+    EXPECT_EQ(guard.GetManager().Unload(verifiedKey),
               AssetResidencyReleaseResult::Unloaded);
 
     // Extra trailing data leaves the valid Radiance image decodable while
@@ -554,7 +578,7 @@ TEST(EnvironmentPreparedLoadingValidation,
         ASSERT_TRUE(output.good());
     }
 
-    auto mismatched = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+    auto mismatched = guard.GetManager().RequestAsync<EnvironmentResource>(
         fixture.Get().string(),
         verifiedOptions);
     ASSERT_TRUE(mismatched);
@@ -562,11 +586,11 @@ TEST(EnvironmentPreparedLoadingValidation,
          attempt < 500 && mismatched.GetSnapshot().state != ResourceLoadState::Failed;
          ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     EXPECT_EQ(mismatched.GetSnapshot().state, ResourceLoadState::Failed);
     EXPECT_EQ(mismatched.GetSnapshot().error.code,
               ResourceLoadErrorCode::ContentIdentityMismatch);
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded(mismatched.GetSnapshot().assetKey));
+    EXPECT_FALSE(guard.GetManager().IsLoaded(mismatched.GetSnapshot().assetKey));
 }

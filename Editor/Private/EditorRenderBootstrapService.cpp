@@ -112,16 +112,14 @@ EditorRenderBootstrapService::Bootstrap(
     config.backendType = backend;
     config.enableValidation = desc.enableValidation;
     config.enableGPUValidation = desc.enableGPUValidation;
-    config.vsync = desc.vsync;
+    config.swapChain.vsync = desc.vsync;
     config.frameBuffering = desc.frameBuffering;
     config.appName = desc.appName ? desc.appName : "RenderVerseX Editor";
 
-    const NativeSurfaceDesc initialSurface =
+    const HAL::NativeSurfaceDesc initialSurface =
         desc.mainSwapChainService->CaptureSurface(
             desc.window,
-            backend,
-            RHIFormat::BGRA8_UNORM,
-            desc.vsync);
+            backend);
     *desc.renderContext = std::make_unique<RenderContext>();
     if (!(*desc.renderContext)->Initialize(config, initialSurface))
     {

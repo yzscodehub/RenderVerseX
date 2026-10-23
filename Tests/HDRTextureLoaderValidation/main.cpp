@@ -1,4 +1,4 @@
-#include "Resource/Loader/HDRTextureLoader.h"
+#include "AssetImport/HDRTextureLoader.h"
 
 #include <gtest/gtest.h>
 
@@ -147,17 +147,19 @@ namespace
         }
     }
 
-    void ExpectLoadedTexture(TextureResource* texture)
+    void ExpectPreparedTexture(TextureResource* texture)
     {
-        EXPECT_TRUE(texture->IsLoaded());
+        ASSERT_NE(nullptr, texture);
+        EXPECT_FALSE(texture->IsLoaded());
+        EXPECT_FALSE(texture->GetData().empty());
     }
 
-    void ExpectLoadedIBL(const IBLData& ibl)
+    void ExpectPreparedIBL(const IBLData& ibl)
     {
-        ExpectLoadedTexture(ibl.environmentMap);
-        ExpectLoadedTexture(ibl.irradianceMap);
-        ExpectLoadedTexture(ibl.prefilteredMap);
-        ExpectLoadedTexture(ibl.brdfLUT);
+        ExpectPreparedTexture(ibl.environmentMap);
+        ExpectPreparedTexture(ibl.irradianceMap);
+        ExpectPreparedTexture(ibl.prefilteredMap);
+        ExpectPreparedTexture(ibl.brdfLUT);
     }
 
     void DeleteIBL(const IBLData& ibl)
@@ -389,7 +391,7 @@ TEST(HDRTextureLoaderValidation, QualityProfileResolutionPolicyLivesInResource)
 
 TEST(HDRTextureLoaderValidation, IrradianceSampleCountChangesNonUniformOutput)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     const CubemapFaces envMap = MakeNonUniformCubemap(4);
 
     const CubemapFaces oneSample = loader.GenerateIrradianceMap(envMap, 2, 1);
@@ -402,7 +404,7 @@ TEST(HDRTextureLoaderValidation, IrradianceSampleCountChangesNonUniformOutput)
 
 TEST(HDRTextureLoaderValidation, IrradianceZeroSamplesClampToOneSample)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     const CubemapFaces envMap = MakeNonUniformCubemap(4);
 
     const CubemapFaces zeroSamples = loader.GenerateIrradianceMap(envMap, 2, 0);
@@ -415,7 +417,7 @@ TEST(HDRTextureLoaderValidation, IrradianceZeroSamplesClampToOneSample)
 
 TEST(HDRTextureLoaderValidation, PrefilteredMapHandlesZeroSamplesAndOneMip)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     const CubemapFaces envMap = MakeNonUniformCubemap(4);
 
     const std::vector<CubemapFaces> mipChain = loader.GeneratePrefilteredMap(envMap, 4, 1, 0);
@@ -427,7 +429,7 @@ TEST(HDRTextureLoaderValidation, PrefilteredMapHandlesZeroSamplesAndOneMip)
 
 TEST(HDRTextureLoaderValidation, PrefilteredMapReturnsRequestedFiniteMipCount)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     const CubemapFaces envMap = MakeNonUniformCubemap(4);
 
     const std::vector<CubemapFaces> mipChain = loader.GeneratePrefilteredMap(envMap, 4, 3, 1);
@@ -441,11 +443,11 @@ TEST(HDRTextureLoaderValidation, PrefilteredMapReturnsRequestedFiniteMipCount)
 
 TEST(HDRTextureLoaderValidation, BRDFLUTClampsZeroSamplesAndKeepsMetadata)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     TextureResource* brdfLUT = loader.GenerateBRDFLUT(4, 0);
 
     ASSERT_NE(nullptr, brdfLUT);
-    EXPECT_TRUE(brdfLUT->IsLoaded());
+    EXPECT_FALSE(brdfLUT->IsLoaded());
     EXPECT_EQ(TextureFormat::RGBA16F, brdfLUT->GetFormat());
     EXPECT_EQ(4u, brdfLUT->GetWidth());
     EXPECT_EQ(4u, brdfLUT->GetHeight());
@@ -458,7 +460,7 @@ TEST(HDRTextureLoaderValidation, BRDFLUTClampsZeroSamplesAndKeepsMetadata)
 
 TEST(HDRTextureLoaderValidation, BRDFLUTCacheKeyIncludesResolutionAndSamples)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     TextureResource* first = loader.GenerateBRDFLUT(4, 1);
     TextureResource* sameKey = loader.GenerateBRDFLUT(4, 1);
     TextureResource* differentResolution = loader.GenerateBRDFLUT(8, 1);
@@ -468,10 +470,10 @@ TEST(HDRTextureLoaderValidation, BRDFLUTCacheKeyIncludesResolutionAndSamples)
     ASSERT_NE(nullptr, sameKey);
     ASSERT_NE(nullptr, differentResolution);
     ASSERT_NE(nullptr, differentSamples);
-    ExpectLoadedTexture(first);
-    ExpectLoadedTexture(sameKey);
-    ExpectLoadedTexture(differentResolution);
-    ExpectLoadedTexture(differentSamples);
+    ExpectPreparedTexture(first);
+    ExpectPreparedTexture(sameKey);
+    ExpectPreparedTexture(differentResolution);
+    ExpectPreparedTexture(differentSamples);
 
     EXPECT_EQ(first->GetId(), sameKey->GetId());
     EXPECT_EQ(first->GetPath(), sameKey->GetPath());
@@ -488,14 +490,14 @@ TEST(HDRTextureLoaderValidation, BRDFLUTCacheKeyIncludesResolutionAndSamples)
     delete differentSamples;
 }
 
-TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndMarksResourcesLoaded)
+TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndKeepsResourcesPrepared)
 {
     const ScopedTempFile firstFile(MakeUniqueTempHDRPath("rvx_hdr_ibl_first"));
     const ScopedTempFile secondFile(MakeUniqueTempHDRPath("rvx_hdr_ibl_second"));
     ASSERT_TRUE(WriteTinyHDRFixture(firstFile.Get(), 1.0f));
     ASSERT_TRUE(WriteTinyHDRFixture(secondFile.Get(), 1.0f));
 
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     HDRLoadOptions options;
     options.cubemapResolution = 4;
     options.irradianceResolution = 2;
@@ -510,8 +512,8 @@ TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndMarksRe
 
     ASSERT_TRUE(first.IsValid());
     ASSERT_TRUE(cached.IsValid());
-    ExpectLoadedIBL(first);
-    ExpectLoadedIBL(cached);
+    ExpectPreparedIBL(first);
+    ExpectPreparedIBL(cached);
     EXPECT_EQ(first.environmentMap->GetId(), cached.environmentMap->GetId());
     EXPECT_EQ(first.irradianceMap->GetId(), cached.irradianceMap->GetId());
     EXPECT_EQ(first.prefilteredMap->GetId(), cached.prefilteredMap->GetId());
@@ -534,7 +536,7 @@ TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndMarksRe
 
     const IBLData changed = loader.LoadIBL(firstFile.Get().string(), changedOptions);
     ASSERT_TRUE(changed.IsValid());
-    ExpectLoadedIBL(changed);
+    ExpectPreparedIBL(changed);
     EXPECT_NE(first.environmentMap->GetId(), changed.environmentMap->GetId());
     EXPECT_NE(first.irradianceMap->GetId(), changed.irradianceMap->GetId());
     EXPECT_NE(first.prefilteredMap->GetId(), changed.prefilteredMap->GetId());
@@ -548,7 +550,7 @@ TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndMarksRe
 
     const IBLData differentPath = loader.LoadIBL(secondFile.Get().string(), options);
     ASSERT_TRUE(differentPath.IsValid());
-    ExpectLoadedIBL(differentPath);
+    ExpectPreparedIBL(differentPath);
     EXPECT_NE(first.environmentMap->GetId(), differentPath.environmentMap->GetId());
     EXPECT_NE(first.irradianceMap->GetId(), differentPath.irradianceMap->GetId());
     EXPECT_NE(first.prefilteredMap->GetId(), differentPath.prefilteredMap->GetId());
@@ -566,7 +568,7 @@ TEST(HDRTextureLoaderValidation, LoadIBLCacheKeyIncludesPathAndOptionsAndMarksRe
 
 TEST(HDRTextureLoaderValidation, BRDFLUTDataChannelsAreFiniteAndPacked)
 {
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     TextureResource* brdfLUT = loader.GenerateBRDFLUT(8, 16);
 
     ASSERT_NE(nullptr, brdfLUT);
@@ -594,7 +596,7 @@ TEST(HDRTextureLoaderValidation, BRDFLUTMatchesSmithGGXSplitSumReference)
 {
     constexpr uint32 kResolution = 16;
     constexpr uint32 kSamples = 64;
-    HDRTextureLoader loader(nullptr);
+    HDRTextureLoader loader;
     TextureResource* brdfLUT = loader.GenerateBRDFLUT(kResolution, kSamples);
 
     ASSERT_NE(nullptr, brdfLUT);

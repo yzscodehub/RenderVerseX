@@ -1,0 +1,549 @@
+/**
+ * @file AssetPipeline.h
+ * @brief Asset import and processing pipeline
+ */
+
+#pragma once
+
+#include "Core/Types.h"
+#include "RHI/RHIDefinitions.h"
+#include "RenderContracts/RenderMaterial.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
+
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace RVX
+{
+    class IShaderCompiler;
+} // namespace RVX
+
+namespace RVX::Tools
+{
+
+namespace fs = std::filesystem;
+
+/**
+ * @brief Asset type enumeration
+ */
+enum class AssetType : uint8
+{
+    // Keep these values stable: AssetType is persisted by the asset database
+    // and cook manifest. New values must be appended rather than inserted.
+    Unknown = 0,
+    Texture = 1,
+    Mesh = 2,
+    Material = 3,
+    Shader = 4,
+    Animation = 5,
+    Audio = 6,
+    Font = 7,
+    Prefab = 8,
+    Scene = 9,
+    Script = 10,
+    Model = 11,
+    Environment = 12,
+    /** @brief Strict authoring JSON cooked to a .rvxvfx product. */
+    Effect = 13
+};
+
+/**
+ * @brief Asset import result
+ */
+struct ImportResult
+{
+    bool success = false;
+    std::string error;
+    /**
+     * Cooked products owned and emitted by this source asset.  CookDirectory
+     * records these as artifacts of the source entry.
+     */
+    std::vector<std::string> outputPaths;
+    /**
+     * Pre-existing cooked products consumed by this source asset.  These are
+     * recorded as content-bound dependencies only; they are never attributed
+     * as artifacts of this source entry.
+     */
+    std::vector<std::string> dependencyOutputPaths;
+    std::vector<std::string> warnings;
+};
+
+/**
+ * @brief Content-addressed identity for a source, dependency, or cooked artifact
+ */
+struct CookContentIdentity
+{
+    std::string relativePath;
+    uint64 byteCount = 0;
+    std::string sha256;
+};
+
+/**
+ * @brief One entry in a cooked asset manifest
+ */
+struct CookManifestEntry
+{
+    std::string sourcePath;
+    std::string outputPath;
+    AssetType type = AssetType::Unknown;
+    bool success = false;
+    std::string error;
+    std::vector<std::string> warnings;
+    std::vector<std::string> dependencyOutputs;
+    uint64 sourceModTime = 0;
+    uint64 outputModTime = 0;
+    uint64 outputSize = 0;
+
+    // Version 2 content identity. The legacy write-time fields above are
+    // observational only and are not part of the persisted v2 eligibility
+    // identity.
+    std::string importerName;
+    CookContentIdentity sourceContent;
+    /**
+     * @brief External source files consumed with @ref sourceContent.
+     *
+     * These are source-side inputs (for example glTF buffers and images),
+     * never cooked product dependencies.  The root source file remains in
+     * @ref sourceContent so legacy self-contained assets retain their single
+     * file identity.
+     */
+    std::vector<CookContentIdentity> sourceDependencies;
+    /** @brief True when the v2 source dependency closure was explicitly captured. */
+    bool sourceDependencyClosureRecorded = false;
+    std::vector<CookContentIdentity> dependencies;
+    std::string canonicalCookSettings;
+    std::string cookSettingsHash;
+    std::string recipeHash;
+    std::vector<CookContentIdentity> artifacts;
+};
+
+/**
+ * @brief Deterministic manifest produced by a directory cook
+ */
+struct CookManifest
+{
+    static constexpr uint32 Version = 2;
+    static constexpr const char* SchemaName = "RVX_COOK_MANIFEST";
+    static constexpr const char* ToolName = "RVXCook";
+    static constexpr const char* ToolVersion = "2.0.0";
+
+    std::string sourceRoot;
+    std::string outputRoot;
+    bool recursive = true;
+    bool manifestWritten = false;
+    std::string manifestError;
+    std::vector<CookManifestEntry> entries;
+
+    size_t GetSuccessCount() const;
+    size_t GetFailureCount() const;
+    /**
+     * @brief Persist the manifest after re-validating its successful artifacts.
+     *
+     * @param validationOutputRoot Optional physical root used to re-hash cooked
+     * artifacts before publication.  Transactions use a staging root here while
+     * preserving @ref outputRoot as the final, published package location.
+     */
+    bool Save(const fs::path& manifestPath,
+              std::string& outError,
+              const fs::path& validationOutputRoot = {}) const;
+
+    /**
+     * @brief Populate and validate v2 identity fields for a successful cook entry
+     *
+     * Every source, dependency, and output must be an existing regular file
+     * contained by its corresponding root. The helper fails closed if it cannot
+     * read or hash any required file.
+     */
+    static bool PopulateSuccessfulEntry(CookManifestEntry& entry,
+                                        const fs::path& sourceRoot,
+                                        const fs::path& outputRoot,
+                                        const fs::path& sourcePath,
+                                        const fs::path& primaryOutputPath,
+                                        const std::vector<fs::path>& productPaths,
+                                        const std::vector<fs::path>& dependencyPaths,
+                                        const std::string& canonicalCookSettings,
+                                        const std::string& importerName,
+                                        std::string& outError);
+
+    /**
+     * @brief Populate a successful entry with an explicit source dependency closure.
+     *
+     * @p sourceDependencyPaths contains only files consumed from the source
+     * package. @p dependencyPaths remains reserved for cooked product
+     * dependencies, preserving the established product-closure contract.
+     */
+    static bool PopulateSuccessfulEntry(CookManifestEntry& entry,
+                                        const fs::path& sourceRoot,
+                                        const fs::path& outputRoot,
+                                        const fs::path& sourcePath,
+                                        const fs::path& primaryOutputPath,
+                                        const std::vector<fs::path>& productPaths,
+                                        const std::vector<fs::path>& dependencyPaths,
+                                        const std::vector<fs::path>& sourceDependencyPaths,
+                                        const std::string& canonicalCookSettings,
+                                        const std::string& importerName,
+                                        std::string& outError);
+};
+
+/**
+ * @brief Base class for asset importers
+ */
+class IAssetImporter
+{
+public:
+    virtual ~IAssetImporter() = default;
+
+    virtual const char* GetName() const = 0;
+    virtual std::vector<std::string> GetSupportedExtensions() const = 0;
+    virtual AssetType GetAssetType() const = 0;
+
+    virtual ImportResult Import(const fs::path& sourcePath,
+                                 const fs::path& outputPath,
+                                 const void* options = nullptr) = 0;
+};
+
+/**
+ * @brief Texture compression mode selection
+ */
+enum class TextureCompressionMode : uint8
+{
+    Auto,
+    None,
+    BC1,
+    BC3,
+    BC5,
+    BC7
+};
+
+/**
+ * @brief Texture import options
+ */
+struct TextureImportOptions
+{
+    bool generateMipmaps = true;
+    bool sRGB = true;
+    bool compress = true;
+    TextureCompressionMode compressionMode = TextureCompressionMode::Auto;
+    int maxSize = 4096;
+    bool flipY = true;
+};
+
+/**
+ * @brief Mesh import options
+ */
+struct MeshImportOptions
+{
+    bool generateTangents = true;
+    bool optimizeMesh = true;
+    bool generateLODs = false;
+    int lodCount = 3;
+    float lodReductionFactor = 0.5f;
+    float scaleFactor = 1.0f;
+    bool importAnimations = true;
+    bool importMaterials = true;
+};
+
+/**
+ * @brief Exact source-material override used by a model cook profile.
+ *
+ * The name is deliberately case-sensitive and is matched against the imported
+ * source material name.  Every value is optional so a profile only changes
+ * the explicitly named aspect of one source material; the cooker derives the
+ * corresponding legacy source representation before validating the artifact.
+ */
+struct MaterialCookOverride
+{
+    std::string materialName;
+    std::optional<MaterialShadingModel> shadingModel;
+    std::optional<MaterialBlendMode> blendMode;
+    std::optional<MaterialTranslucencyPhase> translucencyPhase;
+    std::optional<MaterialCullMode> cullMode;
+    std::optional<MaterialShadowPolicy> shadowPolicy;
+    std::optional<int32> sortPriority;
+    std::optional<float> transmission;
+    std::optional<float> indexOfRefraction;
+    std::optional<float> thickness;
+    std::optional<float> attenuationColorRed;
+    std::optional<float> attenuationColorGreen;
+    std::optional<float> attenuationColorBlue;
+    std::optional<float> attenuationDistance;
+    std::optional<float> emissiveStrength;
+};
+
+/** @brief Static glTF model product options. */
+struct ModelImportOptions
+{
+    MeshImportOptions mesh;
+    /**
+     * @brief Canonical source identity embedded in cooked product metadata.
+     *
+     * CookDirectory supplies a root-relative POSIX path so identical source
+     * packages produce byte-identical artifacts in different worktrees. Direct
+     * importer clients may leave this empty to preserve the sourcePath value.
+     */
+    std::string artifactSourcePath;
+
+    /**
+     * @brief Replace every source material with one canonical ToonLit material.
+     *
+     * This is a cook-time authoring policy, not a runtime override.  It is
+     * intentionally limited to the fixed ToonLit contract so the cooker never
+     * serializes arbitrary RHI state or Sample-owned shader parameters.
+     */
+    bool overrideAllMaterialsToToonLit = false;
+    float toonBands = 4.0f;
+    float toonSpecularThreshold = 0.5f;
+    float toonRimStrength = 0.25f;
+    float toonOutlineWidth = 1.0f;
+    float toonShadowTintRed = 0.42f;
+    float toonShadowTintGreen = 0.48f;
+    float toonShadowTintBlue = 0.62f;
+
+    /** Exact, case-sensitive source material overrides from the cook profile. */
+    std::vector<MaterialCookOverride> materialOverrides;
+};
+
+/** @brief Deterministic HDR/EXR environment cook settings. */
+struct EnvironmentImportOptions
+{
+    /** 0=Validation, 1=Low, 2=Medium, 3=High. */
+    uint8 quality = 1;
+    float32 exposure = 1.0f;
+    bool applyGamma = false;
+    std::string artifactSourcePath;
+};
+
+/** @brief Deterministic PCM16 audio cook settings. */
+struct AudioCookOptions
+{
+    uint32 targetSampleRate = 0;
+    bool forceMono = false;
+    bool forceStereo = false;
+    bool looping = false;
+    uint64 loopStartFrame = 0;
+    uint64 loopEndFrame = 0;
+    std::string artifactSourcePath;
+};
+
+/**
+ * @brief Shader import options
+ */
+struct ShaderImportOptions
+{
+    RHIShaderStage stage = RHIShaderStage::None;
+    RHIBackendType targetBackend = RHIBackendType::DX12;
+    std::string logicalAssetId;
+    std::string entryPoint = "main";
+    std::string targetProfile;
+    std::vector<ShaderMacro> defines;
+    bool enableDebugInfo = false;
+    bool enableOptimization = true;
+};
+
+/**
+ * @brief Asset pipeline for batch processing
+ */
+class AssetPipeline
+{
+public:
+    using ProgressCallback = std::function<void(float progress, const std::string& status)>;
+    using ImportOptionsProvider = std::function<const void*(const fs::path& sourcePath, AssetType assetType)>;
+    /**
+     * @brief Optional finalization run against a fully staged package.
+     *
+     * Returning false prevents the transaction from publishing the staging
+     * package.  The mutator may append manifest entries, but must only write
+     * under @p stagingOutputRoot.
+     */
+    using StagingMutator = std::function<bool(CookManifest& manifest,
+                                              const fs::path& stagingOutputRoot,
+                                              std::string& outError)>;
+
+    AssetPipeline() = default;
+
+    /**
+     * @brief Register an importer
+     */
+    void RegisterImporter(std::unique_ptr<IAssetImporter> importer);
+
+    /**
+     * @brief Get importer for file extension
+     */
+    IAssetImporter* GetImporter(const std::string& extension) const;
+
+    /**
+     * @brief Import a single asset
+     */
+    ImportResult ImportAsset(const fs::path& sourcePath,
+                              const fs::path& outputPath,
+                              const void* options = nullptr);
+
+    /**
+     * @brief Import directory recursively
+     */
+    std::vector<ImportResult> ImportDirectory(const fs::path& sourceDir,
+                                               const fs::path& outputDir,
+                                               bool recursive = true,
+                                               ProgressCallback callback = nullptr);
+
+    /**
+     * @brief Import a directory and optionally write a deterministic cook manifest
+     */
+    CookManifest CookDirectory(const fs::path& sourceDir,
+                               const fs::path& outputDir,
+                               bool recursive = true,
+                               const fs::path& manifestPath = {},
+                               ProgressCallback callback = nullptr,
+                               ImportOptionsProvider optionsProvider = nullptr,
+                               StagingMutator stagingMutator = nullptr);
+
+    /**
+     * @brief Check if file needs reimport
+     */
+    bool NeedsReimport(const fs::path& sourcePath, const fs::path& outputPath) const;
+
+    /**
+     * @brief Get asset type from extension
+     */
+    static AssetType GetAssetTypeFromExtension(const std::string& ext);
+
+private:
+    std::vector<std::unique_ptr<IAssetImporter>> m_importers;
+    std::unordered_map<std::string, IAssetImporter*> m_importersByExt;
+};
+
+/**
+ * @brief Texture importer
+ */
+class TextureImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "TextureImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Texture; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+};
+
+/**
+ * @brief Mesh importer
+ */
+class MeshImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "MeshImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".gltf", ".glb"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Mesh; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+};
+
+/**
+ * @brief Shader importer/compiler
+ */
+class ShaderImporter : public IAssetImporter
+{
+public:
+    using CompilerFactory =
+        std::function<std::unique_ptr<RVX::IShaderCompiler>()>;
+
+    ShaderImporter();
+    explicit ShaderImporter(CompilerFactory compilerFactory);
+
+    const char* GetName() const override { return "ShaderImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".hlsl", ".glsl", ".shader"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Shader; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+
+private:
+    CompilerFactory m_compilerFactory;
+};
+
+/** @brief HDR/EXR importer that writes a self-contained float16 IBL artifact. */
+class EnvironmentImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "EnvironmentImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".hdr", ".exr"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Environment; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+};
+
+/** @brief Canonical model product importer for enabled source formats. */
+class ModelImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "ModelImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        std::vector<std::string> extensions{".gltf", ".glb"};
+#if defined(RVX_ENABLE_FBX)
+        extensions.push_back(".fbx");
+#endif
+        return extensions;
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Model; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+};
+
+/**
+ * @brief Audio importer
+ */
+class AudioImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "AudioImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".wav", ".mp3", ".ogg", ".flac"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Audio; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
+};
+
+} // namespace RVX::Tools

@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 #include <type_traits>
 #include <vector>
@@ -1214,6 +1215,29 @@ TEST(GPUSceneValidation, AcceptedDrawLookupRequiresOneLiveContiguousGenerationCh
               update.GetCommittedMirrorForTesting().draws[resolved->draw.slot]
                   .header.generation);
 
+    // MaterialSystem freezes these fields after the resource-neutral
+    // MeshBatch packet is built. The GPUScene lookup must preserve that
+    // authority instead of comparing conservative legacy defaults.
+    RenderDrawPacket frozenMaterialPacket = packet;
+    frozenMaterialPacket.pipelineKey.cullMode = MaterialCullMode::NoCull;
+    frozenMaterialPacket.pipelineKey.shadowPolicy =
+        MaterialShadowPolicy::Receive;
+    frozenMaterialPacket.pipelineKey.blendMode = MaterialBlendMode::Opaque;
+    frozenMaterialPacket.pipelineKey.shadingModel =
+        MaterialShadingModel::StandardLit;
+    frozenMaterialPacket.pipelineKey.surfacePathEligibility =
+        SurfacePathEligibility::DeferredOpaque;
+    frozenMaterialPacket.pipelineKey.requiresUV1 = true;
+    frozenMaterialPacket.pipelineKey.reverseWinding = true;
+    EXPECT_TRUE(update.ResolveAcceptedDraw(
+        scene, candidate, frozenMaterialPacket).has_value());
+
+    RenderDrawPacket wrongTopologyPacket = frozenMaterialPacket;
+    wrongTopologyPacket.pipelineKey.topology =
+        MeshUploadPrimitiveTopology::Lines;
+    EXPECT_FALSE(update.ResolveAcceptedDraw(
+        scene, candidate, wrongTopologyPacket).has_value());
+
     RenderDrawPacket outOfRangePacket = packet;
     outOfRangePacket.submeshIndex = 9;
     EXPECT_FALSE(update.ResolveAcceptedDraw(scene, candidate, outOfRangePacket).has_value());
@@ -1326,8 +1350,38 @@ TEST(GPUSceneValidation, ChangedDrawCountUpdatesOneObjectWhileAcceptedOrderRemai
         update.Publish(changedDrawCount, resources.registry);
     EXPECT_EQ(changed.updateCount, 1U);
     EXPECT_EQ(changed.noOpCount, 1U);
+    EXPECT_TRUE(changed.HasCompleteSceneParity());
+    EXPECT_TRUE(changed.HasRenderClassificationParity(2, 3, 3));
+    EXPECT_FALSE(changed.HasRenderClassificationParity(2, 2, 3));
+    EXPECT_FALSE(changed.HasRenderClassificationParity(2, 3, 2));
+    EXPECT_EQ(changed.attemptedObjectCount, 2U);
+    EXPECT_EQ(changed.attemptedDrawCount, 3U);
+    EXPECT_EQ(changed.attemptedMaterialBindingCount, 3U);
     EXPECT_EQ(changed.publishedObjectCount, 2U);
     EXPECT_EQ(changed.publishedDrawCount, 3U);
+    EXPECT_EQ(changed.publishedMaterialBindingCount, 3U);
+    EXPECT_EQ(changed.excludedMaterialBindingCount, 0U);
+    const GPUSceneCommittedMirror& changedMirror =
+        update.GetCommittedMirrorForTesting();
+    // Row zero is the typed sentinel. Material rows are bindings, so two
+    // submeshes sharing one material still publish two independent live rows.
+    // The backing vectors may also retain generation-checked tombstones.
+    const auto liveRows = [](const auto& rows)
+    {
+        return std::count_if(
+            rows.begin(), rows.end(), [](const auto& row)
+            {
+                return HasGPUSceneRowFlag(
+                    row.header.flags, GPUSceneRowFlags::Live);
+            });
+    };
+    EXPECT_EQ(changedMirror.primitives.size(), 3U);
+    EXPECT_EQ(liveRows(changedMirror.draws), 3);
+    EXPECT_EQ(liveRows(changedMirror.materials), 3);
+    EXPECT_EQ(liveRows(changedMirror.geometries), 3);
+    EXPECT_GE(changedMirror.draws.size(), 4U);
+    EXPECT_GE(changedMirror.materials.size(), 4U);
+    EXPECT_GE(changedMirror.geometries.size(), 4U);
     EXPECT_GT(changed.committedVersion, initial.committedVersion);
 
     RenderScene reordered;

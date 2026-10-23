@@ -4,6 +4,7 @@
  */
 
 #include "Common/GpuTestUtils.h"
+#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "Render/RenderSubsystem.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderSceneUpdate.h"
@@ -23,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +37,9 @@ namespace RVX
 namespace
 {
     using namespace std::chrono_literals;
+    using HAL::NativeSurfaceDesc;
+    using HAL::NativeSurfacePlatform;
+    using HAL::NativeSurfaceUpdateKind;
 
     [[nodiscard]] constexpr RHIBackendType RequiredBackend() noexcept
     {
@@ -47,6 +52,46 @@ namespace
 #else
 #error NativeRenderLifecycleValidation requires a platform backend definition
 #endif
+    }
+
+    [[nodiscard]] constexpr const char* BackendIdentifier(
+        RHIBackendType backend) noexcept
+    {
+        switch (backend)
+        {
+            case RHIBackendType::DX11: return "DX11";
+            case RHIBackendType::DX12: return "DX12";
+            case RHIBackendType::Vulkan: return "Vulkan";
+            case RHIBackendType::Metal: return "Metal";
+            case RHIBackendType::OpenGL: return "OpenGL";
+            case RHIBackendType::Auto: return "Auto";
+            default: return "None";
+        }
+    }
+
+    [[nodiscard]] bool IsSoftwareAdapterName(std::string adapterName)
+    {
+        for (char& character : adapterName)
+        {
+            character = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character)));
+        }
+        constexpr const char* softwareTokens[] = {
+            "software",
+            "warp",
+            "swiftshader",
+            "lavapipe",
+            "llvmpipe",
+            "microsoft basic",
+        };
+        for (const char* token : softwareTokens)
+        {
+            if (adapterName.find(token) != std::string::npos)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] std::string ReadEnvironmentVariable(const char* name)
@@ -125,8 +170,6 @@ namespace
             surface.width = static_cast<uint32>(width);
             surface.height = static_cast<uint32>(height);
             surface.contentScale = 1.0f;
-            surface.preferredFormat = RHIFormat::BGRA8_UNORM;
-            surface.vsync = false;
             surface.generation = generation;
             surface.backendWindow =
                 reinterpret_cast<uintptr_t>(m_window);
@@ -218,7 +261,24 @@ namespace
         RenderFrameHeaderV5 header;
         header.sequence = sequence;
         header.requiredSceneRevision = sequence;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence - 1;
+        header.deterministicSeed =
+            (0x85ebca6bU ^ static_cast<uint32>(sequence)) | 1U;
+        header.outputWidth = width;
+        header.outputHeight = height;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+            .subViewIndex = 0,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = width;
         view.viewportHeight = height;
         RenderExtractionDiagnostics extraction;
@@ -290,7 +350,8 @@ namespace
         const RenderShutdownResult& shutdown,
         uint64 mainThreadIdentityHash,
         uint64 startupDurationMs,
-        uint64 shutdownDurationMs)
+        uint64 shutdownDurationMs,
+        bool softwareAdapterAllowed)
     {
         const std::string reportPath =
             ReadEnvironmentVariable("RVX_NATIVE_LIFECYCLE_REPORT");
@@ -314,10 +375,22 @@ namespace
         }
         stream << "{\n"
                << "  \"schema\": \"RVX.M1.NativeRenderLifecycle\",\n"
-               << "  \"schemaVersion\": 1,\n"
+               << "  \"schemaVersion\": 2,\n"
                << "  \"status\": \"passed\",\n"
-               << "  \"requiredBackend\": \""
+               << "  \"requestedBackend\": \""
                << JsonEscape(RVX_NATIVE_REQUIRED_BACKEND) << "\",\n"
+               << "  \"actualBackend\": \""
+               << JsonEscape(BackendIdentifier(diagnostics.backend)) << "\",\n"
+               << "  \"backendFallback\": "
+               << (diagnostics.backend != RequiredBackend() ? "true" : "false")
+               << ",\n"
+               << "  \"softwareAdapterAllowed\": "
+               << (softwareAdapterAllowed ? "true" : "false") << ",\n"
+               << "  \"softwareAdapter\": "
+               << (IsSoftwareAdapterName(diagnostics.adapterName)
+                       ? "true"
+                       : "false")
+               << ",\n"
                << "  \"adapterName\": \""
                << JsonEscape(diagnostics.adapterName) << "\",\n"
                << "  \"driverVersion\": \""
@@ -354,10 +427,11 @@ namespace
         HiddenNativeWindow window;
         ASSERT_TRUE(window.Initialize(initialWidth, initialHeight));
         const NativeSurfaceDesc initialSurface = window.Capture(1);
-        ASSERT_TRUE(initialSurface.IsValidFor(RequiredBackend()));
+        ASSERT_TRUE(IsNativeSurfaceValidFor(initialSurface, RequiredBackend()));
 
         RenderRuntimeConfig config;
         config.backendType = RequiredBackend();
+        config.swapChain.vsync = false;
         config.enableValidation = false;
         config.enableGPUValidation = false;
         config.allowSoftwareAdapter =
@@ -365,7 +439,10 @@ namespace
                 "RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER");
 
         RenderSubsystem render;
-        render.Configure(config, initialSurface);
+        render.Configure(
+            config,
+            initialSurface,
+            CreateDevelopmentShaderProgramProviderFactory());
         const auto startupBegin = std::chrono::steady_clock::now();
         ASSERT_NO_THROW(render.Initialize());
         const uint64 startupDurationMs = static_cast<uint64>(
@@ -395,8 +472,8 @@ namespace
                    (resizedSurface.width != initialSurface.width ||
                     resizedSurface.height != initialSurface.height);
         }));
-        ASSERT_TRUE(resizedSurface.IsValidFor(RequiredBackend()));
-        ASSERT_EQ(ClassifyNativeSurfaceUpdate(initialSurface, resizedSurface),
+        ASSERT_TRUE(IsNativeSurfaceValidFor(resizedSurface, RequiredBackend()));
+        ASSERT_EQ(HAL::ClassifyNativeSurfaceUpdate(initialSurface, resizedSurface),
                   NativeSurfaceUpdateKind::Resize);
         const RenderResizeResult resize =
             render.RequestResize(resizedSurface);
@@ -444,7 +521,8 @@ namespace
                                   shutdown,
                                   mainThreadIdentityHash,
                                   startupDurationMs,
-                                  shutdownDurationMs));
+                                  shutdownDurationMs,
+                                  config.allowSoftwareAdapter));
     }
 } // namespace
 } // namespace RVX

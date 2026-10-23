@@ -1,5 +1,7 @@
 #include "Samples/SampleEnvironmentLoader.h"
+#include "Samples/SampleHostComposition.h"
 
+#include "AssetImport/EnvironmentLoader.h"
 #include "Scene/ECS/SceneEcsRuntime.h"
 
 #include <gtest/gtest.h>
@@ -22,6 +24,79 @@ namespace
         identity.fileCount = 1;
         return identity;
     }
+
+    Resource::ResourceContentIdentity MakeCookedIdentity()
+    {
+        Resource::ResourceContentIdentity identity = MakeIdentity();
+        identity.domain =
+            Resource::ResourceContentIdentityDomain::CookedArtifact;
+        return identity;
+    }
+
+    class TestSampleHostComposition final : public ISampleHostComposition
+    {
+    public:
+        [[nodiscard]] bool RequiresCookedOnly() const noexcept override
+        {
+            return false;
+        }
+
+        bool CreateEngineRuntimeDependencies(
+            const SampleRuntimeCompositionEvidence&,
+            EngineRuntimeDependencies&,
+            std::string& outError) const override
+        {
+            outError = "Not exercised by SampleEnvironmentLoader validation.";
+            return false;
+        }
+
+        bool CreateResourceManagerConfig(
+            const SampleRuntimeCompositionEvidence&,
+            Resource::ResourceManagerConfig&,
+            std::string& outError) const override
+        {
+            outError = "Not exercised by SampleEnvironmentLoader validation.";
+            return false;
+        }
+
+        bool PrepareSourceEnvironment(
+            const SampleSourceEnvironmentPreparationRequest& request,
+            uint64& outCanonicalImportOptionsHash,
+            Resource::ResourceLoadPreparationStateRef& outState,
+            Resource::ResourceLoadError& outError) const override
+        {
+            Resource::EnvironmentLoadOptions options;
+            if (request.quality == "low")
+            {
+                options.quality = Resource::HDRIBLQualityProfile::Low;
+            }
+            else if (request.quality == "high")
+            {
+                options.quality = Resource::HDRIBLQualityProfile::High;
+            }
+            else if (request.quality == "default")
+            {
+                options.quality = Resource::HDRIBLQualityProfile::Default;
+            }
+            else
+            {
+                outCanonicalImportOptionsHash = 0;
+                outState.reset();
+                outError = {Resource::ResourceLoadErrorCode::InvalidRequest,
+                            "Environment quality must be one of: default, low, high."};
+                return false;
+            }
+            if (request.smoke)
+            {
+                options.quality = Resource::HDRIBLQualityProfile::Validation;
+            }
+            options.exposure = request.exposure;
+            options.applyGamma = false;
+            outState = Resource::EnvironmentLoader::CreatePreparationState(
+                options, outCanonicalImportOptionsHash, outError);
+            return outState != nullptr;
+        }
+    };
 
     class RecordingRuntimeServices final : public IWorldEcsRuntimeServices
     {
@@ -166,10 +241,11 @@ TEST(EcsSampleEnvironmentLoaderValidation,
      CatalogRequestsCarryExactSceneAndDistinctLowSmokeHighPreparationProfiles)
 {
     RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
     const ECS::SceneRuntimeId sceneRuntimeId(104);
     const Resource::ResourceContentIdentity identity = MakeIdentity();
     SampleEnvironmentLoader loader(
-        services, sceneRuntimeId, MakeRegistry("studio.hdr", identity));
+        services, sceneRuntimeId, MakeRegistry("studio.hdr", identity), composition);
 
     LoadedSampleEnvironment low;
     LoadedSampleEnvironment high;
@@ -199,28 +275,98 @@ TEST(EcsSampleEnvironmentLoaderValidation,
     EXPECT_EQ(lowDesc.expectedSceneRuntimeId, sceneRuntimeId);
     EXPECT_EQ(highDesc.expectedSceneRuntimeId, sceneRuntimeId);
     EXPECT_EQ(smokeDesc.expectedSceneRuntimeId, sceneRuntimeId);
-    EXPECT_EQ(lowDesc.environmentOptions.quality, Resource::HDRIBLQualityProfile::Low);
-    EXPECT_EQ(highDesc.environmentOptions.quality, Resource::HDRIBLQualityProfile::High);
-    EXPECT_EQ(smokeDesc.environmentOptions.quality,
+    const auto lowState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(lowDesc.preparationState);
+    const auto highState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(highDesc.preparationState);
+    const auto smokeState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(smokeDesc.preparationState);
+    ASSERT_NE(lowState, nullptr);
+    ASSERT_NE(highState, nullptr);
+    ASSERT_NE(smokeState, nullptr);
+    EXPECT_EQ(lowState->sourceOptions.quality, Resource::HDRIBLQualityProfile::Low);
+    EXPECT_EQ(highState->sourceOptions.quality, Resource::HDRIBLQualityProfile::High);
+    EXPECT_EQ(smokeState->sourceOptions.quality,
               Resource::HDRIBLQualityProfile::Validation);
-    EXPECT_FLOAT_EQ(lowDesc.environmentOptions.exposure, 1.25f);
-    EXPECT_FLOAT_EQ(highDesc.environmentOptions.exposure, 2.0f);
-    EXPECT_FLOAT_EQ(smokeDesc.environmentOptions.exposure, 1.5f);
+    EXPECT_FLOAT_EQ(lowState->sourceOptions.exposure, 1.25f);
+    EXPECT_FLOAT_EQ(highState->sourceOptions.exposure, 2.0f);
+    EXPECT_FLOAT_EQ(smokeState->sourceOptions.exposure, 1.5f);
     EXPECT_EQ(lowDesc.resourceOptions.expectedContentIdentity, identity);
     EXPECT_EQ(highDesc.resourceOptions.expectedContentIdentity, identity);
     EXPECT_EQ(smokeDesc.resourceOptions.expectedContentIdentity, identity);
-    EXPECT_NE(lowDesc.environmentOptions.quality, highDesc.environmentOptions.quality);
-    EXPECT_NE(smokeDesc.environmentOptions.quality, highDesc.environmentOptions.quality);
+    EXPECT_NE(lowState->sourceOptions.quality, highState->sourceOptions.quality);
+    EXPECT_NE(smokeState->sourceOptions.quality, highState->sourceOptions.quality);
+}
+
+TEST(EcsSampleEnvironmentLoaderValidation,
+     PackageOnlyCookedEnvironmentUsesMountedRuntimePathWithoutSourcePreparation)
+{
+    RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
+    const ECS::SceneRuntimeId sceneRuntimeId(108);
+    const Resource::ResourceContentIdentity identity = MakeCookedIdentity();
+    SampleAssetRegistryEntry entry;
+    entry.id = "studio-cooked";
+    entry.kind = SampleAssetKind::Environment;
+    entry.resolvedPath = "cooked/studio-cooked/environment.rva";
+    entry.resourcePath =
+        "cooked://cooked/studio-cooked/environment.rva";
+    entry.requiresCookedResourcePath = true;
+    entry.contentIdentity = identity;
+    entry.packageOnly = true;
+    SampleEnvironmentLoader loader(
+        services, sceneRuntimeId, SampleAssetRegistry({entry}), composition);
+
+    LoadedSampleEnvironment environment;
+    std::string error;
+    ASSERT_TRUE(loader.RequestByAssetId(
+        "studio-cooked", {}, environment, error)) << error;
+
+    ASSERT_EQ(services.requests.size(), 1u);
+    const auto& request = services.requests.front();
+    EXPECT_EQ(request.path,
+              "cooked://cooked/studio-cooked/environment.rva");
+    EXPECT_EQ(request.expectedSceneRuntimeId, sceneRuntimeId);
+    EXPECT_EQ(request.resourceOptions.importOptionsHash, 0u);
+    EXPECT_EQ(request.resourceOptions.expectedContentIdentity, identity);
+    EXPECT_EQ(request.preparationState, nullptr);
+}
+
+TEST(EcsSampleEnvironmentLoaderValidation,
+     PackageOnlyEnvironmentRejectsNonCookedArtifactBeforeRuntimeServices)
+{
+    RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
+    const ECS::SceneRuntimeId sceneRuntimeId(109);
+    SampleAssetRegistryEntry entry;
+    entry.id = "invalid-package";
+    entry.kind = SampleAssetKind::Environment;
+    entry.resolvedPath = "cooked/invalid-package/environment.hdr";
+    entry.resourcePath =
+        "cooked://cooked/invalid-package/environment.hdr";
+    entry.requiresCookedResourcePath = true;
+    entry.contentIdentity = MakeIdentity();
+    entry.packageOnly = true;
+    SampleEnvironmentLoader loader(
+        services, sceneRuntimeId, SampleAssetRegistry({entry}), composition);
+
+    LoadedSampleEnvironment output;
+    std::string error;
+    EXPECT_FALSE(loader.RequestByAssetId(
+        "invalid-package", {}, output, error));
+    EXPECT_NE(error.find("CookedArtifact .rva"), std::string::npos);
+    EXPECT_TRUE(services.requests.empty());
 }
 
 TEST(EcsSampleEnvironmentLoaderValidation,
      PublishedValueStatusCarriesVerificationAndIblMetadataWithoutResourceHandles)
 {
     RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
     const ECS::SceneRuntimeId sceneRuntimeId(105);
     const Resource::ResourceContentIdentity identity = MakeIdentity();
     SampleEnvironmentLoader loader(
-        services, sceneRuntimeId, MakeRegistry("proof.hdr", identity));
+        services, sceneRuntimeId, MakeRegistry("proof.hdr", identity), composition);
 
     LoadedSampleEnvironment environment;
     std::string error;
@@ -230,10 +376,8 @@ TEST(EcsSampleEnvironmentLoaderValidation,
     ResourceSceneAdapters::EcsEnvironmentLoadStatus published;
     published.state = ResourceSceneAdapters::EcsEnvironmentLoadState::FullyResident;
     published.sceneRuntimeId = sceneRuntimeId;
-    published.environmentOptions.quality = Resource::HDRIBLQualityProfile::Default;
-    published.environmentOptions.exposure = 1.75f;
-    published.canonicalImportOptionsHash =
-        Resource::EnvironmentLoader::ComputeImportOptionsHash(published.environmentOptions);
+    published.canonicalImportOptionsHash = Resource::EnvironmentLoader::ComputeImportOptionsHash(
+        {.quality = Resource::HDRIBLQualityProfile::Default, .exposure = 1.75f});
     published.contentVerificationReceipt = Resource::ResourceContentVerificationReceipt{
         .status = Resource::ResourceContentVerificationStatus::Verified,
         .expected = identity,
@@ -276,9 +420,10 @@ TEST(EcsSampleEnvironmentLoaderValidation,
      InvalidCatalogAndSceneIdentityRequestsDoNotReachRuntimeServices)
 {
     RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
     const Resource::ResourceContentIdentity identity = MakeIdentity();
     SampleEnvironmentLoader loader(
-        services, ECS::SceneRuntimeId{}, MakeRegistry("studio.hdr", identity));
+        services, ECS::SceneRuntimeId{}, MakeRegistry("studio.hdr", identity), composition);
 
     LoadedSampleEnvironment output;
     std::string error;
@@ -295,10 +440,11 @@ TEST(EcsSampleEnvironmentLoaderValidation,
      RequestRefsRequireContentIdentityAndPreserveLiveEvidenceOnFailure)
 {
     RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
     const ECS::SceneRuntimeId sceneRuntimeId(106);
     const Resource::ResourceContentIdentity identity = MakeIdentity();
     SampleEnvironmentLoader loader(
-        services, sceneRuntimeId, MakeRegistry("identity.hdr", identity));
+        services, sceneRuntimeId, MakeRegistry("identity.hdr", identity), composition);
     LoadedSampleEnvironment environment;
     std::string error;
     ASSERT_TRUE(loader.RequestByAssetId("studio", {}, environment, error)) << error;
@@ -335,12 +481,14 @@ TEST(EcsSampleEnvironmentLoaderValidation,
      CatalogEntryWithoutContentIdentityIsRejectedBeforeRuntimeService)
 {
     RecordingRuntimeServices services;
+    TestSampleHostComposition composition;
     const ECS::SceneRuntimeId sceneRuntimeId(107);
     SampleAssetRegistryEntry entry;
     entry.id = "unverified";
     entry.kind = SampleAssetKind::Environment;
     entry.resolvedPath = "unverified.hdr";
-    SampleEnvironmentLoader loader(services, sceneRuntimeId, SampleAssetRegistry({entry}));
+    SampleEnvironmentLoader loader(
+        services, sceneRuntimeId, SampleAssetRegistry({entry}), composition);
 
     LoadedSampleEnvironment output;
     std::string error;

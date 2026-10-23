@@ -4,22 +4,30 @@
 
 #include "Core/Core.h"
 #include "Core/Diagnostics/Trace.h"
+#include "Core/Hash/SHA256.h"
 #include "Engine/Engine.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
-#include "Samples/RuntimeFrameDriver.h"
 #include "Samples/FrameworkAssessment.h"
+#include "Samples/RenderQualityPerformanceWriter.h"
+#include "Samples/RenderQualityQualificationWriter.h"
+#include "Samples/RuntimeFrameDriver.h"
 #include "Samples/SampleAnimationLoader.h"
 #include "Samples/SampleAssetCatalog.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleEnvironmentLoader.h"
+#include "Samples/SampleHostComposition.h"
 #include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleModelLoader.h"
+#include "Samples/SampleParticleEffectLoader.h"
 #include "Samples/SampleRegistry.h"
+#include "Samples/SampleRenderQualityDiagnostics.h"
 #include "Samples/SampleScreenshotWriter.h"
+#include "Samples/SampleSurfaceQualification.h"
 #include "World/World.h"
 
 #include <nlohmann/json.hpp>
@@ -28,6 +36,8 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,10 +54,354 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#elif defined(__linux__) || defined(__APPLE__)
+#include <sys/utsname.h>
 #endif
 
 namespace RVX
 {
+namespace
+{
+    static_assert(
+        RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_UPLOAD_COVERAGE ==
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_UPLOAD_COVERAGE,
+        "Sample performance report upload coverage must match Render evidence");
+    static_assert(
+        RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_TRACKED_FOOTPRINT_COVERAGE ==
+            RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE,
+        "Sample performance report footprint coverage must match Render evidence");
+
+    [[nodiscard]] bool TryMapSamplePipelineRecipe(
+        SamplePipelineRecipe sampleRecipe,
+        RenderPipelineRecipe& outRecipe) noexcept
+    {
+        switch (sampleRecipe)
+        {
+            case SamplePipelineRecipe::Minimal:
+                outRecipe = RenderPipelineRecipe::Minimal;
+                return true;
+            case SamplePipelineRecipe::ForwardStandard:
+                outRecipe = RenderPipelineRecipe::ForwardStandard;
+                return true;
+            case SamplePipelineRecipe::DeferredQuality:
+                outRecipe = RenderPipelineRecipe::DeferredQuality;
+                return true;
+            case SamplePipelineRecipe::HybridRayTracing:
+                outRecipe = RenderPipelineRecipe::HybridRayTracing;
+                return true;
+            case SamplePipelineRecipe::Headless:
+                outRecipe = RenderPipelineRecipe::Headless;
+                return true;
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] bool TryMapRenderPipelineRecipe(
+        RenderPipelineRecipe renderRecipe,
+        SamplePipelineRecipe& outRecipe) noexcept
+    {
+        switch (renderRecipe)
+        {
+            case RenderPipelineRecipe::Minimal:
+                outRecipe = SamplePipelineRecipe::Minimal;
+                return true;
+            case RenderPipelineRecipe::ForwardStandard:
+                outRecipe = SamplePipelineRecipe::ForwardStandard;
+                return true;
+            case RenderPipelineRecipe::DeferredQuality:
+                outRecipe = SamplePipelineRecipe::DeferredQuality;
+                return true;
+            case RenderPipelineRecipe::HybridRayTracing:
+                outRecipe = SamplePipelineRecipe::HybridRayTracing;
+                return true;
+            case RenderPipelineRecipe::Headless:
+                outRecipe = SamplePipelineRecipe::Headless;
+                return true;
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] bool TryMapSampleQualityTier(
+        SampleQualityTier sampleTier,
+        RenderQualityTier& outTier) noexcept
+    {
+        switch (sampleTier)
+        {
+            case SampleQualityTier::Low:
+                outTier = RenderQualityTier::Low;
+                return true;
+            case SampleQualityTier::Medium:
+                outTier = RenderQualityTier::Medium;
+                return true;
+            case SampleQualityTier::High:
+                outTier = RenderQualityTier::High;
+                return true;
+            case SampleQualityTier::Ultra:
+                outTier = RenderQualityTier::Ultra;
+                return true;
+            case SampleQualityTier::Default:
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] std::string ReadEnvironmentString(const char* name)
+    {
+#if defined(_WIN32)
+        char* value = nullptr;
+        size_t valueLength = 0;
+        if (_dupenv_s(&value, &valueLength, name) != 0 || value == nullptr)
+        {
+            return {};
+        }
+        std::string result = valueLength > 1 ? std::string(value) : std::string{};
+        std::free(value);
+        return result;
+#else
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string(value) : std::string{};
+#endif
+    }
+
+    /**
+     * @brief Return an OS build captured at performance-session admission.
+     *
+     * Windows uses RtlGetVersion because compatibility manifests can make
+     * GetVersionEx report an older build. POSIX hosts use uname's kernel
+     * release from the running host. Unsupported hosts fail closed.
+     */
+    [[nodiscard]] std::string ResolveHostOperatingSystemBuild()
+    {
+#if defined(_WIN32)
+        struct RtlOsVersionInformation
+        {
+            ULONG size = 0;
+            ULONG major = 0;
+            ULONG minor = 0;
+            ULONG build = 0;
+            ULONG platformId = 0;
+            WCHAR servicePack[128]{};
+        };
+        using RtlGetVersionFunction = LONG(WINAPI*)(
+            RtlOsVersionInformation*);
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto getVersion = ntdll != nullptr
+            ? reinterpret_cast<RtlGetVersionFunction>(
+                  GetProcAddress(ntdll, "RtlGetVersion"))
+            : nullptr;
+        RtlOsVersionInformation version{};
+        version.size = sizeof(version);
+        if (getVersion == nullptr || getVersion(&version) != 0 ||
+            version.major == 0 || version.build == 0)
+        {
+            return {};
+        }
+        return "Windows-" + std::to_string(version.major) + "." +
+               std::to_string(version.minor) + "." +
+               std::to_string(version.build);
+#elif defined(__linux__) || defined(__APPLE__)
+        struct utsname version{};
+        if (uname(&version) != 0 || version.sysname[0] == '\0' ||
+            version.release[0] == '\0')
+        {
+            return {};
+        }
+        return std::string(version.sysname) + "-" + version.release;
+#else
+        return {};
+#endif
+    }
+
+    [[nodiscard]] RenderExecutionBuildIdentity
+    ReadValidationExecutionBuildIdentity()
+    {
+        return RenderExecutionBuildIdentity{
+            ReadEnvironmentString("RVX_VALIDATION_SOURCE_COMMIT"),
+            ReadEnvironmentString("RVX_VALIDATION_PRESET")};
+    }
+
+    struct FrozenRenderQualityPerformanceHostProvenance
+    {
+        std::string runId{};
+        std::string adapterName{};
+        std::string driverVersion{};
+        std::string osBuild{};
+        std::string capabilityHash{};
+    };
+
+    [[nodiscard]] float64 NanosecondsToMilliseconds(
+        const RenderQualityPerformanceDuration duration) noexcept
+    {
+        return static_cast<float64>(duration.nanoseconds) / 1000000.0;
+    }
+
+    [[nodiscard]] bool BuildRenderQualityPerformanceWriteRequest(
+        const RenderQualityPerformanceEvidence& evidence,
+        const FrozenRenderQualityPerformanceHostProvenance& host,
+        const SampleRunnerCLIOptions& options,
+        const SampleScenarioManifest& manifest,
+        RenderQualityPerformanceWriteRequest& outRequest,
+        std::string* outError)
+    {
+        const auto fail = [outError](std::string message)
+        {
+            if (outError != nullptr)
+            {
+                *outError = std::move(message);
+            }
+            return false;
+        };
+        if (!evidence.IsComplete() || evidence.samples.empty() ||
+            host.runId.empty() || host.adapterName.empty() ||
+            host.driverVersion.empty() || host.osBuild.empty() ||
+            host.capabilityHash.empty() || manifest.captureTicks.empty() ||
+            options.qualificationPerformancePath.empty() ||
+            options.qualificationPerformanceBaselineIdentity.empty() ||
+            !options.captureTickResolved || options.captureTick == 0 ||
+            evidence.hardware.capabilityReportSha256 != host.capabilityHash)
+        {
+            return fail(
+                "GFX24 performance evidence or frozen host provenance is incomplete");
+        }
+        if (options.common.width != 2560U || options.common.height != 1440U)
+        {
+            return fail(
+                "GFX24 performance qualification requires the exact 2560x1440 extent");
+        }
+
+        const RenderQualityPerformanceReceiptBinding& firstBinding =
+            evidence.samples.front().binding;
+        if (!firstBinding.IsValid() ||
+            firstBinding.backend != evidence.hardware.backend)
+        {
+            return fail(
+                "GFX24 performance evidence has invalid frozen build or backend provenance");
+        }
+
+        RenderQualityPerformanceWriteRequest request;
+        request.outputPath = options.qualificationPerformancePath;
+        request.sourceCommit = firstBinding.sourceCommit;
+        request.runId = host.runId;
+        request.preset = firstBinding.preset;
+        request.qualificationIdentity = {
+            .sampleId = "render-quality-lab",
+            .pipeline = GetRenderPipelineRecipeName(firstBinding.recipe),
+            .quality = GetRenderQualityTierName(firstBinding.quality),
+            .backend = firstBinding.backend,
+            .view = options.viewBookmarkId,
+            .qualificationWidth = options.common.width,
+            .qualificationHeight = options.common.height,
+            .captureTick = options.captureTick,
+            .visualContractVersion = manifest.visualContractVersion};
+        request.hardwareIdentity = {
+            .backend = evidence.hardware.backend,
+            .adapterName = host.adapterName,
+            .driverVersion = host.driverVersion,
+            .osBuild = host.osBuild,
+            .capabilityHash = evidence.hardware.capabilityReportSha256};
+        request.telemetryCoverage = {
+            .schemaVersion =
+                RVX_RENDER_QUALITY_PERFORMANCE_TELEMETRY_COVERAGE_SCHEMA_VERSION,
+            .trackedUploadCoverageMask =
+                RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_UPLOAD_COVERAGE,
+            .trackedEstimatedFootprintCoverageMask =
+                RVX_RENDER_QUALITY_PERFORMANCE_REQUIRED_FOOTPRINT_COVERAGE};
+        request.baselineIdentity =
+            options.qualificationPerformanceBaselineIdentity;
+        request.completedWarmupFrames = evidence.completedWarmupSamples;
+        request.samples.reserve(evidence.samples.size());
+
+        for (const RenderQualityPerformanceSample& source : evidence.samples)
+        {
+            if (!source.IsValid() ||
+                source.binding.sourceCommit != firstBinding.sourceCommit ||
+                source.binding.preset != firstBinding.preset ||
+                source.binding.backend != firstBinding.backend ||
+                source.binding.recipe != firstBinding.recipe ||
+                source.binding.quality != firstBinding.quality ||
+                source.binding.viewIdentity != firstBinding.viewIdentity ||
+                !source.cpu.extraction.available ||
+                !source.cpu.visibilityAndDrawPlanning.available ||
+                !source.cpu.graphCompile.available ||
+                !source.cpu.frameEndSubmit.available)
+            {
+                return fail(
+                    "GFX24 performance samples are not uniformly frozen by one Render session");
+            }
+
+            RenderQualityPerformanceReportSample target;
+            target.frameSequence = source.binding.frameIdentity.frameSequence;
+            target.submittedFrame = source.submittedFrame;
+            target.completedFrame = source.completedFrame;
+            target.renderExecutionReceiptSha256 = Hash::FormatSHA256Digest(
+                source.binding.receiptDigest);
+            target.completionOwned = true;
+            target.extractionMilliseconds =
+                NanosecondsToMilliseconds(source.cpu.extraction);
+            target.visibilityMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.visibilityAndDrawPlanning);
+            target.graphCompileMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.graphCompile);
+            target.submissionMilliseconds = NanosecondsToMilliseconds(
+                source.cpu.frameEndSubmit);
+            // RenderGraph's terminal critical path can be shorter than an
+            // independent pass-envelope branch. The policy-owned value is
+            // therefore the conservative maximum of both completion-owned
+            // spans, never a whole-frame, CPU-submit, or Present duration.
+            target.graphicsTerminalCommandSpanMilliseconds =
+                source.graphicsTerminalCommandSpanMilliseconds;
+            target.renderGraphPassEnvelopeMilliseconds =
+                source.graphSpanMilliseconds;
+            target.graphicsQualificationSpanMilliseconds = std::max(
+                source.graphicsTerminalCommandSpanMilliseconds,
+                source.graphSpanMilliseconds);
+            target.trackedUploadBytes = source.trackedUploadBytes;
+            target.trackedUploadCoverageMask =
+                source.trackedUploadCoverageMask;
+            target.trackedEstimatedFootprint = {
+                .schemaVersion =
+                    source.trackedEstimatedFootprint.schemaVersion,
+                .coverageMask =
+                    source.trackedEstimatedFootprint.coverageMask,
+                .transientPoolPhysicalEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .transientPoolPhysicalEstimatedBytes,
+                .importedPersistentEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .importedPersistentEstimatedBytes,
+                .importedHistoryEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .importedHistoryEstimatedBytes,
+                .resourceRegistryResidentEstimatedBytes =
+                    source.trackedEstimatedFootprint
+                        .resourceRegistryResidentEstimatedBytes};
+            target.resourceCountsSchemaVersion =
+                source.resourceCounts.schemaVersion;
+            target.resourceCounts = {
+                {"stableImportedBuffers",
+                 source.resourceCounts.stableImportedBufferCount},
+                {"stableImportedTextures",
+                 source.resourceCounts.stableImportedTextureCount},
+                {"residentMaterials", source.resourceCounts.residentMaterialCount},
+                {"residentMeshes", source.resourceCounts.residentMeshCount},
+                {"residentTextures", source.resourceCounts.residentTextureCount},
+                {"transientBuffers", source.resourceCounts.transientBufferCount},
+                {"transientTextures", source.resourceCounts.transientTextureCount}};
+            for (const RenderQualityPerformancePassTiming& pass :
+                 source.passTimings)
+            {
+                target.passGpuTimings.push_back(
+                    {.executionIndex = pass.executionIndex,
+                     .name = pass.passName,
+                     .durationMilliseconds = pass.durationMilliseconds});
+            }
+            request.samples.push_back(std::move(target));
+        }
+
+        outRequest = std::move(request);
+        return true;
+    }
+} // namespace
+
     bool HasRequiredGPUCullingQualificationComparison(
         const SampleRenderDiagnostics& diagnostics) noexcept
     {
@@ -115,8 +469,6 @@ namespace RVX
 
     namespace
     {
-        constexpr float32 SampleDeltaTime = 1.0f / 60.0f;
-
         [[nodiscard]] bool RequiredGPUCullingQualificationMatchesFrame(
             const SampleRenderDiagnostics& diagnostics,
             uint64 targetFrameSequence) noexcept
@@ -1430,6 +1782,47 @@ namespace RVX
             return true;
         }
 
+        bool ParsePositiveRunnerUInt64(std::string_view text, uint64& output)
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+            uint64 value = 0;
+            const std::from_chars_result result = std::from_chars(
+                text.data(), text.data() + text.size(), value);
+            if (result.ec != std::errc{} ||
+                result.ptr != text.data() + text.size() || value == 0)
+            {
+                return false;
+            }
+            output = value;
+            return true;
+        }
+
+        bool ParsePositiveRunnerFloat64(std::string_view text,
+                                        float64& output)
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+            float64 value = 0.0;
+            const std::from_chars_result result = std::from_chars(
+                text.data(),
+                text.data() + text.size(),
+                value,
+                std::chars_format::general);
+            if (result.ec != std::errc{} ||
+                result.ptr != text.data() + text.size() ||
+                !std::isfinite(value) || value <= 0.0 || value > 1.0)
+            {
+                return false;
+            }
+            output = value;
+            return true;
+        }
+
         bool ParseRunnerRenderPath(std::string_view text,
                                    SampleRenderPath& output)
         {
@@ -1540,8 +1933,13 @@ namespace RVX
             return argument == "--sample" || argument == "--asset" ||
                    argument == "--model" || argument == "--catalog" ||
                    argument == "--asset-root" ||
+                   argument == "--cooked-shader-root" ||
                    argument == "--environment" ||
                    argument == "--environment-file" ||
+                   argument == "--pipeline" ||
+                   argument == "--view" ||
+                   argument == "--fixed-delta" ||
+                   argument == "--capture-tick" ||
                    argument == "--render-path" ||
                    argument == "--workload-scale" ||
                    argument == "--instancing" ||
@@ -1552,6 +1950,10 @@ namespace RVX
                    argument == "--assessment-report" ||
                    argument == "--assessment-profile" ||
                    argument == "--assessment-baseline" ||
+                   argument == "--qualification-bundle" ||
+                   argument == "--qualification-series" ||
+                   argument == "--qualification-performance" ||
+                   argument == "--qualification-performance-baseline" ||
                    argument == "--lifetime-warmup-frames" ||
                    argument == "--lifetime-observation-frames" ||
                    argument == "--lifetime-min-duration-ms" ||
@@ -1574,6 +1976,7 @@ namespace RVX
             std::vector<ResolvedSampleAsset> additionalModels;
             ResolvedSampleAsset environment;
             std::vector<ResolvedSampleAsset> animations;
+            std::vector<ResolvedSampleAsset> effects;
         };
 
         struct AssetContentVerificationSummary
@@ -1777,10 +2180,12 @@ namespace RVX
         }
 
         SampleAssetRegistry MakeSampleAssetRegistry(
-            const ResolvedSampleAssets& assets)
+            const ResolvedSampleAssets& assets,
+            const bool runtimeOnlyComposition)
         {
             std::vector<SampleAssetRegistryEntry> entries;
-            const auto append = [&entries](const ResolvedSampleAsset& asset)
+            const auto append = [&entries, runtimeOnlyComposition](
+                                    const ResolvedSampleAsset& asset)
             {
                 // Explicit paths intentionally have no catalog id and are not
                 // visible to catalog-id loader requests.
@@ -1790,11 +2195,25 @@ namespace RVX
                     return;
                 }
 
-                entries.push_back({asset.entry.id,
-                                   asset.entry.kind,
-                                   asset.entry.resolvedPath,
-                                   asset.entry.contentIdentity,
-                                   asset.entry.assetContentId});
+                SampleAssetRegistryEntry entry;
+                entry.id = asset.entry.id;
+                entry.kind = asset.entry.kind;
+                entry.resolvedPath = asset.entry.resolvedPath;
+                entry.contentIdentity = asset.entry.contentIdentity;
+                entry.assetContentId = asset.entry.assetContentId;
+                entry.packageOnly = asset.entry.cook.packageOnly;
+                entry.requiresCookedResourcePath = runtimeOnlyComposition;
+                if (runtimeOnlyComposition && entry.packageOnly)
+                {
+                    const std::string logicalPath =
+                        asset.entry.path.lexically_normal().generic_string();
+                    const std::string cookedPath = "cooked://" + logicalPath;
+                    if (IsStrictSampleCookedResourcePath(cookedPath))
+                    {
+                        entry.resourcePath = cookedPath;
+                    }
+                }
+                entries.push_back(std::move(entry));
             };
             append(assets.model);
             for (const ResolvedSampleAsset& additional : assets.additionalModels)
@@ -1805,6 +2224,10 @@ namespace RVX
             for (const ResolvedSampleAsset& animation : assets.animations)
             {
                 append(animation);
+            }
+            for (const ResolvedSampleAsset& effect : assets.effects)
+            {
+                append(effect);
             }
             return SampleAssetRegistry(std::move(entries));
         }
@@ -1860,11 +2283,22 @@ namespace RVX
                        : std::nullopt;
         }
 
+        std::optional<Resource::ResourceContentVerificationReceipt>
+        GetEffectContentVerificationReceipt(
+            const SampleParticleEffectLoader& effects,
+            const ResolvedSampleAsset& asset)
+        {
+            return asset.selected && asset.entry.kind == SampleAssetKind::Effect
+                ? effects.GetContentVerificationReceipt(asset.entry.resolvedPath)
+                : std::nullopt;
+        }
+
         AssetContentVerificationSummary BuildAssetContentVerificationSummary(
             const ResolvedSampleAssets& assets,
             const SampleModelLoader& models,
             const SampleEnvironmentLoader& environments,
             const SampleAnimationLoader& animations,
+            const SampleParticleEffectLoader& effects,
             FrameworkAssessmentSession& assessmentSession)
         {
             struct AssetEvidence
@@ -1877,7 +2311,8 @@ namespace RVX
             };
 
             std::map<std::pair<std::string, std::string>, AssetEvidence> evidence;
-            const auto append = [&evidence, &models, &environments, &animations](
+            const auto append = [&evidence, &models, &environments, &animations,
+                                 &effects](
                                     const ResolvedSampleAsset& asset)
             {
                 if (!asset.selected)
@@ -1921,6 +2356,17 @@ namespace RVX
                         value.hasReceipt = true;
                     }
                 }
+                else if (asset.entry.kind == SampleAssetKind::Effect)
+                {
+                    const std::optional<Resource::ResourceContentVerificationReceipt>
+                        receipt = GetEffectContentVerificationReceipt(
+                            effects, asset);
+                    if (receipt.has_value())
+                    {
+                        value.receipt = *receipt;
+                        value.hasReceipt = true;
+                    }
+                }
 
                 // Catalog ids are the portable logical identity. An explicit
                 // path intentionally has no id and cannot enter assetSet.
@@ -1936,6 +2382,10 @@ namespace RVX
             for (const ResolvedSampleAsset& animation : assets.animations)
             {
                 append(animation);
+            }
+            for (const ResolvedSampleAsset& effect : assets.effects)
+            {
+                append(effect);
             }
 
             AssetContentVerificationSummary result;
@@ -2004,11 +2454,45 @@ namespace RVX
             const std::string selectedEnvironmentId =
                 options.environmentId.empty() ? info.defaultEnvironmentId
                                               : options.environmentId;
+            const std::vector<std::string>& declaredEffectIds =
+                info.requiredEffectAssetIds;
+            std::vector<std::string> selectedEffectIds = declaredEffectIds;
+            if (selectedEffectIds.empty() && !info.defaultEffectAssetId.empty())
+            {
+                selectedEffectIds.push_back(info.defaultEffectAssetId);
+            }
+            if (!declaredEffectIds.empty() &&
+                (info.defaultEffectAssetId.empty() ||
+                 selectedEffectIds.front() != info.defaultEffectAssetId))
+            {
+                outError = "Sample multi-effect declaration must retain its first effect as defaultEffectAssetId: " +
+                    info.id;
+                return false;
+            }
             sceneOptions.assetId = selectedModelId;
             sceneOptions.environmentAssetId = selectedEnvironmentId;
+            sceneOptions.effectAssetId = selectedEffectIds.empty()
+                ? std::string{}
+                : selectedEffectIds.front();
             sceneOptions.width = options.common.width;
             sceneOptions.height = options.common.height;
             sceneOptions.quality = options.common.quality;
+            sceneOptions.qualityTier = options.qualityTier;
+            sceneOptions.pipelineRecipe = options.pipelineRecipe;
+            sceneOptions.fixedTimeNumerator = options.fixedTimeNumerator;
+            sceneOptions.fixedTimeDenominator = options.fixedTimeDenominator;
+            sceneOptions.deterministicSeed = options.deterministicSeed;
+            RenderPipelineRecipe validatedRecipe{};
+            RenderQualityTier validatedQuality{};
+            if (!TryMapSamplePipelineRecipe(
+                    sceneOptions.pipelineRecipe, validatedRecipe) ||
+                !TryMapSampleQualityTier(
+                    sceneOptions.qualityTier, validatedQuality))
+            {
+                outError =
+                    "Selected Sample pipeline recipe or quality profile is invalid";
+                return false;
+            }
             sceneOptions.renderPath = options.renderPathExplicit
                                           ? options.renderPath
                                           : info.defaultRenderPath;
@@ -2037,6 +2521,25 @@ namespace RVX
             sceneOptions.deterministicCameraOrbit =
                 options.deterministicCameraOrbit;
 
+            // This is a deliberately narrow qualification intent, not a
+            // renderer control surface. The cooked GFX15 scenario consumes
+            // its normal readiness receipt; unrelated Samples must not accept
+            // the flag and accidentally advertise transparency evidence.
+            if (options.common.translucencyQualificationProbeEnabled &&
+                info.id != "transparent-materials")
+            {
+                outError =
+                    "--translucency-qualification-probe requires the transparent-materials sample";
+                return false;
+            }
+            if (options.common.hiZReflectionQualificationProbeEnabled &&
+                info.id != "post-processing")
+            {
+                outError =
+                    "--hiz-reflection-qualification-probe requires the post-processing sample";
+                return false;
+            }
+
             if (options.renderPathExplicit &&
                 !info.supportsRenderPathSelection)
             {
@@ -2060,9 +2563,10 @@ namespace RVX
                 outError = "Sample requires an environment asset: " + info.id;
                 return false;
             }
-            if (selectedModelId.empty() && options.modelPath.empty())
+            if (selectedModelId.empty() && options.modelPath.empty() &&
+                selectedEffectIds.empty())
             {
-                outError = "Sample has no default asset and --asset was not provided: " +
+                outError = "Sample has no default model or effect asset and --asset was not provided: " +
                            info.id;
                 return false;
             }
@@ -2083,11 +2587,13 @@ namespace RVX
                 return false;
             }
 
-            const bool modelUsesCatalog = options.modelPath.empty();
+            const bool modelUsesCatalog = options.modelPath.empty() &&
+                                          !selectedModelId.empty();
             const bool environmentUsesCatalog = options.environmentPath.empty() &&
                                                 !selectedEnvironmentId.empty();
             const bool animationsUseCatalog =
                 !info.requiredAnimationAssetIds.empty();
+            const bool effectsUseCatalog = !selectedEffectIds.empty();
             const bool cookedAdmissionUsesCatalog =
                 !info.requiredCookedAssetIds.empty();
 
@@ -2095,7 +2601,8 @@ namespace RVX
             std::filesystem::path assetRoot = options.assetRoot;
             SampleAssetCatalog catalog;
             if (modelUsesCatalog || environmentUsesCatalog ||
-                animationsUseCatalog || cookedAdmissionUsesCatalog)
+                animationsUseCatalog || effectsUseCatalog ||
+                cookedAdmissionUsesCatalog)
             {
                 if (catalogPath.empty() && assetRoot.empty())
                 {
@@ -2136,7 +2643,7 @@ namespace RVX
                                  "model",
                                  resolvedAssets.model);
             }
-            else
+            else if (modelUsesCatalog)
             {
                 if (!ResolveCatalogAsset(catalog,
                                          selectedModelId,
@@ -2151,12 +2658,12 @@ namespace RVX
                 sceneOptions.modelPath =
                     resolvedAssets.model.entry.resolvedPath;
             }
-            sceneOptions.modelAssets.push_back({
-                sceneOptions.assetId,
-                sceneOptions.modelPath,
-            });
             if (!sceneOptions.assetId.empty())
             {
+                sceneOptions.modelAssets.push_back({
+                    sceneOptions.assetId,
+                    sceneOptions.modelPath,
+                });
                 sceneOptions.modelAssetIds.push_back(sceneOptions.assetId);
             }
 
@@ -2270,6 +2777,33 @@ namespace RVX
                 resolvedAssets.animations.push_back(std::move(animation));
             }
 
+            for (const std::string& selectedEffectId : selectedEffectIds)
+            {
+                if (selectedEffectId.empty() ||
+                    std::find(sceneOptions.effectAssetIds.begin(),
+                              sceneOptions.effectAssetIds.end(),
+                              selectedEffectId) !=
+                        sceneOptions.effectAssetIds.end())
+                {
+                    outError = "Sample declares an invalid or duplicate effect asset id: " +
+                        selectedEffectId;
+                    return false;
+                }
+                ResolvedSampleAsset effect;
+                if (!ResolveCatalogAsset(catalog,
+                                         selectedEffectId,
+                                         SampleAssetKind::Effect,
+                                         "effect",
+                                         options.common.smoke,
+                                         effect,
+                                         outError))
+                {
+                    return false;
+                }
+                sceneOptions.effectAssetIds.push_back(effect.entry.id);
+                resolvedAssets.effects.push_back(std::move(effect));
+            }
+
             std::vector<std::string> admittedCookedIds;
             admittedCookedIds.reserve(info.requiredCookedAssetIds.size());
             for (const std::string& cookedId : info.requiredCookedAssetIds)
@@ -2322,6 +2856,20 @@ namespace RVX
                     if (animationIt != resolvedAssets.animations.end())
                     {
                         selectedAsset = &*animationIt;
+                    }
+                }
+                if (!selectedAsset)
+                {
+                    const auto effectIt = std::find_if(
+                        resolvedAssets.effects.begin(),
+                        resolvedAssets.effects.end(),
+                        [&cookedId](const ResolvedSampleAsset& asset)
+                        {
+                            return asset.entry.id == cookedId;
+                        });
+                    if (effectIt != resolvedAssets.effects.end())
+                    {
+                        selectedAsset = &*effectIt;
                     }
                 }
                 if (!selectedAsset)
@@ -2384,12 +2932,29 @@ namespace RVX
                 result.observedContentIdentity = receipt->observed;
                 result.verificationStatus = receipt->status;
                 result.verified = receipt->IsVerified();
+                switch (receipt->observed.domain)
+                {
+                    case Resource::ResourceContentIdentityDomain::Source:
+                        result.actualLoadDomain = "SourceAsset";
+                        break;
+                    case Resource::ResourceContentIdentityDomain::CookedArtifact:
+                        result.actualLoadDomain = "CookedArtifact";
+                        break;
+                    case Resource::ResourceContentIdentityDomain::CookManifest:
+                        result.actualLoadDomain = "CookManifest";
+                        break;
+                    default:
+                        result.actualLoadDomain = "Unknown";
+                        break;
+                }
             }
             result.cookedAdmissionRequired =
                 resolved.cookAdmission.has_value();
             result.cookedAdmissionAccepted =
                 resolved.cookAdmission.has_value() &&
                 resolved.cookAdmission->IsAccepted();
+            result.cookPackageOnly = resolved.entry.cook.declared &&
+                resolved.entry.cook.packageOnly;
             if (resolved.entry.cook.declared)
             {
                 result.cookManifestPath =
@@ -2426,6 +2991,470 @@ namespace RVX
                 result.observedCookManifestContentIdentity =
                     resolved.cookAdmission->resourceReceipt
                         .observedManifestContentIdentity;
+            }
+            return result;
+        }
+
+        [[nodiscard]] SamplePostProcessExecutionDiagnostics
+            MakeSamplePostProcessExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SamplePostProcessExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+            result.sceneRuntimeId = receipt.viewIdentity.sceneRuntimeId;
+            result.cameraEntityPacked = receipt.viewIdentity.cameraEntityPacked;
+            result.subViewIndex = receipt.viewIdentity.subViewIndex;
+
+            const auto postProcessFeature = std::find_if(
+                receipt.features.begin(), receipt.features.end(),
+                [](const RenderFeatureExecutionReceipt& feature)
+                {
+                    return feature.featureId ==
+                        BuiltinRenderFeatureIds::PostProcessPipeline;
+                });
+            if (postProcessFeature != receipt.features.end())
+            {
+                result.postProcessFeatureFound = true;
+                result.postProcessFeatureSelected = postProcessFeature->selected;
+                result.postProcessFeatureExecuted =
+                    postProcessFeature->readiness.executed;
+                result.postProcessFeatureFallbackUsed =
+                    postProcessFeature->fallbackUsed;
+                result.postProcessFeatureGraphPassCount =
+                    postProcessFeature->graphPassCount;
+                result.postProcessFeatureExecutedGraphPassCount =
+                    postProcessFeature->executedGraphPassCount;
+                result.diagnostic = postProcessFeature->diagnostic;
+            }
+
+            const RenderPostProcessExecutionReceipt& postProcess =
+                receipt.postProcess;
+            result.postProcessReceiptStructurallyValid =
+                postProcess.IsStructurallyValid();
+            result.planContentHash = postProcess.postProcessContentHash;
+            // GFX12 integration point: this is a direct value projection of
+            // renderer-owned receipt fields. Samples never derive exposure
+            // execution from their requested lighting or post-process policy.
+            result.exposureStateContentHash =
+                postProcess.exposureStateContentHash;
+            result.toneMapExposureStateHash =
+                postProcess.toneMapExposureStateHash;
+            result.bloomExposureStateHash =
+                postProcess.bloomExposureStateHash;
+            result.taaExposureStateHash = postProcess.taaExposureStateHash;
+            result.exposureMode = postProcess.exposureMode;
+            result.exposureRequested = postProcess.exposureRequested;
+            result.exposurePipelineReady = postProcess.exposurePipelineReady;
+            result.exposureInputsReady = postProcess.exposureInputsReady;
+            result.exposureExecuted = postProcess.exposureExecuted;
+            result.exposureHistogramPassCount =
+                postProcess.exposureHistogramPassCount;
+            result.exposureAdaptationPassCount =
+                postProcess.exposureAdaptationPassCount;
+            result.exposureHistoryAvailableBefore =
+                postProcess.exposureHistoryAvailableBefore;
+            result.exposureHistorySampled =
+                postProcess.exposureHistorySampled;
+            result.exposureHistoryCandidateProduced =
+                postProcess.exposureHistoryCandidateProduced;
+            result.exposureHistoryCommitted =
+                postProcess.exposureHistoryCommitted;
+            result.exposureHistoryAbandoned =
+                postProcess.exposureHistoryAbandoned;
+            result.exposureHistoryResetReasons =
+                postProcess.exposureHistoryResetReasons;
+            result.exposureProbeRequested = postProcess.exposureProbeRequested;
+            result.exposureProbeReady = postProcess.exposureProbeReady;
+            result.targetEV100 = postProcess.targetEV100;
+            result.adaptedEV100 = postProcess.adaptedEV100;
+            result.exposureScale = postProcess.exposureScale;
+            result.preExposure = postProcess.preExposure;
+            result.previousPreExposure = postProcess.previousPreExposure;
+            result.toneMappingPassCount = postProcess.toneMapPassCount;
+            result.bloomPassCount = postProcess.bloomPassCount;
+            result.colorGradingPassCount =
+                postProcess.colorGradingPassCount;
+            result.fxaaPassCount = postProcess.fxaaPassCount;
+            result.taaPassCount = postProcess.taaPassCount;
+            result.antiAliasingMode = postProcess.antiAliasingMode;
+            result.taaRequested = postProcess.taaRequested;
+            result.taaPipelineReady = postProcess.taaPipelineReady;
+            result.taaInputsReady = postProcess.taaInputsReady;
+            result.taaExecuted = postProcess.taaExecuted;
+            result.historyAvailableBefore =
+                postProcess.historyAvailableBefore;
+            result.historySampled = postProcess.historySampled;
+            result.historyCandidateProduced =
+                postProcess.historyCandidateProduced;
+            result.historyCommitted = postProcess.historyCommitted;
+            result.historyAbandoned = postProcess.historyAbandoned;
+            result.historyResetReasons = postProcess.historyResetReasons;
+            result.currentJitterPixels = postProcess.currentJitterPixels;
+            result.previousJitterPixels = postProcess.previousJitterPixels;
+            result.taaResolveGraphPassCount =
+                postProcess.taaResolveGraphPassCount;
+            result.taaHistoryStoreGraphPassCount =
+                postProcess.taaHistoryStoreGraphPassCount;
+            result.inputColorDomain = postProcess.inputColorDomain;
+            result.plannedOutputColorDomain =
+                postProcess.plannedOutputColorDomain;
+            result.storedOutputColorDomain =
+                postProcess.storedOutputColorDomain;
+            result.finalOutputFormat = postProcess.finalOutputFormat;
+            result.toneMappingTransfer = postProcess.toneMappingTransfer;
+            result.presentationTransfer = postProcess.presentationTransfer;
+            result.hdrInputReady = postProcess.hdrInputReady;
+            result.displayLinearOutputReady =
+                postProcess.displayLinearOutputReady;
+            result.encodedOutputReady = postProcess.encodedOutputReady;
+            result.fallbackUsed = postProcess.fallbackUsed;
+            if (result.diagnostic.empty())
+            {
+                result.diagnostic = receipt.diagnostic;
+            }
+            return result;
+        }
+
+        [[nodiscard]] SampleAmbientOcclusionExecutionDiagnostics
+            MakeSampleAmbientOcclusionExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SampleAmbientOcclusionExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+            result.sceneRuntimeId = receipt.viewIdentity.sceneRuntimeId;
+            result.cameraEntityPacked = receipt.viewIdentity.cameraEntityPacked;
+            result.subViewIndex = receipt.viewIdentity.subViewIndex;
+
+            // GFX13 integration point: every field is a direct immutable
+            // projection of the renderer-owned receipt. Samples never infer
+            // GTAO execution, consumers, or temporal commits from settings.
+            const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
+                receipt.ambientOcclusion;
+            result.receiptStructurallyValid =
+                ambientOcclusion.IsStructurallyValid();
+            result.planContentHash = ambientOcclusion.planContentHash;
+            result.requested = ambientOcclusion.requested;
+            result.pipelineReady = ambientOcclusion.pipelineReady;
+            result.inputsReady = ambientOcclusion.inputsReady;
+            result.executed = ambientOcclusion.executed;
+            result.lightingConsumerExecuted =
+                ambientOcclusion.lightingConsumerExecuted;
+            result.linearDepthInputReady =
+                ambientOcclusion.linearDepthInputReady;
+            result.worldNormalInputReady =
+                ambientOcclusion.worldNormalInputReady;
+            result.velocityInputReady = ambientOcclusion.velocityInputReady;
+            result.velocityProducerExecuted =
+                ambientOcclusion.velocityProducerExecuted;
+            result.outputPublished = ambientOcclusion.outputPublished;
+            result.outputFormat = ambientOcclusion.outputFormat;
+            result.horizonSearchGraphPassCount =
+                ambientOcclusion.horizonSearchGraphPassCount;
+            result.bilateralDenoiseGraphPassCount =
+                ambientOcclusion.bilateralDenoiseGraphPassCount;
+            result.temporalResolveGraphPassCount =
+                ambientOcclusion.temporalResolveGraphPassCount;
+            result.historyAvailableBefore =
+                ambientOcclusion.historyAvailableBefore;
+            result.historySampled = ambientOcclusion.historySampled;
+            result.motionReprojectionUsed =
+                ambientOcclusion.motionReprojectionUsed;
+            result.viewProjectionMotionObserved =
+                ambientOcclusion.viewProjectionMotionObserved;
+            result.historyCandidateProduced =
+                ambientOcclusion.historyCandidateProduced;
+            result.historyCommitted = ambientOcclusion.historyCommitted;
+            result.historyAbandoned = ambientOcclusion.historyAbandoned;
+            result.historyResetReasons = ambientOcclusion.historyResetReasons;
+            result.aoFieldContentHash = ambientOcclusion.aoFieldContentHash;
+            result.lightingAOFieldContentHash =
+                ambientOcclusion.lightingAOFieldContentHash;
+            result.velocityFieldIdentity =
+                ambientOcclusion.velocityFieldIdentity;
+            result.consumerMask =
+                static_cast<uint32>(ambientOcclusion.consumerMask);
+            result.probeRequested = ambientOcclusion.probeRequested;
+            result.probeReady = ambientOcclusion.probeReady;
+            result.probeSampleCount = ambientOcclusion.probeSampleCount;
+            result.probeOccludedSampleCount =
+                ambientOcclusion.probeOccludedSampleCount;
+            if (result.probeReady)
+            {
+                result.probeMinVisibility = ambientOcclusion.probeMinVisibility;
+                result.probeMeanVisibility =
+                    ambientOcclusion.probeMeanVisibility;
+                result.probeMaxVisibility = ambientOcclusion.probeMaxVisibility;
+            }
+            result.fallbackUsed = ambientOcclusion.fallbackUsed;
+            result.diagnostic = ambientOcclusion.diagnostic;
+            if (result.diagnostic.empty())
+            {
+                result.diagnostic = receipt.diagnostic;
+            }
+            return result;
+        }
+
+        [[nodiscard]] SampleHiZReflectionExecutionDiagnostics
+            MakeSampleHiZReflectionExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SampleHiZReflectionExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.hiZReflectionQualificationReceipt;
+            const RenderReflectionDiagnostics& reflection =
+                frameFeatures.hiZReflectionQualification;
+
+            result.available = reflection.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = receipt.frameIdentity.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence = receipt.presented
+                ? receipt.frameIdentity.frameSequence
+                : 0;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence &&
+                reflection.frameSequence == result.receiptFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+
+            // This is a one-to-one projection of the presentation-frozen
+            // renderer receipt. No sample setting or graph registration is
+            // allowed to synthesize SSR execution evidence.
+            result.graphExecutionFinalized = reflection.graphExecutionFinalized;
+            result.requested = reflection.requested;
+            result.supported = reflection.supported;
+            result.scheduled = reflection.scheduled;
+            result.executed = reflection.executed;
+            result.hiZBuilt = reflection.hiZBuilt;
+            result.globalIBLReady = reflection.globalIBLReady;
+            result.fallbackChainResolved = reflection.fallbackChainResolved;
+            result.screenSpaceRequested = reflection.screenSpaceRequested;
+            result.screenSpaceTraceInputsReady =
+                reflection.screenSpaceTraceInputsReady;
+            result.screenSpaceTraceScheduled =
+                reflection.screenSpaceTraceScheduled;
+            result.halfResolutionTrace = reflection.halfResolutionTrace;
+            result.guidedUpscaleScheduled = reflection.guidedUpscaleScheduled;
+            result.guidedUpscaleExecuted = reflection.guidedUpscaleExecuted;
+            result.screenSpaceApplied = reflection.screenSpaceApplied;
+            result.probesApplied = reflection.probesApplied;
+            result.reflectionRouteEvidenceReady =
+                reflection.reflectionRouteEvidenceReady;
+            result.routeMaskRadianceSchemaVersion =
+                reflection.routeMaskRadianceSchemaVersion;
+            result.localProbeRadianceQualified =
+                reflection.localProbeRadianceQualified;
+            result.globalIBLRadianceQualified =
+                reflection.globalIBLRadianceQualified;
+            result.readyProbeCount = reflection.readyProbeCount;
+            result.hiZMipCount = reflection.hiZMipCount;
+            result.hiZGraphPassCount = reflection.hiZGraphPassCount;
+            result.traceGraphPassCount = reflection.traceGraphPassCount;
+            result.resolveGraphPassCount = reflection.resolveGraphPassCount;
+            result.traceExtent = reflection.traceExtent;
+            result.resolvedExtent = reflection.resolvedExtent;
+            result.reflectionFrameSequence = reflection.frameSequence;
+            result.reflectionPlanIdentity = reflection.reflectionPlanIdentity;
+            result.lightingPlanIdentity = reflection.lightingPlanIdentity;
+            result.configurationIdentity = reflection.configurationIdentity;
+            result.pipelineIdentity = reflection.pipelineIdentity;
+            result.depthPyramidIdentity = reflection.depthPyramidIdentity;
+            result.reflectionSurfaceIdentity =
+                reflection.reflectionSurfaceIdentity;
+            result.exposureStateContentHash =
+                reflection.exposureStateContentHash;
+            result.screenSpaceHitPixelCount =
+                reflection.screenSpaceHitPixelCount;
+            result.localProbePixelCount = reflection.localProbePixelCount;
+            result.globalIBLPixelCount = reflection.globalIBLPixelCount;
+            result.reflectionReadbackSampleCount =
+                reflection.reflectionReadbackSampleCount;
+            result.reflectionRouteSampleCount =
+                reflection.reflectionRouteSampleCount;
+            result.backgroundPixelCount = reflection.backgroundPixelCount;
+            result.nonReflectivePixelCount = reflection.nonReflectivePixelCount;
+            result.fallbackReason = reflection.fallbackReason;
+            return result;
+        }
+
+        [[nodiscard]] SampleWeightedBlendedOITExecutionDiagnostics
+            MakeSampleWeightedBlendedOITExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            constexpr std::string_view ClearPassName =
+                "WeightedBlendedOITClear";
+            constexpr std::string_view MeshWeightedPassName =
+                "TransparentWeightedBlendedOIT";
+            constexpr std::string_view ParticleWeightedPassName =
+                "ParticleWeightedBlendedOIT";
+            constexpr std::string_view CompositePassName =
+                "WeightedBlendedOITComposite";
+
+            SampleWeightedBlendedOITExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+
+            const auto feature = std::find_if(
+                receipt.features.begin(), receipt.features.end(),
+                [](const RenderFeatureExecutionReceipt& candidate)
+                {
+                    return candidate.featureId ==
+                        BuiltinRenderFeatureIds::Translucency;
+                });
+            if (feature == receipt.features.end())
+            {
+                result.diagnostic = receipt.diagnostic.empty()
+                    ? "Presented render receipt does not contain the translucent feature"
+                    : receipt.diagnostic;
+                return result;
+            }
+
+            result.featureFound = true;
+            result.featureSelected = feature->selected;
+            result.featureRequired =
+                feature->requirement == RenderFeatureRequirement::Required;
+            result.featureExecuted = feature->readiness.executed;
+            result.featureFallbackUsed = feature->fallbackUsed;
+            result.featureGraphPassCount = feature->graphPassCount;
+            result.featureExecutedGraphPassCount =
+                feature->executedGraphPassCount;
+            result.allFeatureGraphPassesExecuted =
+                result.featureGraphPassCount != 0 &&
+                result.featureExecutedGraphPassCount ==
+                    result.featureGraphPassCount;
+            result.diagnostic = feature->diagnostic;
+
+            uint32 clearIndex = std::numeric_limits<uint32>::max();
+            uint32 firstWeightedIndex = std::numeric_limits<uint32>::max();
+            uint32 lastWeightedIndex = 0;
+            uint32 compositeIndex = std::numeric_limits<uint32>::max();
+            for (uint32 index = 0;
+                 index < static_cast<uint32>(feature->graphPassNames.size());
+                 ++index)
+            {
+                const std::string& passName = feature->graphPassNames[index];
+                if (passName == ClearPassName)
+                {
+                    ++result.clearGraphPassCount;
+                    clearIndex = index;
+                }
+                else if (passName == MeshWeightedPassName)
+                {
+                    ++result.meshWeightedGraphPassCount;
+                    firstWeightedIndex = std::min(firstWeightedIndex, index);
+                    lastWeightedIndex = std::max(lastWeightedIndex, index);
+                }
+                else if (passName == ParticleWeightedPassName)
+                {
+                    ++result.particleWeightedGraphPassCount;
+                    firstWeightedIndex = std::min(firstWeightedIndex, index);
+                    lastWeightedIndex = std::max(lastWeightedIndex, index);
+                }
+                else if (passName == CompositePassName)
+                {
+                    ++result.compositeGraphPassCount;
+                    compositeIndex = index;
+                }
+            }
+
+            result.passOrderValid = result.clearGraphPassCount == 1 &&
+                result.meshWeightedGraphPassCount +
+                        result.particleWeightedGraphPassCount !=
+                    0 &&
+                result.compositeGraphPassCount == 1 &&
+                clearIndex < firstWeightedIndex &&
+                lastWeightedIndex < compositeIndex;
+            if (result.diagnostic.empty() && !result.passOrderValid)
+            {
+                result.diagnostic =
+                    "Translucent feature did not record clear, weighted accumulation, and composite in the required order";
             }
             return result;
         }
@@ -2643,6 +3672,77 @@ namespace RVX
                 diagnostics.unsupportedPostProcessSkippedCount;
             result.postProcessGraphPassCount =
                 diagnostics.postProcessGraphPassCount;
+            result.postProcessActualExecution =
+                MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
+            result.transparentTemporalExecutionQualified =
+                renderDiagnostics.frameFeatures.available &&
+                renderDiagnostics.frameFeatures.frameSequence == renderDiagnostics.lastPresentedFrameSequence &&
+                renderDiagnostics.frameFeatures.executionReceipt.IsStructurallyValid() &&
+                HasSampleTransparentTemporalExecution(
+                    renderDiagnostics.frameFeatures.executionReceipt, renderDiagnostics.lastPresentedFrameSequence);
+            result.ambientOcclusionActualExecution =
+                MakeSampleAmbientOcclusionExecutionDiagnostics(renderDiagnostics);
+            result.hizReflectionActualExecution =
+                MakeSampleHiZReflectionExecutionDiagnostics(renderDiagnostics);
+            result.toonLightingActualExecution =
+                ProjectSampleToonLightingExecutionDiagnostics(
+                    renderDiagnostics);
+            result.toonOutlineActualExecution =
+                ProjectSampleToonOutlineExecutionDiagnostics(
+                    renderDiagnostics);
+            result.particleVfxActualExecution =
+                ProjectSampleParticleVfxExecutionDiagnostics(
+                    renderDiagnostics);
+            result.waterSurfaceActualExecution =
+                ProjectSampleWaterSurfaceExecutionDiagnostics(
+                    renderDiagnostics);
+            result.weightedBlendedOITActualExecution =
+                MakeSampleWeightedBlendedOITExecutionDiagnostics(
+                    renderDiagnostics);
+            result.transparentAlphaBlendDrawCount =
+                diagnostics.transparent.alphaBlendDrawCount;
+            result.transparentPremultipliedDrawCount =
+                diagnostics.transparent.premultipliedDrawCount;
+            result.transparentAdditiveDrawCount =
+                diagnostics.transparent.additiveDrawCount;
+            result.transparentThinTransmissionDrawCount =
+                diagnostics.transparent.thinTransmissionDrawCount;
+            result.transparentOpaqueSceneColorPyramidReady =
+                diagnostics.transparent.opaqueSceneColorPyramidReady;
+            result.transparentOpaqueSceneColorPyramidBuilt =
+                diagnostics.transparent.opaqueSceneColorPyramidBuilt;
+            result.transparentReactiveMaskAttachmentBound =
+                diagnostics.transparent.reactiveMaskAttachmentBound;
+            result.transparentReactiveMaskWriteDrawCount =
+                diagnostics.transparent.reactiveMaskWriteDrawCount;
+            result.transparentPriorityBucketCount =
+                diagnostics.transparent.translucencyPriorityBucketCount;
+            result.transparentFallbackCount =
+                diagnostics.transparent.translucencyFallbackCount;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& executionReceipt =
+                frameFeatures.executionReceipt;
+            result.transparentFrameFeatureSequence = frameFeatures.frameSequence;
+            result.transparentReceiptFrameSequence =
+                executionReceipt.frameIdentity.frameSequence;
+            result.transparentLastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.transparentPresentedFrameAligned =
+                frameFeatures.available &&
+                executionReceipt.schemaVersion ==
+                    RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION &&
+                executionReceipt.IsStructurallyValid() &&
+                executionReceipt.available && executionReceipt.graphComposed &&
+                executionReceipt.executionSucceeded && executionReceipt.presented &&
+                executionReceipt.succeeded &&
+                executionReceipt.viewIdentity.role == ViewRole::Main &&
+                executionReceipt.viewIdentity.subViewIndex == 0 &&
+                result.transparentFrameFeatureSequence != 0 &&
+                result.transparentFrameFeatureSequence ==
+                    result.transparentReceiptFrameSequence &&
+                result.transparentReceiptFrameSequence ==
+                    result.transparentLastPresentedFrameSequence;
             result.clusteredLightingInitialized =
                 diagnostics.clusteredLightingInitialized;
             result.clusteredLightingActiveClusters =
@@ -2698,6 +3798,14 @@ namespace RVX
                 localLighting.spotShadowRequested;
             result.spotShadowSupported = localLighting.spotShadowSupported;
             result.spotShadowReason = localLighting.spotShadowReason;
+            result.localShadowRequestCount =
+                localLighting.localShadowRequestCount;
+            result.localShadowCasterDrawCount =
+                localLighting.localShadowCasterDrawCount;
+            result.localShadowAtlasReady =
+                localLighting.localShadowAtlasReady;
+            result.localShadowFallbackReason =
+                localLighting.localShadowReason;
             result.hzbRequested = diagnostics.hzb.requested;
             result.hzbSupported = diagnostics.hzb.supported;
             result.hzbEnabled = diagnostics.hzb.enabled;
@@ -2758,7 +3866,11 @@ namespace RVX
                      receipt.textureEntries,
                      receipt.fallbackUsed,
                      receipt.frameSequence,
-                     receipt.presentationSequence});
+                     receipt.presentationSequence,
+                     receipt.parameterLayoutHash,
+                     receipt.featureMask,
+                     receipt.shadingModel,
+                     receipt.surfacePathEligibility});
             }
             result.presentedSkinningPalettesAvailable =
                 diagnostics.skinning.presentedReceiptsAvailable;
@@ -3086,6 +4198,8 @@ namespace RVX
                 gpuDriven.opaqueDirectDrawCount;
             result.gpuDrivenOpaqueIndirectBatchCount =
                 gpuDriven.opaqueGpuDrivenIndirectBatchCount;
+            result.gpuDrivenOpaqueSubmittedSourcePacketCount =
+                gpuDriven.opaqueGpuDrivenSubmittedSourcePacketCount;
             result.gpuDrivenOpaqueIndirectDrawUpperBound =
                 gpuDriven.opaqueGpuDrivenIndirectSubmittedDrawUpperBound;
             result.gpuDrivenOpaqueFallbackReason =
@@ -3394,6 +4508,15 @@ namespace RVX
                 options.deterministicCameraOrbit = true;
                 continue;
             }
+            if (argument == "--runtime-only-composition")
+            {
+                options.runtimeOnlyComposition = true;
+                continue;
+            }
+            if (argument == "--quality")
+            {
+                options.qualityExplicit = true;
+            }
             if (RequiresRunnerValue(argument))
             {
                 if (i + 1 >= argc || !argv[i + 1])
@@ -3422,6 +4545,97 @@ namespace RVX
                 else if (argument == "--environment-file")
                 {
                     options.environmentPath = value;
+                }
+                else if (argument == "--pipeline")
+                {
+                    if (!ParseSamplePipelineRecipe(value,
+                                                   options.pipelineRecipe) ||
+                        options.pipelineRecipe ==
+                            SamplePipelineRecipe::Minimal ||
+                        options.pipelineRecipe ==
+                            SamplePipelineRecipe::Headless)
+                    {
+                        SetError(outError,
+                                 "Invalid --pipeline value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.pipelineExplicit = true;
+                }
+                else if (argument == "--view")
+                {
+                    options.viewBookmarkId = value;
+                    if (options.viewBookmarkId.empty())
+                    {
+                        SetError(outError, "--view must not be empty");
+                        return false;
+                    }
+                    options.viewBookmarkExplicit = true;
+                }
+                else if (argument == "--fixed-delta")
+                {
+                    if (!ParsePositiveRunnerFloat64(
+                            value, options.fixedDeltaSeconds))
+                    {
+                        SetError(outError,
+                                 "Invalid --fixed-delta value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.fixedDeltaExplicit = true;
+                }
+                else if (argument == "--capture-tick")
+                {
+                    if (!ParsePositiveRunnerUInt64(value,
+                                                   options.captureTick) ||
+                        options.captureTick > 1000000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --capture-tick value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.captureTickExplicit = true;
+                }
+                else if (argument == "--qualification-bundle")
+                {
+                    options.qualificationBundlePath = value;
+                    if (options.qualificationBundlePath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-bundle must not be empty");
+                        return false;
+                    }
+                }
+                else if (argument == "--qualification-series")
+                {
+                    options.qualificationSeriesPath = value;
+                    if (options.qualificationSeriesPath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-series must not be empty");
+                        return false;
+                    }
+                }
+                else if (argument == "--qualification-performance")
+                {
+                    options.qualificationPerformancePath = value;
+                    if (options.qualificationPerformancePath.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-performance must not be empty");
+                        return false;
+                    }
+                }
+                else if (argument == "--qualification-performance-baseline")
+                {
+                    options.qualificationPerformanceBaselineIdentity = value;
+                    if (options.qualificationPerformanceBaselineIdentity.empty())
+                    {
+                        SetError(outError,
+                                 "--qualification-performance-baseline must not be empty");
+                        return false;
+                    }
                 }
                 else if (argument == "--render-path")
                 {
@@ -3460,6 +4674,10 @@ namespace RVX
                 else if (argument == "--catalog")
                 {
                     options.catalogPath = value;
+                }
+                else if (argument == "--cooked-shader-root")
+                {
+                    options.cookedShaderRoot = value;
                 }
                 else if (argument == "--ready-timeout-ms")
                 {
@@ -3595,6 +4813,17 @@ namespace RVX
         {
             return false;
         }
+        if (!ParseSampleQualityTier(options.common.quality,
+                                    options.qualityTier))
+        {
+            SetError(outError,
+                     "Invalid --quality value: " + options.common.quality);
+            return false;
+        }
+        if (options.common.showHelp || options.listSamples)
+        {
+            return true;
+        }
         if (options.sampleId.empty())
         {
             SetError(outError, "--sample must not be empty");
@@ -3654,7 +4883,96 @@ namespace RVX
                     options.assessmentProfile ==
                             SampleAssessmentProfile::Smoke
                         ? 120u
-                        : 600u;
+                : 600u;
+            }
+        }
+        if (!options.qualificationBundlePath.empty())
+        {
+            if (options.sampleId != "render-quality-lab")
+            {
+                SetError(outError,
+                         "--qualification-bundle requires --sample render-quality-lab");
+                return false;
+            }
+            if (options.qualificationBundlePath.filename() != "bundle.json")
+            {
+                SetError(outError,
+                         "--qualification-bundle must name bundle.json inside its own artifact directory");
+                return false;
+            }
+        }
+        if (!options.qualificationSeriesPath.empty())
+        {
+            if (options.qualificationSeriesPath.filename() != "series.json")
+            {
+                SetError(outError,
+                         "--qualification-series must name series.json inside its artifact directory");
+                return false;
+            }
+            options.waitReady = true;
+        }
+        if (!options.qualificationBundlePath.empty() &&
+            !options.qualificationSeriesPath.empty())
+        {
+            SetError(outError,
+                     "--qualification-bundle and --qualification-series are mutually exclusive");
+            return false;
+        }
+        if (!options.qualificationPerformanceBaselineIdentity.empty() &&
+            options.qualificationPerformancePath.empty())
+        {
+            SetError(outError,
+                     "--qualification-performance-baseline requires --qualification-performance");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty())
+        {
+            if (options.qualificationPerformanceBaselineIdentity.empty())
+            {
+                options.qualificationPerformanceBaselineIdentity =
+                    ReadEnvironmentString(
+                        "RVX_RENDER_QUALITY_PERFORMANCE_BASELINE_ID");
+            }
+            if (options.qualificationPerformanceOsBuild.empty())
+            {
+                options.qualificationPerformanceOsBuild =
+                    ResolveHostOperatingSystemBuild();
+            }
+            if (options.qualificationPerformanceBaselineIdentity.empty())
+            {
+                SetError(outError,
+                         "--qualification-performance requires an explicit --qualification-performance-baseline or RVX_RENDER_QUALITY_PERFORMANCE_BASELINE_ID");
+                return false;
+            }
+            if (options.qualificationPerformanceOsBuild.empty())
+            {
+                SetError(outError,
+                         "--qualification-performance requires a trustworthy host OS build identity");
+                return false;
+            }
+            if (options.common.frames == 0)
+            {
+                // The fixed Render-owned session, not this generic counter,
+                // decides how many frame submissions are accepted.
+                options.common.frames = 1;
+            }
+            options.waitReady = true;
+            constexpr uint32 MinimumPerformanceHostFrameBudget = 512U;
+            if (options.readyMaxFrames < MinimumPerformanceHostFrameBudget)
+            {
+                if (options.readyMaxFramesExplicit)
+                {
+                    SetError(outError,
+                             "--qualification-performance requires --ready-max-frames of at least 512");
+                    return false;
+                }
+                options.readyMaxFrames = MinimumPerformanceHostFrameBudget;
+            }
+            if (options.common.width != 2560U || options.common.height != 1440U)
+            {
+                SetError(outError,
+                         "--qualification-performance requires the fixed 2560x1440 raster qualification extent");
+                return false;
             }
         }
         if (options.common.gpuSceneCullingQualificationEnabled &&
@@ -3664,12 +4982,52 @@ namespace RVX
                      "GPUScene and Direct Opaque readback qualifications are mutually exclusive");
             return false;
         }
-        if (options.common.gpuSceneCullingQualificationEnabled ||
-            options.common.directOpaqueRasterReadbackQualificationEnabled)
+        if (!options.qualificationPerformancePath.empty() &&
+            (!options.common.screenshotPath.empty() ||
+             options.common.pixelProbeEnabled ||
+             !options.qualificationBundlePath.empty() ||
+             !options.qualificationSeriesPath.empty()))
         {
-            // The one-shot capture is consumed by one frame and observed only
-            // after a later owner-side completion check. Reuse the bounded
-            // readiness wait instead of coupling it to pixel capture.
+            SetError(outError,
+                     "--qualification-performance is mutually exclusive with screenshot, pixel-probe, qualification-bundle, and qualification-series producers");
+            return false;
+        }
+        if (!options.runtimeOnlyComposition && !options.cookedShaderRoot.empty())
+        {
+            SetError(outError,
+                     "--cooked-shader-root requires --runtime-only-composition");
+            return false;
+        }
+        if (options.runtimeOnlyComposition && options.cookedShaderRoot.empty())
+        {
+            SetError(outError,
+                     "--runtime-only-composition requires --cooked-shader-root");
+            return false;
+        }
+        const uint32 executionReceiptProbeCount =
+            (options.common.exposureQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.ambientOcclusionQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.hiZReflectionQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.toonOutlineQualificationProbeEnabled ? 1u : 0u);
+        if (executionReceiptProbeCount > 1u)
+        {
+            // Each probe owns the capture frame's immutable execution
+            // receipt. Do not accept a configuration that would let one
+            // completion replace the other before both can be reported.
+            SetError(outError,
+                     "Exposure, ambient-occlusion, Hi-Z reflection, and Toon-outline qualification probes are mutually exclusive");
+            return false;
+        }
+        if (options.common.gpuSceneCullingQualificationEnabled ||
+            options.common.directOpaqueRasterReadbackQualificationEnabled ||
+            options.common.exposureQualificationProbeEnabled ||
+            options.common.ambientOcclusionQualificationProbeEnabled ||
+            options.common.hiZReflectionQualificationProbeEnabled ||
+            options.common.toonOutlineQualificationProbeEnabled)
+        {
+            // One-shot readbacks are consumed by the target frame and observed
+            // only after a later Render-owner completion poll. Reuse the
+            // bounded readiness wait instead of coupling this to pixel capture.
             options.waitReady = true;
             if (options.common.frames == 0)
             {
@@ -3679,6 +5037,21 @@ namespace RVX
         if (!options.common.screenshotPath.empty() && options.common.frames == 0)
         {
             options.common.frames = 8;
+        }
+        if (options.captureTickExplicit &&
+            options.common.screenshotPath.empty() &&
+            options.qualificationPerformancePath.empty() &&
+            options.qualificationSeriesPath.empty())
+        {
+            SetError(outError,
+                     "--capture-tick requires --screenshot or --qualification-performance");
+            return false;
+        }
+        if (options.captureTickExplicit)
+        {
+            options.common.frames = std::max(
+                options.common.frames,
+                static_cast<uint32>(options.captureTick));
         }
         if (options.readyMaxFrames == 0)
         {
@@ -3721,6 +5094,12 @@ namespace RVX
             << "  --environment-file <path.hdr|path.exr>\n"
             << "  --catalog <catalog.json>\n"
             << "  --asset-root <directory>\n"
+            << "  --runtime-only-composition\n"
+            << "  --cooked-shader-root <directory>\n"
+            << "  --pipeline <forward-plus|deferred|hybrid-rt>\n"
+            << "  --view <bookmark-id>\n"
+            << "  --fixed-delta <seconds>\n"
+            << "  --capture-tick <positive-tick>\n"
             << "  --render-path <auto|direct|gpu-driven>\n"
             << "  --workload-scale <pr|nightly|qualification>\n"
             << "  --instancing <disabled|auto>\n"
@@ -3733,6 +5112,10 @@ namespace RVX
             << "  --assessment-report <path.json>\n"
             << "  --assessment-profile <smoke|qualification|benchmark>\n"
             << "  --assessment-baseline <path.json>\n"
+            << "  --qualification-bundle <path.json>\n"
+            << "  --qualification-series <path/series.json>\n"
+            << "  --qualification-performance <path/performance.json>\n"
+            << "  --qualification-performance-baseline <opaque-id>\n"
             << "  --lifetime-warmup-frames <count>\n"
             << "  --lifetime-observation-frames <count>\n"
             << "  --lifetime-min-duration-ms <milliseconds>\n"
@@ -3747,6 +5130,14 @@ namespace RVX
 
     SampleRunner::SampleRunner(const SampleRegistry& registry) noexcept
         : m_registry(registry)
+    {
+    }
+
+    SampleRunner::SampleRunner(
+        const SampleRegistry& registry,
+        const ISampleHostComposition& composition) noexcept
+        : m_registry(registry)
+        , m_composition(&composition)
     {
     }
 
@@ -3771,6 +5162,384 @@ namespace RVX
     {
         return (minimumFrames == 0 || executedFrames >= minimumFrames) &&
                executedFrames < maximumFrames;
+    }
+
+    bool SampleRunner::ShouldArmRenderQualityPerformanceSession(
+        const bool sampleReady,
+        const bool deterministicEpochActive,
+        const uint64 deterministicTick,
+        const uint64 sessionStartTick) noexcept
+    {
+        return sampleReady && deterministicEpochActive &&
+               sessionStartTick != 0 && deterministicTick == sessionStartTick;
+    }
+
+    bool SampleRunner::HasMissedRenderQualityPerformanceSessionStart(
+        const bool sampleReady,
+        const bool deterministicEpochActive,
+        const uint64 deterministicTick,
+        const uint64 sessionStartTick) noexcept
+    {
+        if (!deterministicEpochActive || sessionStartTick == 0)
+        {
+            return false;
+        }
+        return deterministicTick > sessionStartTick ||
+               (deterministicTick == sessionStartTick && !sampleReady);
+    }
+
+    bool SampleRunner::ShouldDeferGenericFiniteCompletion(
+        const bool renderQualityPerformanceActive) noexcept
+    {
+        // The exact performance session owns completion independently of the
+        // generic Sample `--frames` count used to reach sessionStartTick.
+        return renderQualityPerformanceActive;
+    }
+
+    void SampleRunner::ConfigureFrameWaitPolicy(
+        bool deterministicEpochActive,
+        float32 deltaTime,
+        RuntimeFrameWaitRequest& request) noexcept
+    {
+        request.deltaTime = deltaTime;
+        request.advanceEngine = !deterministicEpochActive;
+        request.pumpRenderProgressOnly = deterministicEpochActive;
+    }
+
+    bool SampleRunner::ResolveManifestContract(
+        const SampleScenarioManifest& manifest,
+        SampleRunnerCLIOptions& options,
+        std::string& outError)
+    {
+        if (manifest.id != options.sampleId ||
+            manifest.visualContractVersion == 0 ||
+            manifest.fixedTime.numerator == 0 ||
+            manifest.fixedTime.denominator == 0)
+        {
+            outError =
+                "The selected Sample manifest contract is incomplete or belongs to another scenario";
+            return false;
+        }
+
+        if (!options.qualificationBundlePath.empty() &&
+            options.sampleId != "render-quality-lab")
+        {
+            SetError(&outError,
+                     "--qualification-bundle requires --sample render-quality-lab");
+            return false;
+        }
+        if (!options.qualificationBundlePath.empty() &&
+            options.qualificationBundlePath.filename() != "bundle.json")
+        {
+            SetError(&outError,
+                     "--qualification-bundle must name bundle.json inside its own artifact directory");
+            return false;
+        }
+        if (!options.qualificationSeriesPath.empty())
+        {
+            if (!manifest.deterministicQualification)
+            {
+                SetError(&outError,
+                         "--qualification-series requires deterministicQualification=true in the selected Sample manifest");
+                return false;
+            }
+            if (options.qualificationSeriesPath.filename() != "series.json")
+            {
+                SetError(&outError,
+                         "--qualification-series must name series.json inside its own artifact directory");
+                return false;
+            }
+            if (options.captureTickExplicit)
+            {
+                SetError(&outError,
+                         "--qualification-series captures every declared manifest tick and forbids --capture-tick");
+                return false;
+            }
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            options.sampleId != "render-quality-lab")
+        {
+            SetError(&outError,
+                     "--qualification-performance requires --sample render-quality-lab");
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            options.qualificationPerformancePath.filename() !=
+                "performance.json")
+        {
+            SetError(&outError,
+                     "--qualification-performance must name performance.json inside an existing artifact directory");
+            return false;
+        }
+
+        if (!options.pipelineExplicit)
+        {
+            options.pipelineRecipe = manifest.defaultRecipe;
+        }
+        if (!options.qualityExplicit ||
+            options.qualityTier == SampleQualityTier::Default)
+        {
+            options.qualityTier = manifest.defaultQualityProfile;
+            options.common.quality =
+                GetSampleQualityTierName(options.qualityTier);
+        }
+        if (options.qualityTier == SampleQualityTier::Default)
+        {
+            outError =
+                "The selected Sample manifest did not resolve a concrete quality profile";
+            return false;
+        }
+        if (!options.qualificationPerformancePath.empty() &&
+            (options.pipelineRecipe != SamplePipelineRecipe::DeferredQuality ||
+             options.qualityTier != SampleQualityTier::High))
+        {
+            SetError(&outError,
+                     "--qualification-performance requires the RenderQualityLab deferred/high profile");
+            return false;
+        }
+
+        options.fixedTimeNumerator = manifest.fixedTime.numerator;
+        options.fixedTimeDenominator = manifest.fixedTime.denominator;
+        options.deterministicSeed = manifest.fixedTime.deterministicSeed;
+        const float64 manifestDelta =
+            static_cast<float64>(manifest.fixedTime.numerator) /
+            static_cast<float64>(manifest.fixedTime.denominator);
+        if (options.fixedDeltaExplicit)
+        {
+            const float64 tolerance =
+                std::numeric_limits<float64>::epsilon() *
+                std::max<float64>(1.0, std::abs(manifestDelta)) * 8.0;
+            if (std::abs(options.fixedDeltaSeconds - manifestDelta) >
+                tolerance)
+            {
+                outError =
+                    "--fixed-delta does not match the exact fixedTime declared by the Sample manifest";
+                return false;
+            }
+        }
+        options.fixedDeltaSeconds = manifestDelta;
+
+        const bool captureEvidenceRequested =
+            !options.common.screenshotPath.empty() ||
+            options.common.pixelProbeEnabled ||
+            !options.qualificationBundlePath.empty() ||
+            !options.qualificationSeriesPath.empty() ||
+            !options.qualificationPerformancePath.empty();
+        options.deterministicContractActive =
+            manifest.deterministicQualification || captureEvidenceRequested ||
+            options.fixedDeltaExplicit || options.viewBookmarkExplicit ||
+            options.captureTickExplicit;
+
+        const auto findBookmark = [&manifest](std::string_view id)
+        {
+            return std::find_if(
+                manifest.cameraBookmarks.begin(),
+                manifest.cameraBookmarks.end(),
+                [id](const SampleCameraBookmark& bookmark)
+                {
+                    return bookmark.id == id;
+                });
+        };
+        if (options.viewBookmarkExplicit)
+        {
+            if (findBookmark(options.viewBookmarkId) ==
+                manifest.cameraBookmarks.end())
+            {
+                outError = "Unknown --view bookmark '" +
+                           options.viewBookmarkId + "' for Sample '" +
+                           manifest.id + "'";
+                return false;
+            }
+            options.viewBookmarkResolved = true;
+        }
+        else if (options.deterministicContractActive)
+        {
+            if (manifest.cameraBookmarks.empty())
+            {
+                outError =
+                    "The deterministic Sample contract has no camera bookmark";
+                return false;
+            }
+            options.viewBookmarkId = manifest.cameraBookmarks.front().id;
+            options.viewBookmarkResolved = true;
+        }
+
+        if (options.captureTickExplicit)
+        {
+            if (std::find(manifest.captureTicks.begin(),
+                          manifest.captureTicks.end(),
+                          static_cast<uint32>(options.captureTick)) ==
+                manifest.captureTicks.end())
+            {
+                outError = "--capture-tick is not declared by the selected Sample manifest";
+                return false;
+            }
+            options.captureTickResolved = true;
+        }
+        else if (captureEvidenceRequested)
+        {
+            if (manifest.captureTicks.empty())
+            {
+                outError =
+                    "The Sample manifest has no capture tick for the requested evidence";
+                return false;
+            }
+            options.captureTick = !options.qualificationSeriesPath.empty()
+                ? manifest.captureTicks.back()
+                : manifest.captureTicks.front();
+            options.captureTickResolved = true;
+        }
+
+        if (options.captureTickResolved)
+        {
+            if (options.captureTick == 0 ||
+                options.captureTick > std::numeric_limits<uint32>::max())
+            {
+                outError = "The resolved Sample capture tick is out of range";
+                return false;
+            }
+            options.common.frames = static_cast<uint32>(options.captureTick);
+            if (!options.readyMaxFramesExplicit)
+            {
+                options.readyMaxFrames = std::max<uint32>(
+                    options.readyMaxFrames,
+                    static_cast<uint32>(options.captureTick) + 120u);
+            }
+        }
+        options.manifestContractResolved = true;
+        return true;
+    }
+
+    bool SampleRunner::ValidateManifestAssessmentContract(
+        const SampleScenarioManifest& manifest,
+        const SampleAssessmentContract& contract,
+        std::string& outError)
+    {
+        const auto findCapability = [&contract](const AssessmentCode& code)
+        {
+            return std::find_if(
+                contract.capabilities.begin(),
+                contract.capabilities.end(),
+                [&code](const AssessmentCapability& capability)
+                {
+                    return capability.code == code;
+                });
+        };
+        for (const AssessmentCode& code : manifest.requiredCapabilities)
+        {
+            const auto capability = findCapability(code);
+            if (capability == contract.capabilities.end() ||
+                !capability->gating)
+            {
+                outError = "Manifest required capability '" +
+                           code.GetValue() +
+                           "' is not a gating capability in the Sample assessment contract";
+                return false;
+            }
+        }
+        for (const AssessmentCode& code : manifest.optionalCapabilities)
+        {
+            const auto capability = findCapability(code);
+            if (capability == contract.capabilities.end() ||
+                capability->gating)
+            {
+                outError = "Manifest optional capability '" +
+                           code.GetValue() +
+                           "' is not a non-gating capability in the Sample assessment contract";
+                return false;
+            }
+        }
+        for (const AssessmentCapability& capability : contract.capabilities)
+        {
+            if (!capability.gating)
+            {
+                continue;
+            }
+
+            const bool declaredRequired = std::find(
+                manifest.requiredCapabilities.begin(),
+                manifest.requiredCapabilities.end(),
+                capability.code) != manifest.requiredCapabilities.end();
+            if (!declaredRequired)
+            {
+                outError = "Gating assessment capability '" +
+                           capability.code.GetValue() +
+                           "' is absent from the active Sample manifest profile";
+                return false;
+            }
+        }
+        if (!manifest.allowedFallbacks.empty())
+        {
+            outError =
+                "Sample fallback declarations require the GFX02 feature resolver and cannot be advertised yet";
+            return false;
+        }
+        return true;
+    }
+
+    bool SampleRunner::ApplyHiZReflectionQualificationProfile(
+        const std::string_view sampleId,
+        const bool probeEnabled,
+        SampleScenarioManifest& manifest,
+        SampleAssessmentContract& contract,
+        std::string& outError)
+    {
+        if (!probeEnabled)
+        {
+            return true;
+        }
+        if (sampleId != "post-processing")
+        {
+            outError =
+                "--hiz-reflection-qualification-probe requires the post-processing sample";
+            return false;
+        }
+
+        const AssessmentCode capabilityCode(
+            "RENDER.CAPABILITY.HIZ_SCREEN_SPACE_REFLECTION");
+        const AssessmentCode gtaoCapabilityCode("RENDER.CAPABILITY.GTAO");
+        const auto hasCode = [&capabilityCode](const auto& values)
+        {
+            return std::find(values.begin(), values.end(), capabilityCode) !=
+                values.end();
+        };
+        const auto hasCapability = [&capabilityCode](
+                                       const std::vector<AssessmentCapability>& values)
+        {
+            return std::find_if(
+                       values.begin(), values.end(),
+                       [&capabilityCode](const AssessmentCapability& value)
+                       {
+                           return value.code == capabilityCode;
+                       }) != values.end();
+        };
+        if (hasCode(manifest.requiredCapabilities) ||
+            hasCode(manifest.optionalCapabilities) ||
+            hasCapability(contract.capabilities))
+        {
+            outError =
+                "The GFX19 Hi-Z reflection qualification profile was activated more than once";
+            return false;
+        }
+
+        // GFX19 owns the immutable capture-frame receipt for its Hi-Z probe.
+        // A GTAO probe owns that same slot, so the active profile replaces
+        // GTAO gating instead of asking one frame to prove both readbacks.
+        std::erase(manifest.requiredCapabilities, gtaoCapabilityCode);
+        std::erase(manifest.optionalCapabilities, gtaoCapabilityCode);
+        std::erase_if(contract.capabilities,
+                      [&gtaoCapabilityCode](const AssessmentCapability& value)
+                      {
+                          return value.code == gtaoCapabilityCode;
+                      });
+        manifest.requiredCapabilities.push_back(capabilityCode);
+        contract.capabilities.push_back(
+            {capabilityCode,
+             "Hi-Z screen-space reflection is requested through the public post-process policy.",
+             true,
+             "Qualification requires exact presented route-mask and fallback-radiance evidence, not graph scheduling."});
+        contract.revision += "-gfx19-hiz";
+        return true;
     }
 
     uint64 SampleRunner::ResolveSceneRemovalPublicationSequence(
@@ -3847,16 +5616,26 @@ namespace RVX
             }
             return 0;
         }
-
-        StartupTimelineReporter startupTimeline(options.startupReportPath);
-        const Diagnostics::TraceContext startupTraceContext =
-            startupTimeline.GetContext();
+        if (m_composition == nullptr)
+        {
+            std::cerr << "Sample host composition was not injected\n";
+            return 1;
+        }
+        if (m_composition->RequiresCookedOnly() &&
+            !options.runtimeOnlyComposition)
+        {
+            std::cerr << "Cooked Sample host requires --runtime-only-composition\n";
+            return 2;
+        }
 
         const SampleInfo* registeredInfo = m_registry.Find(options.sampleId);
+        const SampleScenarioManifest* manifest =
+            m_registry.FindManifest(options.sampleId);
         std::unique_ptr<ISample> sample = m_registry.Create(options.sampleId);
-        if (!registeredInfo || !sample)
+        if (!registeredInfo || !manifest || !sample)
         {
-            std::cerr << "Unknown sample: " << options.sampleId << "\n";
+            std::cerr << "Unknown or uncontracted sample: "
+                      << options.sampleId << "\n";
             PrintSampleRunnerUsage(m_registry, argc > 0 ? argv[0] : nullptr);
             static_cast<void>(WriteEarlyFailureAssessment(
                 options.assessmentReportPath,
@@ -3866,10 +5645,54 @@ namespace RVX
                 "SAMPLE.REGISTRY.NOT_FOUND",
                 "SAMPLE",
                 AssessmentCheckpoints::ScenarioSetup,
-                "The requested Product Sample is not registered.",
+                "The requested Product Sample is not registered with a manifest contract.",
                 "sampleId='" + options.sampleId + "'"));
             return 2;
         }
+        if (!ResolveManifestContract(*manifest, options, error))
+        {
+            std::cerr << error << "\n";
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                options.sampleId,
+                options.common.backend,
+                "SAMPLE.MANIFEST.RESOLUTION_FAILED",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The Product Sample manifest could not resolve the requested execution contract.",
+                error));
+            return 2;
+        }
+        const SampleCameraBookmark* selectedBookmark = nullptr;
+        if (options.viewBookmarkResolved)
+        {
+            const auto bookmark = std::find_if(
+                manifest->cameraBookmarks.begin(),
+                manifest->cameraBookmarks.end(),
+                [&options](const SampleCameraBookmark& candidate)
+                {
+                    return candidate.id == options.viewBookmarkId;
+                });
+            if (bookmark == manifest->cameraBookmarks.end())
+            {
+                std::cerr << "Resolved Sample camera bookmark disappeared\n";
+                return 2;
+            }
+            selectedBookmark = &*bookmark;
+        }
+        const float32 sampleDeltaTime =
+            static_cast<float32>(options.fixedDeltaSeconds);
+        if (!std::isfinite(sampleDeltaTime) || sampleDeltaTime <= 0.0f)
+        {
+            std::cerr << "The resolved fixed delta is not representable as float32\n";
+            return 2;
+        }
+
+        StartupTimelineReporter startupTimeline(options.startupReportPath);
+        const Diagnostics::TraceContext startupTraceContext =
+            startupTimeline.GetContext();
+
         if (sample->GetInfo().id != registeredInfo->id)
         {
             std::cerr << "Sample registry metadata mismatch: "
@@ -3941,30 +5764,126 @@ namespace RVX
                           sceneOptions.environmentPath.string());
         }
 
-        Engine engine;
+        SampleRuntimeCompositionEvidence runtimeComposition;
+        runtimeComposition.runtimeOnlyComposition =
+            options.runtimeOnlyComposition;
+        std::filesystem::path cookedResourceRoot;
+        if (options.runtimeOnlyComposition)
+        {
+            const ResolvedSampleAsset& primaryModel = resolvedAssets.model;
+            if (!primaryModel.selected || !primaryModel.cookAdmission.has_value() ||
+                !primaryModel.cookAdmission->IsAccepted() ||
+                !primaryModel.entry.cook.declared ||
+                !primaryModel.entry.cook.packageOnly ||
+                primaryModel.entry.cook.cookedRoot.empty())
+            {
+                std::cerr << "Runtime-only Sample execution requires an admitted "
+                             "package-only primary cooked model\n";
+                static_cast<void>(WriteEarlyFailureAssessment(
+                    options.assessmentReportPath,
+                    sample.get(),
+                    registeredInfo->id,
+                    options.common.backend,
+                    "RESOURCE.RUNTIME_ONLY_PRIMARY_MODEL_REJECTED",
+                    "RESOURCE",
+                    AssessmentCheckpoints::EngineBaseline,
+                    "Runtime-only Sample composition requires the primary model's "
+                    "accepted cooked package.",
+                    "The selected primary model did not retain an accepted CookManifest "
+                    "admission receipt."));
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+
+            std::error_code filesystemError;
+            // Registry requests are package-relative (`cooked://...`) rather
+            // than catalog absolute paths.  Mount the catalog asset root so
+            // every admitted package entry resolves beneath one policy root;
+            // the individual CookManifest remains the admission authority.
+            cookedResourceRoot = primaryModel.assetRoot.lexically_normal();
+            const std::filesystem::path cookedShaderRoot =
+                options.cookedShaderRoot.lexically_normal();
+            if (!std::filesystem::is_directory(cookedResourceRoot,
+                                               filesystemError) ||
+                filesystemError)
+            {
+                std::cerr << "Runtime-only Sample cooked resource root is unavailable: "
+                          << cookedResourceRoot.string() << "\n";
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+            filesystemError.clear();
+            if (!std::filesystem::is_directory(cookedShaderRoot,
+                                               filesystemError) ||
+                filesystemError)
+            {
+                std::cerr << "Runtime-only Sample cooked shader root is unavailable: "
+                          << cookedShaderRoot.string() << "\n";
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+
+            runtimeComposition.cookedShaderProvider = true;
+            runtimeComposition.sourceShaderFallbackEnabled = false;
+            runtimeComposition.cookedResourcePolicy = true;
+            runtimeComposition.cookedShaderRoot = cookedShaderRoot;
+            runtimeComposition.cookedResourceRoot = cookedResourceRoot;
+            runtimeComposition.shaderProgramProvider = "CookedShaderArtifactV2";
+        }
+
+        EngineRuntimeDependencies engineDependencies;
+        if (!m_composition->CreateEngineRuntimeDependencies(
+                runtimeComposition, engineDependencies, error))
+        {
+            RVX_CORE_ERROR("Sample host composition could not create Engine dependencies: {}",
+                           error);
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
+        Engine engine(std::move(engineDependencies));
         const std::string applicationName =
             "RenderVerseX - " + registeredInfo->displayName;
         EngineConfig engineConfig;
         engineConfig.appName = applicationName.c_str();
         engineConfig.windowWidth = options.common.width;
         engineConfig.windowHeight = options.common.height;
-        engineConfig.vsync = options.common.frames == 0;
         engineConfig.enableJobSystem = false;
         engineConfig.startupTraceContext = startupTraceContext;
         engineConfig.renderRuntime.backendType = options.common.backend;
+        engineConfig.renderRuntime.swapChain.vsync = options.common.frames == 0;
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
+        RenderPipelineRecipe requestedRecipe{};
+        RenderQualityTier requestedQuality{};
+        const bool pipelineRequestMapped =
+            TryMapSamplePipelineRecipe(
+                sceneOptions.pipelineRecipe, requestedRecipe) &&
+            TryMapSampleQualityTier(
+                sceneOptions.qualityTier, requestedQuality);
+        RVX_ASSERT_MSG(
+            pipelineRequestMapped,
+            "Resolved Sample pipeline contract must map to Render contracts");
+        engineConfig.initialRenderFrameSettings.pipelineRequest.recipe =
+            requestedRecipe;
+        engineConfig.initialRenderFrameSettings.pipelineRequest.quality =
+            requestedQuality;
+        const RenderExecutionBuildIdentity validationBuildIdentity =
+            ReadValidationExecutionBuildIdentity();
+        engineConfig.renderRuntime.executionBuildIdentity =
+            validationBuildIdentity;
+        engineConfig.effectDeterministicSeed = options.deterministicSeed;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
-        engine.SetConfig(engineConfig);
-
         auto* window = engine.AddSubsystem<WindowSubsystem>();
         WindowConfig windowConfig;
         windowConfig.title = applicationName.c_str();
         windowConfig.width = options.common.width;
         windowConfig.height = options.common.height;
-        windowConfig.resizable = options.common.frames == 0 ||
-                                 options.HasLifetimeQualification();
-        windowConfig.vsync = options.common.frames == 0;
+        windowConfig.resizable = options.common.frames == 0 &&
+                                 !options.HasLifetimeQualification();
         windowConfig.graphicsApi =
             options.common.backend == RHIBackendType::OpenGL
                 ? WindowGraphicsApi::OpenGL
@@ -3974,26 +5893,20 @@ namespace RVX
         auto* resourceSubsystem =
             engine.AddSubsystem<Resource::ResourceSubsystem>();
         Resource::ResourceManagerConfig resourceConfig;
-        resourceConfig.asyncThreadCount =
-            std::max(resourceConfig.asyncThreadCount, 1);
-        resourceConfig.startupTraceContext = startupTraceContext;
-        if (!resourceSubsystem->Configure(resourceConfig))
+        if (!m_composition->CreateResourceManagerConfig(
+                runtimeComposition, resourceConfig, error))
         {
-            RVX_CORE_ERROR("Failed to configure ResourceSubsystem startup tracing");
-            static_cast<void>(WriteEarlyFailureAssessment(
-                options.assessmentReportPath,
-                sample.get(),
-                registeredInfo->id,
-                options.common.backend,
-                "RESOURCE.CONFIGURATION.FAILED",
-                "RESOURCE",
-                AssessmentCheckpoints::EngineBaseline,
-                "ResourceSubsystem configuration failed before Engine initialization.",
-                "ResourceSubsystem::Configure returned false."));
+            RVX_CORE_ERROR("Sample host composition could not configure ResourceManager: {}",
+                           error);
             static_cast<void>(startupTimeline.Finalize());
             Log::Shutdown();
             return 1;
         }
+        resourceConfig.asyncThreadCount =
+            std::max(resourceConfig.asyncThreadCount, 1);
+        resourceConfig.startupTraceContext = startupTraceContext;
+        engineConfig.resourceManager = resourceConfig;
+        engine.SetConfig(engineConfig);
         auto* input = engine.AddSubsystem<InputSubsystem>();
         auto* render = engine.AddSubsystem<RenderSubsystem>();
 
@@ -4047,16 +5960,107 @@ namespace RVX
         bool readinessFailed = false;
         bool readinessTimedOut = false;
         bool sampleValidationFailed = false;
+        bool deterministicEpochActive = false;
+        bool deterministicCameraApplied = false;
+        uint64 deterministicTick = 0;
+        uint64 captureCarryingFrameSequence = 0;
+        uint64 captureSceneRuntimeId = 0;
+        uint64 captureCameraEntityPacked = 0;
+        uint64 captureSceneRevision = 0;
+        uint64 captureSurfaceGeneration = 0;
+        uint64 captureConfigurationRevision = 0;
+        std::optional<RenderExecutionReceipt> captureExecutionReceipt{};
+        bool renderQualityBundleRequestAccepted = false;
+        bool renderQualityBundleCompleted = false;
+        bool renderQualityBundleWritten = false;
+        uint64 renderQualityBundleSubmittedFrame = 0;
+        uint64 renderQualityBundleCompletedFrame = 0;
+        std::optional<RenderExecutionReceipt> renderQualityBundleReceipt{};
+        std::shared_ptr<const QualificationCaptureBundle>
+            renderQualityCaptureBundle{};
+        const bool renderQualityAttachmentSeriesRequested =
+            !options.qualificationSeriesPath.empty();
+        bool renderQualityAttachmentSeriesWritten = false;
+        size_t renderQualityAttachmentSeriesNextTick = 0;
+        std::vector<RenderQualityAttachmentSeriesTick>
+            renderQualityAttachmentSeriesTicks{};
+        RenderQualityAttachmentSeriesHardwareIdentity
+            renderQualityAttachmentSeriesHardware{};
+        RenderQualityAttachmentSeriesConfigurationIdentity
+            renderQualityAttachmentSeriesConfiguration{};
+        std::string renderQualityAttachmentSeriesRunId{};
+        std::string renderQualityAttachmentSeriesSourceCommit{};
+        std::string renderQualityAttachmentSeriesPreset{};
+        std::string renderQualityBundleRenderPath{};
+        std::string renderQualityBundleInstancingMode{};
+        bool renderQualityPerformanceRequestAccepted = false;
+        uint32 renderQualityPerformanceHostFrames = 0;
+        std::optional<std::chrono::steady_clock::time_point>
+            renderQualityPerformanceDeadline{};
+        FrozenRenderQualityPerformanceHostProvenance
+            renderQualityPerformanceHostProvenance{};
+        uint32 executedFrames = 0;
+        const auto hasCompletedRequestedTicks = [&]() noexcept
+        {
+            if (options.captureTickResolved)
+            {
+                return deterministicEpochActive &&
+                       deterministicTick >= options.captureTick;
+            }
+            return executedFrames >= options.common.frames;
+        };
         bool finalRenderDrainRequested = false;
         bool finalRenderDrainPresentationSubmitted = false;
         bool finalRenderDrainCaptureQueued = false;
         SampleReadiness sampleReadiness =
             SampleReadiness::Pending("Sample setup has not completed");
-        uint32 executedFrames = 0;
         std::string readinessReason;
         RenderDiagnosticsSnapshot diagnostics = render->GetDiagnosticsSnapshot();
+        SampleScenarioManifest assessmentManifest = *manifest;
         SampleAssessmentContract assessmentContract =
             sample->GetAssessmentContract();
+        if (!ApplyHiZReflectionQualificationProfile(
+                registeredInfo->id,
+                options.common.hiZReflectionQualificationProbeEnabled,
+                assessmentManifest,
+                assessmentContract,
+                error))
+        {
+            std::cerr << error << "\n";
+            engine.Shutdown();
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                registeredInfo->id,
+                options.common.backend,
+                "SAMPLE.HIZ_REFLECTION.PROFILE_INVALID",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The GFX19 Hi-Z reflection qualification profile is invalid.",
+                error));
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
+        if (!ValidateManifestAssessmentContract(
+                assessmentManifest, assessmentContract, error))
+        {
+            std::cerr << error << "\n";
+            engine.Shutdown();
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                registeredInfo->id,
+                options.common.backend,
+                "SAMPLE.MANIFEST.CAPABILITY_MISMATCH",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The Sample manifest and assessment capability contracts disagree.",
+                error));
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
         const bool graphicsTimestampSupported =
             diagnostics.gpuFrameTiming.timestampFrequency != 0;
         const bool requireGpuTiming =
@@ -4083,7 +6087,9 @@ namespace RVX
                            ? std::string("driver-unavailable")
                            : diagnostics.driverVersion);
         assessmentMetadata.fingerprint.renderConfiguration =
-            std::string(GetSampleRenderPathName(sceneOptions.renderPath)) +
+            std::string(GetSamplePipelineRecipeName(
+                sceneOptions.pipelineRecipe)) + "|" +
+            GetSampleRenderPathName(sceneOptions.renderPath) +
             "|" + options.common.quality + "|" +
             std::to_string(options.common.width) + "x" +
             std::to_string(options.common.height) + "|instancing=" +
@@ -4091,8 +6097,30 @@ namespace RVX
             "|validation=" +
             (options.common.enableValidation ? "on" : "off");
         assessmentMetadata.fingerprint.renderConfiguration +=
+            "|fixed-time=" +
+            std::to_string(options.fixedTimeNumerator) + "/" +
+            std::to_string(options.fixedTimeDenominator) +
+            "|deterministic-seed=" +
+            std::to_string(options.deterministicSeed) +
+            "|capture-tick=" + std::to_string(options.captureTick) +
+            "|view=" +
+            (options.viewBookmarkId.empty() ? std::string("default")
+                                            : options.viewBookmarkId);
+        assessmentMetadata.fingerprint.renderConfiguration +=
+            "|sample-manifest-v=" +
+            std::to_string(m_registry.GetManifestSchemaVersion()) +
+            "|sample-manifest-sha256=" +
+            std::string(m_registry.GetManifestContentSha256());
+        assessmentMetadata.fingerprint.renderConfiguration +=
             std::string("|assessment-profile=") +
             GetSampleAssessmentProfileName(options.assessmentProfile);
+        if (options.common.hiZReflectionQualificationProbeEnabled)
+        {
+            assessmentMetadata.fingerprint.renderConfiguration +=
+                "|feature-qualification-profile=gfx19-reflections";
+            assessmentMetadata.values.emplace(
+                "featureQualificationProfile", "gfx19-reflections");
+        }
         if (effectiveReadyWait)
         {
             assessmentMetadata.fingerprint.renderConfiguration +=
@@ -4148,6 +6176,7 @@ namespace RVX
         std::unique_ptr<SampleLifetimeQualification> lifetimeQualification;
         std::chrono::steady_clock::time_point lifetimeReadyStart{};
         bool lifetimeReadyStarted = false;
+        SampleSurfaceQualification lifetimeSurface;
         bool lifetimeReportWritten = true;
         bool resizePending = false;
         bool resizeToAlternateExtent = true;
@@ -4181,7 +6210,8 @@ namespace RVX
 
             RenderFrameSettings renderSettings = engine.GetRenderFrameSettings();
             const SampleAssetRegistry assetRegistry =
-                MakeSampleAssetRegistry(resolvedAssets);
+                MakeSampleAssetRegistry(resolvedAssets,
+                                        options.runtimeOnlyComposition);
             SampleModelLoader models(
                 *runtimeServices,
                 *scene,
@@ -4190,10 +6220,14 @@ namespace RVX
             SampleEnvironmentLoader environments(
                 *runtimeServices,
                 scene->GetSceneRuntimeId(),
-                assetRegistry);
+                assetRegistry,
+                *m_composition);
             SampleAnimationLoader animations(
                 *runtimeServices,
                 scene->GetSceneRuntimeId(),
+                assetRegistry);
+            SampleParticleEffectLoader particleEffects(
+                *resourceSubsystem,
                 assetRegistry);
             SampleSceneLifetimeScope sceneLifetime(*scene);
             const SceneECS::SceneEcsDiagnosticsSnapshot engineBaselineScene =
@@ -4216,9 +6250,69 @@ namespace RVX
                 models,
                 environments,
                 animations,
+                particleEffects,
                 sceneLifetime,
                 sceneOptions,
                 assessmentSession.GetChannel(),
+            };
+
+            const auto applyContractCamera =
+                [&](bool markCut, std::string& outError)
+            {
+                if (selectedBookmark == nullptr)
+                {
+                    return true;
+                }
+                constexpr float32 DegreesToRadians =
+                    0.017453292519943295769f;
+                const float32 aspect =
+                    static_cast<float32>(options.common.width) /
+                    static_cast<float32>(
+                        std::max(options.common.height, 1u));
+                Vec3 position(
+                    selectedBookmark->position[0],
+                    selectedBookmark->position[1],
+                    selectedBookmark->position[2]);
+                const Vec3 target(
+                    selectedBookmark->target[0],
+                    selectedBookmark->target[1],
+                    selectedBookmark->target[2]);
+                if (deterministicEpochActive &&
+                    options.common
+                        .ambientOcclusionQualificationProbeEnabled)
+                {
+                    // GTAO qualification must exercise actual temporal
+                    // reprojection, not merely sample a static history with a
+                    // zero velocity field. Keep this path runner-owned so the
+                    // manifest bookmark remains the deterministic authority.
+                    const float64 seconds =
+                        static_cast<float64>(deterministicTick + 1u) *
+                        options.fixedDeltaSeconds;
+                    position.x += static_cast<float32>(
+                        std::sin(seconds * 2.0) * 0.35);
+                    position.y += static_cast<float32>(
+                        std::sin(seconds * 1.3) * 0.12);
+                }
+                if (!cameras->SetPerspective(
+                        camera,
+                        selectedBookmark->verticalFieldOfViewDegrees *
+                            DegreesToRadians,
+                        aspect,
+                        selectedBookmark->nearPlane,
+                        selectedBookmark->farPlane) ||
+                    !cameras->SetPose(
+                        camera,
+                        {.position = position}) ||
+                    !cameras->LookAt(camera, target) ||
+                    !cameras->SetExposure(
+                        camera, selectedBookmark->exposure) ||
+                    (markCut && !cameras->MarkCut(camera)))
+                {
+                    outError = "Failed to apply Sample camera bookmark '" +
+                               selectedBookmark->id + "'";
+                    return false;
+                }
+                return true;
             };
 
             static_cast<void>(assessmentSession.RecordCheckpoint(
@@ -4288,6 +6382,14 @@ namespace RVX
             const bool qualificationEnabled =
                 options.common.gpuSceneCullingQualificationEnabled ||
                 directRasterReadbackQualificationEnabled;
+            const bool exposureQualificationProbeEnabled =
+                options.common.exposureQualificationProbeEnabled;
+            const bool ambientOcclusionQualificationProbeEnabled =
+                options.common.ambientOcclusionQualificationProbeEnabled;
+            const bool hiZReflectionQualificationProbeEnabled =
+                options.common.hiZReflectionQualificationProbeEnabled;
+            const bool toonOutlineQualificationProbeEnabled =
+                options.common.toonOutlineQualificationProbeEnabled;
             const auto hasQualificationComparison =
                 [directRasterReadbackQualificationEnabled](
                     const SampleRenderDiagnostics& value)
@@ -4319,12 +6421,171 @@ namespace RVX
                     ? render->RequestDirectOpaqueRasterReadbackQualificationCapture()
                     : render->RequestGPUSceneCullingQualificationCapture();
             };
+            const auto hasExposureProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       receipt.postProcess.exposureProbeRequested &&
+                       receipt.postProcess.exposureProbeReady &&
+                       receipt.postProcess.exposureHistoryCandidateProduced &&
+                       receipt.postProcess.exposureHistoryCommitted &&
+                       !receipt.postProcess.exposureHistoryAbandoned;
+            };
+            const auto hasAmbientOcclusionProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
+                    receipt.ambientOcclusion;
+                const bool nonNeutralProbe =
+                    ambientOcclusion.probeSampleCount != 0 &&
+                    ambientOcclusion.probeOccludedSampleCount != 0 &&
+                    ambientOcclusion.probeOccludedSampleCount <
+                        ambientOcclusion.probeSampleCount &&
+                    std::isfinite(ambientOcclusion.probeMinVisibility) &&
+                    std::isfinite(ambientOcclusion.probeMeanVisibility) &&
+                    std::isfinite(ambientOcclusion.probeMaxVisibility) &&
+                    ambientOcclusion.probeMinVisibility >= 0.0f &&
+                    ambientOcclusion.probeMinVisibility < 1.0f &&
+                    ambientOcclusion.probeMeanVisibility >=
+                        ambientOcclusion.probeMinVisibility &&
+                    ambientOcclusion.probeMeanVisibility < 1.0f &&
+                    ambientOcclusion.probeMaxVisibility >=
+                        ambientOcclusion.probeMeanVisibility &&
+                    ambientOcclusion.probeMaxVisibility <= 1.0f;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       ambientOcclusion.IsStructurallyValid() &&
+                       ambientOcclusion.executed &&
+                       ambientOcclusion.outputFormat == RHIFormat::R8_UNORM &&
+                       ambientOcclusion.probeRequested &&
+                       ambientOcclusion.probeReady &&
+                       ambientOcclusion.historyAvailableBefore &&
+                       ambientOcclusion.historySampled &&
+                       ambientOcclusion.velocityInputReady &&
+                       ambientOcclusion.velocityProducerExecuted &&
+                       ambientOcclusion.velocityFieldIdentity != 0 &&
+                       ambientOcclusion.motionReprojectionUsed &&
+                       ambientOcclusion.viewProjectionMotionObserved &&
+                       ambientOcclusion.historyCandidateProduced &&
+                       ambientOcclusion.historyCommitted &&
+                       !ambientOcclusion.historyAbandoned &&
+                       ambientOcclusion.historyResetReasons ==
+                           RenderHistoryResetReason::None &&
+                       ambientOcclusion.lightingConsumerExecuted &&
+                       ambientOcclusion.aoFieldContentHash != 0 &&
+                       ambientOcclusion.aoFieldContentHash ==
+                           ambientOcclusion.lightingAOFieldContentHash &&
+                       ambientOcclusion.consumerMask == 0x7u &&
+                       !ambientOcclusion.fallbackUsed && nonNeutralProbe;
+            };
+            const auto hasToonOutlineProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                return EvaluateSampleToonOutlineQualificationTarget(
+                           value, target)
+                    .IsReady();
+            };
+            const auto hasHiZReflectionProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.hiZReflectionQualificationReceipt;
+                const RenderReflectionDiagnostics& reflection =
+                    value.frameFeatures.hiZReflectionQualification;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       reflection.available && reflection.graphExecutionFinalized &&
+                       reflection.frameSequence == target &&
+                       reflection.requested && reflection.supported &&
+                       reflection.scheduled && reflection.executed &&
+                       reflection.hiZBuilt && reflection.globalIBLReady &&
+                       reflection.fallbackChainResolved &&
+                       reflection.screenSpaceRequested &&
+                       reflection.screenSpaceTraceInputsReady &&
+                       reflection.screenSpaceTraceScheduled &&
+                       reflection.screenSpaceApplied &&
+                       reflection.probesApplied &&
+                       reflection.readyProbeCount != 0 &&
+                       reflection.reflectionRouteEvidenceReady &&
+                       reflection.routeMaskRadianceSchemaVersion == 1 &&
+                       reflection.localProbeRadianceQualified &&
+                       reflection.globalIBLRadianceQualified &&
+                       reflection.hiZMipCount != 0 &&
+                       reflection.hiZGraphPassCount == reflection.hiZMipCount &&
+                       reflection.traceGraphPassCount == 1 &&
+                       reflection.resolveGraphPassCount == 1 &&
+                       reflection.reflectionPlanIdentity != 0 &&
+                       reflection.lightingPlanIdentity != 0 &&
+                       reflection.configurationIdentity != 0 &&
+                       reflection.pipelineIdentity != 0 &&
+                       reflection.depthPyramidIdentity != 0 &&
+                       reflection.reflectionSurfaceIdentity != 0 &&
+                       reflection.exposureStateContentHash != 0 &&
+                       reflection.screenSpaceHitPixelCount != 0 &&
+                       reflection.localProbePixelCount != 0 &&
+                       reflection.globalIBLPixelCount != 0 &&
+                       reflection.reflectionReadbackSampleCount != 0 &&
+                       reflection.reflectionRouteSampleCount != 0 &&
+                       reflection.screenSpaceHitPixelCount +
+                               reflection.localProbePixelCount +
+                               reflection.globalIBLPixelCount ==
+                           reflection.reflectionRouteSampleCount &&
+                       reflection.backgroundPixelCount +
+                               reflection.nonReflectivePixelCount +
+                               reflection.reflectionRouteSampleCount ==
+                           reflection.reflectionReadbackSampleCount &&
+                       reflection.fallbackReason.empty();
+            };
+            const auto hasHiZReflectionCopyPassForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                if (!receipt.IsStructurallyValid() || !receipt.available ||
+                    receipt.frameIdentity.frameSequence != target)
+                {
+                    return false;
+                }
+                const auto reflectionFeature = std::find_if(
+                    receipt.features.begin(),
+                    receipt.features.end(),
+                    [](const RenderFeatureExecutionReceipt& feature)
+                    {
+                        return feature.featureId ==
+                            BuiltinRenderFeatureIds::ReflectionResolve;
+                    });
+                return reflectionFeature != receipt.features.end() &&
+                       std::find(reflectionFeature->graphPassNames.begin(),
+                                 reflectionFeature->graphPassNames.end(),
+                                 "SSRQualificationRouteMaskCopy") !=
+                           reflectionFeature->graphPassNames.end();
+            };
             bool gpuSceneCullingQualificationRequestAccepted =
                 !qualificationEnabled;
+            bool exposureQualificationProbeRequestAccepted =
+                !exposureQualificationProbeEnabled;
+            bool ambientOcclusionQualificationProbeRequestAccepted =
+                !ambientOcclusionQualificationProbeEnabled;
+            bool hiZReflectionQualificationProbeRequestAccepted =
+                !hiZReflectionQualificationProbeEnabled;
+            bool toonOutlineQualificationProbeRequestAccepted =
+                !toonOutlineQualificationProbeEnabled;
             uint64 gpuSceneCullingQualificationTargetFrameSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPublishedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetSubmittedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPresentedSequence = 0;
+            uint64 exposureQualificationProbeTargetFrameSequence = 0;
+            uint64 ambientOcclusionQualificationProbeTargetFrameSequence = 0;
+            uint64 hiZReflectionQualificationProbeTargetFrameSequence = 0;
+            uint64 toonOutlineQualificationProbeTargetFrameSequence = 0;
 
             if (setupSucceeded)
             {
@@ -4354,6 +6615,283 @@ namespace RVX
                     {
                         engine.RequestShutdown();
                         break;
+                    }
+
+                    if (!options.qualificationPerformancePath.empty() &&
+                        renderQualityPerformanceRequestAccepted)
+                    {
+                        const RenderQualityPerformanceDiagnostics& performance =
+                            diagnostics.qualityPerformance;
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Rejected)
+                        {
+                            error = "GFX24 performance session failed: " +
+                                std::string(GetRenderQualityPerformanceFailureName(
+                                    performance.session.failure));
+                            if (!performance.session.diagnostic.empty())
+                            {
+                                error += ": " + performance.session.diagnostic;
+                            }
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Completed)
+                        {
+                            if (!performance.completedEvidence)
+                            {
+                                error =
+                                    "GFX24 performance session completed without immutable evidence";
+                                engine.RequestShutdown();
+                                break;
+                            }
+
+                            RenderQualityPerformanceWriteRequest writeRequest;
+                            if (!BuildRenderQualityPerformanceWriteRequest(
+                                    *performance.completedEvidence,
+                                    renderQualityPerformanceHostProvenance,
+                                    options,
+                                    *manifest,
+                                    writeRequest,
+                                    &error))
+                            {
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            RenderQualityPerformanceWriteResult writeResult;
+                            if (!WriteRenderQualityPerformanceReport(
+                                    writeRequest, writeResult, &error))
+                            {
+                                if (error.empty())
+                                {
+                                    error =
+                                        "Failed to publish GFX24 performance evidence";
+                                }
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            std::error_code expectedError;
+                            std::error_code actualError;
+                            const std::filesystem::path expected =
+                                std::filesystem::weakly_canonical(
+                                    options.qualificationPerformancePath,
+                                    expectedError);
+                            const std::filesystem::path actual =
+                                std::filesystem::weakly_canonical(
+                                    writeResult.reportPath,
+                                    actualError);
+                            if (expectedError || actualError || expected != actual)
+                            {
+                                error =
+                                    "GFX24 performance writer published an unexpected report path";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            engine.RequestShutdown();
+                            continue;
+                        }
+
+                        if (!renderQualityPerformanceDeadline.has_value() ||
+                            std::chrono::steady_clock::now() >=
+                                *renderQualityPerformanceDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "GFX24 performance session exceeded the readiness deadline";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (performance.session.state ==
+                            RenderQualityPerformanceSessionState::Draining)
+                        {
+                            // All 60 warm-up and 300 measured submissions are
+                            // already fixed. Draining must not publish another
+                            // Engine frame that could alter the session data.
+                            diagnostics = frameDriver.PumpRenderProgressOnce();
+                            continue;
+                        }
+                        if (renderQualityPerformanceHostFrames >=
+                            readinessWaitBudget.maximumFrames)
+                        {
+                            error =
+                                "GFX24 performance session exceeded its finite host frame budget";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
+                    if (toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeRequestAccepted)
+                    {
+                        const RenderToonOutlineQualificationRequestResult
+                            admission = render
+                                ->GetToonOutlineQualificationProbeRequestResult();
+                        if (admission.IsRejected())
+                        {
+                            toonOutlineQualificationProbeRequestAccepted =
+                                false;
+                            error = admission.diagnostic != nullptr &&
+                                    admission.diagnostic[0] != '\0'
+                                ? admission.diagnostic
+                                : "Render owner rejected the Toon-outline qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
+                    if (hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeRequestAccepted)
+                    {
+                        const RenderHiZReflectionQualificationRequestResult
+                            admission = render
+                                ->GetHiZReflectionQualificationProbeRequestResult();
+                        if (admission.IsRejected())
+                        {
+                            hiZReflectionQualificationProbeRequestAccepted =
+                                false;
+                            error = admission.diagnostic != nullptr &&
+                                    admission.diagnostic[0] != '\0'
+                                ? admission.diagnostic
+                                : "Render owner rejected the Hi-Z reflection qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
+                    if (exposureQualificationProbeEnabled &&
+                        exposureQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // The target image already presented. Poll only the
+                        // Render owner until its explicit probe completion
+                        // supplements that exact frame's immutable receipt.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Exposure qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasExposureProbeForTarget(
+                                diagnostics,
+                                exposureQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (ambientOcclusionQualificationProbeEnabled &&
+                        ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // GTAO uses the same target-frame discipline as the
+                        // exposure probe: after presentation, progress only
+                        // the Render owner until its immutable receipt is
+                        // supplemented by the explicit probe result.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Ambient-occlusion qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasAmbientOcclusionProbeForTarget(
+                                diagnostics,
+                                ambientOcclusionQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // Route-mask completion belongs to the already
+                        // presented source frame. Progress only the Render
+                        // owner while the physical copy fence resolves.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Hi-Z reflection qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasHiZReflectionProbeForTarget(
+                                diagnostics,
+                                hiZReflectionQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures
+                                    .hiZReflectionQualificationReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // The verifier belongs to the already-presented target
+                        // frame. Progress only the Render owner so a replacement
+                        // frame cannot steal its immutable receipt identity.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Toon-outline qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        const auto targetEvaluation =
+                            EvaluateSampleToonOutlineQualificationTarget(
+                                diagnostics,
+                                toonOutlineQualificationProbeTargetFrameSequence);
+                        if (targetEvaluation.IsReady())
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        else if (targetEvaluation.IsFailed())
+                        {
+                            error = targetEvaluation.diagnostic.empty()
+                                ? "Toon-outline qualification failed for the final target frame"
+                                : targetEvaluation.diagnostic;
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        continue;
                     }
 
                     if (qualificationEnabled &&
@@ -4451,8 +6989,12 @@ namespace RVX
                             // This is the final Engine tick in the protocol.
                             // It publishes the capture-carrying frame, after
                             // which all progress is owner-side completion work.
-                            diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                            diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                             ++executedFrames;
+                            if (deterministicEpochActive)
+                            {
+                                ++deterministicTick;
+                            }
 
                             RuntimeFrameWaitRequest presentationRequest;
                             const uint64 finalPresentationSequence =
@@ -4475,7 +7017,10 @@ namespace RVX
                             // driver switches to Render-only progress as soon
                             // as publication reaches it, so presentation does
                             // not create a replacement frame.
-                            presentationRequest.advanceEngine = true;
+                            ConfigureFrameWaitPolicy(
+                                deterministicEpochActive,
+                                sampleDeltaTime,
+                                presentationRequest);
                             presentationRequest.timeout = std::max(
                                 std::chrono::duration_cast<
                                     std::chrono::milliseconds>(
@@ -4526,6 +7071,36 @@ namespace RVX
                             if (finalRenderDrainCaptureQueued &&
                                 presentationResult.Reached())
                             {
+                                captureCarryingFrameSequence =
+                                    diagnostics.lastCapture.frameSequence;
+                                captureExecutionReceipt =
+                                    diagnostics.frameFeatures.executionReceipt;
+                                captureConfigurationRevision =
+                                    captureExecutionReceipt.has_value() &&
+                                        captureExecutionReceipt->available &&
+                                        captureExecutionReceipt
+                                            ->frameIdentity
+                                            .configurationRevision != 0
+                                        ? captureExecutionReceipt
+                                              ->frameIdentity
+                                              .configurationRevision
+                                        : 0;
+                                const EngineRenderRuntimeDiagnostics
+                                    captureEngineDiagnostics =
+                                        engine.GetRenderRuntimeDiagnostics();
+                                const SceneECS::SceneEcsDiagnosticsSnapshot
+                                    captureSceneDiagnostics =
+                                        scene->GetDiagnosticsSnapshot();
+                                captureSceneRuntimeId =
+                                    captureSceneDiagnostics.sceneRuntimeId
+                                            .GetValue();
+                                captureCameraEntityPacked =
+                                    captureEngineDiagnostics.cameraIdentity;
+                                captureSceneRevision =
+                                    diagnostics.sceneValues
+                                        .requiredSceneRevision;
+                                captureSurfaceGeneration =
+                                    diagnostics.surfaceGeneration;
                                 if (!options.common.screenshotPath.empty())
                                 {
                                     screenshotWritten = WriteSampleScreenshotPPM(
@@ -4637,7 +7212,7 @@ namespace RVX
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
                                       !lifetimeQualification->HasFailed()
-                                : executedFrames >= options.common.frames;
+                                : hasCompletedRequestedTicks();
                         if (sampleReady && requestedRunComplete &&
                             (options.common.screenshotPath.empty() ||
                              screenshotWritten) &&
@@ -4651,6 +7226,45 @@ namespace RVX
                             engine.RequestShutdown();
                         }
                         continue;
+                    }
+
+                    if (options.deterministicContractActive && sampleReady &&
+                        !deterministicEpochActive)
+                    {
+                        frameDriver.ResetFixedTime();
+                        deterministicTick = 0;
+                        if (!engine.ResetEffectFrameTime(options.deterministicSeed))
+                        {
+                            error =
+                                "Engine rejected the deterministic Sample effect clock reset";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (!sample->BeginDeterministicEpoch(context, error))
+                        {
+                            if (error.empty())
+                            {
+                                error =
+                                    "Sample rejected the deterministic epoch reset";
+                            }
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        if (!applyContractCamera(true, error))
+                        {
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        deterministicCameraApplied =
+                            selectedBookmark != nullptr;
+                        if (engine.RequestRenderTemporalReset() == 0)
+                        {
+                            error =
+                                "Render runtime rejected the deterministic Sample history reset";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        deterministicEpochActive = true;
                     }
 
                     // Surface resize is an ordinary runtime event, not a
@@ -4669,17 +7283,38 @@ namespace RVX
                         notifiedViewportHeight = diagnostics.surfaceHeight;
                     }
 
-                    sample->OnInput(context);
-                    sample->Update(context, SampleDeltaTime);
+                    if (!deterministicEpochActive)
+                    {
+                        sample->OnInput(context);
+                    }
+                    sample->Update(context, sampleDeltaTime);
+                    if (deterministicEpochActive &&
+                        !applyContractCamera(false, error))
+                    {
+                        engine.RequestShutdown();
+                        break;
+                    }
 
+                    const uint64 nextLogicalTick =
+                        deterministicEpochActive
+                            ? deterministicTick + 1u
+                            : static_cast<uint64>(executedFrames) + 1u;
+                    const bool explicitCaptureTick =
+                        options.captureTickResolved &&
+                        deterministicEpochActive &&
+                        nextLogicalTick == options.captureTick;
                     const bool fixedCaptureFrame =
                         !lifetimeQualification && !effectiveReadyWait &&
                         options.common.frames > 0 &&
-                        executedFrames + 1u >= options.common.frames;
+                        (options.captureTickResolved
+                             ? explicitCaptureTick
+                             : nextLogicalTick >= options.common.frames);
                     const bool readyCaptureFrame =
                         effectiveReadyWait && sampleReady &&
                         ((!lifetimeQualification &&
-                          executedFrames >= options.common.frames) ||
+                          (options.captureTickResolved
+                               ? explicitCaptureTick
+                               : executedFrames >= options.common.frames)) ||
                          (lifetimeQualification &&
                           lifetimeQualification->IsComplete() &&
                           !lifetimeQualification->HasFailed() &&
@@ -4687,10 +7322,38 @@ namespace RVX
                           !resizePending &&
                           diagnostics.surfaceWidth == options.common.width &&
                           diagnostics.surfaceHeight == options.common.height));
+                    const bool exposureProbeTargetFrame =
+                        exposureQualificationProbeEnabled &&
+                        exposureQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
+                    const bool ambientOcclusionProbeTargetFrame =
+                        ambientOcclusionQualificationProbeEnabled &&
+                        ambientOcclusionQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
+                    const bool hiZReflectionProbeTargetFrame =
+                        hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
+                    const bool toonOutlineProbeTargetFrame =
+                        toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     const bool captureFrame =
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool renderQualityAttachmentSeriesTargetFrame =
+                        renderQualityAttachmentSeriesRequested && sampleReady &&
+                        deterministicEpochActive &&
+                        renderQualityAttachmentSeriesNextTick <
+                            manifest->captureTicks.size() &&
+                        nextLogicalTick == manifest->captureTicks[
+                            renderQualityAttachmentSeriesNextTick];
+                    const bool renderQualityBundleTargetFrame =
+                        renderQualityAttachmentSeriesRequested
+                            ? renderQualityAttachmentSeriesTargetFrame
+                            : (!options.qualificationBundlePath.empty() &&
+                               (fixedCaptureFrame || readyCaptureFrame));
                     constexpr uint64 CaptureRequestId = 1;
                     bool captureQueued = false;
                     if (captureFrame)
@@ -4731,10 +7394,143 @@ namespace RVX
                         }
                     }
 
+                    if (renderQualityBundleTargetFrame)
+                    {
+                        if (renderQualityAttachmentSeriesRequested &&
+                            renderQualityAttachmentSeriesRunId.empty())
+                        {
+                            renderQualityAttachmentSeriesRunId =
+                                ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
+                            renderQualityAttachmentSeriesHardware = {
+                                .backend = GetSampleBackendName(diagnostics.backend),
+                                .adapterName = diagnostics.adapterName,
+                                .driverVersion = diagnostics.driverVersion,
+                                .osBuild = ResolveHostOperatingSystemBuild(),
+                                .capabilityHash =
+                                    diagnostics.capabilityReportSha256};
+                            if (renderQualityAttachmentSeriesRunId.empty() ||
+                                renderQualityAttachmentSeriesHardware.backend.empty() ||
+                                renderQualityAttachmentSeriesHardware.adapterName.empty() ||
+                                renderQualityAttachmentSeriesHardware.driverVersion.empty() ||
+                                renderQualityAttachmentSeriesHardware.osBuild.empty() ||
+                                renderQualityAttachmentSeriesHardware.capabilityHash.empty())
+                            {
+                                error =
+                                    "GFX24 attachment series lacks frozen host hardware provenance";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                        }
+                        renderQualityBundleRequestAccepted =
+                            render->RequestQualificationCaptureBundle();
+                        if (!renderQualityBundleRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the GFX24 semantic attachment bundle request";
+                            engine.RequestShutdown();
+                            break;
+                        }
+
+                        // The Render owner consumes control requests
+                        // asynchronously. Do not publish the carrying frame
+                        // until diagnostics prove the one-shot capture is
+                        // armed; otherwise a completion-only pump can leave an
+                        // Armed request waiting forever for a frame that has
+                        // already been presented.
+                        while (!diagnostics.qualificationCapture.requestPending &&
+                               !engine.ShouldShutdown())
+                        {
+                            const QualificationCaptureDiagnostics& capture =
+                                diagnostics.qualificationCapture.capture;
+                            if (capture.state ==
+                                QualificationCaptureState::Rejected)
+                            {
+                                error =
+                                    "GFX24 bundle capture admission failed: " +
+                                    std::string(
+                                        GetQualificationCaptureFailureName(
+                                            capture.failure));
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            if (std::chrono::steady_clock::now() >=
+                                readinessDeadline)
+                            {
+                                readinessTimedOut = true;
+                                error =
+                                    "GFX24 bundle capture admission exceeded the sample readiness deadline";
+                                engine.RequestShutdown();
+                                break;
+                            }
+                            diagnostics =
+                                frameDriver.PumpRenderProgressOnce();
+                        }
+                        if (engine.ShouldShutdown())
+                        {
+                            break;
+                        }
+                    }
+                    if (exposureProbeTargetFrame)
+                    {
+                        exposureQualificationProbeRequestAccepted =
+                            render->RequestExposureQualificationProbe();
+                        if (!exposureQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit exposure qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (ambientOcclusionProbeTargetFrame)
+                    {
+                        ambientOcclusionQualificationProbeRequestAccepted =
+                            render->RequestAmbientOcclusionQualificationProbe();
+                        if (!ambientOcclusionQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit ambient-occlusion qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (hiZReflectionProbeTargetFrame)
+                    {
+                        hiZReflectionQualificationProbeRequestAccepted =
+                            render->RequestHiZReflectionQualificationProbe();
+                        if (!hiZReflectionQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit Hi-Z reflection qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (toonOutlineProbeTargetFrame)
+                    {
+                        toonOutlineQualificationProbeRequestAccepted =
+                            render->RequestToonOutlineQualificationProbe();
+                        if (!toonOutlineQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit Toon-outline qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
                     const uint64 publishedBeforeOuterTick =
                         diagnostics.lastPublishedFrameSequence;
-                    diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                    diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                     ++executedFrames;
+                    if (renderQualityPerformanceRequestAccepted)
+                    {
+                        ++renderQualityPerformanceHostFrames;
+                    }
+                    if (deterministicEpochActive)
+                    {
+                        ++deterministicTick;
+                    }
 
                     if (options.common.frames > 0)
                     {
@@ -4803,7 +7599,10 @@ namespace RVX
                         // immediately after target publication, so it cannot
                         // publish a replacement frame while waiting to
                         // submit/present the carrying target.
-                        request.advanceEngine = true;
+                        ConfigureFrameWaitPolicy(
+                            deterministicEpochActive,
+                            sampleDeltaTime,
+                            request);
                         const RuntimeFrameWaitResult waitResult =
                             frameDriver.WaitFor(request);
                         diagnostics = waitResult.diagnostics;
@@ -4832,8 +7631,132 @@ namespace RVX
                                 engine.RequestShutdown();
                             }
                         }
+                        if (exposureProbeTargetFrame && waitResult.Reached())
+                        {
+                            exposureQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Exposure qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
+                        if (ambientOcclusionProbeTargetFrame && waitResult.Reached())
+                        {
+                            ambientOcclusionQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Ambient-occlusion qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
+                        if (hiZReflectionProbeTargetFrame && waitResult.Reached())
+                        {
+                            const RenderHiZReflectionQualificationRequestResult
+                                admission = render
+                                    ->GetHiZReflectionQualificationProbeRequestResult();
+                            if (!admission.IsAccepted())
+                            {
+                                hiZReflectionQualificationProbeRequestAccepted =
+                                    false;
+                                error = admission.diagnostic != nullptr &&
+                                        admission.diagnostic[0] != '\0'
+                                    ? admission.diagnostic
+                                    : "Hi-Z reflection qualification probe did not reach Render-owner admission";
+                                engine.RequestShutdown();
+                            }
+                            else if (admission.targetFrameSequence !=
+                                     targetSequence)
+                            {
+                                hiZReflectionQualificationProbeRequestAccepted =
+                                    false;
+                                error =
+                                    "Hi-Z reflection qualification probe bound a different target frame";
+                                engine.RequestShutdown();
+                            }
+                            else if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Hi-Z reflection qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                            else if (!hasHiZReflectionCopyPassForTarget(
+                                         diagnostics, targetSequence))
+                            {
+                                error =
+                                    "Hi-Z reflection qualification target did not register SSRQualificationRouteMaskCopy";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                hiZReflectionQualificationProbeTargetFrameSequence =
+                                    targetSequence;
+                            }
+                        }
+                        if (toonOutlineProbeTargetFrame && waitResult.Reached())
+                        {
+                            toonOutlineQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Toon-outline qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
                         if (captureFrame && captureQueued && waitResult.Reached())
                         {
+                            captureCarryingFrameSequence =
+                                diagnostics.lastCapture.frameSequence;
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            captureConfigurationRevision =
+                                captureExecutionReceipt.has_value() &&
+                                    captureExecutionReceipt->available &&
+                                    captureExecutionReceipt->frameIdentity
+                                            .configurationRevision !=
+                                        0
+                                    ? captureExecutionReceipt->frameIdentity
+                                          .configurationRevision
+                                    : 0;
+                            const EngineRenderRuntimeDiagnostics
+                                captureEngineDiagnostics =
+                                    engine.GetRenderRuntimeDiagnostics();
+                            const SceneECS::SceneEcsDiagnosticsSnapshot
+                                captureSceneDiagnostics =
+                                    scene->GetDiagnosticsSnapshot();
+                            captureSceneRuntimeId =
+                                captureSceneDiagnostics.sceneRuntimeId
+                                    .GetValue();
+                            captureCameraEntityPacked =
+                                captureEngineDiagnostics.cameraIdentity;
+                            captureSceneRevision =
+                                diagnostics.sceneValues.requiredSceneRevision;
+                            captureSurfaceGeneration =
+                                diagnostics.surfaceGeneration;
                             if (!options.common.screenshotPath.empty())
                             {
                                 screenshotWritten = WriteSampleScreenshotPPM(
@@ -4845,6 +7768,434 @@ namespace RVX
                             {
                                 pixelProbeCaptured = diagnostics.lastCapture
                                                          .HasMatchingCompletedPixelProbe();
+                            }
+                        }
+                        if (renderQualityBundleTargetFrame &&
+                            waitResult.Reached())
+                        {
+                            const RenderExecutionReceipt& receipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            if (!receipt.available || !receipt.graphComposed ||
+                                !receipt.executionSucceeded ||
+                                !receipt.presented || !receipt.succeeded ||
+                                !receipt.IsStructurallyValid() ||
+                                receipt.frameIdentity.frameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "GFX24 bundle target did not retain an exact successful presentation receipt";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                const SampleRenderDiagnostics
+                                    completedFrameDiagnostics =
+                                        MakeSampleRenderDiagnostics(
+                                            diagnostics, engine);
+                                renderQualityBundleRenderPath =
+                                    ResolveActualRenderPath(
+                                        sceneOptions.renderPath,
+                                        completedFrameDiagnostics);
+                                renderQualityBundleInstancingMode =
+                                    GetRenderInstancingModeName(
+                                        engine.GetRenderFrameSettings()
+                                            .instancingMode);
+                                if (renderQualityBundleRenderPath ==
+                                        "unavailable" ||
+                                    renderQualityBundleInstancingMode ==
+                                        "Invalid")
+                                {
+                                    error =
+                                        "GFX24 bundle target lacks actual render-path or applied instancing evidence";
+                                    engine.RequestShutdown();
+                                }
+                                renderQualityBundleReceipt = receipt;
+                                renderQualityBundleSubmittedFrame =
+                                    targetSequence;
+
+                                // The capture is a completion-owned artifact,
+                                // so its wait must share the same wall-clock
+                                // budget as the surrounding readiness wait.
+                                // A fixed iteration count made this path
+                                // dependent on scheduler timing and could
+                                // busy-poll long after the readiness budget
+                                // had expired. PumpRenderProgressOnce already
+                                // yields a bounded scheduling quantum; the
+                                // deadline below is the single source of
+                                // truth for how long the host may wait.
+                                while (!engine.ShouldShutdown())
+                                {
+                                    const auto pollNow =
+                                        std::chrono::steady_clock::now();
+                                    if (pollNow >= readinessDeadline)
+                                    {
+                                        readinessTimedOut = true;
+                                        error =
+                                            "GFX24 bundle capture exceeded the sample readiness deadline (state=" +
+                                            std::to_string(static_cast<uint32>(
+                                                diagnostics
+                                                    .qualificationCapture
+                                                    .capture.state)) +
+                                            ", requestPending=" +
+                                            (diagnostics
+                                                     .qualificationCapture
+                                                     .requestPending
+                                                 ? "true"
+                                                 : "false") +
+                                            ")";
+                                        engine.RequestShutdown();
+                                        break;
+                                    }
+
+                                    const RenderQualificationCaptureDiagnostics&
+                                        qualification =
+                                        diagnostics.qualificationCapture;
+                                    if (qualification.capture.state ==
+                                            QualificationCaptureState::Completed &&
+                                        qualification.completedBundle)
+                                    {
+                                        const QualificationCaptureBundle& bundle =
+                                            *qualification.completedBundle;
+                                        if (bundle.identity.frameIdentity !=
+                                                receipt.frameIdentity ||
+                                            bundle.identity.viewIdentity !=
+                                                receipt.viewIdentity ||
+                                            !bundle.identity.IsValid())
+                                        {
+                                            error =
+                                                "Completed GFX24 bundle identity does not match its frozen presentation receipt";
+                                            engine.RequestShutdown();
+                                        }
+                                        else
+                                        {
+                                            renderQualityCaptureBundle =
+                                                qualification.completedBundle;
+                                            renderQualityBundleCompletedFrame =
+                                                targetSequence;
+                                            renderQualityBundleCompleted = true;
+                                        }
+                                        break;
+                                    }
+                                    if (qualification.capture.state ==
+                                        QualificationCaptureState::Rejected)
+                                    {
+                                        error =
+                                            "GFX24 bundle capture failed: " +
+                                            std::string(
+                                                GetQualificationCaptureFailureName(
+                                                    qualification.capture.failure));
+                                        engine.RequestShutdown();
+                                        break;
+                                    }
+                                    diagnostics =
+                                        frameDriver.PumpRenderProgressOnce();
+                                }
+                                if (!renderQualityBundleCompleted &&
+                                    error.empty())
+                                {
+                                    error =
+                                        "GFX24 bundle capture did not reach exact GPU completion";
+                                    engine.RequestShutdown();
+                                }
+                                if (renderQualityBundleCompleted &&
+                                    renderQualityCaptureBundle &&
+                                    renderQualityBundleReceipt.has_value())
+                                {
+                                    RenderQualityQualificationWriteRequest
+                                        writeRequest;
+                                    const uint64 renderQualityBundleCaptureTick =
+                                        renderQualityAttachmentSeriesRequested
+                                            ? manifest->captureTicks[
+                                                  renderQualityAttachmentSeriesNextTick]
+                                            : options.captureTick;
+                                    std::string renderQualityBundleDirectory;
+                                    if (renderQualityAttachmentSeriesRequested)
+                                    {
+                                        const std::string tickText =
+                                            std::to_string(
+                                                renderQualityBundleCaptureTick);
+                                        renderQualityBundleDirectory = "tick-" +
+                                            std::string(
+                                                tickText.size() < 6U
+                                                    ? 6U - tickText.size()
+                                                    : 0U,
+                                                '0') +
+                                            tickText;
+                                        const std::filesystem::path seriesRoot =
+                                            options.qualificationSeriesPath
+                                                    .has_parent_path()
+                                                ? options.qualificationSeriesPath
+                                                      .parent_path()
+                                                : std::filesystem::path(".");
+                                        writeRequest.outputRoot = seriesRoot /
+                                            renderQualityBundleDirectory;
+                                    }
+                                    else
+                                    {
+                                        writeRequest.outputRoot =
+                                            options.qualificationBundlePath
+                                                    .has_parent_path()
+                                                ? options.qualificationBundlePath
+                                                      .parent_path()
+                                                : std::filesystem::path(".");
+                                    }
+                                    writeRequest.sampleId = registeredInfo->id;
+                                    writeRequest.cameraBookmarkId =
+                                        options.viewBookmarkId;
+                                    writeRequest.runId =
+                                        renderQualityAttachmentSeriesRequested
+                                            ? renderQualityAttachmentSeriesRunId
+                                            : ReadEnvironmentString(
+                                                  "RVX_VALIDATION_RUN_ID");
+                                    writeRequest.renderPath =
+                                        renderQualityBundleRenderPath;
+                                    writeRequest.instancingMode =
+                                        renderQualityBundleInstancingMode;
+                                    writeRequest.captureTick =
+                                        renderQualityBundleCaptureTick;
+                                    writeRequest.visualContractVersion =
+                                        manifest->visualContractVersion;
+                                    writeRequest.submittedFrame =
+                                        renderQualityBundleSubmittedFrame;
+                                    writeRequest.completedFrame =
+                                        renderQualityBundleCompletedFrame;
+
+                                    RenderQualityQualificationWriteResult
+                                        writeResult;
+                                    if (!WriteRenderQualityQualificationBundle(
+                                            writeRequest,
+                                            *renderQualityCaptureBundle,
+                                            *renderQualityBundleReceipt,
+                                            writeResult,
+                                            &error))
+                                    {
+                                        if (error.empty())
+                                        {
+                                            error =
+                                                "Failed to publish the completed GFX24 qualification bundle";
+                                        }
+                                        engine.RequestShutdown();
+                                    }
+                                    else
+                                    {
+                                        std::error_code expectedError;
+                                        std::error_code actualError;
+                                        const std::filesystem::path expectedOutput =
+                                            renderQualityAttachmentSeriesRequested
+                                                ? ((options.qualificationSeriesPath
+                                                            .has_parent_path()
+                                                        ? options
+                                                              .qualificationSeriesPath
+                                                              .parent_path()
+                                                        : std::filesystem::path(".")) /
+                                                   renderQualityBundleDirectory /
+                                                   "bundle.json")
+                                                : options.qualificationBundlePath;
+                                        const std::filesystem::path expected =
+                                            std::filesystem::weakly_canonical(
+                                                expectedOutput, expectedError);
+                                        const std::filesystem::path actual =
+                                            std::filesystem::weakly_canonical(
+                                                writeResult.bundlePath,
+                                                actualError);
+                                        if (expectedError || actualError ||
+                                            expected != actual)
+                                        {
+                                            error =
+                                                "GFX24 qualification writer published an unexpected manifest path";
+                                            engine.RequestShutdown();
+                                        }
+                                        else
+                                        {
+                                            if (!renderQualityAttachmentSeriesRequested)
+                                            {
+                                                renderQualityBundleWritten = true;
+                                            }
+                                            else
+                                            {
+                                                const RenderExecutionReceipt
+                                                    completedReceipt =
+                                                        *renderQualityBundleReceipt;
+                                                if (writeResult.bundleSha256.size() !=
+                                                        64U ||
+                                                    completedReceipt.build.sourceCommit.empty() ||
+                                                    completedReceipt.build.preset.empty() ||
+                                                    writeResult
+                                                            .renderConfigurationIdentity
+                                                            .renderConfigurationHash
+                                                            .size() != 64U ||
+                                                    GetSampleBackendName(
+                                                        completedReceipt.backend) !=
+                                                        renderQualityAttachmentSeriesHardware
+                                                            .backend ||
+                                                    (!renderQualityAttachmentSeriesSourceCommit
+                                                          .empty() &&
+                                                     (renderQualityAttachmentSeriesSourceCommit !=
+                                                          completedReceipt.build.sourceCommit ||
+                                                      renderQualityAttachmentSeriesPreset !=
+                                                          completedReceipt.build.preset)) ||
+                                                    (!renderQualityAttachmentSeriesConfiguration
+                                                          .renderConfigurationHash
+                                                          .empty() &&
+                                                     renderQualityAttachmentSeriesConfiguration !=
+                                                         writeResult
+                                                             .renderConfigurationIdentity))
+                                                {
+                                                    error =
+                                                        "GFX24 attachment series bundle does not share frozen build, runtime configuration, or hardware identity";
+                                                    engine.RequestShutdown();
+                                                }
+                                                else
+                                                {
+                                                    renderQualityAttachmentSeriesSourceCommit =
+                                                        completedReceipt.build.sourceCommit;
+                                                    renderQualityAttachmentSeriesPreset =
+                                                        completedReceipt.build.preset;
+                                                    renderQualityAttachmentSeriesConfiguration =
+                                                        writeResult
+                                                            .renderConfigurationIdentity;
+                                                    RenderQualityAttachmentSeriesTick seriesTick;
+                                                    seriesTick.captureTick =
+                                                        renderQualityBundleCaptureTick;
+                                                    seriesTick.bundleId =
+                                                        renderQualityCaptureBundle
+                                                            ->identity.bundleId;
+                                                    seriesTick.bundlePath =
+                                                        renderQualityBundleDirectory +
+                                                        "/bundle.json";
+                                                    seriesTick.bundleSha256 =
+                                                        writeResult.bundleSha256;
+                                                    seriesTick
+                                                        .receiptSha256 =
+                                                        writeResult
+                                                            .renderExecutionReceiptSha256;
+                                                    seriesTick.frameSequence =
+                                                        completedReceipt.frameIdentity
+                                                            .frameSequence;
+                                                    seriesTick.submittedFrame =
+                                                        renderQualityBundleSubmittedFrame;
+                                                    seriesTick.completedFrame =
+                                                        renderQualityBundleCompletedFrame;
+                                                    renderQualityAttachmentSeriesTicks
+                                                        .push_back(std::move(seriesTick));
+                                                    ++renderQualityAttachmentSeriesNextTick;
+                                                    renderQualityBundleRequestAccepted = false;
+                                                    renderQualityBundleCompleted = false;
+                                                    renderQualityCaptureBundle.reset();
+                                                    renderQualityBundleReceipt.reset();
+                                                    renderQualityBundleSubmittedFrame = 0;
+                                                    renderQualityBundleCompletedFrame = 0;
+                                                    if (renderQualityAttachmentSeriesNextTick ==
+                                                        manifest->captureTicks.size())
+                                                    {
+                                                        RenderQualityAttachmentSeriesWriteRequest
+                                                            seriesRequest;
+                                                        seriesRequest.outputPath =
+                                                            options.qualificationSeriesPath;
+                                                        seriesRequest.sourceCommit =
+                                                            renderQualityAttachmentSeriesSourceCommit;
+                                                        seriesRequest.runId =
+                                                            renderQualityAttachmentSeriesRunId;
+                                                        seriesRequest.preset =
+                                                            renderQualityAttachmentSeriesPreset;
+                                                        seriesRequest.qualificationIdentity = {
+                                                            .sampleId = registeredInfo->id,
+                                                            .pipeline = GetRenderPipelineRecipeName(
+                                                                completedReceipt.resolvedRecipe),
+                                                            .quality = GetRenderQualityTierName(
+                                                                completedReceipt.quality),
+                                                            .backend = GetSampleBackendName(
+                                                                completedReceipt.backend),
+                                                            .view = options.viewBookmarkId,
+                                                            .visualContractVersion =
+                                                                manifest->visualContractVersion};
+                                                        seriesRequest.hardwareIdentity =
+                                                            renderQualityAttachmentSeriesHardware;
+                                                        seriesRequest
+                                                            .renderConfigurationIdentity =
+                                                            renderQualityAttachmentSeriesConfiguration;
+                                                        seriesRequest.manifestSha256 = std::string(
+                                                            m_registry.GetManifestContentSha256());
+                                                        seriesRequest.ticks =
+                                                            renderQualityAttachmentSeriesTicks;
+                                                        RenderQualityAttachmentSeriesWriteResult
+                                                            seriesResult;
+                                                        if (!WriteRenderQualityAttachmentSeries(
+                                                                seriesRequest,
+                                                                seriesResult,
+                                                                &error))
+                                                        {
+                                                            if (error.empty())
+                                                            {
+                                                                error =
+                                                                    "Failed to publish the completed GFX24 attachment series";
+                                                            }
+                                                            engine.RequestShutdown();
+                                                        }
+                                                        else
+                                                        {
+                                                            std::error_code expectedSeriesError;
+                                                            std::error_code actualSeriesError;
+                                                            const std::filesystem::path expectedSeries =
+                                                                std::filesystem::weakly_canonical(
+                                                                    options
+                                                                        .qualificationSeriesPath,
+                                                                    expectedSeriesError);
+                                                            const std::filesystem::path actualSeries =
+                                                                std::filesystem::weakly_canonical(
+                                                                    seriesResult.seriesPath,
+                                                                    actualSeriesError);
+                                                            if (expectedSeriesError ||
+                                                                actualSeriesError ||
+                                                                expectedSeries != actualSeries ||
+                                                                seriesResult.seriesSha256.size() !=
+                                                                    64U)
+                                                            {
+                                                                error =
+                                                                    "GFX24 attachment series writer published an unexpected manifest path";
+                                                                engine.RequestShutdown();
+                                                            }
+                                                            else
+                                                            {
+                                                                captureExecutionReceipt =
+                                                                    completedReceipt;
+                                                                captureCarryingFrameSequence =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .frameSequence;
+                                                                captureSceneRuntimeId =
+                                                                    completedReceipt
+                                                                        .viewIdentity
+                                                                        .sceneRuntimeId;
+                                                                captureCameraEntityPacked =
+                                                                    completedReceipt
+                                                                        .viewIdentity
+                                                                        .cameraEntityPacked;
+                                                                captureSceneRevision =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .sceneRevision;
+                                                                captureSurfaceGeneration =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .surfaceGeneration;
+                                                                captureConfigurationRevision =
+                                                                    completedReceipt
+                                                                        .frameIdentity
+                                                                        .configurationRevision;
+                                                                renderQualityAttachmentSeriesWritten = true;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         if (!waitResult.Reached() ||
@@ -4932,14 +8283,33 @@ namespace RVX
                             lifetimeReadyStart =
                                 std::chrono::steady_clock::now();
                             lifetimeReadyStarted = true;
+                            lifetimeSurface.Begin(diagnostics.surfaceWidth,
+                                                  diagnostics.surfaceHeight,
+                                                  diagnostics.surfaceGeneration);
                         }
 
-                        if (resizePending &&
-                            diagnostics.surfaceWidth == pendingResizeWidth &&
-                            diagnostics.surfaceHeight == pendingResizeHeight &&
-                            notifiedViewportWidth == pendingResizeWidth &&
-                            notifiedViewportHeight == pendingResizeHeight)
+                        const auto surfaceObservation = lifetimeSurface.Observe(
+                            diagnostics.surfaceWidth, diagnostics.surfaceHeight,
+                            diagnostics.surfaceGeneration);
+                        if (surfaceObservation == SampleSurfaceObservation::UnexpectedChange)
                         {
+                            error = "Unexpected native surface change during lifetime qualification: expected=" +
+                                std::to_string(lifetimeSurface.GetExpectedWidth()) + "x" +
+                                std::to_string(lifetimeSurface.GetExpectedHeight()) + " actual=" +
+                                std::to_string(diagnostics.surfaceWidth) + "x" +
+                                std::to_string(diagnostics.surfaceHeight) + " generation=" +
+                                std::to_string(diagnostics.surfaceGeneration);
+                            lifetimeQualification->Fail(error);
+                            engine.RequestShutdown();
+                        }
+                        if (surfaceObservation == SampleSurfaceObservation::ResizeAccepted)
+                        {
+                            // The post-wait diagnostics already contain the
+                            // renderer-accepted extent, while the ordinary
+                            // sample viewport callback runs at the start of
+                            // the next outer tick. Begin lifetime settling
+                            // now so this first resized frame is never checked
+                            // against the prior extent's allocation plateau.
                             lifetimeQualification->NotifyResize();
                             resizePending = false;
                         }
@@ -4969,7 +8339,8 @@ namespace RVX
                         {
                             pendingResizeWidth = options.common.width;
                             pendingResizeHeight = options.common.height;
-                            if (!window->RequestResize(pendingResizeWidth,
+                            if (!lifetimeSurface.Request(pendingResizeWidth, pendingResizeHeight) ||
+                                !window->RequestResize(pendingResizeWidth,
                                                        pendingResizeHeight))
                             {
                                 lifetimeQualification->Fail(
@@ -5033,7 +8404,8 @@ namespace RVX
                                                       : options.common.height;
                             resizeToAlternateExtent =
                                 !resizeToAlternateExtent;
-                            if (!window->RequestResize(pendingResizeWidth,
+                            if (!lifetimeSurface.Request(pendingResizeWidth, pendingResizeHeight) ||
+                                !window->RequestResize(pendingResizeWidth,
                                                        pendingResizeHeight))
                             {
                                 lifetimeQualification->Fail(
@@ -5047,6 +8419,98 @@ namespace RVX
                                 resizePending = true;
                             }
                         }
+                    }
+
+                    if (!options.qualificationPerformancePath.empty() &&
+                        !renderQualityPerformanceRequestAccepted &&
+                        HasMissedRenderQualityPerformanceSessionStart(
+                            sampleReady,
+                            deterministicEpochActive,
+                            deterministicTick,
+                            options.captureTick))
+                    {
+                        error = sampleReady
+                            ? "GFX24 performance session missed its declared deterministic session-start tick"
+                            : "GFX24 performance sample was not Ready at its declared deterministic session-start tick";
+                        engine.RequestShutdown();
+                        break;
+                    }
+
+                    if (!options.qualificationPerformancePath.empty() &&
+                        !renderQualityPerformanceRequestAccepted &&
+                        ShouldArmRenderQualityPerformanceSession(
+                            sampleReady,
+                            deterministicEpochActive,
+                            deterministicTick,
+                            options.captureTick))
+                    {
+                        std::error_code outputExistsError;
+                        if (std::filesystem::exists(
+                                options.qualificationPerformancePath,
+                                outputExistsError) ||
+                            outputExistsError)
+                        {
+                            error =
+                                "GFX24 performance output already exists or cannot be inspected";
+                            engine.RequestShutdown();
+                            break;
+                        }
+
+                        renderQualityPerformanceHostProvenance.runId =
+                            ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
+                        renderQualityPerformanceHostProvenance.adapterName =
+                            diagnostics.adapterName;
+                        renderQualityPerformanceHostProvenance.driverVersion =
+                            diagnostics.driverVersion;
+                        renderQualityPerformanceHostProvenance.osBuild =
+                            options.qualificationPerformanceOsBuild;
+                        renderQualityPerformanceHostProvenance.capabilityHash =
+                            diagnostics.capabilityReportSha256;
+                        if (renderQualityPerformanceHostProvenance.runId.empty() ||
+                            renderQualityPerformanceHostProvenance.adapterName.empty() ||
+                            renderQualityPerformanceHostProvenance.driverVersion.empty() ||
+                            renderQualityPerformanceHostProvenance.osBuild.empty() ||
+                            renderQualityPerformanceHostProvenance.capabilityHash.empty())
+                        {
+                            error =
+                                "GFX24 performance session cannot freeze complete host provenance";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        renderQualityPerformanceRequestAccepted =
+                            render->RequestRenderQualityPerformanceSession();
+                        if (!renderQualityPerformanceRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the GFX24 performance session request";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        // The scene readiness timeout and this fixed
+                        // completion-owned run are independent budgets.  A
+                        // slow but valid resource activation must not consume
+                        // the time reserved for its 360 session submissions
+                        // and terminal GPU drain.
+                        renderQualityPerformanceDeadline =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(
+                                readinessWaitBudget.timeoutMs);
+                        // The request is consumed by the Render owner. Begin
+                        // regular exact Graphics submissions on the next host
+                        // iteration so no pre-session frame is counted.
+                        continue;
+                    }
+
+                    if (ShouldDeferGenericFiniteCompletion(
+                            renderQualityPerformanceRequestAccepted))
+                    {
+                        // Performance owns its exact 60 + 300 submission
+                        // lifetime.  The generic finite-frame completion
+                        // policy below would otherwise see its one-frame
+                        // host sentinel as complete after the first measured
+                        // submission and tear down the session before its
+                        // Render-owned evidence can drain.
+                        continue;
                     }
 
                     // A drain-capable sample has proved all ordinary scene,
@@ -5075,7 +8539,7 @@ namespace RVX
                         continue;
                     }
                     if (!effectiveReadyWait &&
-                        executedFrames >= options.common.frames)
+                        hasCompletedRequestedTicks())
                     {
                         engine.RequestShutdown();
                     }
@@ -5087,18 +8551,42 @@ namespace RVX
                              screenshotWritten) &&
                             (!options.common.pixelProbeEnabled ||
                              pixelProbeCaptured) &&
+                            (options.qualificationBundlePath.empty() ||
+                             renderQualityBundleWritten) &&
+                            (options.qualificationSeriesPath.empty() ||
+                             renderQualityAttachmentSeriesWritten) &&
                             (!qualificationEnabled ||
                              (gpuSceneCullingQualificationTargetFrameSequence != 0 &&
                               hasQualificationComparison(
                                   frameReadinessDiagnostics) &&
                               qualificationMatchesTargetFrame(
                                   frameReadinessDiagnostics,
-                                  gpuSceneCullingQualificationTargetFrameSequence)));
+                                  gpuSceneCullingQualificationTargetFrameSequence))) &&
+                            (!exposureQualificationProbeEnabled ||
+                             (exposureQualificationProbeTargetFrameSequence != 0 &&
+                              hasExposureProbeForTarget(
+                                  diagnostics,
+                                  exposureQualificationProbeTargetFrameSequence))) &&
+                            (!ambientOcclusionQualificationProbeEnabled ||
+                             (ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                              hasAmbientOcclusionProbeForTarget(
+                                  diagnostics,
+                                  ambientOcclusionQualificationProbeTargetFrameSequence))) &&
+                            (!hiZReflectionQualificationProbeEnabled ||
+                             (hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                              hasHiZReflectionProbeForTarget(
+                                  diagnostics,
+                                  hiZReflectionQualificationProbeTargetFrameSequence))) &&
+                            (!toonOutlineQualificationProbeEnabled ||
+                             (toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                              hasToonOutlineProbeForTarget(
+                                  diagnostics,
+                                  toonOutlineQualificationProbeTargetFrameSequence)));
                         const bool requestedRunComplete =
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
                                       !lifetimeQualification->HasFailed()
-                                : executedFrames >= options.common.frames;
+                                : hasCompletedRequestedTicks();
                         if (requestedRunComplete &&
                             readyAndCaptured)
                         {
@@ -5198,12 +8686,15 @@ namespace RVX
                             ? "Sample-specific completion contract failed"
                             : validationError;
             }
-            bool succeeded = sampleResultValid &&
+            bool succeeded = error.empty() && sampleResultValid &&
                               diagnostics.backend != RHIBackendType::None &&
                               diagnostics.lastPresentedFrameSequence > 0 &&
                              features.available && features.renderAttempted &&
                              features.rendered && features.graphBuilt &&
-                             features.graphCompiled;
+                             features.graphCompiled &&
+                             features.executionReceipt.available &&
+                             features.executionReceipt.presented &&
+                             features.executionReceipt.succeeded;
             if (lifetimeQualification)
             {
                 if (!lifetimeQualification->IsComplete())
@@ -5271,6 +8762,107 @@ namespace RVX
                     error = directRasterReadbackQualificationEnabled
                         ? "Direct Opaque raster readback qualification reported a value mismatch"
                         : "GPUScene culling qualification reported a value mismatch";
+                }
+            }
+            if (exposureQualificationProbeEnabled)
+            {
+                const bool exposureProbeCompleted =
+                    exposureQualificationProbeTargetFrameSequence != 0 &&
+                    hasExposureProbeForTarget(
+                        diagnostics,
+                        exposureQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        exposureQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->postProcess.exposureProbeRequested &&
+                    captureExecutionReceipt->postProcess.exposureProbeReady;
+                succeeded &= exposureQualificationProbeRequestAccepted &&
+                             exposureProbeCompleted;
+                if (!exposureQualificationProbeRequestAccepted && error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit exposure qualification probe";
+                }
+                else if (!exposureProbeCompleted && error.empty())
+                {
+                    error =
+                        "Exposure qualification probe did not complete for the capture frame";
+                }
+            }
+            if (ambientOcclusionQualificationProbeEnabled)
+            {
+                const bool ambientOcclusionProbeCompleted =
+                    ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                    hasAmbientOcclusionProbeForTarget(
+                        diagnostics,
+                        ambientOcclusionQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        ambientOcclusionQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->ambientOcclusion.probeRequested &&
+                    captureExecutionReceipt->ambientOcclusion.probeReady;
+                succeeded &= ambientOcclusionQualificationProbeRequestAccepted &&
+                             ambientOcclusionProbeCompleted;
+                if (!ambientOcclusionQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit ambient-occlusion qualification probe";
+                }
+                else if (!ambientOcclusionProbeCompleted && error.empty())
+                {
+                    error =
+                        "Ambient-occlusion qualification probe did not complete for the capture frame";
+                }
+            }
+            if (hiZReflectionQualificationProbeEnabled)
+            {
+                const bool hiZReflectionProbeCompleted =
+                    hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                    hasHiZReflectionProbeForTarget(
+                        diagnostics,
+                        hiZReflectionQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        hiZReflectionQualificationProbeTargetFrameSequence;
+                succeeded &= hiZReflectionQualificationProbeRequestAccepted &&
+                             hiZReflectionProbeCompleted;
+                if (!hiZReflectionQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit Hi-Z reflection qualification probe";
+                }
+                else if (!hiZReflectionProbeCompleted && error.empty())
+                {
+                    error =
+                        "Hi-Z reflection qualification probe did not complete for the capture frame";
+                }
+            }
+            if (toonOutlineQualificationProbeEnabled)
+            {
+                const bool toonOutlineProbeCompleted =
+                    toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                    hasToonOutlineProbeForTarget(
+                        diagnostics,
+                        toonOutlineQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        toonOutlineQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->toonLighting.IsExecutionReady() &&
+                    captureExecutionReceipt->toonOutline.IsQualificationReady();
+                succeeded &= toonOutlineQualificationProbeRequestAccepted &&
+                             toonOutlineProbeCompleted;
+                if (!toonOutlineQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit Toon-outline qualification probe";
+                }
+                else if (!toonOutlineProbeCompleted && error.empty())
+                {
+                    error =
+                        "Toon-outline qualification probe did not complete for the capture frame";
                 }
             }
             if (!succeeded && error.empty())
@@ -5353,12 +8945,37 @@ namespace RVX
                     models,
                     environments,
                     animations,
+                    particleEffects,
                     assessmentSession);
             const auto primaryModelContentReceipt =
                 GetModelContentVerificationReceipt(models, resolvedAssets.model);
-            const bool primaryModelLoaded =
-                primaryModelContentReceipt.has_value() &&
-                primaryModelContentReceipt->IsVerified();
+            // Preserve the long-standing Model primary-asset contract, but do
+            // not manufacture a Model identity for effect-only scenarios.
+            // A mixed scenario keeps its selected Model as primary; otherwise
+            // the explicitly selected effect becomes the report's primary
+            // asset and is backed by its own owner-thread verification receipt.
+            const ResolvedSampleAsset* primaryAsset =
+                resolvedAssets.model.selected ? &resolvedAssets.model : nullptr;
+            std::optional<Resource::ResourceContentVerificationReceipt>
+                primaryAssetContentReceipt = primaryModelContentReceipt;
+            if (primaryAsset == nullptr && !sceneOptions.effectAssetId.empty())
+            {
+                const auto selectedEffect = std::find_if(
+                    resolvedAssets.effects.begin(),
+                    resolvedAssets.effects.end(),
+                    [&sceneOptions](const ResolvedSampleAsset& asset)
+                    {
+                        return asset.selected &&
+                               asset.entry.id == sceneOptions.effectAssetId;
+                    });
+                if (selectedEffect != resolvedAssets.effects.end())
+                {
+                    primaryAsset = &*selectedEffect;
+                    primaryAssetContentReceipt =
+                        GetEffectContentVerificationReceipt(
+                            particleEffects, *selectedEffect);
+                }
+            }
             const SceneECS::SceneEcsDiagnosticsSnapshot reportSceneDiagnostics =
                 scene->GetDiagnosticsSnapshot();
             const WorldEcsRuntimeServicesDiagnostics reportServiceDiagnostics =
@@ -5369,11 +8986,15 @@ namespace RVX
             // below.  Start from the neutral value so a fully successful run
             // is not permanently forced to false by the default member value.
             report.pass = true;
-            report.schemaVersion = options.common.pixelProbeEnabled &&
-                                       !options.common
-                                            .directOpaqueRasterReadbackQualificationEnabled
-                                       ? RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION
-                                       : RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+            report.schemaVersion = options.deterministicContractActive
+                                       ? RVX_SAMPLE_REPORT_SCHEMA_VERSION
+                                       : (options.common.pixelProbeEnabled &&
+                                                  !options.common
+                                                       .directOpaqueRasterReadbackQualificationEnabled
+                                              ? RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION
+                                              : RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION);
+            report.validationRunId =
+                ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
             report.scenario.contractRevision = 0;
             report.scenario.phase = "not-applicable";
             report.sampleName = registeredInfo->id;
@@ -5440,6 +9061,144 @@ namespace RVX
             report.renderPath = report.requestedRenderPath;
             report.actualRenderPath = ResolveActualRenderPath(
                 sceneOptions.renderPath, sampleRenderDiagnostics);
+            // Performance qualification is intentionally mutually exclusive
+            // with screenshot, pixel-probe, and visual-bundle production. Its
+            // own immutable report binds the manifest, fixed epoch, build,
+            // backend, and every completion-owned execution-receipt digest.
+            // Do not require a visual capture receipt after that report has
+            // already published successfully.
+            if (options.deterministicContractActive &&
+                options.qualificationPerformancePath.empty())
+            {
+                SampleVisualContractReceipt receipt;
+                receipt.manifestSchema =
+                    std::string(RVX_SAMPLE_MANIFEST_SCHEMA);
+                receipt.manifestSchemaVersion =
+                    m_registry.GetManifestSchemaVersion();
+                receipt.manifestContentSha256 =
+                    std::string(m_registry.GetManifestContentSha256());
+                receipt.visualContractVersion =
+                    manifest->visualContractVersion;
+                receipt.domain = manifest->domain;
+                receipt.intent = manifest->intent;
+                receipt.requestedPipeline = sceneOptions.pipelineRecipe;
+                const RenderExecutionReceipt* executionReceipt =
+                    captureExecutionReceipt.has_value()
+                        ? &*captureExecutionReceipt
+                        : nullptr;
+                if (executionReceipt != nullptr)
+                {
+                    receipt.renderExecutionReceipt = *executionReceipt;
+                }
+                RenderPipelineRecipe requestedRenderRecipe{};
+                RenderQualityTier requestedRenderQuality{};
+                SamplePipelineRecipe observedSampleRecipe{};
+                const bool requestedProfileMapped =
+                    TryMapSamplePipelineRecipe(
+                        sceneOptions.pipelineRecipe,
+                        requestedRenderRecipe) &&
+                    TryMapSampleQualityTier(
+                        sceneOptions.qualityTier,
+                        requestedRenderQuality);
+                const bool observedRecipeMapped =
+                    TryMapRenderPipelineRecipe(
+                        executionReceipt != nullptr
+                            ? executionReceipt->resolvedRecipe
+                            : RenderPipelineRecipe::Count,
+                        observedSampleRecipe);
+                const bool validationBuildIdentityAccepted =
+                    validationBuildIdentity.IsEmpty()
+                        ? executionReceipt != nullptr &&
+                              executionReceipt->build.IsEmpty()
+                        : validationBuildIdentity.IsStructurallyValid() &&
+                              executionReceipt != nullptr &&
+                              executionReceipt->build ==
+                                  validationBuildIdentity;
+                const bool executionMatchesCapture =
+                    requestedProfileMapped && observedRecipeMapped &&
+                    executionReceipt != nullptr &&
+                    executionReceipt->IsStructurallyValid() &&
+                    executionReceipt->available &&
+                    executionReceipt->graphComposed &&
+                    executionReceipt->executionSucceeded &&
+                    executionReceipt->presented &&
+                    executionReceipt->succeeded &&
+                    executionReceipt->frameIdentity.frameSequence ==
+                        captureCarryingFrameSequence &&
+                    executionReceipt->frameIdentity.sceneRevision ==
+                        captureSceneRevision &&
+                    executionReceipt->frameIdentity.surfaceGeneration ==
+                        captureSurfaceGeneration &&
+                    executionReceipt->frameIdentity.configurationRevision ==
+                        captureConfigurationRevision &&
+                    executionReceipt->viewIdentity.sceneRuntimeId ==
+                        captureSceneRuntimeId &&
+                    executionReceipt->viewIdentity.cameraEntityPacked ==
+                        captureCameraEntityPacked &&
+                    executionReceipt->viewIdentity.subViewIndex == 0 &&
+                    executionReceipt->viewIdentity.role == ViewRole::Main &&
+                    executionReceipt->backend == diagnostics.backend &&
+                    executionReceipt->requestedRecipe ==
+                        requestedRenderRecipe &&
+                    executionReceipt->resolvedRecipe ==
+                        requestedRenderRecipe &&
+                    executionReceipt->quality == requestedRenderQuality &&
+                    executionReceipt->profileHash ==
+                        ComputeRenderPipelineProfileHash(
+                            executionReceipt->resolvedRecipe,
+                            requestedRenderQuality) &&
+                    validationBuildIdentityAccepted;
+                if (executionMatchesCapture)
+                {
+                    receipt.observedPipeline = observedSampleRecipe;
+                }
+                receipt.quality = options.qualityTier;
+                receipt.cameraBookmarkId = options.viewBookmarkId;
+                receipt.fixedTimeNumerator = options.fixedTimeNumerator;
+                receipt.fixedTimeDenominator = options.fixedTimeDenominator;
+                receipt.deterministicSeed = options.deterministicSeed;
+                receipt.captureTick =
+                    static_cast<uint32>(options.captureTick);
+                receipt.captureCarryingFrameSequence =
+                    captureCarryingFrameSequence;
+                receipt.captureSceneRuntimeId = captureSceneRuntimeId;
+                receipt.captureCameraEntityPacked =
+                    captureCameraEntityPacked;
+                receipt.captureSceneRevision = captureSceneRevision;
+                receipt.captureSurfaceGeneration =
+                    captureSurfaceGeneration;
+                receipt.captureConfigurationRevision =
+                    captureConfigurationRevision;
+                receipt.deterministicQualification =
+                    manifest->deterministicQualification;
+                receipt.satisfied =
+                    options.manifestContractResolved &&
+                    options.viewBookmarkResolved &&
+                    options.captureTickResolved &&
+                    deterministicEpochActive && deterministicCameraApplied &&
+                    deterministicTick >= options.captureTick &&
+                    captureCarryingFrameSequence != 0 &&
+                    captureConfigurationRevision != 0 &&
+                    captureCarryingFrameSequence <=
+                        diagnostics.lastPresentedFrameSequence &&
+                    receipt.observedPipeline.has_value() &&
+                    receipt.manifestContentSha256.size() == 64u &&
+                    ((!options.common.screenshotPath.empty() &&
+                      screenshotWritten) ||
+                     (options.common.pixelProbeEnabled &&
+                      pixelProbeCaptured) ||
+                     renderQualityAttachmentSeriesWritten);
+                if (!receipt.satisfied)
+                {
+                    succeeded = false;
+                    if (error.empty())
+                    {
+                        error =
+                            "The deterministic Sample visual contract did not produce exact execution evidence";
+                    }
+                }
+                report.visualContractReceipt = std::move(receipt);
+            }
             report.ecsDiagnostics = MakeEcsRuntimeDiagnostics(
                 reportSceneDiagnostics, reportServiceDiagnostics);
             report.physicsDiagnosticsAvailable =
@@ -5456,23 +9215,28 @@ namespace RVX
             }
             report.diagnostics = options.common.diagnostics;
             report.screenshotPath = options.common.screenshotPath;
-            report.assetId = sceneOptions.assetId;
-            report.assetPath = sceneOptions.modelPath;
-            report.assetKind =
-                GetSampleAssetKindName(resolvedAssets.model.entry.kind);
-            report.catalogPath = resolvedAssets.model.catalogPath;
-            report.assetRoot = resolvedAssets.model.assetRoot;
-            report.assetLicenseSpdx =
-                resolvedAssets.model.entry.license.spdxId;
-            report.assetLicenseFile =
-                resolvedAssets.model.entry.license.resolvedFile;
-            report.assetSourceName = resolvedAssets.model.entry.source.name;
-            report.assetSourceUri = resolvedAssets.model.entry.source.uri;
-            report.assetAuthor = resolvedAssets.model.entry.source.author;
-            report.assetAttribution = resolvedAssets.model.entry.attribution;
-            report.assetRedistributable =
-                resolvedAssets.model.entry.redistributable;
-            report.assetLoaded = primaryModelLoaded;
+            if (primaryAsset != nullptr)
+            {
+                report.assetId = primaryAsset->entry.id;
+                report.assetPath = primaryAsset->entry.resolvedPath;
+                report.assetKind =
+                    GetSampleAssetKindName(primaryAsset->entry.kind);
+                report.catalogPath = primaryAsset->catalogPath;
+                report.assetRoot = primaryAsset->assetRoot;
+                report.assetLicenseSpdx =
+                    primaryAsset->entry.license.spdxId;
+                report.assetLicenseFile =
+                    primaryAsset->entry.license.resolvedFile;
+                report.assetSourceName = primaryAsset->entry.source.name;
+                report.assetSourceUri = primaryAsset->entry.source.uri;
+                report.assetAuthor = primaryAsset->entry.source.author;
+                report.assetAttribution = primaryAsset->entry.attribution;
+                report.assetRedistributable =
+                    primaryAsset->entry.redistributable;
+                report.assetLoaded =
+                    primaryAssetContentReceipt.has_value() &&
+                    primaryAssetContentReceipt->IsVerified();
+            }
             report.readiness.waitRequested = effectiveReadyWait;
             report.readiness.ready = sampleReady;
             report.readiness.minimumFrames = options.common.frames;
@@ -5483,9 +9247,13 @@ namespace RVX
                                              ? readinessWaitBudget.timeoutMs
                                              : 0;
             report.readiness.reason = readinessReason;
-            report.assets.push_back(MakeReportAsset("model",
-                                                    resolvedAssets.model,
-                                                    primaryModelContentReceipt));
+            report.runtimeComposition = runtimeComposition;
+            if (resolvedAssets.model.selected)
+            {
+                report.assets.push_back(MakeReportAsset("model",
+                                                        resolvedAssets.model,
+                                                        primaryModelContentReceipt));
+            }
             for (const ResolvedSampleAsset& additional :
                  resolvedAssets.additionalModels)
             {
@@ -5510,6 +9278,12 @@ namespace RVX
                     animation,
                     GetAnimationContentVerificationReceipt(
                         animations, animation)));
+            }
+            for (const ResolvedSampleAsset& effect : resolvedAssets.effects)
+            {
+                report.assets.push_back(MakeReportAsset(
+                    "effect", effect,
+                    GetEffectContentVerificationReceipt(particleEffects, effect)));
             }
             report.renderDiagnostics = sampleRenderDiagnostics;
             if (options.common.pixelProbeEnabled)
@@ -5562,7 +9336,7 @@ namespace RVX
             uint32 teardownPumpFrames = 0;
             // Activate writes the next ECS snapshot. Publish one removal-capable
             // frame before observing the selected camera or lifetime receipts.
-            diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+            diagnostics = frameDriver.TickOnce(sampleDeltaTime);
             ++teardownPumpFrames;
             while (teardownPumpFrames < teardownPumpFrameLimit &&
                    std::chrono::steady_clock::now() < teardownDeadline)
@@ -5579,7 +9353,7 @@ namespace RVX
                 {
                     break;
                 }
-                diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                 ++teardownPumpFrames;
             }
 
@@ -5685,7 +9459,7 @@ namespace RVX
                    worldShutdownPumpFrames < teardownPumpFrameLimit &&
                    std::chrono::steady_clock::now() < teardownDeadline)
             {
-                diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                 ++worldShutdownPumpFrames;
             }
             const bool worldDestroyed =
@@ -5899,6 +9673,22 @@ namespace RVX
                      std::chrono::steady_clock::now() < teardownDeadline);
             const EngineShutdownDiagnostics& shutdownDiagnostics =
                 engine.GetLastShutdownDiagnostics();
+            const RenderDiagnosticsSnapshot finalRenderDiagnostics =
+                render->GetDiagnosticsSnapshot();
+            const RenderNativeValidationDiagnostics& finalNativeValidation =
+                finalRenderDiagnostics.nativeValidation;
+            report.renderDiagnostics.nativeValidationAvailable =
+                finalNativeValidation.available;
+            report.renderDiagnostics.nativeValidationEnabled =
+                finalNativeValidation.enabled;
+            report.renderDiagnostics.nativeValidationReadComplete =
+                finalNativeValidation.readComplete;
+            report.renderDiagnostics.nativeValidationWarningCount =
+                finalNativeValidation.warningCount;
+            report.renderDiagnostics.nativeValidationErrorCount =
+                finalNativeValidation.errorCount;
+            report.renderDiagnostics.nativeValidationCorruptionCount =
+                finalNativeValidation.corruptionCount;
             static_cast<void>(assessmentSession.RecordCheckpoint(
                 AssessmentCheckpoints::EngineShutdownComplete));
             AssessmentSnapshot shutdownSnapshot;
@@ -6007,6 +9797,38 @@ namespace RVX
                     {{AssessmentCode("ENGINE.TEARDOWN.CLEAN"),
                       "Scene, render, jobs, and worlds retire before shutdown ends."},
                      AssessmentCheckpoints::EngineShutdownComplete}));
+            }
+
+            if (finalNativeValidation.available &&
+                (finalNativeValidation.errorCount != 0 ||
+                 finalNativeValidation.corruptionCount != 0))
+            {
+                succeeded = false;
+                if (error.empty())
+                {
+                    error =
+                        "Native graphics validation reported an error during shutdown";
+                }
+                static_cast<void>(assessmentSession.RecordFinding(
+                    MakeHostFinding(
+                        "RHI.VALIDATION.SHUTDOWN_ERROR",
+                        "RHI",
+                        "ENGINE.TEARDOWN.CLEAN",
+                        AssessmentCheckpoints::EngineShutdownComplete,
+                        FindingClass::ContractViolation,
+                        finalNativeValidation.corruptionCount != 0
+                            ? FindingSeverity::Fatal
+                            : FindingSeverity::Error,
+                        FindingConfidence::Confirmed,
+                        "The final native validation snapshot reported errors after RHI child teardown.",
+                        "Final native validation error and corruption counts are zero.",
+                        "errors=" +
+                            std::to_string(finalNativeValidation.errorCount) +
+                            ", corruption=" +
+                            std::to_string(
+                                finalNativeValidation.corruptionCount),
+                        true,
+                        "Shutdown validation failures must fail the Sample process and report.")));
             }
 
             const SampleAssessmentReport assessmentReport =
@@ -6133,7 +9955,7 @@ namespace RVX
                  pump < 120u && engine.GetWorld(worldRequirements.world.name) != nullptr;
                  ++pump)
             {
-                engine.Tick(SampleDeltaTime);
+                engine.Tick(sampleDeltaTime);
             }
         }
         engine.Shutdown();

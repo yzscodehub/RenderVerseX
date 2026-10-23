@@ -5,9 +5,10 @@ target_link_libraries(EcsParticleFeatureBridgeValidation PRIVATE
     RVX::Water
     RVX::Terrain)
 target_compile_features(EcsParticleFeatureBridgeValidation PRIVATE cxx_std_20)
-set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
-    EcsParticleFeatureBridgeValidation)
-add_test(NAME EcsParticleFeatureBridgeValidation COMMAND EcsParticleFeatureBridgeValidation)
-set_tests_properties(EcsParticleFeatureBridgeValidation PROPERTIES
-    LABELS "unit;scene;ecs;feature;particle;water;terrain"
+rvx_add_validation_test(
+    NAME EcsParticleFeatureBridgeValidation
+    LANE unit
+    COMMAND EcsParticleFeatureBridgeValidation
+    BUILD_TARGETS EcsParticleFeatureBridgeValidation
+    TAGS subsystem.scene subsystem.ecs subsystem.particle subsystem.water subsystem.terrain trait.feature
     TIMEOUT 30)

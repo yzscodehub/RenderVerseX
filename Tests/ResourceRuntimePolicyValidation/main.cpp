@@ -1,7 +1,9 @@
+#include "Common/FilesystemLinkTestSupport.h"
 #include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
 #include "Geometry/Asset/Material.h"
 #include "Geometry/Asset/Mesh.h"
+#include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/RenderUploadRequestBuilder.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
@@ -11,6 +13,7 @@
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
+#include "ShaderContracts/ShaderArtifact.h"
 
 #include <gtest/gtest.h>
 
@@ -101,11 +104,10 @@ namespace
             return {".png", ".rva"};
         }
 
-        IResource* Load(const std::string& path) override
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
         {
-            ++loadCount;
-            lastPath = path;
-            return new RecordingResource(m_type);
+            return request.type == m_type;
         }
 
         bool Prepare(const ResourceLoadPreparationContext& context,
@@ -131,6 +133,37 @@ namespace
         std::string lastPath;
     };
 
+    class RecordingChangeMonitor final : public IResourceChangeMonitor
+    {
+    public:
+        void Watch(ResourceId resourceId, std::string path) override
+        {
+            watched[resourceId] = std::move(path);
+        }
+
+        void Unwatch(ResourceId resourceId) override
+        {
+            watched.erase(resourceId);
+        }
+
+        std::vector<ResourceSourceChange> Poll() override
+        {
+            std::vector<ResourceSourceChange> result;
+            result.swap(pending);
+            return result;
+        }
+
+        void Queue(ResourceId resourceId)
+        {
+            const auto found = watched.find(resourceId);
+            ASSERT_NE(found, watched.end());
+            pending.push_back({resourceId, found->second});
+        }
+
+        std::unordered_map<ResourceId, std::string> watched;
+        std::vector<ResourceSourceChange> pending;
+    };
+
     class BlockingLoader final : public IResourceLoader
     {
     public:
@@ -147,17 +180,10 @@ namespace
             return {".png"};
         }
 
-        IResource* Load(const std::string& path) override
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
         {
-            loadCount.fetch_add(1, std::memory_order_relaxed);
-            lastPath = path;
-            loaderThreadId = std::this_thread::get_id();
-            if (m_started)
-            {
-                m_started->set_value();
-            }
-            m_release.wait();
-            return new RecordingResource(ResourceType::Texture);
+            return request.type == ResourceType::Texture;
         }
 
         bool Prepare(const ResourceLoadPreparationContext& context,
@@ -203,24 +229,46 @@ namespace
     class ResourceManagerTestGuard
     {
     public:
-        explicit ResourceManagerTestGuard(const ResourceManagerConfig& config)
+        explicit ResourceManagerTestGuard(
+            const ResourceManagerConfig& config,
+            bool useBuiltinLoaders = false)
+            : m_config(config)
         {
-            auto& manager = ResourceManager::Get();
-            if (manager.IsInitialized())
-            {
-                manager.Shutdown();
-            }
-            manager.Initialize(config);
+            ResourceManagerDependencies dependencies = useBuiltinLoaders
+                ? CreateRuntimeResourceManagerDependencies()
+                : ResourceManagerDependencies{};
+            m_manager.Initialize(config, std::move(dependencies));
+        }
+
+        ResourceManagerTestGuard(
+            const ResourceManagerConfig& config,
+            ResourceManagerDependencies dependencies)
+            : m_config(config)
+        {
+            m_manager.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceManagerTestGuard()
         {
-            auto& manager = ResourceManager::Get();
-            if (manager.IsInitialized())
-            {
-                manager.Shutdown();
-            }
+            m_manager.Shutdown();
         }
+
+        ResourceManager& GetManager() noexcept { return m_manager; }
+
+        bool AddLoader(std::unique_ptr<IResourceLoader> loader)
+        {
+            m_manager.Shutdown();
+            ResourceManagerDependencies dependencies;
+            std::string error;
+            if (!dependencies.loaderCatalog.Add(std::move(loader), error))
+                return false;
+            m_manager.Initialize(m_config, std::move(dependencies));
+            return m_manager.IsInitialized();
+        }
+
+    private:
+        ResourceManagerConfig m_config;
+        ResourceManager m_manager;
     };
 
     fs::path MakeTempDirectory(const std::string& name)
@@ -258,7 +306,8 @@ namespace
         for (uint32 i = 0; i < 8; ++i)
         {
             if (fs::exists(cursor / "CMakeLists.txt") &&
-                fs::exists(cursor / "Resource/Include/Resource/ResourceManager.h"))
+                fs::exists(cursor /
+                           "Source/Runtime/ResourceRuntime/Include/Resource/ResourceManager.h"))
             {
                 return cursor;
             }
@@ -277,31 +326,83 @@ namespace
                              const std::string& glsl,
                              const std::string& msl)
     {
-        fs::create_directories(path.parent_path());
-        std::ofstream file(path, std::ios::binary);
-        ASSERT_TRUE(file.is_open());
-        file << "RVX_SHADER_PREBAKE_V1\n";
-        file << "source=Shaders/Fullscreen.ps.hlsl\n";
-        file << "backend=DirectX 12\n";
-        file << "stage=Pixel\n";
-        file << "entry=main\n";
-        file << "targetProfile=ps_6_0\n";
-        file << "bytecodeSize=" << bytecode.size() << "\n";
-        file << "glslSize=" << glsl.size() << "\n";
-        file << "mslSize=" << msl.size() << "\n";
-        file << "reflectionResources=3\n";
-        file << "sourceHash=123456789\n";
-        file << "RVX_SHADER_BYTECODE_BEGIN\n";
-        file.write(reinterpret_cast<const char*>(bytecode.data()),
-                   static_cast<std::streamsize>(bytecode.size()));
-        file << "\nRVX_SHADER_GLSL_BEGIN\n";
-        file.write(glsl.data(), static_cast<std::streamsize>(glsl.size()));
-        file << "\nRVX_SHADER_MSL_BEGIN\n";
-        file.write(msl.data(), static_cast<std::streamsize>(msl.size()));
-        file << "\nRVX_SHADER_PREBAKE_END\n";
-        ASSERT_TRUE(file.good());
+        (void)glsl;
+        (void)msl;
+        ShaderArtifact artifact;
+        artifact.request.logicalAssetId = "Shaders/Fullscreen.ps.hlsl";
+        artifact.request.backend = RHIBackendType::DX12;
+        artifact.request.stage = RHIShaderStage::Pixel;
+        artifact.request.entryPoint = "main";
+        artifact.targetProfile = "ps_6_0";
+        artifact.runtimeEntryPoint = "main";
+        artifact.contentHash = 123456789u;
+        artifact.code = bytecode;
+        artifact.reflection.valid = true;
+        artifact.reflection.resources = {
+            {"Frame", 0, 0, RHIBindingType::UniformBuffer, 1},
+            {"Texture", 0, 1, RHIBindingType::SampledTexture, 1},
+            {"Sampler", 0, 2, RHIBindingType::Sampler, 1},
+        };
+        std::string error;
+        ASSERT_TRUE(WriteShaderArtifactV2(path, artifact, error)) << error;
     }
 } // namespace
+
+TEST(ResourceRuntimePolicyValidation, EmptyDependenciesDoNotInstallImplicitLoaders)
+{
+    ResourceManagerDependencies dependencies;
+    std::string error;
+    ASSERT_TRUE(dependencies.loaderCatalog.Seal(error)) << error;
+    EXPECT_EQ(dependencies.loaderCatalog.Resolve(
+                  {ResourceType::Texture, ResourceLoadDomain::Source, "a.png"})
+                  .status,
+              ResourceLoaderResolveStatus::NotFound);
+}
+
+TEST(ResourceRuntimePolicyValidation, BuiltinLoaderCompositionIsExplicit)
+{
+    ResourceManagerDependencies dependencies =
+        CreateRuntimeResourceManagerDependencies();
+    std::string error;
+    ASSERT_TRUE(dependencies.loaderCatalog.Seal(error)) << error;
+    for (const ResourceType type : {
+             ResourceType::Texture, ResourceType::Mesh, ResourceType::Shader,
+             ResourceType::Model, ResourceType::Environment})
+    {
+        EXPECT_TRUE(dependencies.loaderCatalog.Resolve(
+            {type, ResourceLoadDomain::Cooked, "asset.rva"}).Succeeded());
+    }
+    const auto materialCooked = dependencies.loaderCatalog.Resolve(
+        {ResourceType::Material, ResourceLoadDomain::Cooked, "asset.rvmat"});
+    EXPECT_TRUE(materialCooked.Succeeded());
+    EXPECT_EQ(materialCooked.matchCount, 1u);
+    EXPECT_EQ(dependencies.loaderCatalog.Resolve(
+                  {ResourceType::Material, ResourceLoadDomain::Source, "asset.rvmat"})
+                  .status,
+              ResourceLoaderResolveStatus::NotFound);
+    EXPECT_TRUE(dependencies.loaderCatalog.Resolve(
+        {ResourceType::Animation,
+         ResourceLoadDomain::Cooked,
+         "asset.rvxanim"}).Succeeded());
+
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     UnschemedParticleEffectProductUsesCookedRuntimeDomain)
+{
+    ResourceRuntimePolicy policy;
+    policy.mode = ResourceRuntimeMode::CookedRuntime;
+    policy.allowSourceAssetReads = false;
+    policy.requireCookedArtifacts = true;
+    policy.cookedRoot = fs::temp_directory_path().string();
+
+    const ResourcePathResolution resolution = ResolveRuntimeResourcePath(
+        policy, "", "Vfx/Fire.rvxvfx");
+    EXPECT_TRUE(resolution.allowed) << resolution.diagnosticMessage;
+    EXPECT_EQ(resolution.domain, ResourceLoadDomain::CookedArtifact);
+    EXPECT_TRUE(resolution.cookedArtifactRead);
+    EXPECT_FALSE(resolution.sourceAssetRead);
+}
 
 TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreRequired)
 {
@@ -312,11 +413,11 @@ TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreR
     config.runtimePolicy.requireCookedArtifacts = true;
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("source://textures/albedo.png"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -378,11 +479,11 @@ TEST(ResourceRuntimePolicyValidation, MapsCookedArtifactsThroughCookedRoot)
     config.runtimePolicy.cookedRoot = root.string();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     IResource* resource = manager.LoadResource("cooked://textures/albedo.rva");
     ASSERT_NE(resource, nullptr);
@@ -462,11 +563,11 @@ TEST(ResourceRuntimePolicyValidation, ReportsMissingRuntimePackageRoot)
     config.runtimePolicy.requireRuntimePackage = true;
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -485,7 +586,7 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
 {
     const fs::path root = MakeTempDirectory("PackageRoot");
     const fs::path packageEntryPath = root / "Base" / "shaders" / "basic.rva";
-    WriteTextFile(packageEntryPath, "RVX_SHADER_PREBAKE_V1\n");
+    WriteTextFile(packageEntryPath, "RVX_TEST_COOKED_ARTIFACT\n");
 
     ResourceManagerConfig config;
     config.asyncThreadCount = 0;
@@ -495,13 +596,14 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     config.runtimePolicy.packageRoot = root.string();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Custom);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
+    IResource* resource = manager.LoadResource(
+        "package://Base/shaders/basic.rva", ResourceType::Custom);
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
     ExpectEquivalentExistingPath(loaderPtr->lastPath, packageEntryPath);
@@ -525,8 +627,8 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     const fs::path highRoot = MakeTempDirectory("PackageMountHigh");
     const fs::path lowArtifactPath = lowRoot / "compiled" / "basic.rva";
     const fs::path highArtifactPath = highRoot / "compiled" / "basic.rva";
-    WriteTextFile(lowArtifactPath, "RVX_SHADER_PREBAKE_V1\nlow\n");
-    WriteTextFile(highArtifactPath, "RVX_SHADER_PREBAKE_V1\nhigh\n");
+    WriteTextFile(lowArtifactPath, "RVX_TEST_COOKED_ARTIFACT\nlow\n");
+    WriteTextFile(highArtifactPath, "RVX_TEST_COOKED_ARTIFACT\nhigh\n");
     const std::string highHash = Diagnostics::ComputeFileContentHash(highArtifactPath);
 
     ResourceManagerConfig config;
@@ -548,13 +650,14 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     };
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Custom);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
+    IResource* resource = manager.LoadResource(
+        "package://Base/shaders/basic.rva", ResourceType::Custom);
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
     ExpectEquivalentExistingPath(loaderPtr->lastPath, highArtifactPath);
@@ -596,11 +699,11 @@ TEST(ResourceRuntimePolicyValidation, RejectsMissingRuntimePackageMount)
     };
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -635,11 +738,11 @@ TEST(ResourceRuntimePolicyValidation, RejectsMissingRuntimePackageArtifact)
     };
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -660,7 +763,7 @@ TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackageArtifactHashMismatch)
 {
     const fs::path root = MakeTempDirectory("PackageArtifactHashMismatch");
     const fs::path artifactPath = root / "compiled" / "basic.rva";
-    WriteTextFile(artifactPath, "RVX_SHADER_PREBAKE_V1\nhash mismatch\n");
+    WriteTextFile(artifactPath, "RVX_TEST_COOKED_ARTIFACT\nhash mismatch\n");
 
     ResourceManagerConfig config;
     config.asyncThreadCount = 0;
@@ -676,11 +779,11 @@ TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackageArtifactHashMismatch)
     };
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("package://Base/shaders/basic.rva"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -718,11 +821,11 @@ TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackagePathsEscapingMountedR
     config.runtimePolicy.packageRoot = root.string();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     EXPECT_EQ(manager.LoadResource("package://Base/../../outside.rva"), nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 0u);
@@ -797,14 +900,9 @@ TEST(ResourceRuntimePolicyValidation, RejectsMountedRootSymlinkEscapesWhenSuppor
 
     const fs::path symlinkPath = sourceRoot / "external";
     std::error_code linkError;
-    fs::create_directory_symlink(outsideRoot, symlinkPath, linkError);
-    if (linkError)
-    {
-        std::error_code removeError;
-        fs::remove_all(sourceRoot, removeError);
-        fs::remove_all(outsideRoot, removeError);
-        GTEST_SKIP() << "Directory symlinks are unavailable in this environment: " << linkError.message();
-    }
+    ASSERT_TRUE(RVX::TestSupport::CreateDirectoryLink(
+        outsideRoot, symlinkPath, linkError)) << linkError.message();
+    const RVX::TestSupport::ScopedDirectoryLink linkCleanup(symlinkPath);
 
     ResourceRuntimePolicy policy;
     policy.mode = ResourceRuntimeMode::Editor;
@@ -841,8 +939,8 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     config.runtimePolicy.requireCookedArtifacts = true;
     config.runtimePolicy.cookedRoot = root.string();
 
-    ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    ResourceManagerTestGuard guard(config, true);
+    auto& manager = guard.GetManager();
 
     IResource* resource = manager.LoadResource("cooked://shaders/fullscreen.rva");
     ASSERT_NE(resource, nullptr);
@@ -865,8 +963,8 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_EQ(contract.sourceHash, 123456789u);
     EXPECT_EQ(contract.reflectionResourceCount, 3u);
     EXPECT_EQ(contract.bytecodeSize, bytecode.size());
-    EXPECT_EQ(contract.glslSourceSize, glsl.size());
-    EXPECT_EQ(contract.mslSourceSize, msl.size());
+    EXPECT_EQ(contract.glslSourceSize, 0u);
+    EXPECT_EQ(contract.mslSourceSize, 0u);
     EXPECT_NE(contract.payloadHash, 0u);
     EXPECT_NE(contract.contractHash, 0u);
     EXPECT_EQ(shader->GetRuntimeContractHash(), contract.contractHash);
@@ -879,7 +977,7 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_NE(contract.cacheKey.find("bytecodeSize=8"), std::string::npos);
 
     const std::string contractJson = shader->ExportRuntimeContractJson();
-    EXPECT_NE(contractJson.find("\"schemaVersion\": 1"), std::string::npos);
+    EXPECT_NE(contractJson.find("\"schemaVersion\": 2"), std::string::npos);
     EXPECT_NE(contractJson.find("\"schemaId\": \"RVX.Resource.ShaderRuntimeContract\""),
               std::string::npos);
     EXPECT_NE(contractJson.find("\"id\": \"shaderRuntimeContractJson\""), std::string::npos);
@@ -908,9 +1006,9 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_NE(contractJson.find("\"payloadHash\": " + std::to_string(contract.payloadHash)),
               std::string::npos);
     EXPECT_NE(contractJson.find("\"bytecodeSize\": 8"), std::string::npos);
-    EXPECT_NE(contractJson.find("\"glslSourceSize\": " + std::to_string(glsl.size())),
+    EXPECT_NE(contractJson.find("\"glslSourceSize\": 0"),
               std::string::npos);
-    EXPECT_NE(contractJson.find("\"mslSourceSize\": " + std::to_string(msl.size())),
+    EXPECT_NE(contractJson.find("\"mslSourceSize\": 0"),
               std::string::npos);
     EXPECT_FALSE(shader->SaveRuntimeContractJson(nullptr));
     EXPECT_FALSE(shader->SaveRuntimeContractJson(""));
@@ -1063,12 +1161,12 @@ TEST(ResourceRuntimePolicyValidation, PreparedAsyncPathStaysOnCoreJobSystemContr
     const fs::path repoRoot = FindRepositoryRoot();
     ASSERT_FALSE(repoRoot.empty());
 
-    const std::string managerHeader =
-        ReadTextFile(repoRoot / "Resource/Include/Resource/ResourceManager.h");
-    const std::string managerSource =
-        ReadTextFile(repoRoot / "Resource/Private/ResourceManager.cpp");
-    const std::string resourceSource =
-        ReadTextFile(repoRoot / "Resource/Private/IResource.cpp");
+    const std::string managerHeader = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Include/Resource/ResourceManager.h");
+    const std::string managerSource = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Private/ResourceManager.cpp");
+    const std::string resourceSource = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Private/IResource.cpp");
     ASSERT_FALSE(managerHeader.empty());
     ASSERT_FALSE(managerSource.empty());
     ASSERT_FALSE(resourceSource.empty());
@@ -1108,11 +1206,11 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJob
     config.runtimePolicy.sourceRoot = root.string();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     std::future<ResourceHandle<RecordingResource>> future =
         manager.LoadAsync<RecordingResource>("source://textures/inline.png");
@@ -1149,11 +1247,11 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncUsesCoreJobSystemWhenEnabled)
     releaseLoadPromise.set_value();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<BlockingLoader>(nullptr, releaseLoadFuture);
     BlockingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     std::future<ResourceHandle<RecordingResource>> future =
         manager.LoadAsync<RecordingResource>("source://textures/async.png");
@@ -1191,11 +1289,11 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncCallbackDispatchesOnlyFromProcess
     config.runtimePolicy.sourceRoot = root.string();
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     const std::thread::id pumpThreadId = std::this_thread::get_id();
     bool callbackCalled = false;
@@ -1254,7 +1352,7 @@ TEST(ResourceRuntimePolicyValidation, HotReloadRejectedByCookedRuntimePolicy)
     config.runtimePolicy.requireCookedArtifacts = true;
 
     ResourceManagerTestGuard guard(config);
-    auto& manager = ResourceManager::Get();
+    auto& manager = guard.GetManager();
 
     EXPECT_FALSE(manager.IsHotReloadEnabled());
 
@@ -1315,18 +1413,24 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
     config.runtimePolicy.sourceRoot = root.string();
 
     {
-        ResourceManagerTestGuard guard(config);
-        auto& manager = ResourceManager::Get();
+        ResourceManagerDependencies dependencies;
+        auto monitor = std::make_unique<RecordingChangeMonitor>();
+        RecordingChangeMonitor* monitorPtr = monitor.get();
+        dependencies.changeMonitor = std::move(monitor);
+        auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
+        RecordingLoader* loaderPtr = loader.get();
+        std::string loaderError;
+        ASSERT_TRUE(dependencies.loaderCatalog.Add(
+            std::move(loader), loaderError)) << loaderError;
+        ResourceManagerTestGuard guard(config, std::move(dependencies));
+        auto& manager = guard.GetManager();
 
         EXPECT_TRUE(manager.IsHotReloadEnabled());
         EXPECT_EQ(manager.GetHotReloadDiagnostic().status, ResourceHotReloadStatus::Active);
 
-        auto loader = std::make_unique<RecordingLoader>(ResourceType::Texture);
-        RecordingLoader* loaderPtr = loader.get();
-        manager.RegisterLoader(ResourceType::Texture, std::move(loader));
-
         IResource* resource = manager.LoadResource("source://textures/albedo.png");
         ASSERT_NE(resource, nullptr);
+        const ResourceId resourceId = resource->GetId();
         EXPECT_EQ(loaderPtr->loadCount, 1u);
         ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
 
@@ -1362,8 +1466,40 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
         ASSERT_TRUE(SaveResourceHotReloadDiagnosticJson(diagnosticPathString.c_str(), diagnostic));
         EXPECT_EQ(ReadTextFile(diagnosticPath), diagnosticJson);
 
+        uint32 reloadedEvents = 0;
+        manager.SetLifecycleEventCallback(
+            [&reloadedEvents](const ResourceLifecycleEvent& event)
+            {
+                if (event.type == ResourceLifecycleEventType::Reloaded)
+                {
+                    ++reloadedEvents;
+                }
+            });
+        monitorPtr->Queue(resourceId);
         manager.CheckForChanges();
+        manager.ProcessCompletedLoads();
+        EXPECT_EQ(loaderPtr->loadCount, 2u);
+        EXPECT_EQ(reloadedEvents, 1u);
         EXPECT_EQ(manager.GetHotReloadDiagnostic().status, ResourceHotReloadStatus::Active);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().totalReloadCount, 1u);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().successfulReloadCount, 1u);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().failedReloadCount, 0u);
+        EXPECT_EQ(manager.Unload(resourceId),
+                  AssetResidencyReleaseResult::Unloaded);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().registeredResourceCount, 0u);
+        EXPECT_TRUE(monitorPtr->watched.empty());
+    }
+
+    {
+        ResourceManagerDependencies dependencies;
+        dependencies.changeMonitor =
+            std::make_unique<RecordingChangeMonitor>();
+        ResourceManagerTestGuard guard(config, std::move(dependencies));
+        const ResourceHotReloadDiagnostic diagnostic =
+            guard.GetManager().GetHotReloadDiagnostic();
+        EXPECT_EQ(diagnostic.totalReloadCount, 0u);
+        EXPECT_EQ(diagnostic.successfulReloadCount, 0u);
+        EXPECT_EQ(diagnostic.failedReloadCount, 0u);
     }
 
     std::error_code removeError;
@@ -1385,7 +1521,13 @@ namespace
             return {".png"};
         }
 
-        IResource* Load(const std::string&) override
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == ResourceType::Texture;
+        }
+
+        TextureResource* BuildTexture()
         {
             auto* texture = new TextureResource();
             TextureMetadata metadata;
@@ -1400,7 +1542,7 @@ namespace
                      PreparedResourceBundle& outBundle,
                      ResourceLoadError& outError) override
         {
-            auto* texture = static_cast<TextureResource*>(Load(context.resolvedPath));
+            auto* texture = BuildTexture();
             texture->SetId(context.rootResourceId);
             texture->SetPath(context.requestedPath);
             if (!outBundle.SetRoot(ResourceHandle<IResource>(texture)))
@@ -1588,8 +1730,6 @@ namespace
 
     class PreparedRenderTextureLoader final : public RenderTextureLoader
     {
-    public:
-        bool SupportsPreparedLoading() const override { return true; }
     };
 
     ResourceManagerConfig MakeRenderResourceTestConfig(const fs::path& root)
@@ -1600,6 +1740,19 @@ namespace
         config.runtimePolicy.allowSourceAssetReads = true;
         config.runtimePolicy.sourceRoot = root.string();
         return config;
+    }
+
+    template<typename Loader>
+    ResourceManagerDependencies MakeLoaderDependencies()
+    {
+        ResourceManagerDependencies dependencies;
+        std::string error;
+        if (!dependencies.loaderCatalog.Add(
+                std::make_unique<Loader>(), error))
+        {
+            throw std::runtime_error(error);
+        }
+        return dependencies;
     }
 } // namespace
 
@@ -1759,6 +1912,9 @@ TEST(ResourceRuntimePolicyValidation,
         EXPECT_FLOAT_EQ(uv.x, 0.0f);
         EXPECT_FLOAT_EQ(uv.y, 0.0f);
     }
+    EXPECT_EQ(missingUVPayload.uv1Range.offset, 0U);
+    EXPECT_EQ(missingUVPayload.uv1Range.size, 0U);
+    EXPECT_EQ(missingUVPayload.uv1Range.stride, 0U);
 
     const std::vector<uint8> ownedMissingUVBytes(missingUVBytes.begin(),
                                                   missingUVBytes.end());
@@ -1804,6 +1960,28 @@ TEST(ResourceRuntimePolicyValidation,
                           authoredUVPayload.uvRange.size),
               0);
 
+    const std::vector<Vec2> authoredUV1s = {
+        {0.0f, 0.125f},
+        {0.75f, 0.5f},
+        {0.25f, 1.0f}};
+    authoredUVMesh->SetUVs(authoredUV1s, VertexBufferNames::UV1);
+    const RenderUploadRequestBuildResult authoredUV1Build =
+        RenderUploadRequestBuilder::Build(authoredUVResource, {7, 1}, 7, {});
+    ASSERT_EQ(authoredUV1Build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(authoredUV1Build.request, nullptr);
+    const auto& authoredUV1Payload =
+        std::get<MeshUploadPayload>(authoredUV1Build.request->GetPayload());
+    const std::span<const uint8> authoredUV1Bytes =
+        GetUploadPayloadBytes(authoredUV1Payload);
+    ASSERT_EQ(authoredUV1Payload.uv1Range.stride, sizeof(Vec2));
+    ASSERT_EQ(authoredUV1Payload.uv1Range.size,
+              authoredUV1s.size() * sizeof(Vec2));
+    ASSERT_EQ(std::memcmp(authoredUV1Bytes.data() +
+                              authoredUV1Payload.uv1Range.offset,
+                          authoredUV1s.data(),
+                          authoredUV1Payload.uv1Range.size),
+              0);
+
     MeshResource malformedUVResource;
     malformedUVResource.SetId(105);
     auto malformedUVMesh = std::make_shared<Mesh>();
@@ -1826,6 +2004,30 @@ TEST(ResourceRuntimePolicyValidation,
     EXPECT_EQ(malformedUVBuild.code,
               RenderUploadRequestBuildCode::InvalidResource);
     EXPECT_EQ(malformedUVBuild.request, nullptr);
+
+    MeshResource malformedUV1Resource;
+    malformedUV1Resource.SetId(106);
+    auto malformedUV1Mesh = std::make_shared<Mesh>();
+    malformedUV1Mesh->SetPositions(positions);
+    malformedUV1Mesh->SetNormals(std::vector<Vec3>(
+        positions.size(), Vec3{0.0f, 0.0f, 1.0f}));
+    malformedUV1Mesh->SetUVs(authoredUVs);
+    malformedUV1Mesh->AddAttribute(
+        VertexBufferNames::UV1,
+        std::vector<float>{0.0f, 0.0f, 0.0f,
+                           1.0f, 0.0f, 0.0f,
+                           0.5f, 1.0f, 0.0f},
+        3);
+    malformedUV1Mesh->SetIndices(std::vector<uint16>{0, 1, 2});
+    malformedUV1Mesh->SetBoundingBox(
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f});
+    malformedUV1Resource.SetMesh(malformedUV1Mesh);
+
+    const RenderUploadRequestBuildResult malformedUV1Build =
+        RenderUploadRequestBuilder::Build(malformedUV1Resource, {8, 1}, 8, {});
+    EXPECT_EQ(malformedUV1Build.code,
+              RenderUploadRequestBuildCode::InvalidResource);
+    EXPECT_EQ(malformedUV1Build.request, nullptr);
 }
 
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderResolvesMaterialTextureHandles)
@@ -1872,6 +2074,253 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderResolvesMaterialTexture
     EXPECT_NE(payload.sourceData.textureFlags, 0U);
 }
 
+TEST(ResourceRuntimePolicyValidation,
+     RenderUploadBuilderPreservesMaterialStaticDescriptor)
+{
+    MaterialResource material;
+    material.SetId(204);
+
+    MaterialDefinition definition;
+    definition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+    definition.descriptor.programFamily =
+        std::string(GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+    definition.descriptor.cullMode = MaterialCullMode::NoCull;
+    definition.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+    definition.descriptor.sortPriority = 17;
+    definition.parameters.doubleSided = true;
+    ASSERT_TRUE(material.SetMaterialDefinition(definition));
+
+    const RenderUploadRequestBuildResult build =
+        RenderUploadRequestBuilder::Build(material, {9, 2}, 5, {});
+    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(build.request, nullptr);
+
+    const auto& payload =
+        std::get<MaterialUploadPayload>(build.request->GetPayload());
+    const MaterialStaticDescriptor& descriptor = payload.staticDescriptor;
+    EXPECT_EQ(descriptor.domain, definition.descriptor.domain);
+    EXPECT_EQ(descriptor.shadingModel, definition.descriptor.shadingModel);
+    EXPECT_EQ(descriptor.blendMode, definition.descriptor.blendMode);
+    EXPECT_EQ(descriptor.cullMode, definition.descriptor.cullMode);
+    EXPECT_EQ(descriptor.shadowPolicy, definition.descriptor.shadowPolicy);
+    EXPECT_EQ(descriptor.translucencyPhase,
+              definition.descriptor.translucencyPhase);
+    EXPECT_EQ(descriptor.sortPriority, definition.descriptor.sortPriority);
+    EXPECT_EQ(descriptor.featureMask, definition.descriptor.featureMask);
+    EXPECT_EQ(descriptor.programFamily, definition.descriptor.programFamily);
+    EXPECT_EQ(descriptor.parameterLayoutHash,
+              definition.descriptor.parameterLayoutHash);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     SourceAndCookedTransparentMaterialDefinitionsUseReceiveOnlyPolicy)
+{
+    auto source = std::make_shared<Material>("SourceTransparent");
+    source->SetAlphaMode(Material::AlphaMode::Blend);
+    source->SetDoubleSided(true);
+
+    MaterialResource sourceResource;
+    sourceResource.SetId(206);
+    ASSERT_TRUE(sourceResource.SetMaterialData(source));
+    const MaterialDefinition sourceDefinition =
+        sourceResource.GetMaterialDefinition();
+    EXPECT_EQ(MaterialBlendMode::AlphaBlend,
+              sourceDefinition.descriptor.blendMode);
+    EXPECT_EQ(MaterialShadowPolicy::Receive,
+              sourceDefinition.descriptor.shadowPolicy);
+    EXPECT_EQ(MaterialTranslucencyPhase::Standard,
+              sourceDefinition.descriptor.translucencyPhase);
+    EXPECT_EQ(MaterialCullMode::NoCull, sourceDefinition.descriptor.cullMode);
+
+    CookedMaterialArtifact artifact;
+    artifact.logicalMaterialId = "Materials/SourceTransparent";
+    artifact.material = sourceDefinition;
+    std::string error;
+    ASSERT_TRUE(FinalizeCookedMaterialArtifact(artifact, error)) << error;
+    std::vector<uint8> bytes;
+    ASSERT_TRUE(SerializeCookedMaterialArtifact(artifact, bytes, error))
+        << error;
+    CookedMaterialArtifact decoded;
+    ASSERT_TRUE(DeserializeCookedMaterialArtifact(bytes, decoded, error))
+        << error;
+
+    MaterialResource cookedResource;
+    cookedResource.SetId(207);
+    ASSERT_TRUE(cookedResource.SetMaterialDefinition(decoded.material));
+    const MaterialStaticDescriptor& cooked =
+        cookedResource.GetMaterialDefinition().descriptor;
+    EXPECT_EQ(sourceDefinition.descriptor.blendMode, cooked.blendMode);
+    EXPECT_EQ(sourceDefinition.descriptor.shadowPolicy, cooked.shadowPolicy);
+    EXPECT_EQ(sourceDefinition.descriptor.translucencyPhase,
+              cooked.translucencyPhase);
+    EXPECT_EQ(sourceDefinition.descriptor.cullMode, cooked.cullMode);
+
+    MaterialDefinition disabledTextureBinding = sourceDefinition;
+    MaterialTextureSlotDefinition uv1Binding;
+    uv1Binding.slot = MaterialTextureSlot::BaseColor;
+    uv1Binding.uvSet = 1;
+    disabledTextureBinding.textureSlots.push_back(uv1Binding);
+    disabledTextureBinding.parameters.textureFlags = 1u;
+    // A descriptor-disabled binding may never reach the renderer. This makes
+    // the policy resolver's inactive-slot handling a defensive fallback, not
+    // a way to accept an incoherent public material contract.
+    EXPECT_FALSE(disabledTextureBinding.descriptor.featureMask & 1ull);
+    EXPECT_FALSE(cookedResource.SetMaterialDefinition(disabledTextureBinding));
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     RenderUploadBuilderPreservesAllLegalV2TextureSlotsAndFeatures)
+{
+    const auto bindTexture = [](MaterialResource& material,
+                                const char* slot,
+                                ResourceId id)
+    {
+        auto* texture = new TextureResource();
+        texture->SetId(id);
+        return material.SetTexture(
+            slot, ResourceHandle<TextureResource>(texture));
+    };
+    const auto buildMaterial = [](const MaterialResource& material,
+                                  RenderResourceHandle handle,
+                                  uint64 sequence)
+    {
+        return RenderUploadRequestBuilder::Build(
+            material,
+            handle,
+            sequence,
+            [](AssetId assetId, RenderResourceKind kind)
+            {
+                EXPECT_EQ(kind, RenderResourceKind::Texture);
+                return RenderResourceHandle{static_cast<uint32>(assetId.value),
+                                            1};
+            });
+    };
+
+    MaterialResource standard;
+    standard.SetId(205);
+    MaterialDefinition standardDefinition;
+    standardDefinition.parameters.specularFactor = 0.7f;
+    standardDefinition.parameters.clearcoatFactor = 0.5f;
+    for (const MaterialTextureSlot slot : {
+             MaterialTextureSlot::BaseColor,
+             MaterialTextureSlot::Normal,
+             MaterialTextureSlot::MetallicRoughness,
+             MaterialTextureSlot::Occlusion,
+             MaterialTextureSlot::Emissive,
+             MaterialTextureSlot::Specular,
+             MaterialTextureSlot::SpecularColor,
+             MaterialTextureSlot::Clearcoat,
+             MaterialTextureSlot::ClearcoatRoughness,
+             MaterialTextureSlot::ClearcoatNormal})
+    {
+        standardDefinition.textureSlots.push_back(
+            MaterialTextureSlotDefinition{slot});
+    }
+    standardDefinition.parameters.textureFlags = static_cast<uint32>(
+        GetMaterialFeatureMaskV2(
+            standardDefinition.parameters, standardDefinition.textureSlots));
+    standardDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        standardDefinition.parameters, standardDefinition.textureSlots);
+    ASSERT_TRUE(standard.SetMaterialDefinition(standardDefinition));
+    ResourceId standardTextureId = 206;
+    for (const char* slot : {
+             "albedo", "normal", "metallic_roughness", "ao", "emissive",
+             "specular", "specular_color", "clearcoat",
+             "clearcoat_roughness", "clearcoat_normal"})
+    {
+        ASSERT_TRUE(bindTexture(standard, slot, standardTextureId++));
+    }
+
+    const RenderUploadRequestBuildResult standardBuild = buildMaterial(
+        standard, {10, 2}, 6);
+    ASSERT_EQ(standardBuild.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(standardBuild.request, nullptr);
+    const auto& standardPayload =
+        std::get<MaterialUploadPayload>(standardBuild.request->GetPayload());
+    EXPECT_NE(standardPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(standardPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    ASSERT_EQ(standardPayload.textureBindings.size(), 10u);
+    EXPECT_EQ(standardPayload.textureBindings[5].slot,
+              MaterialUploadTextureSlot::Specular);
+    EXPECT_EQ(standardPayload.textureBindings[6].slot,
+              MaterialUploadTextureSlot::SpecularColor);
+    EXPECT_EQ(standardPayload.textureBindings[7].slot,
+              MaterialUploadTextureSlot::Clearcoat);
+    EXPECT_EQ(standardPayload.textureBindings[8].slot,
+              MaterialUploadTextureSlot::ClearcoatRoughness);
+    EXPECT_EQ(standardPayload.textureBindings[9].slot,
+              MaterialUploadTextureSlot::ClearcoatNormal);
+
+    MaterialResource transmission;
+    transmission.SetId(220);
+    MaterialDefinition transmissionDefinition;
+    transmissionDefinition.descriptor.shadingModel =
+        MaterialShadingModel::ThinTransmission;
+    transmissionDefinition.descriptor.programFamily = std::string(
+        GetMaterialProgramFamily(MaterialShadingModel::ThinTransmission));
+    transmissionDefinition.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+    transmissionDefinition.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+    transmissionDefinition.descriptor.translucencyPhase =
+        MaterialTranslucencyPhase::Standard;
+    transmissionDefinition.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+    transmissionDefinition.parameters.transmission = 0.75f;
+    transmissionDefinition.textureSlots = {
+        MaterialTextureSlotDefinition{MaterialTextureSlot::Transmission},
+        MaterialTextureSlotDefinition{MaterialTextureSlot::Thickness}};
+    transmissionDefinition.parameters.textureFlags = static_cast<uint32>(
+        GetMaterialFeatureMaskV2(
+            transmissionDefinition.parameters,
+            transmissionDefinition.textureSlots));
+    transmissionDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        transmissionDefinition.parameters, transmissionDefinition.textureSlots);
+    ASSERT_TRUE(transmission.SetMaterialDefinition(transmissionDefinition));
+    ASSERT_TRUE(bindTexture(transmission, "transmission", 221));
+    ASSERT_TRUE(bindTexture(transmission, "thickness", 222));
+    const RenderUploadRequestBuildResult transmissionBuild = buildMaterial(
+        transmission, {11, 2}, 7);
+    ASSERT_EQ(transmissionBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& transmissionPayload = std::get<MaterialUploadPayload>(
+        transmissionBuild.request->GetPayload());
+    EXPECT_NE(transmissionPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_TRANSMISSION,
+              0u);
+    EXPECT_NE(transmissionPayload.staticDescriptor.featureMask &
+                  RVX_MATERIAL_FEATURE_VOLUME,
+              0u);
+    ASSERT_EQ(transmissionPayload.textureBindings.size(), 2u);
+    EXPECT_EQ(transmissionPayload.textureBindings[0].slot,
+              MaterialUploadTextureSlot::Transmission);
+    EXPECT_EQ(transmissionPayload.textureBindings[1].slot,
+              MaterialUploadTextureSlot::Thickness);
+
+    MaterialResource toon;
+    toon.SetId(230);
+    MaterialDefinition toonDefinition;
+    toonDefinition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+    toonDefinition.descriptor.programFamily = std::string(
+        GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+    toonDefinition.textureSlots = {
+        MaterialTextureSlotDefinition{MaterialTextureSlot::ToonRamp}};
+    toonDefinition.parameters.textureFlags =
+        1u << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+    toonDefinition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+        toonDefinition.parameters, toonDefinition.textureSlots);
+    ASSERT_TRUE(toon.SetMaterialDefinition(toonDefinition));
+    ASSERT_TRUE(bindTexture(toon, "toon_ramp", 231));
+    const RenderUploadRequestBuildResult toonBuild = buildMaterial(
+        toon, {12, 2}, 8);
+    ASSERT_EQ(toonBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& toonPayload =
+        std::get<MaterialUploadPayload>(toonBuild.request->GetPayload());
+    ASSERT_EQ(toonPayload.textureBindings.size(), 1u);
+    EXPECT_EQ(toonPayload.textureBindings[0].slot,
+              MaterialUploadTextureSlot::ToonRamp);
+}
+
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderDescribesCubemapMipStorageExactly)
 {
     TextureResource texture;
@@ -1907,9 +2356,8 @@ TEST(ResourceRuntimePolicyValidation, ResourceLifecycleEventsDrainOnlyFromUpdate
     const fs::path root = MakeTempDirectory("LifecyclePump");
     WriteTextFile(root / "textures" / "event.png", "placeholder");
     ResourceManagerTestGuard guard(MakeRenderResourceTestConfig(root));
-    auto& manager = ResourceManager::Get();
-    manager.RegisterLoader(ResourceType::Texture,
-                           std::make_unique<RenderTextureLoader>());
+    auto& manager = guard.GetManager();
+    ASSERT_TRUE(guard.AddLoader(std::make_unique<RenderTextureLoader>()));
 
     const std::thread::id pumpThread = std::this_thread::get_id();
     std::vector<ResourceLifecycleEventType> events;
@@ -1946,7 +2394,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(301);
@@ -1984,7 +2432,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(302);
@@ -2111,7 +2559,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(305);
@@ -2213,7 +2661,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(311);
@@ -2308,7 +2756,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(321);
@@ -2386,9 +2834,9 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRetriesPressureAndEnqueue
     gateway.pressureCode = RenderUploadEnqueueCode::QueueFullByCount;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<RenderTextureLoader>());
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<RenderTextureLoader>());
 
     ResourceHandle<TextureResource> resource =
         subsystem.Load<TextureResource>("source://textures/retry.png");
@@ -2439,9 +2887,9 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<PreparedRenderTextureLoader>());
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<PreparedRenderTextureLoader>());
 
     const ResourceHandle<TextureResource> resource =
         subsystem.Load<TextureResource>("source://textures/closure.png");
@@ -2522,9 +2970,9 @@ TEST(ResourceRuntimePolicyValidation,
     WriteTextFile(root / "textures" / "cpu-only.png", "placeholder");
 
     ResourceSubsystem subsystem;
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<PreparedRenderTextureLoader>());
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<PreparedRenderTextureLoader>());
 
     const ResourceHandle<TextureResource> resource =
         subsystem.Load<TextureResource>("source://textures/cpu-only.png");
@@ -2574,9 +3022,8 @@ TEST(ResourceRuntimePolicyValidation, AsyncWorkersNeverPublishRenderGatewayOpera
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(config);
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<RenderTextureLoader>());
+    subsystem.Initialize(
+        config, MakeLoaderDependencies<RenderTextureLoader>());
 
     std::future<ResourceHandle<TextureResource>> future =
         subsystem.LoadAsync<TextureResource>("source://textures/worker.png");
@@ -2617,7 +3064,9 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRejectsWorkerGatewayMutat
     FakeResourceGateway updateGateway;
     FakeResourceGateway workerGateway;
     ResourceSubsystem subsystem;
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<RenderTextureLoader>());
     subsystem.SetRenderResourceGateway(&updateGateway);
 
     std::thread worker(
@@ -2629,8 +3078,6 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRejectsWorkerGatewayMutat
 
     EXPECT_EQ(subsystem.GetRenderResourceStats().wrongThreadMutations, 1U);
     WriteTextFile(root / "textures" / "owner.png", "placeholder");
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<RenderTextureLoader>());
     ResourceHandle<TextureResource> resource =
         subsystem.Load<TextureResource>("source://textures/owner.png");
     ASSERT_TRUE(resource.IsValid());
@@ -2657,9 +3104,9 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReclaimsEveryTerminalRequ
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<RenderTextureLoader>());
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<RenderTextureLoader>());
 
     const RenderResourcePublicState terminalStates[] = {
         RenderResourcePublicState::GPUReady,
@@ -2717,9 +3164,9 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSea
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
-    subsystem.RegisterLoader(ResourceType::Texture,
-                             std::make_unique<RenderTextureLoader>());
+    subsystem.Initialize(
+        MakeRenderResourceTestConfig(root),
+        MakeLoaderDependencies<RenderTextureLoader>());
 
     ResourceHandle<TextureResource> first =
         subsystem.Load<TextureResource>("source://textures/replace.png");
@@ -2735,6 +3182,17 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSea
     EXPECT_EQ(subsystem.ResolveRenderResource(AssetId{first.GetId()},
                                               RenderResourceKind::Texture)
                   .code,
+              RenderResourceResolveCode::Resolved);
+
+    // CPU publication can retire before the matching GPU generation. Keep
+    // the old Render handle resolvable until Render confirms terminal release,
+    // then allow a fresh generation to reserve a new handle.
+    gateway.PublishTerminal(firstResolved.handle,
+                            RenderResourcePublicState::Released);
+    subsystem.DrainTerminalRenderRequests();
+    EXPECT_EQ(subsystem.ResolveRenderResource(AssetId{first.GetId()},
+                                              RenderResourceKind::Texture)
+                  .code,
               RenderResourceResolveCode::NotFound);
 
     ResourceHandle<TextureResource> replacement =
@@ -2745,10 +3203,6 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSea
                                         RenderResourceKind::Texture);
     ASSERT_EQ(secondResolved.code, RenderResourceResolveCode::Resolved);
     EXPECT_NE(secondResolved.handle, firstResolved.handle);
-
-    gateway.PublishTerminal(firstResolved.handle,
-                            RenderResourcePublicState::Released);
-    subsystem.DrainTerminalRenderRequests();
     const uint32 releasesBeforeSeal = gateway.releaseAttempts;
     subsystem.BeginRenderShutdown();
     EXPECT_EQ(gateway.releaseAttempts, releasesBeforeSeal);

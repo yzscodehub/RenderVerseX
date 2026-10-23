@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build System & Commands
 
 ### Prerequisites
-- CMake 3.21+
+- CMake 3.25+
 - C++20 compatible compiler (VS2022, GCC11+, Clang13+)
 - vcpkg for dependency management
 
@@ -228,13 +228,13 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 ## Shader Development
 
 ### Shader Compilation Pipeline
-1. Write HLSL shaders in `Render/Shaders/`, `Particle/Shaders/`, etc.
+1. Write HLSL shaders in `Source/Runtime/Render/Shaders/`, `Source/Runtime/Particle/Shaders/`, etc.
 2. ShaderCompiler compiles HLSL to SPIR-V using DXC
 3. SPIRV-Cross translates SPIR-V to MSL (Metal) and GLSL (OpenGL)
 4. Caching system stores compiled bytecode and reflection data
 
 ### Shader File Locations
-- Render shaders: `Render/Shaders/`
+- Render shaders: `Source/Runtime/Render/Shaders/`
 - Particle shaders: `Particle/Shaders/`
 - Water shaders: `Water/Shaders/`
 - Terrain shaders: `Terrain/Shaders/`
@@ -244,7 +244,7 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 ### Adding New Modules
 1. Create module directory with `Include/` and `Private/` subdirectories
 2. Add CMakeLists.txt with proper target dependencies
-3. Register with Engine in `Engine/Engine.cpp`
+3. Register with Engine in `Source/Runtime/Engine/Private/Engine.cpp`
 4. Follow naming conventions and documentation style
 
 ### Working with Subsystems
@@ -292,41 +292,16 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 
 ```
 RenderVerseX/
-├── Core/              # Core utilities (Types, Log, Assert, Math, Job System)
-├── Geometry/          # Geometry primitives, spatial queries
-├── HAL/               # Hardware Abstraction Layer (Window, Input)
-├── Spatial/           # Spatial partitioning and queries
-├── Scene/             # Entity-Component system, scene management
-├── Animation/         # Animation system
-├── Runtime/           # Runtime subsystems (Camera, etc.)
-├── Picking/           # Object picking and raycasting
-├── World/             # World management (integrates Scene, Spatial, Picking)
-├── Engine/            # Engine initialization and main loop
-├── RHI/               # Rendering Hardware Interface abstraction
-├── RHI_DX11/          # DirectX 11 backend
-├── RHI_DX12/          # DirectX 12 backend
-├── RHI_Vulkan/        # Vulkan backend
-├── RHI_Metal/         # Metal backend (macOS/iOS)
-├── RHI_OpenGL/        # OpenGL backend (Linux fallback)
-├── ShaderCompiler/    # HLSL compilation and cross-compilation
-├── Render/            # High-level rendering (RenderGraph, Passes, SceneRenderer)
-├── Resource/          # Asset loading and resource management
-├── Particle/          # GPU-driven particle system
-├── AI/                # AI systems (Navigation, BehaviorTree, Perception)
-├── Networking/        # Network communication and replication
-├── Debug/             # Debug tools (profiling, console, stats)
-├── Scripting/         # Lua scripting system with Sol2 bindings
-├── Audio/             # Audio subsystem (MiniAudio)
-├── Tools/             # Asset pipeline and importers
-├── UI/                # UI framework with widgets
-├── Physics/           # Physics subsystem (Jolt Physics)
-├── Terrain/           # Heightmap terrain rendering
-├── Water/             # Water simulation and effects
-└── Editor/            # Editor application with ImGui
-
-Samples/               # Sample applications
-Tests/                 # Validation tests
-Docs/                 # Design documents and plans
+├── Source/
+│   ├── Runtime/       # Shipping-capable engine, features, RHI, and backends
+│   ├── Developer/     # Importers, compiler, debug tools, and dev composition
+│   └── Programs/      # RVXCook and RVXAnimationDerive entry points
+├── Editor/            # Explicitly deferred authoring product
+├── Samples/           # Sample applications
+├── Tests/             # Validation tests
+├── Docs/              # Architecture and workflow documentation
+├── Scripts/           # Architecture, Build Truth, and CI checks
+└── cmake/             # Module inventory and validation helpers
 ```
 
 ## Dependencies (vcpkg)

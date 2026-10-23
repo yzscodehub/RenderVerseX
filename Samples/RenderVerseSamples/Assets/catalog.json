@@ -1,10 +1,12 @@
 {
   "schemaId": "RVX.SampleAssetCatalog",
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "assets": [
     {
       "id": "casual-female",
       "kind": "model",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "models/casual-female/Casual_Female.gltf",
       "license": {
         "spdxId": "CC0-1.0",
@@ -29,28 +31,64 @@
       "assetContentId": {
         "schemaVersion": 1,
         "algorithm": "sha256",
-        "digest": "42dec4e0c8ed81f540f666943f7823e500f53d22c9eccc7a9750cc9c1324dee5",
-        "byteCount": 3595794,
-        "fileCount": 5
+        "digest": "8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca",
+        "byteCount": 3598370,
+        "fileCount": 11
       },
       "files": [
         {
           "path": "cooked/casual-female/CookManifest.rvxmanifest",
           "purpose": "cook-manifest",
-          "byteCount": 2122,
-          "sha256": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096"
+          "byteCount": 4998,
+          "sha256": "b003138d5c8ca4f216c1aede8628d64bb17d94549d328b2de6f4ef3075895a2a"
         },
         {
           "path": "cooked/casual-female/models/casual-female/Casual_Female.rva",
           "purpose": "cooked-artifact",
-          "byteCount": 15841,
-          "sha256": "5761696ced130fec6ec302660cae7e1f9d260b8a7f112b7f3cd93ade65062d39"
+          "byteCount": 13183,
+          "sha256": "71f83ed202f3efa35552d111008bf92bfbb3fa9e9ab70a37620265eddc2196c4"
         },
         {
           "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/animation.rvxanim",
           "purpose": "cooked-artifact",
           "byteCount": 927584,
           "sha256": "36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_0.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "0083436851caeb46964c010bf8012973e108300a4f4b7d88e856a3cc81e11988"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_1.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "04b3751567943b8daf2a60b03f453c83267302a214cfdc938680ca3a1bb609bb"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_2.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "afbf34bc574b05647496dfdb2be73772cbb3bfff1fd83fc81ae2581dcade2487"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_3.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "9f88e0768fedfb042899e6200067eccb52dcb98f41fd1d2f1ecb743bf8425f12"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_4.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "92d697adf9371fdaffada154d29c24c496e7d1c1552e12463c3f505cece51493"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/material_5.rvmat",
+          "purpose": "cooked-artifact",
+          "byteCount": 393,
+          "sha256": "fc12f851846b8d540f66ede776bd1f7f77ae98d4e05e6eeed547ebe4acfb01b1"
         },
         {
           "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/meshes.rva",
@@ -90,21 +128,21 @@
           "domain": "cooked-artifact",
           "scope": "dependency-closure",
           "algorithm": "sha256",
-          "digest": "c91215f2751eb272b6750de1a03829d2599577a13842fa76dc488e621a94ce89",
-          "byteCount": 1534789,
-          "fileCount": 3
+          "digest": "e9da09c36544ffae0834156cd6878cfdab25f4fd0ab5d58c667349fa19496b7d",
+          "byteCount": 1534489,
+          "fileCount": 9
         },
         "manifestContentIdentity": {
           "schemaVersion": 1,
           "domain": "cook-manifest",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096",
-          "byteCount": 2122,
+          "digest": "b003138d5c8ca4f216c1aede8628d64bb17d94549d328b2de6f4ef3075895a2a",
+          "byteCount": 4998,
           "fileCount": 1
         },
-        "cookSettingsHash": "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa",
-        "recipeHash": "815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5",
+        "cookSettingsHash": "10cfaf4149306c1992cd93a0448e877c360ab41cd3551a7586ad74060ce62fa3",
+        "recipeHash": "2f98a9441e3e96806c084147666253bf3c310f7274539a719055dd0809c7015a",
         "tool": {
           "name": "RVXCook",
           "version": "2.0.0"
@@ -114,6 +152,8 @@
     {
       "id": "casual-female-walk-root-motion",
       "kind": "animation",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "cooked/casual-female-root-motion/casual-female-walk-root-motion.rvxanim",
       "license": {
         "spdxId": "CC0-1.0",
@@ -131,29 +171,29 @@
         "domain": "cooked-artifact",
         "scope": "self-contained-artifact",
         "algorithm": "sha256",
-        "digest": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca",
-        "byteCount": 54462,
+        "digest": "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca",
+        "byteCount": 54464,
         "fileCount": 1
       },
       "assetContentId": {
         "schemaVersion": 1,
         "algorithm": "sha256",
-        "digest": "3e32fb4c332021590f3841ddb7fe858e09c8240246bfbf16e67bb8b795413360",
-        "byteCount": 56156,
+        "digest": "a1237867f0594b079b1e87269684cead024c7e598d94613c954b59742c9b3164",
+        "byteCount": 56159,
         "fileCount": 2
       },
       "files": [
         {
           "path": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
           "purpose": "cook-manifest",
-          "byteCount": 1694,
-          "sha256": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17"
+          "byteCount": 1695,
+          "sha256": "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289"
         },
         {
           "path": "cooked/casual-female-root-motion/casual-female-walk-root-motion.rvxanim",
           "purpose": "runtime-root",
-          "byteCount": 54462,
-          "sha256": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca"
+          "byteCount": 54464,
+          "sha256": "269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca"
         }
       ],
       "attribution": "Derived from Quaternius Casual Female Walk, CC0 1.0 Universal.",
@@ -165,7 +205,7 @@
       "generation": {
         "recipe": "rvx-animation-root-motion-derive-v1",
         "toolVersion": "1.0.0",
-        "recipeHash": "3f12412b0a93123d4727c06ab91a87c5e86d7c1055b1db511de0f62e9eab21e3"
+        "recipeHash": "f7572d945849c7b9ddca2bb40501dfcd59f2a3e8855bda2096d01a9676befd76"
       },
       "cook": {
         "manifestPath": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
@@ -189,8 +229,8 @@
           "domain": "cooked-artifact",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "b820610acdfb55f6f182d753ddeabdc0d73d635816d0b14d93b8ae899b16acbb",
-          "byteCount": 54462,
+          "digest": "da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e",
+          "byteCount": 54464,
           "fileCount": 1
         },
         "manifestContentIdentity": {
@@ -198,12 +238,12 @@
           "domain": "cook-manifest",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17",
-          "byteCount": 1694,
+          "digest": "6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289",
+          "byteCount": 1695,
           "fileCount": 1
         },
-        "cookSettingsHash": "0618f669053ab678745f85251fe13a8db9966f8196a30f955ea1585bc2c81963",
-        "recipeHash": "2984a9d350b89ae24050cbcc3087c4714f66aafca654ea8cef9b7bc5a8dcd709",
+        "cookSettingsHash": "8eb7720e13e68209be75e55b81ab4ee0d731dda72389f53cffe2391e77da3a27",
+        "recipeHash": "bc445631a2989716a9c08158b45dc7ee73293e0eb9afe43156e003beab5e6070",
         "tool": {
           "name": "RVXCook",
           "version": "2.0.0"
@@ -213,6 +253,8 @@
     {
       "id": "corset",
       "kind": "model",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "models/corset/Corset.glb",
       "license": {
         "spdxId": "CC0-1.0",
@@ -256,6 +298,8 @@
     {
       "id": "crytek-sponza",
       "kind": "model",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "models/crytek-sponza/scene.gltf",
       "license": {
         "spdxId": "CC-BY-3.0",
@@ -452,12 +496,14 @@
       "generation": {
         "recipe": "Scripts/Assets/convert_crytek_sponza.py",
         "toolVersion": "1.0.0",
-        "recipeHash": "e51b9ea31691b7cf0b1174c6ed7619cfabaf519211187e8aa216a4724b43b849"
+        "recipeHash": "4357a60f357bcb1badc468ff6a10b9a72d9193a49815060205224fb16dfe06bc"
       }
     },
     {
       "id": "interior-rendering-p0a",
       "kind": "model",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "models/interior-rendering-p0a/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -501,6 +547,8 @@
     {
       "id": "kloofendal-48d-partly-cloudy-pure-sky",
       "kind": "environment",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "environments/kloofendal-48d-partly-cloudy-pure-sky/kloofendal_48d_partly_cloudy_puresky_2k.hdr",
       "license": {
         "spdxId": "CC0-1.0",
@@ -544,6 +592,8 @@
     {
       "id": "pbr-material-grid",
       "kind": "model",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "models/pbr-material-grid/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -561,23 +611,23 @@
         "domain": "source",
         "scope": "self-contained-artifact",
         "algorithm": "sha256",
-        "digest": "f773451c60bb4ef138cccbfea66fe7fbf2cb61029a8cdc4e965f59ecf87051d1",
-        "byteCount": 388150,
+        "digest": "31ec84d9e037bf033370b75f5fcb35eef3157e9a40a0019edf04b41dbecb7286",
+        "byteCount": 404806,
         "fileCount": 1
       },
       "assetContentId": {
         "schemaVersion": 1,
         "algorithm": "sha256",
-        "digest": "f7f8d058a48d8cf8aa06eeef9bf67d2ca2a12eaf679764262165d6c4286d01f7",
-        "byteCount": 388150,
+        "digest": "8aa13e1bf5902680e45f2107b5d2a7a50da11f5584f504484ac0e3d30eb151db",
+        "byteCount": 404806,
         "fileCount": 1
       },
       "files": [
         {
           "path": "models/pbr-material-grid/scene.gltf",
           "purpose": "runtime-root",
-          "byteCount": 388150,
-          "sha256": "f773451c60bb4ef138cccbfea66fe7fbf2cb61029a8cdc4e965f59ecf87051d1"
+          "byteCount": 404806,
+          "sha256": "31ec84d9e037bf033370b75f5fcb35eef3157e9a40a0019edf04b41dbecb7286"
         }
       ],
       "attribution": "Generated test geometry; no third-party source asset.",
@@ -587,6 +637,8 @@
     {
       "id": "pbr-material-texture-cube",
       "kind": "model",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "models/pbr-material-texture-cube/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -630,6 +682,8 @@
     {
       "id": "pbr-reference-environment",
       "kind": "environment",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "environments/pbr-reference/environment.hdr",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -673,6 +727,8 @@
     {
       "id": "r7-triangle",
       "kind": "model",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "models/r7-triangle/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -716,6 +772,8 @@
     {
       "id": "shadow-plane-caster",
       "kind": "model",
+      "usagePolicy": "required-qualification",
+      "qualificationEligible": true,
       "path": "models/shadow-plane-caster/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
@@ -759,6 +817,8 @@
     {
       "id": "water-bottle",
       "kind": "model",
+      "usagePolicy": "development-only",
+      "qualificationEligible": false,
       "path": "models/water-bottle/WaterBottle.glb",
       "license": {
         "spdxId": "CC0-1.0",

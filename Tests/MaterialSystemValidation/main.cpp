@@ -3,11 +3,12 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialBinder.h"
 #include "Render/Material/MaterialClassification.h"
+#include "Render/Material/MaterialGPUEncoding.h"
 #include "Render/Material/MaterialSystem.h"
-#include "Render/Material/MaterialTemplate.h"
 #include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderSubmissionTracker.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +36,63 @@ using namespace RVX;
 
 namespace
 {
+    float EvaluateToonDiffuseQuantizationReference(
+        float nDotL,
+        float authoredBandCount)
+    {
+        const float bandCount = std::clamp(
+            std::round(authoredBandCount), 1.0f, 64.0f);
+        const float lit = std::clamp(nDotL, 0.0f, 1.0f);
+        if (bandCount <= 1.0f)
+        {
+            return lit;
+        }
+
+        const float bandIndex = std::min(
+            std::floor(lit * bandCount), bandCount - 1.0f);
+        return bandIndex / (bandCount - 1.0f);
+    }
+
+    Resource::TextureHandle PrepareCookedTexture(
+        const std::filesystem::path& path,
+        std::string& outError)
+    {
+        Resource::CookedTextureLoader loader;
+        Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = Resource::MakeAssetKey(
+            context.requestedPath, Resource::ResourceType::Texture);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+
+        Resource::PreparedResourceBundle bundle;
+        Resource::ResourceLoadError error;
+        if (!loader.Prepare(context, bundle, error))
+        {
+            outError = error.message;
+            return {};
+        }
+
+        std::vector<Resource::IResource*> resources;
+        resources.reserve(bundle.GetEntries().size());
+        for (const Resource::PreparedResourceEntry& entry : bundle.GetEntries())
+            resources.push_back(entry.resource.Get());
+        Resource::ResourceCache publicationCache;
+        if (!publicationCache.StorePreparedBatch(resources))
+        {
+            outError = "Could not publish prepared cooked texture bundle.";
+            return {};
+        }
+
+        auto* texture = dynamic_cast<Resource::TextureResource*>(
+            bundle.GetRoot().Get());
+        if (!texture)
+            outError = "Cooked texture bundle root has the wrong type.";
+        return Resource::TextureHandle(texture);
+    }
+
     class FakeBuffer final : public RHIBuffer
     {
     public:
@@ -172,12 +231,18 @@ namespace
             m_entries.push_back({3, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({4, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({5, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
-            m_entries.push_back({6, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
-            m_entries.push_back({7, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
-            m_entries.push_back({8, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({6, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
+            m_entries.push_back({7, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
+            m_entries.push_back({8, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({9, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
             m_entries.push_back({10, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
-            m_entries.push_back({11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::All, 1, false});
+            m_entries.push_back({11, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({12, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({13, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({14, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({15, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({16, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({17, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::All, 1, false});
         }
 
         const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
@@ -1144,52 +1209,297 @@ namespace
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Transparent));
     }
 
-    TEST(MaterialSystemValidation, MaterialTemplateCompileFailuresAreSpecificAndVisible)
+    TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyAcceptsTheGFX15RuntimeMaterialMatrix)
     {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto uploadDefinition = [&](uint64 id,
+                                          const char* name,
+                                          const MaterialDefinition& definition)
         {
-            MaterialTemplate materialTemplate("null-device");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(nullptr));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "RHI device"));
-        }
-
+            Resource::MaterialResource resource;
+            resource.SetId(id);
+            resource.SetName(name);
+            EXPECT_TRUE(resource.SetMaterialDefinition(definition));
+            return gpuResources.ResolveOrUpload(&resource);
+        };
+        const auto resolvePolicy = [&](RenderResourceHandle handle,
+                                       MaterialShadowPolicy& outShadow)
         {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-vertex");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
+            MaterialCullMode cull = MaterialCullMode::Back;
+            bool requiresUV1 = false;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle, cull, outShadow, requiresUV1);
+        };
 
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "vertex shader path"));
-        }
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::ToonLit));
+        const RenderResourceHandle toonHandle = uploadDefinition(
+            9101, "DeferredToonMaterial", toon);
+        ASSERT_TRUE(toonHandle.IsValid());
+        MaterialShadowPolicy shadow =
+            MaterialShadowPolicy::CastAndReceive;
+        EXPECT_TRUE(resolvePolicy(toonHandle, shadow));
+        EXPECT_EQ(MaterialShadowPolicy::CastAndReceive, shadow);
 
+        MaterialDefinition thin;
+        thin.descriptor.shadingModel =
+            MaterialShadingModel::ThinTransmission;
+        thin.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::ThinTransmission));
+        thin.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        thin.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        thin.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        thin.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+        thin.parameters.transmission = 1.0f;
+        // The immutable V2 descriptor owns the feature identity. Keep this
+        // focused policy fixture internally coherent rather than relying on a
+        // legacy runtime repair of the transmission bit.
+        thin.descriptor.featureMask = GetMaterialFeatureMaskV2(
+            thin.parameters, thin.textureSlots);
+        const RenderResourceHandle thinHandle = uploadDefinition(
+            9102, "DeferredThinTransmissionMaterial", thin);
+        ASSERT_TRUE(thinHandle.IsValid());
+        EXPECT_TRUE(resolvePolicy(thinHandle, shadow));
+        EXPECT_EQ(MaterialShadowPolicy::Receive, shadow);
+
+        MaterialDefinition premultiplied;
+        premultiplied.descriptor.blendMode =
+            MaterialBlendMode::Premultiplied;
+        premultiplied.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        premultiplied.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        premultiplied.parameters.alphaMode =
+            MaterialSourceAlphaMode::Blend;
+        const RenderResourceHandle premultipliedHandle = uploadDefinition(
+            9103, "DeferredPremultipliedMaterial", premultiplied);
+        ASSERT_TRUE(premultipliedHandle.IsValid());
+        EXPECT_TRUE(resolvePolicy(premultipliedHandle, shadow));
+
+        MaterialDefinition unlit;
+        unlit.descriptor.shadingModel = MaterialShadingModel::Unlit;
+        unlit.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::Unlit));
+        unlit.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        unlit.parameters.workflow = MaterialSourceWorkflow::Unlit;
+        const RenderResourceHandle unlitHandle = uploadDefinition(
+            9104, "ImplementedUnlitReceiveMaterial", unlit);
+        ASSERT_TRUE(unlitHandle.IsValid());
+        EXPECT_TRUE(resolvePolicy(unlitHandle, shadow));
+        EXPECT_EQ(MaterialShadowPolicy::Receive, shadow);
+
+        MaterialDefinition invalidAdditive;
+        invalidAdditive.descriptor.blendMode = MaterialBlendMode::Additive;
+        invalidAdditive.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        invalidAdditive.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+        const RenderResourceHandle invalidAdditiveHandle = uploadDefinition(
+            9105, "RejectedStandardAdditive", invalidAdditive);
+        ASSERT_TRUE(invalidAdditiveHandle.IsValid());
+        EXPECT_FALSE(resolvePolicy(invalidAdditiveHandle, shadow));
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyFreezesDescriptorOwnedSurfacePathEligibility)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto uploadDefinition = [&](uint64 id,
+                                          const char* name,
+                                          const MaterialDefinition& definition)
         {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-pixel");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "pixel shader path"));
-        }
-
+            Resource::MaterialResource resource;
+            resource.SetId(id);
+            resource.SetName(name);
+            EXPECT_TRUE(resource.SetMaterialDefinition(definition));
+            return gpuResources.ResolveOrUpload(&resource);
+        };
+        const auto resolvePath = [&](RenderResourceHandle handle,
+                                     SurfacePathEligibility& outPath)
         {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-pipeline");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
+            MaterialCullMode cullMode = MaterialCullMode::Back;
+            MaterialShadowPolicy shadowPolicy =
+                MaterialShadowPolicy::CastAndReceive;
+            bool requiresUV1 = true;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle,
+                cullMode,
+                shadowPolicy,
+                requiresUV1,
+                outPath);
+        };
 
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "standalone material pipeline"));
-        }
+        MaterialDefinition standardOpaque;
+        const RenderResourceHandle standardOpaqueHandle = uploadDefinition(
+            9161, "StandardOpaque", standardOpaque);
+        ASSERT_TRUE(standardOpaqueHandle.IsValid());
+        SurfacePathEligibility path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardOpaqueHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
+
+        MaterialDefinition standardMasked;
+        standardMasked.descriptor.blendMode = MaterialBlendMode::Masked;
+        standardMasked.parameters.alphaMode = MaterialSourceAlphaMode::Mask;
+        const RenderResourceHandle standardMaskedHandle = uploadDefinition(
+            9162, "StandardMasked", standardMasked);
+        ASSERT_TRUE(standardMaskedHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardMaskedHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
+
+        MaterialDefinition unlitOpaque;
+        unlitOpaque.descriptor.shadingModel = MaterialShadingModel::Unlit;
+        unlitOpaque.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::Unlit));
+        unlitOpaque.parameters.workflow = MaterialSourceWorkflow::Unlit;
+        const RenderResourceHandle unlitOpaqueHandle = uploadDefinition(
+            9163, "UnlitOpaque", unlitOpaque);
+        ASSERT_TRUE(unlitOpaqueHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(unlitOpaqueHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::ForwardSpecialOpaque, path);
+
+        MaterialDefinition standardTranslucent;
+        standardTranslucent.descriptor.blendMode =
+            MaterialBlendMode::AlphaBlend;
+        standardTranslucent.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        standardTranslucent.descriptor.shadowPolicy =
+            MaterialShadowPolicy::Receive;
+        standardTranslucent.parameters.alphaMode =
+            MaterialSourceAlphaMode::Blend;
+        const RenderResourceHandle standardTranslucentHandle = uploadDefinition(
+            9164, "StandardTranslucent", standardTranslucent);
+        ASSERT_TRUE(standardTranslucentHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardTranslucentHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::ForwardTranslucency, path);
+
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        const RenderResourceHandle toonHandle = uploadDefinition(
+            9165, "DeferredToonMaterial", toon);
+        ASSERT_TRUE(toonHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(toonHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyUsesOnlyImplementedAndSamplableMaterialState)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto resolvePolicy = [&](RenderResourceHandle handle,
+                                       MaterialShadowPolicy& outShadow,
+                                       bool& outRequiresUV1)
+        {
+            MaterialCullMode cull = MaterialCullMode::Back;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle, cull, outShadow, outRequiresUV1);
+        };
+
+        auto specularGlossiness = std::make_shared<Material>(
+            "UnsupportedSpecularGlossiness");
+        specularGlossiness->SetWorkflow(MaterialWorkflow::SpecularGlossiness);
+        Resource::MaterialResource specularGlossinessResource;
+        specularGlossinessResource.SetId(9111);
+        ASSERT_TRUE(specularGlossinessResource.SetMaterialData(
+            specularGlossiness));
+        const RenderResourceHandle specularGlossinessHandle =
+            gpuResources.ResolveOrUpload(&specularGlossinessResource);
+        ASSERT_TRUE(specularGlossinessHandle.IsValid());
+        MaterialShadowPolicy shadow = MaterialShadowPolicy::CastAndReceive;
+        bool requiresUV1 = true;
+        EXPECT_FALSE(resolvePolicy(specularGlossinessHandle,
+                                   shadow,
+                                   requiresUV1));
+
+        auto transparent = std::make_shared<Material>(
+            "SourceTransparentReceiveOnly");
+        transparent->SetAlphaMode(Material::AlphaMode::Blend);
+        Resource::MaterialResource transparentResource;
+        transparentResource.SetId(9112);
+        ASSERT_TRUE(transparentResource.SetMaterialData(transparent));
+        EXPECT_EQ(MaterialShadowPolicy::Receive,
+                  transparentResource.GetMaterialDefinition()
+                      .descriptor.shadowPolicy);
+        const RenderResourceHandle transparentHandle =
+            gpuResources.ResolveOrUpload(&transparentResource);
+        ASSERT_TRUE(transparentHandle.IsValid());
+        requiresUV1 = true;
+        EXPECT_TRUE(resolvePolicy(transparentHandle, shadow, requiresUV1));
+        EXPECT_EQ(MaterialShadowPolicy::Receive, shadow);
+        EXPECT_FALSE(requiresUV1);
+
+        MaterialDefinition transparentCaster;
+        transparentCaster.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        transparentCaster.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        transparentCaster.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+        Resource::MaterialResource transparentCasterResource;
+        transparentCasterResource.SetId(9113);
+        ASSERT_TRUE(transparentCasterResource.SetMaterialDefinition(
+            transparentCaster));
+        const RenderResourceHandle transparentCasterHandle =
+            gpuResources.ResolveOrUpload(&transparentCasterResource);
+        ASSERT_TRUE(transparentCasterHandle.IsValid());
+        EXPECT_FALSE(resolvePolicy(transparentCasterHandle,
+                                   shadow,
+                                   requiresUV1));
+
+        auto fallbackUV1Material = std::make_shared<Material>(
+            "FallbackUV1Material");
+        fallbackUV1Material->SetBaseColorTexture(TextureInfo("fallback.png", 1));
+        Resource::MaterialResource fallbackUV1Resource;
+        fallbackUV1Resource.SetId(9114);
+        ASSERT_TRUE(fallbackUV1Resource.SetMaterialData(fallbackUV1Material));
+        const Resource::TextureHandle fallbackTexture = CreateTextureResource(9115);
+        fallbackTexture->MarkDefaultFallback("test fallback UV1");
+        ASSERT_TRUE(gpuResources.UploadImmediate(fallbackTexture.Get()));
+        ASSERT_TRUE(fallbackUV1Resource.SetTexture("albedo", fallbackTexture));
+        const RenderResourceHandle fallbackUV1Handle =
+            gpuResources.ResolveOrUpload(&fallbackUV1Resource);
+        ASSERT_TRUE(fallbackUV1Handle.IsValid());
+        requiresUV1 = true;
+        EXPECT_TRUE(resolvePolicy(fallbackUV1Handle, shadow, requiresUV1));
+        EXPECT_FALSE(requiresUV1);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
     }
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)
@@ -1225,6 +1535,271 @@ namespace
         EXPECT_EQ(constants.alphaMode, static_cast<uint32>(MaterialGPUAlphaMode::Blend));
         EXPECT_EQ(constants.workflow, static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness));
         EXPECT_EQ(constants.doubleSided, 1u);
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialBinderEncodesDescriptorOwnedToonAndStableTableSlot)
+    {
+        MaterialStaticDescriptor descriptor;
+        descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+
+        MaterialSourceData source;
+        source.toonBands = 7.0f;
+        source.toonSpecularThreshold = 0.61f;
+        source.toonRimStrength = 1.25f;
+        source.toonOutlineWidth = 2.5f;
+        source.toonShadowTint = {0.2f, 0.4f, 0.8f};
+
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+            descriptor, source, {}, 37u);
+        EXPECT_EQ(constants.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::ToonLit));
+        EXPECT_EQ(constants.materialTableIndex, 37u);
+        EXPECT_FLOAT_EQ(constants.toonBands, source.toonBands);
+        EXPECT_FLOAT_EQ(constants.toonSpecularThreshold,
+                        source.toonSpecularThreshold);
+        EXPECT_FLOAT_EQ(constants.toonRimStrength, source.toonRimStrength);
+        EXPECT_FLOAT_EQ(constants.toonOutlineWidth, source.toonOutlineWidth);
+        EXPECT_EQ(constants.toonShadowTint,
+                  (Vec4{0.2f, 0.4f, 0.8f, 0.0f}));
+
+        const MaterialGPUConstants legacy =
+            MaterialBinder::ConvertToGPU(source);
+        EXPECT_EQ(legacy.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::StandardLit));
+        EXPECT_EQ(legacy.materialTableIndex, 0u);
+    }
+
+    TEST(MaterialSystemValidation, ToonDiffuseQuantizationBoundaryReferenceMatchesContract)
+    {
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.0f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.249f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.25f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            2.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.50f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(0.75f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(1.0f, 4.0f));
+
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.0f, 1.0f));
+        EXPECT_FLOAT_EQ(
+            0.73f, EvaluateToonDiffuseQuantizationReference(0.73f, 1.0f));
+
+        EXPECT_FLOAT_EQ(
+            0.5f, EvaluateToonDiffuseQuantizationReference(0.60f, 3.49f));
+        EXPECT_FLOAT_EQ(
+            2.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.60f, 3.5f));
+
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(1.0f, 65.0f));
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialBinderPacksPerSlotUVTransformsIntoTheSharedGPUABI)
+    {
+        MaterialSourceData source;
+        std::array<MaterialUploadTextureBinding, 2> bindings{};
+        bindings[0].slot = MaterialUploadTextureSlot::BaseColor;
+        bindings[0].uvSet = 0;
+        bindings[0].scale = Vec2(2.0f, 3.0f);
+        bindings[0].offset = Vec2(0.25f, 0.5f);
+        bindings[0].rotation = 0.0f;
+        bindings[1].slot = MaterialUploadTextureSlot::Normal;
+        bindings[1].uvSet = 1;
+        bindings[1].scale = Vec2(0.5f, 0.75f);
+        bindings[1].offset = Vec2(-0.25f, 0.125f);
+        bindings[1].rotation = 1.57079632679f;
+
+        const MaterialGPUConstants constants =
+            MaterialBinder::ConvertToGPU(source, bindings);
+        static_assert(sizeof(MaterialGPUConstants) == 592);
+        ASSERT_EQ(RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT,
+                  constants.uvTransforms.size());
+        EXPECT_FLOAT_EQ(2.0f, constants.uvTransforms[0].scaleOffset.x);
+        EXPECT_FLOAT_EQ(3.0f, constants.uvTransforms[0].scaleOffset.y);
+        EXPECT_FLOAT_EQ(0.25f, constants.uvTransforms[0].scaleOffset.z);
+        EXPECT_FLOAT_EQ(0.5f, constants.uvTransforms[0].scaleOffset.w);
+        EXPECT_NEAR(0.0f,
+                    constants.uvTransforms[1].rotationUVSet.x,
+                    0.00001f);
+        EXPECT_NEAR(1.0f,
+                    constants.uvTransforms[1].rotationUVSet.y,
+                    0.00001f);
+        EXPECT_FLOAT_EQ(1.0f,
+                        constants.uvTransforms[1].rotationUVSet.z);
+        EXPECT_FLOAT_EQ(1.0f, constants.uvTransforms[4].scaleOffset.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.uvTransforms[4].rotationUVSet.z);
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialGPUEncodingPacksV2SpecularClearcoatParametersAndExtensionTransforms)
+    {
+        MaterialStaticDescriptor descriptor;
+        MaterialSourceData source;
+        source.specularFactor = 0.65f;
+        source.specularColor = {0.2f, 0.4f, 0.8f};
+        source.clearcoatFactor = 0.75f;
+        source.clearcoatRoughness = 0.3f;
+        source.clearcoatNormalScale = 0.5f;
+        source.textureFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasSpecular) |
+            static_cast<uint32>(MaterialTextureFlags::HasSpecularColor) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoat) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoatRoughness) |
+            static_cast<uint32>(MaterialTextureFlags::HasClearcoatNormal);
+
+        std::array<MaterialUploadTextureBinding, 5> bindings{};
+        const std::array slots = {
+            MaterialUploadTextureSlot::Specular,
+            MaterialUploadTextureSlot::SpecularColor,
+            MaterialUploadTextureSlot::Clearcoat,
+            MaterialUploadTextureSlot::ClearcoatRoughness,
+            MaterialUploadTextureSlot::ClearcoatNormal};
+        for (uint32 index = 0; index < slots.size(); ++index)
+        {
+            bindings[index].slot = slots[index];
+            bindings[index].uvSet = static_cast<int32>(index % 2u);
+            bindings[index].offset = {
+                static_cast<float32>(index) * 0.1f,
+                static_cast<float32>(index) * 0.2f};
+        }
+
+        const MaterialGPUConstants constants = EncodeMaterialGPUConstants(
+            descriptor, source, bindings, 11u);
+        EXPECT_EQ(constants.specularColorFactor,
+                  (Vec4{0.2f, 0.4f, 0.8f, 0.65f}));
+        EXPECT_EQ(constants.clearcoatParams,
+                  (Vec4{0.75f, 0.3f, 0.5f, 0.0f}));
+        EXPECT_EQ(constants.textureFlags, source.textureFlags);
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::SpecularColor)]
+                      .rotationUVSet.z,
+                  1.0f);
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::ClearcoatNormal)]
+                      .scaleOffset.z,
+                  0.4f);
+        EXPECT_EQ(constants.uvTransforms.size(), 13u);
+    }
+
+    TEST(MaterialSystemValidation,
+         KhronosSpecularIorAndClearcoatReferencePreservesEnergyContracts)
+    {
+        const auto f0FromIor = [](float ior)
+        {
+            const float ratio = (ior - 1.0f) / (ior + 1.0f);
+            return ratio * ratio;
+        };
+        const auto dielectricF0 = [&f0FromIor](
+                                      float ior,
+                                      float color,
+                                      float specularFactor)
+        {
+            return std::min(
+                       f0FromIor(std::max(ior, 1.0f)) *
+                           std::max(color, 0.0f),
+                       1.0f) *
+                std::clamp(specularFactor, 0.0f, 1.0f);
+        };
+        const auto fresnel = [](float f0, float f90, float cosine)
+        {
+            const float oneMinusCosine = 1.0f - std::clamp(cosine, 0.0f, 1.0f);
+            return f0 + (f90 - f0) *
+                oneMinusCosine * oneMinusCosine * oneMinusCosine *
+                oneMinusCosine * oneMinusCosine;
+        };
+
+        EXPECT_FLOAT_EQ(dielectricF0(1.0f, 1.0f, 1.0f), 0.0f);
+        EXPECT_NEAR(dielectricF0(1.5f, 1.0f, 1.0f), 0.04f, 0.00001f);
+        EXPECT_NEAR(dielectricF0(2.42f, 1.0f, 1.0f), 0.1723f, 0.0002f);
+        // Color is not clamped before IOR multiplication: a high authored
+        // color may reach F0=1, after which the scalar factor applies.
+        EXPECT_FLOAT_EQ(dielectricF0(2.42f, 10.0f, 0.5f), 0.5f);
+
+        const float zeroSpecularF0 = dielectricF0(1.5f, 1.0f, 0.0f);
+        EXPECT_FLOAT_EQ(zeroSpecularF0, 0.0f);
+        EXPECT_FLOAT_EQ(fresnel(zeroSpecularF0, 0.0f, 0.0f), 0.0f);
+        EXPECT_FLOAT_EQ(1.0f - fresnel(zeroSpecularF0, 0.0f, 0.5f), 1.0f);
+        const float coloredTransmissionFresnel = fresnel(
+            dielectricF0(1.5f, 0.25f, 1.0f), 1.0f, 0.5f);
+        EXPECT_LT(coloredTransmissionFresnel, 1.0f);
+        EXPECT_GT(1.0f - coloredTransmissionFresnel, 0.0f);
+
+        const float metallic = 1.0f;
+        const float metalF0 = metallic * 0.8f + (1.0f - metallic) *
+            dielectricF0(1.5f, 0.1f, 0.0f);
+        const float metalF90 = metallic * 1.0f + (1.0f - metallic) * 0.0f;
+        EXPECT_FLOAT_EQ(metalF0, 0.8f);
+        EXPECT_FLOAT_EQ(metalF90, 1.0f);
+
+        const float clearcoatFactor = 0.0f;
+        const float clearcoatFresnel = fresnel(
+            0.04f * clearcoatFactor, clearcoatFactor, 0.2f);
+        EXPECT_FLOAT_EQ(clearcoatFresnel, 0.0f);
+        EXPECT_FLOAT_EQ(1.0f - clearcoatFresnel, 1.0f);
+        const float boundedLayerEnergy =
+            (1.0f - clearcoatFresnel) + clearcoatFresnel;
+        EXPECT_LE(boundedLayerEnergy, 1.0f);
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialGPUEncodingPreservesDescriptorAndThinTransmissionValues)
+    {
+        MaterialStaticDescriptor descriptor;
+        descriptor.shadingModel = MaterialShadingModel::ThinTransmission;
+        descriptor.blendMode = MaterialBlendMode::Premultiplied;
+        descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(descriptor.shadingModel));
+        descriptor.translucencyPhase = MaterialTranslucencyPhase::Standard;
+        descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+
+        MaterialSourceData source;
+        source.alphaMode = MaterialSourceAlphaMode::Blend;
+        source.transmission = 0.75f;
+        source.indexOfRefraction = 1.33f;
+        source.thickness = 0.125f;
+        source.attenuationColor = {0.2f, 0.4f, 0.6f};
+        source.attenuationDistance = 5.0f;
+        source.textureFlags =
+            static_cast<uint32>(MaterialTextureFlags::HasTransmission) |
+            static_cast<uint32>(MaterialTextureFlags::HasThickness);
+
+        std::array<MaterialUploadTextureBinding, 2> bindings{};
+        bindings[0].slot = MaterialUploadTextureSlot::Transmission;
+        bindings[0].uvSet = 1;
+        bindings[0].scale = {0.5f, 0.75f};
+        bindings[1].slot = MaterialUploadTextureSlot::Thickness;
+        bindings[1].offset = {0.125f, 0.25f};
+
+        const MaterialGPUConstants constants = EncodeMaterialGPUConstants(
+            descriptor, source, bindings, 37u);
+        EXPECT_EQ(constants.shadingModel,
+                  static_cast<uint32>(MaterialGPUShadingModel::ThinTransmission));
+        EXPECT_EQ(constants.blendMode,
+                  static_cast<uint32>(MaterialGPUBlendMode::Premultiplied));
+        EXPECT_EQ(constants.materialTableIndex, 37u);
+        EXPECT_EQ(constants.thinTransmissionParams,
+                  (Vec4{0.75f, 1.33f, 0.125f, 5.0f}));
+        EXPECT_EQ(constants.attenuationColor,
+                  (Vec4{0.2f, 0.4f, 0.6f, 0.0f}));
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::Transmission)]
+                      .scaleOffset,
+                  (Vec4{0.5f, 0.75f, 0.0f, 0.0f}));
+        EXPECT_EQ(constants.uvTransforms[
+                      static_cast<uint32>(MaterialUploadTextureSlot::Thickness)]
+                      .scaleOffset,
+                  (Vec4{1.0f, 1.0f, 0.125f, 0.25f}));
     }
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUTextureFlagsReflectOptionalTextures)
@@ -1448,6 +2023,54 @@ namespace
         gpuResources.Shutdown();
     }
 
+    TEST(MaterialSystemValidation,
+         DefaultMaterialDescriptorBindsEveryFixedTextureAndSamplerSlot)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        auto* defaultSet = static_cast<FakeDescriptorSet*>(
+            materialSystem.GetDefaultMaterialSet());
+        ASSERT_NE(nullptr, defaultSet);
+        ASSERT_EQ(1u + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2 + 1u,
+                  defaultSet->bindings.size());
+
+        const RHIDescriptorBinding* constants = defaultSet->FindBinding(0);
+        ASSERT_NE(nullptr, constants);
+        EXPECT_NE(nullptr, constants->buffer);
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
+        {
+            const RHIDescriptorBinding* texture = defaultSet->FindBinding(binding);
+            ASSERT_NE(nullptr, texture) << "Missing default texture slot " << binding;
+            EXPECT_NE(nullptr, texture->textureView)
+                << "Default texture slot " << binding << " is null";
+        }
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
+        {
+            const RHIDescriptorBinding* sampler = defaultSet->FindBinding(binding);
+            ASSERT_NE(nullptr, sampler) << "Missing default sampler slot " << binding;
+            EXPECT_NE(nullptr, sampler->sampler)
+                << "Default sampler slot " << binding << " is null";
+        }
+        const RHIDescriptorBinding* parameterTable = defaultSet->FindBinding(
+            1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2);
+        ASSERT_NE(nullptr, parameterTable);
+        EXPECT_NE(nullptr, parameterTable->buffer);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, MaterialBindingResidentTexturesAreReady)
     {
         FakeDevice device;
@@ -1482,6 +2105,12 @@ namespace
             static_cast<uint32>(MaterialTextureFlags::HasOcclusion) |
             static_cast<uint32>(MaterialTextureFlags::HasEmissive);
         EXPECT_EQ(expectedFlags, result.textureFlags);
+        EXPECT_EQ(result.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV2());
+        EXPECT_EQ(result.featureMask, static_cast<uint64>(expectedFlags));
+        EXPECT_EQ(result.shadingModel, MaterialShadingModel::StandardLit);
+        EXPECT_EQ(result.surfacePathEligibility,
+                  SurfacePathEligibility::DeferredOpaque);
         EXPECT_TRUE(Contains(result.materialName, "render-material["));
         EXPECT_EQ(expectedFlags, materialSystem.GetLastBindingResult().textureFlags);
         EXPECT_EQ(result.materialName,
@@ -1783,6 +2412,7 @@ namespace
         const auto makeNormalKey = [](
                                        Resource::ResourceId textureId,
                                        float32 normalScale,
+                                       float32 normalRotation,
                                        bool allowNormalMap) -> uint64
         {
             FakeDevice device;
@@ -1809,6 +2439,29 @@ namespace
             material.SetName("RasterNormalSemantic");
             material.SetMaterialData(materialData);
             material.SetTexture("normal", texture);
+            MaterialDefinition definition = material.GetMaterialDefinition();
+            const auto normalSlot = std::find_if(
+                definition.textureSlots.begin(),
+                definition.textureSlots.end(),
+                [](const MaterialTextureSlotDefinition& slot)
+                {
+                    return slot.slot == MaterialTextureSlot::Normal;
+                });
+            if (normalSlot == definition.textureSlots.end())
+            {
+                system.Shutdown();
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
+            normalSlot->rotation = normalRotation;
+            if (!material.SetMaterialDefinition(definition))
+            {
+                system.Shutdown();
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
             MaterialBindingOptions options;
             options.allowNormalMap = allowNormalMap;
             uint64 key = 0;
@@ -1829,10 +2482,14 @@ namespace
             return key;
         };
 
-        const uint64 disabledFirst = makeNormalKey(9302u, 0.25f, false);
-        const uint64 disabledChanged = makeNormalKey(9303u, 2.0f, false);
-        const uint64 enabledFirst = makeNormalKey(9302u, 0.25f, true);
-        const uint64 enabledChanged = makeNormalKey(9303u, 2.0f, true);
+        const uint64 disabledFirst =
+            makeNormalKey(9302u, 0.25f, 0.0f, false);
+        const uint64 disabledChanged =
+            makeNormalKey(9302u, 2.0f, 0.75f, false);
+        const uint64 enabledFirst =
+            makeNormalKey(9302u, 0.25f, 0.0f, true);
+        const uint64 enabledChanged =
+            makeNormalKey(9302u, 0.25f, 0.75f, true);
         ASSERT_NE(0u, disabledFirst);
         ASSERT_NE(0u, enabledFirst);
         EXPECT_EQ(disabledFirst, disabledChanged);
@@ -2206,19 +2863,26 @@ namespace
         ASSERT_NE(nullptr, descriptorSet);
         ASSERT_NE(materialSystem.GetDefaultMaterialSet(), descriptorSet);
 
-        const RHIDescriptorBinding* albedoBinding = FindBinding(descriptorSet, 1);
+        const RHIDescriptorBinding* albedoBinding = FindBinding(
+            descriptorSet,
+            GetMaterialTextureDescriptorBinding(MaterialUploadTextureSlot::BaseColor));
         ASSERT_NE(nullptr, albedoBinding);
         ASSERT_NE(nullptr, albedoBinding->textureView);
         EXPECT_EQ(gpuResources.GetTexture(albedo.GetId()), albedoBinding->textureView->GetTexture());
 
-        const RHIDescriptorBinding* normalBinding = FindBinding(descriptorSet, 2);
+        const RHIDescriptorBinding* normalBinding = FindBinding(
+            descriptorSet,
+            GetMaterialTextureDescriptorBinding(MaterialUploadTextureSlot::Normal));
         ASSERT_NE(nullptr, normalBinding);
         ASSERT_NE(nullptr, normalBinding->textureView);
         EXPECT_NE(albedoBinding->textureView, normalBinding->textureView);
 
-        const RHIDescriptorBinding* samplerBinding = FindBinding(descriptorSet, 6);
+        const RHIDescriptorBinding* samplerBinding = FindBinding(
+            descriptorSet,
+            GetMaterialSamplerDescriptorBinding(MaterialUploadTextureSlot::BaseColor));
         ASSERT_NE(nullptr, samplerBinding);
         EXPECT_NE(nullptr, samplerBinding->sampler);
+        EXPECT_EQ(nullptr, samplerBinding->textureView);
 
         materialSystem.Shutdown();
         viewCache.Shutdown();
@@ -2247,13 +2911,16 @@ namespace
             false,
             std::vector<uint8>(16, 0x33)));
 
-        Resource::TextureLoader loader(nullptr);
-        Resource::TextureHandle albedo(loader.LoadFromFile(albedoPath.string()));
-        ASSERT_TRUE(albedo) << loader.GetLastLoadError();
-        Resource::TextureHandle metallicRoughness(loader.LoadFromFile(metallicRoughnessPath.string()));
-        ASSERT_TRUE(metallicRoughness) << loader.GetLastLoadError();
-        Resource::TextureHandle normal(loader.LoadFromFile(normalPath.string()));
-        ASSERT_TRUE(normal) << loader.GetLastLoadError();
+        std::string loadError;
+        Resource::TextureHandle albedo =
+            PrepareCookedTexture(albedoPath, loadError);
+        ASSERT_TRUE(albedo) << loadError;
+        Resource::TextureHandle metallicRoughness =
+            PrepareCookedTexture(metallicRoughnessPath, loadError);
+        ASSERT_TRUE(metallicRoughness) << loadError;
+        Resource::TextureHandle normal =
+            PrepareCookedTexture(normalPath, loadError);
+        ASSERT_TRUE(normal) << loadError;
 
         EXPECT_EQ(Resource::TextureFormat::BC1, albedo->GetFormat());
         EXPECT_TRUE(albedo->IsSRGB());
@@ -2420,7 +3087,8 @@ namespace
                 : nullptr;
         };
 
-        const FakeSampler* baseColorSampler = samplerAt(6);
+        const FakeSampler* baseColorSampler = samplerAt(
+            GetMaterialSamplerDescriptorBinding(MaterialUploadTextureSlot::BaseColor));
         ASSERT_NE(nullptr, baseColorSampler);
         const RHISamplerDesc& baseColorDesc = baseColorSampler->GetDesc();
         EXPECT_EQ(RHIFilterMode::Nearest, baseColorDesc.minFilter);
@@ -2430,14 +3098,17 @@ namespace
         EXPECT_EQ(RHIAddressMode::ClampToEdge, baseColorDesc.addressU);
         EXPECT_EQ(RHIAddressMode::MirrorRepeat, baseColorDesc.addressV);
 
-        const FakeSampler* normalSampler = samplerAt(7);
+        const FakeSampler* normalSampler = samplerAt(
+            GetMaterialSamplerDescriptorBinding(MaterialUploadTextureSlot::Normal));
         ASSERT_NE(nullptr, normalSampler);
         const RHISamplerDesc& normalDesc = normalSampler->GetDesc();
         EXPECT_EQ(RHIFilterMode::Linear, normalDesc.minFilter);
         EXPECT_EQ(RHIFilterMode::Nearest, normalDesc.mipFilter);
         EXPECT_FLOAT_EQ(0.0f, normalDesc.maxLod);
 
-        const FakeSampler* metallicRoughnessSampler = samplerAt(8);
+        const FakeSampler* metallicRoughnessSampler = samplerAt(
+            GetMaterialSamplerDescriptorBinding(
+                MaterialUploadTextureSlot::MetallicRoughness));
         ASSERT_NE(nullptr, metallicRoughnessSampler);
         const RHISamplerDesc& metallicRoughnessDesc =
             metallicRoughnessSampler->GetDesc();
@@ -2445,13 +3116,15 @@ namespace
         EXPECT_EQ(RHIFilterMode::Nearest, metallicRoughnessDesc.mipFilter);
         EXPECT_GT(metallicRoughnessDesc.maxLod, 0.0f);
 
-        const FakeSampler* occlusionSampler = samplerAt(9);
+        const FakeSampler* occlusionSampler = samplerAt(
+            GetMaterialSamplerDescriptorBinding(MaterialUploadTextureSlot::Occlusion));
         ASSERT_NE(nullptr, occlusionSampler);
         const RHISamplerDesc& occlusionDesc = occlusionSampler->GetDesc();
         EXPECT_EQ(RHIFilterMode::Nearest, occlusionDesc.minFilter);
         EXPECT_EQ(RHIFilterMode::Linear, occlusionDesc.mipFilter);
 
-        const FakeSampler* emissiveSampler = samplerAt(10);
+        const FakeSampler* emissiveSampler = samplerAt(
+            GetMaterialSamplerDescriptorBinding(MaterialUploadTextureSlot::Emissive));
         ASSERT_NE(nullptr, emissiveSampler);
         const RHISamplerDesc& emissiveDesc = emissiveSampler->GetDesc();
         EXPECT_EQ(RHIFilterMode::Linear, emissiveDesc.minFilter);
@@ -2478,23 +3151,29 @@ namespace
 
         RHIDescriptorSet* defaultSet = materialSystem.GetDefaultMaterialSet();
         ASSERT_NE(nullptr, defaultSet);
-        for (uint32 binding = 6; binding <= 10; ++binding)
+        for (uint32 slot = 0; slot < RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; ++slot)
         {
-            const RHIDescriptorBinding* sampler = FindBinding(defaultSet, binding);
+            const auto textureSlot = static_cast<MaterialUploadTextureSlot>(slot);
+            const RHIDescriptorBinding* texture = FindBinding(
+                defaultSet, GetMaterialTextureDescriptorBinding(textureSlot));
+            ASSERT_NE(nullptr, texture);
+            EXPECT_NE(nullptr, texture->textureView);
+
+            const RHIDescriptorBinding* sampler = FindBinding(
+                defaultSet,
+                GetMaterialSamplerDescriptorBinding(textureSlot));
             ASSERT_NE(nullptr, sampler);
             EXPECT_NE(nullptr, sampler->sampler);
             EXPECT_EQ(nullptr, sampler->textureView);
         }
         const RHIDescriptorBinding* defaultParameterTable =
-            FindBinding(defaultSet, 11);
+            FindBinding(defaultSet, RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING);
         ASSERT_NE(nullptr, defaultParameterTable);
         ASSERT_NE(nullptr, defaultParameterTable->buffer);
         EXPECT_TRUE(HasFlag(defaultParameterTable->buffer->GetUsage(),
                             RHIBufferUsage::Structured));
         EXPECT_TRUE(HasFlag(defaultParameterTable->buffer->GetUsage(),
                             RHIBufferUsage::ShaderResource));
-        EXPECT_EQ(nullptr, FindBinding(defaultSet, 12));
-        EXPECT_EQ(nullptr, FindBinding(defaultSet, 13));
 
         Resource::MaterialResource materialResource;
         materialResource.SetId(501);
@@ -2505,20 +3184,27 @@ namespace
                 gpuResources.ResolveOrUpload(&materialResource),
                 &viewCache);
         ASSERT_TRUE(result.IsDrawable());
-        for (uint32 binding = 6; binding <= 10; ++binding)
+        for (uint32 slot = 0; slot < RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT; ++slot)
         {
-            const RHIDescriptorBinding* sampler =
-                FindBinding(result.descriptorSet, binding);
+            const auto textureSlot = static_cast<MaterialUploadTextureSlot>(slot);
+            const RHIDescriptorBinding* texture = FindBinding(
+                result.descriptorSet,
+                GetMaterialTextureDescriptorBinding(textureSlot));
+            ASSERT_NE(nullptr, texture);
+            EXPECT_NE(nullptr, texture->textureView);
+
+            const RHIDescriptorBinding* sampler = FindBinding(
+                result.descriptorSet,
+                GetMaterialSamplerDescriptorBinding(textureSlot));
             ASSERT_NE(nullptr, sampler);
             EXPECT_NE(nullptr, sampler->sampler);
             EXPECT_EQ(nullptr, sampler->textureView);
         }
         const RHIDescriptorBinding* parameterTable =
-            FindBinding(result.descriptorSet, 11);
+            FindBinding(result.descriptorSet,
+                        RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING);
         ASSERT_NE(nullptr, parameterTable);
         EXPECT_EQ(defaultParameterTable->buffer, parameterTable->buffer);
-        EXPECT_EQ(nullptr, FindBinding(result.descriptorSet, 12));
-        EXPECT_EQ(nullptr, FindBinding(result.descriptorSet, 13));
 
         materialSystem.Shutdown();
         viewCache.Shutdown();
@@ -2584,6 +3270,20 @@ namespace
         ASSERT_LT(second.slot, snapshot.rasterMaterialSemanticKeysBySlot.size());
         EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[first.slot]);
         EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[second.slot]);
+        EXPECT_TRUE(snapshot.containsResolvedRasterBindingEvidence);
+        ASSERT_EQ(2u, snapshot.resolvedRasterBindingEvidence.size());
+        EXPECT_EQ(first,
+                  snapshot.resolvedRasterBindingEvidence[0].material);
+        EXPECT_EQ(second,
+                  snapshot.resolvedRasterBindingEvidence[1].material);
+        for (const MaterialParameterTableBindingEvidence& evidence :
+             snapshot.resolvedRasterBindingEvidence)
+        {
+            EXPECT_TRUE(evidence.IsValid());
+            EXPECT_FALSE(evidence.fallbackUsed);
+            EXPECT_EQ(GetMaterialParameterLayoutHashV2(),
+                      evidence.parameterLayoutHash);
+        }
 
         auto* buffer = static_cast<FakeBuffer*>(snapshot.buffer.Get());
         const std::vector<uint8>& bytes = buffer->GetStorage();
@@ -2609,7 +3309,8 @@ namespace
         EXPECT_EQ(snapshot.rasterMaterialSemanticKeysBySlot[first.slot],
                   firstTableBinding.descriptorContentKey);
         const RHIDescriptorBinding* firstTableDescriptor =
-            FindBinding(firstTableBinding.descriptorSet, 11);
+            FindBinding(firstTableBinding.descriptorSet,
+                        RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING);
         ASSERT_NE(nullptr, firstTableDescriptor);
         EXPECT_EQ(snapshot.buffer.Get(), firstTableDescriptor->buffer);
 
@@ -2626,7 +3327,8 @@ namespace
                 first, &viewCache, nextFrameOptions);
         ASSERT_TRUE(nextFrameBinding.IsDrawable());
         const RHIDescriptorBinding* nextFrameTableDescriptor =
-            FindBinding(nextFrameBinding.descriptorSet, 11);
+            FindBinding(nextFrameBinding.descriptorSet,
+                        RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING);
         ASSERT_NE(nullptr, nextFrameTableDescriptor);
         EXPECT_EQ(nextFrameSnapshot.buffer.Get(),
                   nextFrameTableDescriptor->buffer);
@@ -2645,6 +3347,172 @@ namespace
         gpuResources.Shutdown();
     }
 
+
+    TEST(MaterialSystemValidation,
+         MaterialClassificationTableUsesStableSlotsWithoutTextureResolution)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        toon.parameters.toonBands = 6.0f;
+        toon.parameters.toonSpecularThreshold = 0.55f;
+        toon.parameters.toonRimStrength = 1.5f;
+        toon.parameters.toonOutlineWidth = 3.0f;
+        toon.parameters.toonShadowTint = {0.25f, 0.5f, 0.75f};
+        Resource::MaterialResource resource;
+        resource.SetId(9901u);
+        resource.SetName("ToonClassificationMaterial");
+        ASSERT_TRUE(resource.SetMaterialDefinition(toon));
+        const RenderResourceHandle material =
+            gpuResources.ResolveOrUpload(&resource);
+        ASSERT_TRUE(material.IsValid());
+
+        const std::array handles = {material};
+        MaterialParameterTableSnapshot first;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            handles, first));
+        ASSERT_TRUE(first.IsValid());
+        EXPECT_EQ(first.schemaVersion,
+                  RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION);
+        EXPECT_EQ(first.stride, sizeof(MaterialGPUConstants));
+        EXPECT_NE(first.contentHash, 0u);
+        ASSERT_LT(material.slot, first.slotCount);
+        ASSERT_LT(material.slot, first.rasterMaterialSemanticKeysBySlot.size());
+        EXPECT_NE(first.rasterMaterialSemanticKeysBySlot[material.slot], 0u);
+        ASSERT_EQ(first.valueOnlyRowEvidence.size(), first.slotCount);
+        const MaterialParameterTableRowEvidence& toonEvidence =
+            first.valueOnlyRowEvidence[material.slot];
+        EXPECT_EQ(toonEvidence.stableSlot, material.slot);
+        EXPECT_TRUE(toonEvidence.isAsset);
+        EXPECT_EQ(toonEvidence.shadingModel, MaterialShadingModel::ToonLit);
+        EXPECT_EQ(toonEvidence.programFamilyHash,
+                  GetMaterialProgramFamilyValueIdentity("toon-lit-v2"));
+        EXPECT_EQ(toonEvidence.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV2());
+        EXPECT_FLOAT_EQ(toonEvidence.toonBands, 6.0f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonSpecularThreshold, 0.55f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonRimStrength, 1.5f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonOutlineWidth, 3.0f);
+        EXPECT_EQ(toonEvidence.toonShadowTint,
+                  (Vec3{0.25f, 0.5f, 0.75f}));
+        EXPECT_TRUE(toonEvidence.toonParametersValid);
+        EXPECT_TRUE(toonEvidence.IsStructurallyValid());
+
+        const auto* firstBuffer = static_cast<const FakeBuffer*>(first.buffer.Get());
+        const std::vector<uint8>& bytes = firstBuffer->GetStorage();
+        ASSERT_GE(bytes.size(),
+                  (static_cast<size_t>(material.slot) + 1U) *
+                      sizeof(MaterialGPUConstants));
+        MaterialGPUConstants constants{};
+        std::memcpy(&constants,
+                    bytes.data() +
+                        static_cast<size_t>(material.slot) *
+                            sizeof(MaterialGPUConstants),
+                    sizeof(constants));
+        EXPECT_EQ(constants.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::ToonLit));
+        EXPECT_EQ(constants.materialTableIndex, material.slot);
+        EXPECT_FLOAT_EQ(constants.toonBands, 6.0f);
+        EXPECT_FLOAT_EQ(constants.toonSpecularThreshold, 0.55f);
+        EXPECT_FLOAT_EQ(constants.toonRimStrength, 1.5f);
+        EXPECT_FLOAT_EQ(constants.toonOutlineWidth, 3.0f);
+        EXPECT_EQ(constants.toonShadowTint,
+                  (Vec4{0.25f, 0.5f, 0.75f, 0.0f}));
+
+        MaterialParameterTableSnapshot second;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            handles, second));
+        EXPECT_EQ(first.contentHash, second.contentHash);
+        EXPECT_EQ(first.rasterMaterialSemanticKeysBySlot,
+                  second.rasterMaterialSemanticKeysBySlot);
+        EXPECT_EQ(first.valueOnlyRowEvidence.size(),
+                  second.valueOnlyRowEvidence.size());
+        EXPECT_EQ(first.valueOnlyRowEvidence[material.slot].programFamilyHash,
+                  second.valueOnlyRowEvidence[material.slot].programFamilyHash);
+
+        const std::array conflicting = {
+            material,
+            RenderResourceHandle{material.slot, material.generation + 1u}};
+        MaterialParameterTableSnapshot rejected;
+        EXPECT_FALSE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            conflicting, rejected));
+        EXPECT_FALSE(rejected.IsValid());
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         EmptyMaterialClassificationTablePublishesDefaultSentinel)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        MaterialParameterTableSnapshot first;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            {}, first));
+        ASSERT_TRUE(first.IsValid());
+        EXPECT_TRUE(first.usesDefaultClassificationSentinel);
+        EXPECT_EQ(first.slotCount, 1u);
+        EXPECT_EQ(first.materialCount, 1u);
+        EXPECT_EQ(first.schemaVersion,
+                  RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION);
+        EXPECT_EQ(first.stride, sizeof(MaterialGPUConstants));
+        EXPECT_NE(first.contentHash, 0u);
+        ASSERT_EQ(first.rasterMaterialSemanticKeysBySlot.size(), 1u);
+        EXPECT_NE(first.rasterMaterialSemanticKeysBySlot[0], 0u);
+        ASSERT_EQ(first.valueOnlyRowEvidence.size(), 1u);
+        const MaterialParameterTableRowEvidence& sentinelEvidence =
+            first.valueOnlyRowEvidence.front();
+        EXPECT_EQ(sentinelEvidence.stableSlot, 0u);
+        EXPECT_FALSE(sentinelEvidence.isAsset);
+        EXPECT_EQ(sentinelEvidence.shadingModel,
+                  MaterialShadingModel::StandardLit);
+        EXPECT_EQ(sentinelEvidence.programFamilyHash,
+                  GetMaterialProgramFamilyValueIdentity("standard-lit-v2"));
+        EXPECT_EQ(sentinelEvidence.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV2());
+        EXPECT_FALSE(sentinelEvidence.toonParametersValid);
+        EXPECT_TRUE(sentinelEvidence.IsStructurallyValid());
+
+        const auto* firstBuffer =
+            static_cast<const FakeBuffer*>(first.buffer.Get());
+        ASSERT_NE(firstBuffer, nullptr);
+        ASSERT_EQ(firstBuffer->GetStorage().size(),
+                  sizeof(MaterialGPUConstants));
+        MaterialGPUConstants constants{};
+        std::memcpy(&constants,
+                    firstBuffer->GetStorage().data(),
+                    sizeof(constants));
+        EXPECT_EQ(constants.shadingModel,
+                  static_cast<uint32>(MaterialGPUShadingModel::StandardLit));
+        EXPECT_EQ(constants.materialTableIndex, 0u);
+
+        MaterialParameterTableSnapshot second;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            {}, second));
+        EXPECT_TRUE(second.usesDefaultClassificationSentinel);
+        EXPECT_EQ(first.contentHash, second.contentHash);
+        EXPECT_EQ(first.rasterMaterialSemanticKeysBySlot,
+                  second.rasterMaterialSemanticKeysBySlot);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
 
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIsNotGPUReady)
     {

@@ -49,6 +49,58 @@ constexpr uint8 FEATURE_TERRAIN = 1U << 2U;
     return MakeFrozenSceneObjectId(runtime, entity, type, slot);
 }
 
+[[nodiscard]] RenderFeatureSourceIdentity FeatureSource(
+    ECS::SceneRuntimeId runtime,
+    ECS::EntityHandle entity)
+{
+    return {
+        .sceneRuntimeId = runtime.GetValue(),
+        .entitySlot = entity.GetIndex(),
+        .entityGeneration = entity.GetGeneration(),
+    };
+}
+
+[[nodiscard]] WaterRenderSnapshotItem MakeReadyWaterSnapshot()
+{
+    WaterRenderSnapshotItem item;
+    item.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
+    // The bridge replaces this transport identity with the generation-qualified
+    // RenderScene object id. A non-zero value is nevertheless required while
+    // validating the sealed producer packet.
+    item.componentId = 1;
+    item.surfaceAssetId = {.value = 101};
+    item.materialAssetId = {.value = 201};
+    item.worldBounds = AABB({-5.8f, -4.8f, -5.8f}, {5.8f, 0.8f, 5.8f});
+    item.size = {10.0f, 10.0f};
+    item.depth = 4.0f;
+    item.gerstnerWaves.waveCount = 1;
+    item.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f},
+        .amplitude = 0.5f,
+        .wavelength = 8.0f,
+        .steepness = 0.4f,
+        .speed = 1.0f,
+        .phaseOffsetRadians = 0.0f,
+    };
+    EXPECT_TRUE(CanonicalizeWaterGerstnerWaveSet(item.gerstnerWaves));
+    item.shallowColor = {0.02f, 0.24f, 0.30f};
+    item.deepColor = {0.005f, 0.04f, 0.10f};
+    item.foamColor = {0.92f, 0.96f, 1.0f};
+    item.absorptionCoefficient = {0.15f, 0.06f, 0.02f};
+    item.transparency = 0.72f;
+    item.reflectionStrength = 0.65f;
+    item.refractionStrength = 0.08f;
+    item.roughness = 0.08f;
+    item.normalScale = 1.0f;
+    item.foamIntensity = 1.0f;
+    item.foamCrestThreshold = 0.62f;
+    item.reflectionEnabled = true;
+    item.refractionEnabled = true;
+    item.foamEnabled = true;
+    item.contentHash = item.ComputeContentHash();
+    return item;
+}
+
 [[nodiscard]] EcsFrozenSceneBridgeOutput MakeOutput(
     ECS::SceneRuntimeId runtime,
     uint64 snapshotRevision,
@@ -107,12 +159,21 @@ constexpr uint8 FEATURE_TERRAIN = 1U << 2U;
 
     const ECS::EntityHandle featureEntity = ECS::EntityHandle::Create(
         featureEntityIndex, featureEntityGeneration);
+    // These fixtures re-emit an unchanged feature payload while the enclosing
+    // Scene snapshot revision advances. Preserve the feature's own capture and
+    // configuration revisions so the extraction delta remains a removal-only
+    // update when a sibling feature disappears.
+    constexpr uint64 featureCaptureSequence = 1;
+    constexpr uint64 featureConfigurationRevision = 1;
     if ((featureMask & FEATURE_PARTICLE) != 0)
     {
         FrozenSceneParticle particle;
         particle.id = Id(runtime, featureEntity, FrozenSceneObjectType::Particle);
         particle.sourceEntity = featureEntity;
-        particle.payloadRevision = snapshotRevision;
+        particle.payloadRevision = featureConfigurationRevision;
+        particle.state.header.captureSequence = featureCaptureSequence;
+        particle.state.header.configurationRevision = particle.payloadRevision;
+        particle.state.header.source = FeatureSource(runtime, featureEntity);
         snapshot.particles.push_back(std::move(particle));
     }
     if ((featureMask & FEATURE_WATER) != 0)
@@ -120,7 +181,11 @@ constexpr uint8 FEATURE_TERRAIN = 1U << 2U;
         FrozenSceneWater water;
         water.id = Id(runtime, featureEntity, FrozenSceneObjectType::Water);
         water.sourceEntity = featureEntity;
-        water.payloadRevision = snapshotRevision;
+        water.payloadRevision = featureConfigurationRevision;
+        water.state = MakeReadyWaterSnapshot();
+        water.state.header.captureSequence = featureCaptureSequence;
+        water.state.header.configurationRevision = water.payloadRevision;
+        water.state.header.source = FeatureSource(runtime, featureEntity);
         snapshot.water.push_back(std::move(water));
     }
     if ((featureMask & FEATURE_TERRAIN) != 0)
@@ -128,7 +193,10 @@ constexpr uint8 FEATURE_TERRAIN = 1U << 2U;
         FrozenSceneTerrain terrain;
         terrain.id = Id(runtime, featureEntity, FrozenSceneObjectType::Terrain);
         terrain.sourceEntity = featureEntity;
-        terrain.payloadRevision = snapshotRevision;
+        terrain.payloadRevision = featureConfigurationRevision;
+        terrain.state.header.captureSequence = featureCaptureSequence;
+        terrain.state.header.configurationRevision = terrain.payloadRevision;
+        terrain.state.header.source = FeatureSource(runtime, featureEntity);
         snapshot.terrain.push_back(std::move(terrain));
     }
     if (includeSkybox)
@@ -153,6 +221,15 @@ constexpr uint8 FEATURE_TERRAIN = 1U << 2U;
 {
     EcsFrameExtractionInput input;
     input.sequence = sequence;
+    input.worldRevision = 1;
+    input.temporalEpoch = 1;
+    input.viewFamilyId = 1;
+    input.surfaceGeneration = 1;
+    input.configurationRevision = 1;
+    input.formatRevision = 1;
+    input.simulationTick = sequence - 1;
+    input.deterministicSeed =
+        (0xd3a2646cU ^ static_cast<uint32>(sequence)) | 1U;
     input.outputWidth = 640;
     input.outputHeight = 480;
     input.deltaTime = 1.0f / 60.0f;

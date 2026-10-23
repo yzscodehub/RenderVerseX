@@ -13,6 +13,174 @@
 
 namespace RVX
 {
+    /** @brief Product-facing domain used to organize sample scenarios. */
+    enum class SampleDomain : uint8
+    {
+        Rendering = 0,
+        Animation,
+        VFX,
+        Environment,
+        Physics,
+        Systems,
+        Qualification
+    };
+
+    /** @brief Observable purpose of a sample scenario. */
+    enum class SampleIntent : uint8
+    {
+        Demonstration = 0,
+        Regression,
+        Stress,
+        Integration
+    };
+
+    /** @brief Renderer composition recipe selected by a sample contract. */
+    enum class SamplePipelineRecipe : uint8
+    {
+        Minimal = 0,
+        ForwardStandard,
+        DeferredQuality,
+        HybridRayTracing,
+        Headless
+    };
+
+    /** @brief Stable quality tiers shared by manifests and command-line input. */
+    enum class SampleQualityTier : uint8
+    {
+        Default = 0,
+        Low,
+        Medium,
+        High,
+        Ultra
+    };
+
+    /** @brief Return the stable manifest spelling for a sample domain. */
+    inline constexpr const char* GetSampleDomainName(
+        SampleDomain domain) noexcept
+    {
+        switch (domain)
+        {
+            case SampleDomain::Rendering: return "rendering";
+            case SampleDomain::Animation: return "animation";
+            case SampleDomain::VFX: return "vfx";
+            case SampleDomain::Environment: return "environment";
+            case SampleDomain::Physics: return "physics";
+            case SampleDomain::Systems: return "systems";
+            case SampleDomain::Qualification: return "qualification";
+            default: return "invalid";
+        }
+    }
+
+    /** @brief Return the stable manifest spelling for a sample intent. */
+    inline constexpr const char* GetSampleIntentName(
+        SampleIntent intent) noexcept
+    {
+        switch (intent)
+        {
+            case SampleIntent::Demonstration: return "demonstration";
+            case SampleIntent::Regression: return "regression";
+            case SampleIntent::Stress: return "stress";
+            case SampleIntent::Integration: return "integration";
+            default: return "invalid";
+        }
+    }
+
+    /** @brief Return the stable command-line spelling for a pipeline recipe. */
+    inline constexpr const char* GetSamplePipelineRecipeName(
+        SamplePipelineRecipe recipe) noexcept
+    {
+        switch (recipe)
+        {
+            case SamplePipelineRecipe::Minimal: return "minimal";
+            case SamplePipelineRecipe::ForwardStandard: return "forward-plus";
+            case SamplePipelineRecipe::DeferredQuality: return "deferred";
+            case SamplePipelineRecipe::HybridRayTracing: return "hybrid-rt";
+            case SamplePipelineRecipe::Headless: return "headless";
+            default: return "invalid";
+        }
+    }
+
+    /** @brief Parse one stable command-line pipeline recipe spelling. */
+    inline constexpr bool ParseSamplePipelineRecipe(
+        std::string_view text,
+        SamplePipelineRecipe& output) noexcept
+    {
+        if (text == "minimal")
+        {
+            output = SamplePipelineRecipe::Minimal;
+            return true;
+        }
+        if (text == "forward-plus")
+        {
+            output = SamplePipelineRecipe::ForwardStandard;
+            return true;
+        }
+        if (text == "deferred")
+        {
+            output = SamplePipelineRecipe::DeferredQuality;
+            return true;
+        }
+        if (text == "hybrid-rt")
+        {
+            output = SamplePipelineRecipe::HybridRayTracing;
+            return true;
+        }
+        if (text == "headless")
+        {
+            output = SamplePipelineRecipe::Headless;
+            return true;
+        }
+        return false;
+    }
+
+    /** @brief Return the stable command-line spelling for a quality tier. */
+    inline constexpr const char* GetSampleQualityTierName(
+        SampleQualityTier tier) noexcept
+    {
+        switch (tier)
+        {
+            case SampleQualityTier::Default: return "default";
+            case SampleQualityTier::Low: return "low";
+            case SampleQualityTier::Medium: return "medium";
+            case SampleQualityTier::High: return "high";
+            case SampleQualityTier::Ultra: return "ultra";
+            default: return "invalid";
+        }
+    }
+
+    /** @brief Parse one stable command-line quality tier spelling. */
+    inline constexpr bool ParseSampleQualityTier(
+        std::string_view text,
+        SampleQualityTier& output) noexcept
+    {
+        if (text == "default")
+        {
+            output = SampleQualityTier::Default;
+            return true;
+        }
+        if (text == "low")
+        {
+            output = SampleQualityTier::Low;
+            return true;
+        }
+        if (text == "medium")
+        {
+            output = SampleQualityTier::Medium;
+            return true;
+        }
+        if (text == "high")
+        {
+            output = SampleQualityTier::High;
+            return true;
+        }
+        if (text == "ultra")
+        {
+            output = SampleQualityTier::Ultra;
+            return true;
+        }
+        return false;
+    }
+
     /** @brief Stable deterministic scene workload scales exposed by samples. */
     enum class SampleWorkloadScale : uint8
     {
@@ -140,7 +308,23 @@ namespace RVX
             SampleWorkloadScale::PullRequest;
         /** Catalog animation assets required in addition to the primary model. */
         std::vector<std::string> requiredAnimationAssetIds;
+        /**
+         * Cooked particle effects admitted in deterministic scenario order.
+         * Empty preserves the legacy single `defaultEffectAssetId` contract;
+         * non-empty is the complete runtime effect set, not a hint.
+         */
+        std::vector<std::string> requiredEffectAssetIds;
         /** Catalog assets whose CookManifest admission must pass before setup. */
         std::vector<std::string> requiredCookedAssetIds;
+        /** Product-facing classification; the machine manifest is authoritative. */
+        SampleDomain domain = SampleDomain::Systems;
+        /** Observable scenario intent; the machine manifest is authoritative. */
+        SampleIntent intent = SampleIntent::Demonstration;
+        /** Stable sidecar contract id. Empty is rejected for product samples. */
+        std::string visualContractId;
+        /** Whether captures must use the deterministic qualification timeline. */
+        bool deterministicQualification = false;
+        /** Cooked-only primary effect asset used by an effect-focused VFX scenario. */
+        std::string defaultEffectAssetId;
     };
 } // namespace RVX

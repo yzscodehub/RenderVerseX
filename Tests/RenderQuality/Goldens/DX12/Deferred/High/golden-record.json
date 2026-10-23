@@ -1,0 +1,121 @@
+{
+  "approval": {
+    "approvedAtUtc": "2026-09-03T04:46:04.966062Z",
+    "approvedBy": "yinzs",
+    "reason": "User approved the configuration-bound Deferred V2 contact sheet"
+  },
+  "contactSheet": {
+    "indexPath": "contact-sheet.json",
+    "indexSha256": "e1596bf7cc5db58444c30b4ee5e7d0c1c4f6e6f69a935f5a54d7d2572ae9b627",
+    "ppmPath": "contact-sheet.ppm",
+    "ppmSha256": "6682c1aba99c12268aa062ad2bff545290302e9a4285de8b2991cd2c3d7bd9d5"
+  },
+  "goldenId": "gfx24-dx12-deferred-high-v3",
+  "hardwareMode": "exact-hardware",
+  "qualificationIdentity": {
+    "backend": "dx12",
+    "pipeline": "deferred",
+    "quality": "high",
+    "sampleId": "render-quality-lab",
+    "view": "hero",
+    "visualContractVersion": 3
+  },
+  "renderConfigurationIdentity": {
+    "instancingMode": "Auto",
+    "profileHash": 13488619642324636900,
+    "renderConfigurationHash": "34f39cc6f75aa8cf0b8ff52b0e224637644e89165382fb2772f7bf991b206c2f",
+    "renderPath": "direct",
+    "requestedRecipe": "deferred",
+    "resolvedRecipe": "deferred"
+  },
+  "runnerClass": null,
+  "sampleManifest": {
+    "path": "sample-manifest.json",
+    "sha256": "8fedbc163951232787ea5b8b76c02e7b120854440d9d92bb846c891bf606c8f1"
+  },
+  "schema": "RVX.RenderQualityGoldenRecord",
+  "schemaVersion": 2,
+  "selectedBundle": {
+    "bundleId": "1",
+    "bundlePath": "bundle/bundle.json",
+    "bundleSha256": "fd25f457e349fc9db23b5732c5452b0217e0798aeb94f0cc5d2f6f610507cfb6",
+    "captureTick": 300,
+    "preset": "win_x64_gfx24_approved_golden_release_run",
+    "receiptSha256": "f028bcc26e0b8987c28b312cd60ce82751aa6d6bb06205174e5b5db1e35d5b3d",
+    "runId": "b023532a4c654b589e96e87fa6cf1182",
+    "seriesOrdinal": 3,
+    "seriesSha256": "a57fadd2065cfb52785bb5b870b4da3a85b76bd12843fdc2a829f8f3ef86bfe3"
+  },
+  "seriesAudit": {
+    "requiredSeriesCount": 5,
+    "runs": [
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 1,
+        "runId": "5be31430728d47329e7da2303f6aecfc",
+        "seriesSha256": "fff984b94916ad30514a3236a74ae5fcc0165c46d7351ef7f8fbb787f72e239f"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 2,
+        "runId": "cfde58c8c34e4e47b9bacbb3d6fb3149",
+        "seriesSha256": "5b39486b2175289d96f97a965ab4622c1c9000bd77123e3ed0e6e900220bd298"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 3,
+        "runId": "b023532a4c654b589e96e87fa6cf1182",
+        "seriesSha256": "a57fadd2065cfb52785bb5b870b4da3a85b76bd12843fdc2a829f8f3ef86bfe3"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 4,
+        "runId": "8f0e545e6ed64a1bbe1eaeff49e7ccf6",
+        "seriesSha256": "d261d2fd11ff2d5ca029a6f1d43b93d39a8a0bd5b44bfca9fa7fb2b28f8cd62b"
+      },
+      {
+        "hardwareIdentity": {
+          "adapterName": "NVIDIA GeForce RTX 4070 Ti",
+          "backend": "dx12",
+          "capabilityHash": "637676fbcc626b0c78b4a8ec997169697dcc02f6af254f93ff598a7389bf3cf9",
+          "driverVersion": "32.0.16.1062",
+          "osBuild": "Windows-10.0.19045"
+        },
+        "ordinal": 5,
+        "runId": "9d3d9b7573f34a688e1b9a5d601bf81e",
+        "seriesSha256": "aa905573baedf723f45166084411d054e6438e69ff13046d4a86f0dabfbea0bf"
+      }
+    ],
+    "selectedSeriesOrdinal": 3
+  },
+  "sourceCommit": "88a615a0190481afb76a7b06c99c3cfe6d896e29",
+  "status": "approved",
+  "visualPolicy": {
+    "path": "visual-policy.json",
+    "sha256": "e09d7b3d0df007e66af28ffe09acdae208cb9798566ae5a78b4d00b3a1cf4b4c"
+  }
+}

@@ -2,6 +2,7 @@
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceRuntime/TextureSourceDecode.h"
 #include "ResourceSceneAdapters/ECS/EcsSceneAssetLoadCoordinator.h"
 #include "Scene/ECS/AnimationFragments.h"
 
@@ -10,7 +11,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <functional>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -50,6 +56,39 @@ namespace
         {
             return {.code = RVX::RenderResourceStatusCode::StaleGeneration,
                     .state = RVX::RenderResourcePublicState::Released};
+        }
+    };
+
+    /** @brief Deterministic source decoder injected by streaming-focused tests. */
+    class FixtureTextureSourceDecoder final
+        : public RVX::Resource::ITextureSourceDecoder
+    {
+    public:
+        bool Decode(
+            const RVX::Resource::TextureReference& reference,
+            const std::string& modelPath,
+            const RVX::Diagnostics::TraceContext&,
+            RVX::Resource::DecodedTextureData& outData,
+            std::string& outError,
+            const std::function<bool()>& isCancellationRequested) override
+        {
+            if (isCancellationRequested && isCancellationRequested())
+            {
+                outError = "Fixture texture decode was cancelled";
+                return false;
+            }
+
+            outData.bytes = std::make_shared<const std::vector<RVX::uint8>>(
+                std::vector<RVX::uint8>{0x7fu});
+            outData.metadata = {
+                .width = 1,
+                .height = 1,
+                .mipLevels = 1,
+                .format = RVX::Resource::TextureFormat::RGBA8,
+            };
+            outData.sourceKey = modelPath + "#fixture-" + reference.path;
+            outError.clear();
+            return true;
         }
     };
 
@@ -108,8 +147,12 @@ namespace
         }
 
         std::vector<std::string> GetSupportedExtensions() const override { return {".ecsmodel"}; }
-        RVX::Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const RVX::Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == RVX::ResourceType::Model &&
+                request.resolvedPath.ends_with(".ecsmodel");
+        }
 
         bool Prepare(const RVX::Resource::ResourceLoadPreparationContext& context,
                      RVX::Resource::PreparedResourceBundle& bundle,
@@ -377,10 +420,16 @@ namespace
         {
             RVX::Resource::ResourceManagerConfig config;
             config.asyncThreadCount = asyncThreadCount;
-            m_resources.Initialize(config);
-            m_resources.RegisterLoader(
-                RVX::ResourceType::Model,
-                std::make_unique<PreparedRootOnlyModelLoader>());
+            RVX::Resource::ResourceManagerDependencies dependencies;
+            dependencies.textureSourceDecoder =
+                std::make_unique<FixtureTextureSourceDecoder>();
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<PreparedRootOnlyModelLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceSubsystemScope() { m_resources.Deinitialize(); }
@@ -663,8 +712,10 @@ TEST(EcsSceneAssetLoadCoordinatorValidation,
     EXPECT_FLOAT_EQ(metadata.materials[0].baseColor.w, 0.75f);
     EXPECT_FLOAT_EQ(metadata.materials[0].metallicFactor, 0.7f);
     EXPECT_FLOAT_EQ(metadata.materials[0].roughnessFactor, 0.2f);
+    EXPECT_EQ(metadata.materials[0].featureMask, 0x3u);
     EXPECT_EQ(metadata.materials[1].workflow, RVX::Resource::MaterialWorkflowMode::Unlit);
     EXPECT_EQ(metadata.materials[1].alphaMode, RVX::Resource::MaterialAlphaMode::Mask);
+    EXPECT_EQ(metadata.materials[1].featureMask, 0u);
     ASSERT_EQ(metadata.materials[0].textureSlots.size(), 2u);
     EXPECT_EQ(metadata.materials[0].textureSlots[0].slot, "albedo");
     EXPECT_EQ(metadata.materials[0].textureSlots[0].textureAssetId.value, 7201u);

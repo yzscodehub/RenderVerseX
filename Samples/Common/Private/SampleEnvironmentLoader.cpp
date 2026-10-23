@@ -2,6 +2,8 @@
 
 #include "Samples/SampleEnvironmentLoader.h"
 
+#include "Samples/SampleHostComposition.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -12,35 +14,8 @@ namespace RVX
 {
     namespace
     {
-        [[nodiscard]] bool TryResolveQualityProfile(
-            const SampleEnvironmentLoadOptions& sampleOptions,
-            Resource::HDRIBLQualityProfile& outProfile)
-        {
-            if (sampleOptions.quality != "default" && sampleOptions.quality != "low" &&
-                sampleOptions.quality != "high")
-            {
-                return false;
-            }
-            if (sampleOptions.smoke)
-            {
-                outProfile = Resource::HDRIBLQualityProfile::Validation;
-                return true;
-            }
-            if (sampleOptions.quality == "low")
-            {
-                outProfile = Resource::HDRIBLQualityProfile::Low;
-                return true;
-            }
-            if (sampleOptions.quality == "high")
-            {
-                outProfile = Resource::HDRIBLQualityProfile::High;
-                return true;
-            }
-            outProfile = Resource::HDRIBLQualityProfile::Default;
-            return true;
-        }
-
-        [[nodiscard]] bool IsSupportedEnvironmentPath(const std::filesystem::path& path)
+        [[nodiscard]] std::string GetLowercaseExtension(
+            const std::filesystem::path& path)
         {
             std::string extension = path.extension().string();
             std::transform(extension.begin(),
@@ -50,7 +25,20 @@ namespace RVX
                            {
                                return static_cast<char>(std::tolower(value));
                            });
+            return extension;
+        }
+
+        [[nodiscard]] bool IsSupportedSourceEnvironmentPath(
+            const std::filesystem::path& path)
+        {
+            const std::string extension = GetLowercaseExtension(path);
             return extension == ".hdr" || extension == ".exr";
+        }
+
+        [[nodiscard]] bool IsCookedEnvironmentPath(
+            const std::filesystem::path& path)
+        {
+            return GetLowercaseExtension(path) == ".rva";
         }
 
         [[nodiscard]] bool IsCpuReadyState(
@@ -86,18 +74,23 @@ namespace RVX
 
     SampleEnvironmentLoader::SampleEnvironmentLoader(
         IWorldEcsRuntimeServices& runtimeServices,
-        ECS::SceneRuntimeId sceneRuntimeId) noexcept
-        : m_runtimeServices(runtimeServices), m_sceneRuntimeId(sceneRuntimeId)
+        ECS::SceneRuntimeId sceneRuntimeId,
+        const ISampleHostComposition& composition) noexcept
+        : m_runtimeServices(runtimeServices)
+        , m_sceneRuntimeId(sceneRuntimeId)
+        , m_composition(composition)
     {
     }
 
     SampleEnvironmentLoader::SampleEnvironmentLoader(
         IWorldEcsRuntimeServices& runtimeServices,
         ECS::SceneRuntimeId sceneRuntimeId,
-        SampleAssetRegistry assetRegistry)
+        SampleAssetRegistry assetRegistry,
+        const ISampleHostComposition& composition)
         : m_runtimeServices(runtimeServices)
         , m_sceneRuntimeId(sceneRuntimeId)
         , m_assetRegistry(std::move(assetRegistry))
+        , m_composition(composition)
     {
     }
 
@@ -143,8 +136,28 @@ namespace RVX
                        std::string(assetId);
             return false;
         }
-        return RequestResolved(lookup.entry->resolvedPath,
+        if (lookup.entry->packageOnly &&
+            (!IsCookedEnvironmentPath(lookup.entry->resolvedPath) ||
+             lookup.entry->contentIdentity.domain !=
+                 Resource::ResourceContentIdentityDomain::CookedArtifact ||
+             lookup.entry->contentIdentity.scope !=
+                 Resource::ResourceContentIdentityScope::SelfContainedArtifact))
+        {
+            outError =
+                "Package-only sample environment entry must resolve to a verified "
+                "self-contained CookedArtifact .rva file: " +
+                std::string(assetId);
+            return false;
+        }
+        std::string resourcePath;
+        if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
+        {
+            return false;
+        }
+        return RequestResolved(resourcePath,
+                               lookup.entry->resolvedPath,
                                lookup.entry->contentIdentity,
+                               lookup.entry->packageOnly,
                                options,
                                output,
                                outError);
@@ -162,12 +175,16 @@ namespace RVX
             outError = "Environment request output already owns a live ECS request reference.";
             return false;
         }
-        return RequestResolved(path, contentIdentity, options, output, outError);
+        return RequestResolved(path.generic_string(), path, contentIdentity,
+                               false,
+                               options, output, outError);
     }
 
     bool SampleEnvironmentLoader::RequestResolved(
-        const std::filesystem::path& path,
+        const std::string& resourcePath,
+        const std::filesystem::path& sourcePath,
         const Resource::ResourceContentIdentity& expectedContentIdentity,
+        const bool packageOnly,
         const SampleEnvironmentLoadOptions& options,
         LoadedSampleEnvironment& output,
         std::string& outError) const
@@ -177,9 +194,9 @@ namespace RVX
             outError = "Environment request requires a valid exact Scene runtime id.";
             return false;
         }
-        if (path.empty())
+        if (resourcePath.empty() || sourcePath.empty())
         {
-            outError = "Environment path must not be empty";
+            outError = "Environment resource and evidence paths must not be empty";
             return false;
         }
         if (!expectedContentIdentity.IsValid())
@@ -192,24 +209,41 @@ namespace RVX
             outError = "Environment exposure must be finite and positive";
             return false;
         }
-        if (!IsSupportedEnvironmentPath(path))
+        if (packageOnly && !IsCookedEnvironmentPath(sourcePath))
         {
-            outError = "Environment must use an .hdr or .exr file: " + path.string();
+            outError = "Cooked environment must use an .rva file: " +
+                       sourcePath.generic_string();
             return false;
         }
-
-        Resource::HDRIBLQualityProfile quality;
-        if (!TryResolveQualityProfile(options, quality))
+        if (!packageOnly &&
+            !IsSupportedSourceEnvironmentPath(std::filesystem::path(resourcePath)))
         {
-            outError = "Environment quality must be one of: default, low, high.";
+            outError = "Environment must use an .hdr or .exr file: " + resourcePath;
             return false;
         }
 
         ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
-        desc.path = path.string();
-        desc.environmentOptions.quality = quality;
-        desc.environmentOptions.exposure = options.exposure;
-        desc.environmentOptions.applyGamma = false;
+        desc.path = resourcePath;
+        if (!packageOnly)
+        {
+            Resource::ResourceLoadError preparationError;
+            const SampleSourceEnvironmentPreparationRequest preparationRequest{
+                .quality = options.quality,
+                .smoke = options.smoke,
+                .exposure = options.exposure};
+            if (!m_composition.PrepareSourceEnvironment(
+                    preparationRequest,
+                    desc.resourceOptions.importOptionsHash,
+                    desc.preparationState,
+                    preparationError) ||
+                !desc.preparationState)
+            {
+                outError = preparationError.message.empty()
+                               ? "Sample host rejected environment source preparation."
+                               : preparationError.message;
+                return false;
+            }
+        }
         desc.expectedSceneRuntimeId = m_sceneRuntimeId;
         desc.resourceOptions.expectedContentIdentity = expectedContentIdentity;
         LoadedSampleEnvironment requested;
@@ -224,7 +258,7 @@ namespace RVX
             }
             return false;
         }
-        requested.sourcePath = path;
+        requested.sourcePath = sourcePath;
         requested.status.sceneRuntimeId = m_sceneRuntimeId;
         output = std::move(requested);
         return true;

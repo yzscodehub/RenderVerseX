@@ -1,0 +1,5620 @@
+# Qualification-only opt-ins are deliberately absent from normal developer
+# presets. Their guards fail closed when a required primary backend is absent.
+option(RVX_ENABLE_P0_QUALIFICATION_MATRIX
+    "Register the strict DX12/Vulkan P0 sample qualification matrix" OFF)
+if(RVX_ENABLE_P0_QUALIFICATION_MATRIX)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_P0_QUALIFICATION_MATRIX requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "P0 qualification matrix: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_P1_QUALIFICATION_MATRIX
+    "Register the strict DX12/Vulkan P1 physics sample qualification matrix" OFF)
+if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_P1_QUALIFICATION_MATRIX requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "P1 qualification matrix: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX07_DEFERRED_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX07 DeferredQuality native sample gate" OFF)
+if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX07_DEFERRED_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX07 Deferred qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX08_LIGHTING_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX08 Forward+/Deferred lighting gate" OFF)
+if(RVX_ENABLE_GFX08_LIGHTING_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX08_LIGHTING_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX08 lighting qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX09_ANIMATION_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX09 Forward+/Deferred animation-deformation gate" OFF)
+if(RVX_ENABLE_GFX09_ANIMATION_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX09_ANIMATION_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX09 animation qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX10_POST_PROCESS_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX10 Forward+/Deferred post-process gate" OFF)
+if(RVX_ENABLE_GFX10_POST_PROCESS_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX10_POST_PROCESS_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX10 post-process qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX11_TAA_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX11 Forward+/Deferred temporal-AA gate" OFF)
+if(RVX_ENABLE_GFX11_TAA_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX11_TAA_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX11 temporal-AA qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX12_EXPOSURE_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX12 Forward+/Deferred exposure gate" OFF)
+if(RVX_ENABLE_GFX12_EXPOSURE_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX12_EXPOSURE_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX12 exposure qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX13_GTAO_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX13 Forward+/Deferred GTAO gate" OFF)
+if(RVX_ENABLE_GFX13_GTAO_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX13_GTAO_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX13 GTAO qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX14_TOON_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX14 Forward+/Deferred ToonLit gate" OFF)
+if(RVX_ENABLE_GFX14_TOON_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX14_TOON_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX14 Toon qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX15 Forward+/Deferred translucency gate" OFF)
+if(RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX15 translucency qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX17_VFX_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX17 fire-and-smoke VFX gate" OFF)
+if(RVX_ENABLE_GFX17_VFX_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX17_VFX_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX17 VFX qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX18_WATER_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX18 Forward+/Deferred water gate" OFF)
+if(RVX_ENABLE_GFX18_WATER_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX18_WATER_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX18 water qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX19 Forward+/Deferred local-lighting gate" OFF)
+if(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX19 local-lighting qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX19 Forward+/Deferred Hi-Z reflection gate" OFF)
+if(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX19_REFLECTIONS_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX19 reflection qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "RVX_ENABLE_GFX24_NATIVE_CANDIDATES requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+endif()
+if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+endif()
+option(RVX_ENABLE_GFX24_RASTER_CORRECTNESS
+    "Register the platform-primary GFX24 Forward+/Deferred raster correctness suite" OFF)
+if(RVX_ENABLE_GFX24_RASTER_CORRECTNESS)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "RVX_ENABLE_GFX24_RASTER_CORRECTNESS requires RenderVerseSamplesCooked and RVXCook")
+    endif()
+    if(WIN32)
+        if(NOT RVX_ENABLE_DX12)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the Windows DX12 backend")
+        endif()
+    elseif(APPLE)
+        if(NOT RVX_ENABLE_METAL)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the macOS Metal backend")
+        endif()
+    elseif(UNIX)
+        if(NOT RVX_ENABLE_VULKAN)
+            message(FATAL_ERROR
+                "GFX24 raster correctness requires the Linux Vulkan backend")
+        endif()
+    else()
+        message(FATAL_ERROR
+            "GFX24 raster correctness supports only Windows, Linux, and macOS")
+    endif()
+endif()
+option(RVX_ENABLE_PR_SMOKE
+    "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
+option(RVX_ENABLE_COMPATIBILITY_SMOKE
+    "Register fixed DX11/OpenGL SceneLifecycle compatibility smokes" OFF)
+option(RVX_ENABLE_WEEKLY_SOAK
+    "Register the hermetic 10,000-frame / five-minute primary-backend soak" OFF)
+set(RVX_DEDICATED_QUALIFICATION_MODES)
+foreach(mode PR_SMOKE COMPATIBILITY_SMOKE WEEKLY_SOAK)
+    if(RVX_ENABLE_${mode})
+        list(APPEND RVX_DEDICATED_QUALIFICATION_MODES ${mode})
+    endif()
+endforeach()
+list(LENGTH RVX_DEDICATED_QUALIFICATION_MODES RVX_DEDICATED_QUALIFICATION_MODE_COUNT)
+if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 1)
+    message(FATAL_ERROR
+        "PR, compatibility, and weekly soak modes require separate build trees")
+endif()
+if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 0 AND
+   (RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX))
+    message(FATAL_ERROR
+        "Dedicated PR/compatibility/soak modes require P0/P1 matrices disabled")
+endif()
+
+if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
+    OR RVX_ENABLE_GFX07_DEFERRED_NATIVE OR RVX_ENABLE_GFX08_LIGHTING_NATIVE
+    OR RVX_ENABLE_GFX09_ANIMATION_NATIVE OR RVX_ENABLE_GFX10_POST_PROCESS_NATIVE
+    OR RVX_ENABLE_GFX11_TAA_NATIVE OR RVX_ENABLE_GFX12_EXPOSURE_NATIVE
+    OR RVX_ENABLE_GFX13_GTAO_NATIVE OR RVX_ENABLE_GFX14_TOON_NATIVE
+    OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE OR RVX_ENABLE_GFX17_VFX_NATIVE
+    OR RVX_ENABLE_GFX18_WATER_NATIVE OR RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE
+    OR RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
+   AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
+    message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
+endif()
+
+function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKEND_NAME BACKEND_LABEL)
+    cmake_parse_arguments(
+        RVX_SAMPLE
+        "WAIT_READY;ASSESSMENT"
+        "READY_TIMEOUT_MS;READY_MAX_FRAMES;TIMEOUT;ASSESSMENT_PROFILE;ASSET_LICENSE;SUITE"
+        "SAMPLE_ARGS;REPORT_ARGS"
+        ${ARGN})
+    if(RVX_SAMPLE_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR
+            "rvx_add_renderverse_primary_smoke received unparsed arguments: ${RVX_SAMPLE_UNPARSED_ARGUMENTS}")
+    endif()
+
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    set(smoke_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+    set(smoke_startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+    set(smoke_readiness_args)
+    set(smoke_assessment_args)
+    set(smoke_assessment_report_args)
+    # Every primary smoke captures a screenshot, which implicitly enables the
+    # readiness-bounded runner path and may require a carrying publication frame.
+    set(smoke_frame_report_args --min-frame-count 8)
+    if(RVX_SAMPLE_WAIT_READY)
+        if(NOT RVX_SAMPLE_READY_TIMEOUT_MS)
+            set(RVX_SAMPLE_READY_TIMEOUT_MS 30000)
+        endif()
+        if(NOT RVX_SAMPLE_READY_MAX_FRAMES)
+            set(RVX_SAMPLE_READY_MAX_FRAMES 64)
+        endif()
+        list(APPEND smoke_readiness_args
+            --wait-ready
+            --ready-timeout-ms ${RVX_SAMPLE_READY_TIMEOUT_MS}
+            --ready-max-frames ${RVX_SAMPLE_READY_MAX_FRAMES})
+    endif()
+    if(RVX_SAMPLE_ASSESSMENT)
+        if(NOT RVX_SAMPLE_ASSESSMENT_PROFILE)
+            set(RVX_SAMPLE_ASSESSMENT_PROFILE smoke)
+        endif()
+        foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+            file(MAKE_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/FrameworkAssessments/${config_name}/RenderVerseSamples")
+        endforeach()
+        set(smoke_assessment_report
+            "${CMAKE_CURRENT_BINARY_DIR}/FrameworkAssessments/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+        list(APPEND smoke_assessment_args
+            --assessment-report "${smoke_assessment_report}"
+            --assessment-profile ${RVX_SAMPLE_ASSESSMENT_PROFILE})
+        list(APPEND smoke_assessment_report_args
+            --require-assessment-summary
+            --assessment-report-path "${smoke_assessment_report}"
+            --assessment-blocking-count 0
+            --assessment-dropped-event-count 0
+            --require-assessment-pass)
+    endif()
+    if(NOT RVX_SAMPLE_TIMEOUT)
+        set(RVX_SAMPLE_TIMEOUT 120)
+    endif()
+    if(NOT RVX_SAMPLE_ASSET_LICENSE)
+        set(RVX_SAMPLE_ASSET_LICENSE
+            LicenseRef-RenderVerseX-Generated-Fixture)
+    endif()
+    if(NOT RVX_SAMPLE_SUITE)
+        set(RVX_SAMPLE_SUITE primary)
+    endif()
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Smoke
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample ${SAMPLE_ID}
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 8
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${smoke_actual}"
+            --report "${smoke_report}"
+            --startup-report "${smoke_startup_report}"
+            --diagnostics
+            --validation
+            ${smoke_readiness_args}
+            ${smoke_assessment_args}
+            ${RVX_SAMPLE_SAMPLE_ARGS}
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
+        TIMEOUT ${RVX_SAMPLE_TIMEOUT}
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${smoke_report}"
+            --sample-name ${SAMPLE_ID}
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            ${smoke_frame_report_args}
+            --asset-id ${ASSET_ID}
+            --asset-license-spdx ${RVX_SAMPLE_ASSET_LICENSE}
+            --require-redistributable
+            --min-visible-objects 1
+            --require-enabled-feature ModelResourceLoad
+            --require-enabled-feature SceneInstantiation
+            --require-enabled-feature RenderGraph
+            --require-enabled-feature SceneRendering
+            --require-ready
+            ${smoke_assessment_report_args}
+            ${RVX_SAMPLE_REPORT_ARGS}
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX08 proves that the same immutable lighting selection reaches both raster
+# recipes.  Each producer is paired with image and structured-receipt
+# validators; no backend absence, CSM fallback, or missing lighting receipt is
+# accepted by the required-suite runner.
+function(rvx_add_renderverse_gfx08_lighting_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX08 lighting qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX08${PIPELINE_LABEL}LightingShadows")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample lighting-shadows
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
+        TIMEOUT 180
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name lighting-shadows
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-render-pipeline ${PIPELINE_NAME}
+            --require-lighting-plan
+            --require-csm-requested
+            --require-csm-execution-ready
+            --require-local-shadow-execution
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX09 qualifies one presentation-bound deformation resource snapshot across
+# both raster recipes.  The producer remains Direct because skinned packets are
+# deliberately excluded from the GPU-driven execution strategy; recipe and
+# execution strategy are independent contracts.
+function(rvx_add_renderverse_gfx09_animation_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX09 animation qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX09${PIPELINE_LABEL}AnimationCharacter")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample animation-character
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx09
+        SUITE gfx09-animation
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx09
+        SUITE gfx09-animation
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name animation-character
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 7
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-lighting-plan
+            --require-csm-requested
+            --require-csm-execution-ready
+            --require-deformation-plan
+            --require-current-skinning-palette
+            --require-previous-skinning-palette
+            --require-skinned-opaque-execution
+            --require-skinned-shadow-execution
+            --require-skinned-velocity-execution
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-action PresentSkinningPalette
+            --require-invariant PresentedPalette
+            --require-enabled-feature EcsPresentedSkinningPalette
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx09
+        SUITE gfx09-animation
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX10 qualifies the typed post-process pipeline across both raster recipes.
+# The scenario requests only public RenderContracts policy. The native receipt
+# validator proves the renderer selected and executed the typed feature; the
+# sample cannot add, order, or inspect private renderer passes.
+function(rvx_add_renderverse_gfx10_post_process_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX10 post-process qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX10${PIPELINE_LABEL}PostProcessing")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample post-processing
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx10
+        SUITE gfx10-postprocess
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx10
+        SUITE gfx10-postprocess
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name post-processing
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-post-process-bloom-execution
+            --require-post-process-color-grading-execution
+            --require-post-process-fxaa-execution
+            --require-no-temporal-aa-execution
+            --require-render-feature-executed 2
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature EnginePostProcessConfiguration
+            --require-enabled-feature BloomRequested
+            --require-enabled-feature ACESToneMappingRequested
+            --require-enabled-feature ColorGradingRequested
+            --require-enabled-feature FXAARequested
+            --require-enabled-feature TemporalAAExplicitlyDisabled
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx10
+        SUITE gfx10-postprocess
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX11 qualifies the real temporal resolve across both raster recipes. The
+# producer runs long enough to sample a compatible prior-presented history;
+# receipt validation rejects scheduling-only evidence and any FXAA fallback.
+function(rvx_add_renderverse_gfx11_taa_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX11 temporal-AA qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX11${PIPELINE_LABEL}TemporalAA")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample temporal-aa
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name temporal-aa
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-render-feature-executed 2
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature EnginePostProcessConfiguration
+            --require-enabled-feature TemporalAARequested
+            --require-enabled-feature VelocityOutputRequested
+            --require-enabled-feature DeterministicModelMotion
+            --require-enabled-feature FXAAExplicitlyDisabled
+            --require-enabled-feature TemporalAAActualExecutionQualified
+            --require-enabled-feature TemporalHistorySampled
+            --require-enabled-feature TemporalHistoryCommittedAfterPresent
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX12 owns no scenario-side exposure values. Each producer requests an
+# explicit qualification probe; receipt validation accepts numerical evidence
+# only after the renderer marks that probe ready following a successful Present.
+function(rvx_add_renderverse_gfx12_exposure_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL
+         SAMPLE_ID SAMPLE_LABEL CAPTURE_TICK)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX12 exposure qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX12${PIPELINE_LABEL}${SAMPLE_LABEL}")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    set(exposure_receipt_args)
+    set(exposure_feature_args)
+    if(SAMPLE_ID STREQUAL "physical-exposure")
+        list(APPEND exposure_receipt_args --require-manual-ev100-exposure)
+        list(APPEND exposure_feature_args
+            --require-enabled-feature ManualEV100Requested
+            --require-enabled-feature ManualEV100Stable
+            --require-enabled-feature ManualEV100ActualExecutionQualified)
+    elseif(SAMPLE_ID STREQUAL "auto-exposure")
+        list(APPEND exposure_receipt_args --require-histogram-auto-exposure)
+        list(APPEND exposure_feature_args
+            --require-enabled-feature HistogramAutoExposureRequested
+            --require-enabled-feature DeterministicLuminanceTimeline
+            --require-enabled-feature BrightLuminanceStageObserved
+            --require-enabled-feature DarkLuminanceStageObserved
+            --require-enabled-feature HistogramAutoExposureActualExecutionQualified
+            --require-enabled-feature ExposureHistoryCommittedAfterPresent)
+    else()
+        message(FATAL_ERROR "GFX12 exposure qualification received unsupported sample '${SAMPLE_ID}'")
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample ${SAMPLE_ID}
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick ${CAPTURE_TICK}
+            --exposure-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.exposure
+            backend.${BACKEND_NAME} suite.gfx12-exposure
+        SUITE gfx12-exposure
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.exposure
+            backend.${BACKEND_NAME} suite.gfx12-exposure
+        SUITE gfx12-exposure
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name ${SAMPLE_ID}
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count ${CAPTURE_TICK}
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-post-process-bloom-execution
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-exposure-probe
+            --require-shared-exposure-state
+            ${exposure_receipt_args}
+            --require-render-feature-executed 2
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature EnginePostProcessConfiguration
+            --require-enabled-feature BloomRequested
+            --require-enabled-feature TemporalAARequested
+            --require-enabled-feature VelocityOutputRequested
+            --require-enabled-feature FXAAExplicitlyDisabled
+            --require-enabled-feature SharedPreExposureActualExecutionQualified
+            ${exposure_feature_args}
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.exposure
+            backend.${BACKEND_NAME} suite.gfx12-exposure
+        SUITE gfx12-exposure
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX13 qualifies GTAO as a renderer-owned, presentation-bound feature.  The
+# sample only requests public policy; all bilateral/temporal/lighting evidence
+# comes from the exact capture-frame receipt and explicit post-Present probe.
+function(rvx_add_renderverse_gfx13_gtao_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX13 GTAO qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX13${PIPELINE_LABEL}GTAO")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample post-processing
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --ambient-occlusion-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.gtao
+            backend.${BACKEND_NAME} suite.gfx13-gtao
+        SUITE gfx13-gtao
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.gtao
+            backend.${BACKEND_NAME} suite.gfx13-gtao
+        SUITE gfx13-gtao
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name post-processing
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
+            --require-environment-redistributable
+            --require-texture-ibl
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-post-process-bloom-execution
+            --require-post-process-color-grading-execution
+            --require-post-process-fxaa-execution
+            --require-no-temporal-aa-execution
+            --require-ambient-occlusion-execution
+            --require-ambient-occlusion-bilateral-filtering
+            --require-ambient-occlusion-temporal-sampled
+            --require-ambient-occlusion-history-committed-after-present
+            --require-ambient-occlusion-indirect-only-lighting
+            --require-ambient-occlusion-non-neutral-probe
+            --require-render-feature-executed 2
+            --require-render-feature-executed 7
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature EnginePostProcessConfiguration
+            --require-enabled-feature EnvironmentResourceLoad
+            --require-enabled-feature EnvironmentIBL
+            --require-enabled-feature AmbientOcclusionRequested
+            --require-enabled-feature AmbientOcclusionActualExecutionQualified
+            --require-enabled-feature AmbientOcclusionBilateralFiltering
+            --require-enabled-feature AmbientOcclusionTemporalHistorySampled
+            --require-enabled-feature AmbientOcclusionHistoryCommittedAfterPresent
+            --require-enabled-feature AmbientOcclusionIndirectOnlyLighting
+            --require-enabled-feature AmbientOcclusionNonNeutralProbe
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.gtao
+            backend.${BACKEND_NAME} suite.gfx13-gtao
+        SUITE gfx13-gtao
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX14 qualifies ToonLit and screen-space outlines only from the exact
+# presented-frame receipt projection. The sample remains a cooked-only caller;
+# it cannot replace a missing package with source data or infer pass execution.
+function(rvx_add_renderverse_gfx14_toon_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX14 Toon qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX14${PIPELINE_LABEL}Toon")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample stylized-materials
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --toon-outline-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.toon
+            backend.${BACKEND_NAME} suite.gfx14-toon
+        SUITE gfx14-toon
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.toon
+            backend.${BACKEND_NAME} suite.gfx14-toon
+        SUITE gfx14-toon
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name stylized-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id stylized-materials-toon
+            --require-cook-admission-accepted stylized-materials-toon
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-toon-lighting-execution
+            --require-toon-outline-execution
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature CookedToonAssetAdmissionRequired
+            --require-enabled-feature ToonLitRequested
+            --require-enabled-feature ToonOutlineRequested
+            --require-enabled-feature ToonLightingActualExecutionQualified
+            --require-enabled-feature ToonOutlineActualExecutionQualified
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.toon
+            backend.${BACKEND_NAME} suite.gfx14-toon
+        SUITE gfx14-toon
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX15 uses a dedicated cooked-only fixture.  The 640x360 gate is functional
+# evidence: actual category draws, snapshot/reactive-mask graph receipts, and
+# image content. ROI/SSIM qualification deliberately remains a GFX24 concern.
+function(rvx_add_renderverse_gfx15_translucency_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX15 translucency qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX15${PIPELINE_LABEL}Translucency")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample transparent-materials
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --translucency-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.translucency
+            backend.${BACKEND_NAME} suite.gfx15-translucency
+        SUITE gfx15-translucency
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.translucency
+            backend.${BACKEND_NAME} suite.gfx15-translucency
+        SUITE gfx15-translucency
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name transparent-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id transparent-materials-v1
+            --require-cook-admission-accepted transparent-materials-v1
+            --require-package-only-cooked-asset transparent-materials-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-translucency-execution
+            --require-transparent-alpha-blend-execution
+            --require-transparent-premultiplied-execution
+            --require-transparent-additive-execution
+            --require-transparent-thin-transmission-execution
+            --require-transparent-opaque-scene-color-pyramid
+            --require-transparent-reactive-mask
+            --require-transparent-sorting
+            --forbid-transparent-fallbacks
+            --require-weighted-blended-oit-execution
+            --require-render-feature-executed 11
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature CookedTransparentMaterialsAssetAdmissionRequired
+            --require-enabled-feature AlphaBlendRequested
+            --require-enabled-feature PremultipliedBlendRequested
+            --require-enabled-feature AdditiveBlendRequested
+            --require-enabled-feature ThinTransmissionRequested
+            --require-enabled-feature SortedTranslucencyRequested
+            --require-enabled-feature WeightedBlendedOITRequested
+            --require-enabled-feature TransparentMaterialsActualExecutionQualified
+            --require-enabled-feature WeightedBlendedOITActualExecutionQualified
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.translucency
+            backend.${BACKEND_NAME} suite.gfx15-translucency
+        SUITE gfx15-translucency
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX17 uses two single-emitter cooked-only scenarios.  The 640x360 matrix is
+# functional evidence only: detailed beauty/ROI qualification is deliberately
+# deferred to GFX24.  Each producer has one image and one structured receipt
+# validator, so the strict matrix remains exactly 2 samples x 2 backends x 2
+# paths x 3 tests = 24 CTest cases.
+function(rvx_add_renderverse_gfx17_vfx_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL
+         SAMPLE_ID SAMPLE_LABEL CAPTURE_TICK)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX17 VFX qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX17${PIPELINE_LABEL}${SAMPLE_LABEL}")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+    set(vfx_receipt_args --require-particle-vfx-execution)
+    set(vfx_feature_args)
+    if(SAMPLE_ID STREQUAL "particle-fire")
+        list(APPEND vfx_receipt_args --require-particle-fire-execution)
+        list(APPEND vfx_feature_args
+            --require-enabled-feature CookedParticleFireAdmissionRequired
+            --require-enabled-feature CpuBillboardRequested
+            --require-enabled-feature AdditiveHdrFlipbookRequested
+            --require-enabled-feature ParticleDistortionAndReactiveMaskRequested
+            --require-enabled-feature ParticleFireDeterministicEpochResetQueued
+            --require-enabled-feature ParticleFireDeterministicEpochResetApplied
+            --require-enabled-feature CookedParticleFireResident
+            --require-enabled-feature ParticleFireEcsEmitterCreated
+            --require-enabled-feature ParticleFireActualExecutionQualified)
+    elseif(SAMPLE_ID STREQUAL "particle-smoke")
+        list(APPEND vfx_receipt_args --require-particle-smoke-execution)
+        list(APPEND vfx_feature_args
+            --require-enabled-feature CookedParticleSmokeAdmissionRequired
+            --require-enabled-feature CpuBillboardRequested
+            --require-enabled-feature PremultipliedSoftDepthRequested
+            --require-enabled-feature ParticleReactiveMaskRequested
+            --require-enabled-feature ParticleSmokeDeterministicEpochResetQueued
+            --require-enabled-feature ParticleSmokeDeterministicEpochResetApplied
+            --require-enabled-feature CookedParticleSmokeResident
+            --require-enabled-feature ParticleSmokeEcsEmitterCreated
+            --require-enabled-feature ParticleSmokeActualExecutionQualified)
+    else()
+        message(FATAL_ERROR "GFX17 VFX qualification has unsupported sample: ${SAMPLE_ID}")
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample ${SAMPLE_ID}
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick ${CAPTURE_TICK}
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name ${SAMPLE_ID}
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count ${CAPTURE_TICK}
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id ${SAMPLE_ID}-v1
+            --require-cook-admission-accepted ${SAMPLE_ID}-v1
+            --require-package-only-cooked-asset ${SAMPLE_ID}-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            ${vfx_receipt_args}
+            --asset-kind effect
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            ${vfx_feature_args}
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX18 covers one Cooked-only deterministic Gerstner surface. The strict
+# matrix is exactly DX12/Vulkan x Forward+/Deferred x Capture/Image/Receipt =
+# 12 native CTest cases; gameplay and renderer contract tests stay outside
+# this suite so its required count cannot hide extra producers.  The Cooked
+# shader fixture must also track every source it admits; otherwise an
+# incremental qualification build could run a newer renderer against stale
+# shader artifacts from a prior source revision.
+file(GLOB_RECURSE RVX_GFX18_WATER_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx18_water_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX18 water qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    # This is a build fixture, not a CTest producer: suite.gfx18-water stays
+    # exactly Capture/Image/Receipt for each backend and raster recipe.  The
+    # rendered Sample receives this exact backend-cooked root through its
+    # runtime-only composition rather than ever consulting a source compiler.
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx18WaterShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp "${cooked_shader_root}/.rvx-gfx18-water-shaders")
+    set(cooked_shader_target "RVXGfx18WaterCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX18_WATER_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX18${PIPELINE_LABEL}WaterSurface")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample water-surface
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 4
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --roi-normalized 0.12 0.34 0.76 0.55
+            --min-roi-unique-colors 32
+            --min-roi-normalized-luma-range 0.10
+            --min-roi-normalized-luma-contrast 0.04
+            --max-top-bottom-luma-delta -100
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name water-surface
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id water-surface-reference-fixture-v1
+            --require-cook-admission-accepted water-surface-reference-fixture-v1
+            --require-package-only-cooked-asset water-surface-reference-fixture-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-water-surface-execution
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature CookedWaterSurfaceReferenceAdmissionRequired
+            --require-enabled-feature CookedWaterSurfaceReferenceResident
+            --require-enabled-feature GerstnerWaterSurfaceRequested
+            --require-enabled-feature WaterDepthThicknessRequested
+            --require-enabled-feature WaterBeerLambertRequested
+            --require-enabled-feature WaterReactiveMaskRequested
+            --require-enabled-feature WaterSurfaceDeterministicEpochStarted
+            --require-enabled-feature WaterSurfaceEcsRefreshApplied
+            --require-enabled-feature WaterSurfaceGameplayQueryQualified
+            --require-enabled-feature WaterSurfaceActualExecutionQualified
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX19 local-lighting qualification proves point/spot admission plus exact
+# caster -> atlas -> receiver execution. Hi-Z reflections are covered by the
+# separate suite below because they require delayed route/radiance readback.
+# This suite is exactly DX12/Vulkan x Forward+/Deferred x
+# Capture/Image/Receipt = 12.
+file(GLOB_RECURSE RVX_GFX19_LOCAL_LIGHTING_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx19_local_lighting_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX19 local-lighting qualification requires RenderVerseSamples, RVXCook, and report/image validators")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx19LocalLightingShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx19-local-lighting-shaders")
+    set(cooked_shader_target
+        "RVXGfx19LocalLightingCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX19_LOCAL_LIGHTING_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX19${PIPELINE_LABEL}LocalLighting")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample lighting-shadows
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name lighting-shadows
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-lighting-plan
+            --require-csm-requested
+            --require-csm-execution-ready
+            --require-local-shadow-execution
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature PointShadowRequested
+            --require-enabled-feature SpotShadowRequested
+            --require-enabled-feature LocalShadowAtlasExecutionRequired
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX19 reflections are qualified separately from local lighting. The
+# post-processing scenario requests Hi-Z SSR through public Sample contracts,
+# while the receipt validator requires completed Hi-Z execution rather than
+# treating requested or scheduled work as evidence. The matrix is exactly
+# DX12/Vulkan x Forward+/Deferred x Capture/Image/Receipt = 12.
+file(GLOB_RECURSE RVX_GFX19_REFLECTION_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx19_reflections_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX19 reflection qualification requires RenderVerseSamples, RVXCook, and report/image validators")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx19ReflectionShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx19-reflection-shaders")
+    set(cooked_shader_target
+        "RVXGfx19ReflectionCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX19_REFLECTION_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX19${PIPELINE_LABEL}Reflections")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample post-processing
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --hiz-reflection-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name post-processing
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
+            --require-package-only-cooked-asset post-processing-interior-v1
+            --require-package-only-cooked-asset pbr-reference-environment-cooked-v1
+            --require-hiz-reflection-execution
+            --require-enabled-feature LocalReflectionProbeScene
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX24 candidate evidence has no approved visual golden or performance
+# baseline.  Keep its native producers in their own suite: they publish
+# completion-bound artifacts for review, but no CTest validator may turn a
+# candidate into a passing quality claim.
+file(GLOB_RECURSE RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx24_native_candidates)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX24 native candidates require Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+
+    # The product executable fixes its catalog, package root, runtime-only
+    # composition, and scenario.  These producers may provide only cooked
+    # shaders and public render/evidence switches.
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24CandidateShaders/DX12")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx24-candidate-dx12-shaders")
+    set(cooked_shader_target RVXGfx24CandidateCookedShadersDX12)
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend DX12
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/${config_name}/DX12DeferredHighPerformance")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/${config_name}/DX12DeferredHighSeries")
+    endforeach()
+
+    set(series_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/$<CONFIG>/DX12DeferredHighSeries")
+    rvx_add_validation_test(
+        LANE native
+        NAME RenderVerseSamplesCookedDX12Gfx24DeferredHighSeriesCandidate
+        COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+            --backend dx12
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline deferred
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --width 1280
+            --height 720
+            --qualification-series "${series_root}/series.json"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            trait.candidate backend.dx12 suite.gfx24-candidate
+        SUITE gfx24-candidate
+        TIMEOUT 900
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+    )
+
+    set(performance_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24Candidate/$<CONFIG>/DX12DeferredHighPerformance")
+    rvx_add_validation_test(
+        LANE native
+        NAME RenderVerseSamplesCookedDX12Gfx24DeferredHighPerformanceCandidate
+        COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+            --backend dx12
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline deferred
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 3600000
+            --ready-max-frames 1024
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 300
+            --width 2560
+            --height 1440
+            --qualification-performance "${performance_root}/performance.json"
+            --qualification-performance-baseline gfx24-dx12-candidate-unapproved
+            --diagnostics
+            --no-validation
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${cooked_shader_target}
+        TAGS product.samples trait.performance trait.gpu trait.native
+            trait.candidate backend.dx12 suite.gfx24-candidate
+        SUITE gfx24-candidate
+        TIMEOUT 3600
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+    )
+endfunction()
+
+# One fixed-hardware producer used by the A4 calibration orchestrator. Keeping
+# it separate from the two visual candidates avoids recapturing 1280x720 raw
+# bundles during each of the five 60+300 performance runs.
+function(rvx_add_renderverse_gfx24_performance_calibration)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR
+       NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX24 performance calibration requires Windows DX12, RenderVerseSamplesCooked, and RVXCook")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24PerformanceCalibrationShaders/DX12")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx24-performance-calibration-dx12-shaders")
+    set(cooked_shader_target
+        RVXGfx24PerformanceCalibrationCookedShadersDX12)
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend DX12
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24PerformanceCalibration/${config_name}/DX12DeferredHigh")
+    endforeach()
+    set(performance_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24PerformanceCalibration/$<CONFIG>/DX12DeferredHigh")
+    rvx_add_validation_test(
+        LANE native
+        NAME RenderVerseSamplesCookedDX12Gfx24DeferredHighPerformanceCalibration
+        COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+            --backend dx12
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline deferred
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 3600000
+            --ready-max-frames 1024
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 300
+            --width 2560
+            --height 1440
+            --qualification-performance "${performance_root}/performance.json"
+            --qualification-performance-baseline gfx24-dx12-rtx4070ti-v1
+            --diagnostics
+            --no-validation
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${cooked_shader_target}
+        TAGS product.samples trait.performance trait.gpu trait.native
+            trait.calibration backend.dx12
+            suite.gfx24-performance-calibration
+        SUITE gfx24-performance-calibration
+        TIMEOUT 3600
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+    )
+endfunction()
+
+# GFX24C validates the primary raster backend on each supported desktop
+# platform. The public Sample Host captures all qualification ticks in one
+# process; the generated wrapper invokes the shared series validator with the
+# run identity inherited from the required-suite runner. Hosted software
+# adapters remain valid correctness evidence. Self-hosted jobs can tighten
+# adapter, driver, and OS checks through the three cache variables below.
+function(rvx_add_renderverse_gfx24_raster_series_validator
+         TEST_NAME SERIES_PATH REPORT_PATH GOLDEN_REPORT_PATH
+         EXPECTED_BACKEND GOLDEN_BACKEND GOLDEN_PIPELINE FIXTURE_NAME)
+    set(_rvx_gfx24_series_validator
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/ValidateSeries.cmake")
+    get_property(_rvx_gfx24_series_validator_generated GLOBAL
+        PROPERTY RVX_GFX24_RASTER_SERIES_VALIDATOR_GENERATED)
+    if(NOT _rvx_gfx24_series_validator_generated)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness")
+        file(GENERATE
+            OUTPUT "${_rvx_gfx24_series_validator}"
+            CONTENT [==[
+if(NOT DEFINED RVX_GFX24_SERIES OR NOT DEFINED RVX_GFX24_REPORT OR
+   NOT DEFINED RVX_GFX24_EXPECTED_BACKEND OR NOT DEFINED RVX_GFX24_PYTHON OR
+   NOT DEFINED RVX_GFX24_SERIES_CHECKER OR NOT DEFINED RVX_GFX24_MANIFEST)
+    message(FATAL_ERROR "GFX24 raster series validator received incomplete CTest arguments")
+endif()
+
+foreach(_rvx_required_identity IN ITEMS
+        RVX_VALIDATION_SOURCE_COMMIT
+        RVX_VALIDATION_RUN_ID
+        RVX_VALIDATION_PRESET)
+    set(_rvx_identity_value "$ENV{${_rvx_required_identity}}")
+    if("${_rvx_identity_value}" STREQUAL "")
+        message(FATAL_ERROR
+            "GFX24 raster correctness requires ${_rvx_required_identity} from the required-suite environment")
+    endif()
+endforeach()
+
+file(READ "${RVX_GFX24_SERIES}" _rvx_series_document)
+string(JSON _rvx_identity_backend GET
+       "${_rvx_series_document}" qualificationIdentity backend)
+string(JSON _rvx_hardware_backend GET
+       "${_rvx_series_document}" hardwareIdentity backend)
+if(NOT "${_rvx_identity_backend}" STREQUAL "${RVX_GFX24_EXPECTED_BACKEND}" OR
+   NOT "${_rvx_hardware_backend}" STREQUAL "${RVX_GFX24_EXPECTED_BACKEND}")
+    message(FATAL_ERROR
+        "GFX24 raster correctness series backend does not match ${RVX_GFX24_EXPECTED_BACKEND}")
+endif()
+
+set(_rvx_command
+    "${RVX_GFX24_PYTHON}" "${RVX_GFX24_SERIES_CHECKER}"
+    --series "${RVX_GFX24_SERIES}"
+    --sample-manifest "${RVX_GFX24_MANIFEST}"
+    --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+    --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+    --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+    --report "${RVX_GFX24_REPORT}")
+if(NOT "${RVX_GFX24_EXPECTED_ADAPTER_NAME}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-adapter-name "${RVX_GFX24_EXPECTED_ADAPTER_NAME}")
+endif()
+if(NOT "${RVX_GFX24_EXPECTED_DRIVER_VERSION}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-driver-version "${RVX_GFX24_EXPECTED_DRIVER_VERSION}")
+endif()
+if(NOT "${RVX_GFX24_EXPECTED_OS_BUILD}" STREQUAL "")
+    list(APPEND _rvx_command
+        --expected-os-build "${RVX_GFX24_EXPECTED_OS_BUILD}")
+endif()
+execute_process(COMMAND ${_rvx_command}
+                RESULT_VARIABLE _rvx_result)
+if(NOT _rvx_result EQUAL 0)
+    message(FATAL_ERROR "GFX24 raster correctness series validation failed")
+endif()
+
+if(NOT "${RVX_GFX24_GOLDEN_MODE}" STREQUAL "none")
+    foreach(_rvx_required_golden_argument IN ITEMS
+            RVX_GFX24_GOLDEN_REPORT
+            RVX_GFX24_GOLDEN_CHECKER
+            RVX_GFX24_GOLDEN_RECORD
+            RVX_GFX24_GOLDEN_BASELINE
+            RVX_GFX24_GOLDEN_POLICY
+            RVX_GFX24_GOLDEN_MANIFEST)
+        if(NOT DEFINED ${_rvx_required_golden_argument} OR
+           "${${_rvx_required_golden_argument}}" STREQUAL "")
+            message(FATAL_ERROR
+                "GFX24 approved-Golden validation received incomplete CTest arguments")
+        endif()
+    endforeach()
+
+    set(_rvx_golden_command
+        "${RVX_GFX24_PYTHON}" "${RVX_GFX24_GOLDEN_CHECKER}" compare-series
+        --series "${RVX_GFX24_SERIES}"
+        --record "${RVX_GFX24_GOLDEN_RECORD}"
+        --baseline "${RVX_GFX24_GOLDEN_BASELINE}"
+        --policy "${RVX_GFX24_GOLDEN_POLICY}"
+        --series-manifest "${RVX_GFX24_MANIFEST}"
+        --sample-manifest "${RVX_GFX24_GOLDEN_MANIFEST}"
+        --required-hardware-mode "${RVX_GFX24_GOLDEN_MODE}"
+        --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+        --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+        --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+        --report "${RVX_GFX24_GOLDEN_REPORT}")
+    if(NOT "${RVX_GFX24_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+        list(APPEND _rvx_golden_command
+            --runner-class "${RVX_GFX24_GOLDEN_RUNNER_CLASS}")
+    endif()
+    execute_process(COMMAND ${_rvx_golden_command}
+                    RESULT_VARIABLE _rvx_golden_result)
+    if(NOT _rvx_golden_result EQUAL 0)
+        message(FATAL_ERROR "GFX24 approved-Golden series validation failed")
+    endif()
+endif()
+]==])
+        set_property(GLOBAL PROPERTY
+            RVX_GFX24_RASTER_SERIES_VALIDATOR_GENERATED TRUE)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${TEST_NAME}
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_GFX24_SERIES=${SERIES_PATH}"
+            "-DRVX_GFX24_REPORT=${REPORT_PATH}"
+            "-DRVX_GFX24_EXPECTED_BACKEND=${EXPECTED_BACKEND}"
+            "-DRVX_GFX24_PYTHON=${Python3_EXECUTABLE}"
+            "-DRVX_GFX24_SERIES_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "-DRVX_GFX24_MANIFEST=${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+            "-DRVX_GFX24_EXPECTED_ADAPTER_NAME=${RVX_GFX24_RASTER_EXPECTED_ADAPTER_NAME}"
+            "-DRVX_GFX24_EXPECTED_DRIVER_VERSION=${RVX_GFX24_RASTER_EXPECTED_DRIVER_VERSION}"
+            "-DRVX_GFX24_EXPECTED_OS_BUILD=${RVX_GFX24_RASTER_EXPECTED_OS_BUILD}"
+            "-DRVX_GFX24_GOLDEN_MODE=${RVX_GFX24_RASTER_GOLDEN_MODE}"
+            "-DRVX_GFX24_GOLDEN_REPORT=${GOLDEN_REPORT_PATH}"
+            "-DRVX_GFX24_GOLDEN_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/render_quality_golden.py"
+            "-DRVX_GFX24_GOLDEN_RECORD=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/golden-record.json"
+            "-DRVX_GFX24_GOLDEN_BASELINE=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/bundle/bundle.json"
+            "-DRVX_GFX24_GOLDEN_POLICY=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/visual-policy.json"
+            "-DRVX_GFX24_GOLDEN_MANIFEST=${RVX_GFX24_RASTER_GOLDEN_ROOT}/${GOLDEN_BACKEND}/${GOLDEN_PIPELINE}/High/sample-manifest.json"
+            "-DRVX_GFX24_GOLDEN_RUNNER_CLASS=${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}"
+            -P "${_rvx_gfx24_series_validator}"
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+        TAGS product.samples subsystem.render trait.visual trait.native trait.temporal
+            suite.gfx24-raster-correctness
+        SUITE gfx24-raster-correctness
+        TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED ${FIXTURE_NAME}
+    )
+endfunction()
+
+# Generic same-process candidate producer for deterministic cooked Samples.
+# It validates series identity and receipt integrity only; Golden promotion
+# remains a separate reviewed action.
+option(RVX_ENABLE_GFX25_NATIVE_CANDIDATES
+    "Register opt-in cooked ModelViewer/PBR qualification-series candidates" OFF)
+function(rvx_add_renderverse_cooked_visual_series_candidate)
+    cmake_parse_arguments(ARG "" "TEST_NAME;SAMPLE_ID;BACKEND_LOWER;BACKEND_NAME;PIPELINE;RENDER_PATH;SERIES_ROOT;COOKED_SHADER_ROOT;COOKED_SHADER_TARGET;PLATFORM_TAG" "" ${ARGN})
+    foreach(_rvx_required IN ITEMS
+            TEST_NAME SAMPLE_ID BACKEND_LOWER BACKEND_NAME PIPELINE RENDER_PATH
+            SERIES_ROOT COOKED_SHADER_ROOT COOKED_SHADER_TARGET PLATFORM_TAG)
+        if("${ARG_${_rvx_required}}" STREQUAL "")
+            message(FATAL_ERROR
+                "Cooked visual-series candidate is missing ${_rvx_required}")
+        endif()
+    endforeach()
+    if(NOT TARGET RenderVerseSamplesCooked OR
+       NOT TARGET ${ARG_COOKED_SHADER_TARGET})
+        message(FATAL_ERROR
+            "Cooked visual-series candidate requires RenderVerseSamplesCooked and its cooked shader target")
+    endif()
+
+    set(_rvx_validator
+        "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/ValidateSeries.cmake")
+    get_property(_rvx_validator_generated GLOBAL
+        PROPERTY RVX_GFX25_CANDIDATE_SERIES_VALIDATOR_GENERATED)
+    if(NOT _rvx_validator_generated)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate")
+        file(GENERATE
+            OUTPUT "${_rvx_validator}"
+            CONTENT [==[
+if(NOT DEFINED RVX_CANDIDATE_SERIES OR NOT DEFINED RVX_CANDIDATE_REPORT OR
+   NOT DEFINED RVX_CANDIDATE_BACKEND OR NOT DEFINED RVX_CANDIDATE_PYTHON OR
+   NOT DEFINED RVX_CANDIDATE_CHECKER OR NOT DEFINED RVX_CANDIDATE_MANIFEST)
+    message(FATAL_ERROR "Cooked visual-series validator received incomplete CTest arguments")
+endif()
+foreach(_rvx_required_identity IN ITEMS
+        RVX_VALIDATION_SOURCE_COMMIT
+        RVX_VALIDATION_RUN_ID
+        RVX_VALIDATION_PRESET)
+    if("$ENV{${_rvx_required_identity}}" STREQUAL "")
+        message(FATAL_ERROR
+            "Cooked visual-series validation requires ${_rvx_required_identity} from the required-suite environment")
+    endif()
+endforeach()
+include("${RVX_CANDIDATE_RUN_IDENTITY_HELPER}")
+cmake_path(GET RVX_CANDIDATE_SERIES PARENT_PATH _rvx_series_root)
+set(RVX_CANDIDATE_SERIES "${_rvx_series_root}/runs/${_rvx_run_id}/series.json")
+set(RVX_CANDIDATE_REPORT "${_rvx_series_root}/runs/${_rvx_run_id}/series-validation.json")
+file(READ "${RVX_CANDIDATE_SERIES}" _rvx_series_document)
+string(JSON _rvx_identity_backend GET
+       "${_rvx_series_document}" qualificationIdentity backend)
+string(JSON _rvx_hardware_backend GET
+       "${_rvx_series_document}" hardwareIdentity backend)
+if(NOT "${_rvx_identity_backend}" STREQUAL "${RVX_CANDIDATE_BACKEND}" OR
+   NOT "${_rvx_hardware_backend}" STREQUAL "${RVX_CANDIDATE_BACKEND}")
+    message(FATAL_ERROR
+        "Cooked visual-series candidate backend does not match ${RVX_CANDIDATE_BACKEND}")
+endif()
+execute_process(
+    COMMAND "${RVX_CANDIDATE_PYTHON}" "${RVX_CANDIDATE_CHECKER}"
+        --series "${RVX_CANDIDATE_SERIES}"
+        --sample-manifest "${RVX_CANDIDATE_MANIFEST}"
+        --expected-source-commit "$ENV{RVX_VALIDATION_SOURCE_COMMIT}"
+        --expected-run-id "$ENV{RVX_VALIDATION_RUN_ID}"
+        --expected-preset "$ENV{RVX_VALIDATION_PRESET}"
+        --report "${RVX_CANDIDATE_REPORT}"
+    RESULT_VARIABLE _rvx_result)
+if(NOT _rvx_result EQUAL 0)
+    message(FATAL_ERROR "Cooked visual-series candidate validation failed")
+endif()
+]==])
+        set_property(GLOBAL PROPERTY
+            RVX_GFX25_CANDIDATE_SERIES_VALIDATOR_GENERATED TRUE)
+    endif()
+
+    set(_rvx_producer "${ARG_TEST_NAME}Producer")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${_rvx_producer}
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_CANDIDATE_ROOT=${ARG_SERIES_ROOT}"
+            "-DRVX_CANDIDATE_ALLOWED_ROOT=${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/$<CONFIG>"
+            "-DRVX_CANDIDATE_EXECUTABLE=$<TARGET_FILE:RenderVerseSamplesCooked>"
+            "-DRVX_CANDIDATE_WORKING_DIRECTORY=$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+            "-DRVX_CANDIDATE_SAMPLE_ID=${ARG_SAMPLE_ID}"
+            "-DRVX_CANDIDATE_BACKEND=${ARG_BACKEND_LOWER}"
+            "-DRVX_CANDIDATE_COOKED_SHADER_ROOT=${ARG_COOKED_SHADER_ROOT}"
+            "-DRVX_CANDIDATE_PIPELINE=${ARG_PIPELINE}"
+            "-DRVX_CANDIDATE_RENDER_PATH=${ARG_RENDER_PATH}"
+            -P "${CMAKE_SOURCE_DIR}/Tests/CMake/RunFreshGfx25Candidate.cmake"
+        BUILD_TARGETS
+            RenderVerseSamplesCooked
+            ${ARG_COOKED_SHADER_TARGET}
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Tests/CMake/RunFreshGfx25Candidate.cmake"
+        TAGS product.samples subsystem.render trait.visual trait.gpu
+            trait.temporal trait.candidate ${ARG_PLATFORM_TAG}
+            backend.${ARG_BACKEND_LOWER} suite.gfx25-candidate
+        SUITE gfx25-candidate
+        TIMEOUT 900
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP ${_rvx_producer}FreshSeries
+    )
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${ARG_TEST_NAME}SeriesValidation
+        COMMAND ${CMAKE_COMMAND}
+            "-DRVX_CANDIDATE_SERIES=${ARG_SERIES_ROOT}/series.json"
+            "-DRVX_CANDIDATE_RUN_IDENTITY_HELPER=${CMAKE_SOURCE_DIR}/Tests/CMake/Gfx25CandidateRunIdentity.cmake"
+            "-DRVX_CANDIDATE_REPORT=${ARG_SERIES_ROOT}/series-validation.json"
+            "-DRVX_CANDIDATE_BACKEND=${ARG_BACKEND_LOWER}"
+            "-DRVX_CANDIDATE_PYTHON=${Python3_EXECUTABLE}"
+            "-DRVX_CANDIDATE_CHECKER=${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "-DRVX_CANDIDATE_MANIFEST=${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+            -P "${_rvx_validator}"
+        REQUIRED_FILES
+            "${CMAKE_SOURCE_DIR}/Scripts/check_render_quality_series.py"
+            "${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Manifests/renderverse-samples.json"
+        TAGS product.samples subsystem.render trait.visual trait.temporal
+            trait.candidate ${ARG_PLATFORM_TAG}
+            backend.${ARG_BACKEND_LOWER} suite.gfx25-candidate
+        SUITE gfx25-candidate
+        TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED ${_rvx_producer}FreshSeries
+    )
+endfunction()
+
+function(rvx_add_renderverse_gfx25_native_candidates)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX25 candidates require RenderVerseSamplesCooked and RVXCook")
+    endif()
+    if(WIN32)
+        set(_rvx_backend_name DX12)
+        set(_rvx_backend_lower dx12)
+        set(_rvx_platform_tag platform.windows)
+    elseif(APPLE)
+        set(_rvx_backend_name Metal)
+        set(_rvx_backend_lower metal)
+        set(_rvx_platform_tag platform.macos)
+    elseif(UNIX)
+        set(_rvx_backend_name Vulkan)
+        set(_rvx_backend_lower vulkan)
+        set(_rvx_platform_tag platform.linux)
+    else()
+        message(FATAL_ERROR
+            "GFX25 candidates support only Windows, Linux, and macOS")
+    endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_rvx_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx25CandidateShaders/${_rvx_backend_name}")
+    set(_rvx_shader_stamp
+        "${_rvx_shader_root}/.rvx-gfx25-candidate-${_rvx_backend_lower}-shaders")
+    set(_rvx_shader_target
+        "RVXGfx25CandidateCookedShaders${_rvx_backend_name}")
+    if(NOT TARGET ${_rvx_shader_target})
+        add_custom_command(
+            OUTPUT "${_rvx_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_rvx_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${_rvx_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${_rvx_backend_name}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${_rvx_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${_rvx_shader_target}
+            DEPENDS "${_rvx_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${_rvx_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(_rvx_sample_id IN ITEMS model-viewer pbr-materials)
+        if(_rvx_sample_id STREQUAL "model-viewer")
+            set(_rvx_sample_label ModelViewer)
+        else()
+            set(_rvx_sample_label PBRMaterials)
+        endif()
+        foreach(_rvx_pipeline IN ITEMS forward-plus deferred)
+            if(_rvx_pipeline STREQUAL "forward-plus")
+                set(_rvx_pipeline_label ForwardPlus)
+            else()
+                set(_rvx_pipeline_label Deferred)
+            endif()
+            foreach(_rvx_render_path IN ITEMS direct gpu-driven)
+                if(_rvx_render_path STREQUAL "direct")
+                    set(_rvx_render_path_label Direct)
+                else()
+                    set(_rvx_render_path_label GPUDriven)
+                endif()
+                set(_rvx_test_name
+                    "RenderVerseSamplesCooked${_rvx_backend_name}Gfx25${_rvx_sample_label}${_rvx_pipeline_label}${_rvx_render_path_label}")
+                set(_rvx_series_root
+                    "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/$<CONFIG>/${_rvx_backend_name}/${_rvx_sample_label}/${_rvx_pipeline_label}/${_rvx_render_path_label}")
+                foreach(_rvx_config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+                    file(MAKE_DIRECTORY
+                        "${CMAKE_CURRENT_BINARY_DIR}/Gfx25Candidate/${_rvx_config}/${_rvx_backend_name}/${_rvx_sample_label}/${_rvx_pipeline_label}/${_rvx_render_path_label}")
+                endforeach()
+                rvx_add_renderverse_cooked_visual_series_candidate(
+                    TEST_NAME ${_rvx_test_name}
+                    SAMPLE_ID ${_rvx_sample_id}
+                    BACKEND_LOWER ${_rvx_backend_lower}
+                    BACKEND_NAME ${_rvx_backend_name}
+                    PIPELINE ${_rvx_pipeline}
+                    RENDER_PATH ${_rvx_render_path}
+                    SERIES_ROOT "${_rvx_series_root}"
+                    COOKED_SHADER_ROOT "${_rvx_shader_root}"
+                    COOKED_SHADER_TARGET ${_rvx_shader_target}
+                    PLATFORM_TAG ${_rvx_platform_tag})
+            endforeach()
+        endforeach()
+    endforeach()
+endfunction()
+
+# The platform-specific configure preset enables this function exactly once,
+# which gives the suite two same-process producers and two non-GPU validators.
+function(rvx_add_renderverse_gfx24_raster_correctness)
+    if(NOT TARGET RenderVerseSamplesCooked OR NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX24 raster correctness requires RenderVerseSamplesCooked and RVXCook")
+    endif()
+
+    if(WIN32)
+        set(backend_name DX12)
+        set(backend_lower dx12)
+        set(platform_tag platform.windows)
+    elseif(APPLE)
+        set(backend_name Metal)
+        set(backend_lower metal)
+        set(platform_tag platform.macos)
+    elseif(UNIX)
+        set(backend_name Vulkan)
+        set(backend_lower vulkan)
+        set(platform_tag platform.linux)
+    else()
+        message(FATAL_ERROR
+            "GFX24 raster correctness supports only Windows, Linux, and macOS")
+    endif()
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(RVX_GFX24_RASTER_EXPECTED_ADAPTER_NAME "" CACHE STRING
+        "Optional exact adapter name for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_EXPECTED_DRIVER_VERSION "" CACHE STRING
+        "Optional exact driver version for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_EXPECTED_OS_BUILD "" CACHE STRING
+        "Optional exact OS build for GFX24 raster correctness")
+    set(RVX_GFX24_RASTER_GOLDEN_MODE "none" CACHE STRING
+        "Approved-Golden validation mode for GFX24 raster correctness (none, exact-hardware, runner-class)")
+    set_property(CACHE RVX_GFX24_RASTER_GOLDEN_MODE PROPERTY STRINGS
+        none exact-hardware runner-class)
+    set(RVX_GFX24_RASTER_GOLDEN_ROOT "" CACHE PATH
+        "Root containing approved GFX24 raster Golden packages")
+    set(RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS "" CACHE STRING
+        "Required runner class for runner-class GFX24 raster Golden validation")
+
+    set(_rvx_gfx24_golden_modes none exact-hardware runner-class)
+    if(NOT RVX_GFX24_RASTER_GOLDEN_MODE IN_LIST _rvx_gfx24_golden_modes)
+        message(FATAL_ERROR
+            "RVX_GFX24_RASTER_GOLDEN_MODE must be none, exact-hardware, or runner-class")
+    endif()
+    if(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "none")
+        if(NOT "${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           NOT "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "GFX24 raster Golden root and runner class require a non-none Golden mode")
+        endif()
+    elseif(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "exact-hardware")
+        if(NOT WIN32 OR NOT backend_name STREQUAL "DX12")
+            message(FATAL_ERROR
+                "exact-hardware GFX24 raster Golden validation is supported only for Windows DX12")
+        endif()
+        if("${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           NOT "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "exact-hardware GFX24 raster Golden validation requires a root and no runner class")
+        endif()
+    elseif(RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "runner-class")
+        if("${RVX_GFX24_RASTER_GOLDEN_ROOT}" STREQUAL "" OR
+           "${RVX_GFX24_RASTER_GOLDEN_RUNNER_CLASS}" STREQUAL "")
+            message(FATAL_ERROR
+                "runner-class GFX24 raster Golden validation requires both root and runner class")
+        endif()
+    endif()
+
+    if(NOT RVX_GFX24_RASTER_GOLDEN_MODE STREQUAL "none")
+        get_filename_component(RVX_GFX24_RASTER_GOLDEN_ROOT
+            "${RVX_GFX24_RASTER_GOLDEN_ROOT}" ABSOLUTE
+            BASE_DIR "${CMAKE_SOURCE_DIR}")
+        if(NOT IS_DIRECTORY "${RVX_GFX24_RASTER_GOLDEN_ROOT}")
+            message(FATAL_ERROR
+                "GFX24 raster Golden root does not exist: ${RVX_GFX24_RASTER_GOLDEN_ROOT}")
+        endif()
+        foreach(_rvx_pipeline_label IN ITEMS ForwardPlus Deferred)
+            set(_rvx_golden_directory
+                "${RVX_GFX24_RASTER_GOLDEN_ROOT}/${backend_name}/${_rvx_pipeline_label}/High")
+            foreach(_rvx_golden_file IN ITEMS
+                    golden-record.json
+                    bundle/bundle.json
+                    visual-policy.json
+                    sample-manifest.json)
+                if(NOT EXISTS "${_rvx_golden_directory}/${_rvx_golden_file}")
+                    message(FATAL_ERROR
+                        "GFX24 raster Golden package is incomplete: "
+                        "${_rvx_golden_directory}/${_rvx_golden_file}")
+                endif()
+            endforeach()
+        endforeach()
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx24RasterCorrectnessShaders/${backend_name}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx24-raster-correctness-${backend_lower}-shaders")
+    set(cooked_shader_target
+        "RVXGfx24RasterCorrectnessCookedShaders${backend_name}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${backend_name}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX24_CANDIDATE_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        foreach(pipeline_label ForwardPlus Deferred)
+            file(MAKE_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/${config_name}/${backend_name}/${pipeline_label}")
+        endforeach()
+    endforeach()
+
+    foreach(pipeline_name IN ITEMS forward-plus deferred)
+        if(pipeline_name STREQUAL "forward-plus")
+            set(pipeline_label ForwardPlus)
+        else()
+            set(pipeline_label Deferred)
+        endif()
+        set(test_prefix
+            "RenderVerseSamplesCooked${backend_name}Gfx24Raster${pipeline_label}")
+        set(series_root
+            "${CMAKE_CURRENT_BINARY_DIR}/Gfx24RasterCorrectness/$<CONFIG>/${backend_name}/${pipeline_label}")
+        set(producer "${test_prefix}Producer")
+
+        # The Sample manifest supplies ordered ticks 300/360/361, so one
+        # producer owns all temporal state without a second-process history.
+        rvx_add_validation_test(
+            LANE native
+            NAME ${producer}
+            COMMAND $<TARGET_FILE:RenderVerseSamplesCooked>
+                --backend ${backend_lower}
+                --cooked-shader-root "${cooked_shader_root}"
+                --pipeline ${pipeline_name}
+                --render-path direct
+                --quality high
+                --smoke
+                --wait-ready
+                --ready-timeout-ms 120000
+                --ready-max-frames 2400
+                --view hero
+                --fixed-delta 0.0166666666666667
+                --width 1280
+                --height 720
+                --qualification-series "${series_root}/series.json"
+                --diagnostics
+                --validation
+            BUILD_TARGETS
+                RenderVerseSamplesCooked
+                ${cooked_shader_target}
+            TAGS product.samples subsystem.render trait.visual trait.gpu trait.native
+                trait.temporal ${platform_tag} backend.${backend_lower}
+                suite.gfx24-raster-correctness
+            SUITE gfx24-raster-correctness
+            TIMEOUT 900
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamplesCooked>"
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_SETUP ${producer}FreshSeries
+        )
+
+        rvx_add_renderverse_gfx24_raster_series_validator(
+            "${test_prefix}SeriesValidation"
+            "${series_root}/series.json"
+            "${series_root}/series-validation.json"
+            "${series_root}/golden-validation.json"
+            "${backend_lower}"
+            "${backend_name}"
+            "${pipeline_label}"
+            "${producer}FreshSeries")
+    endforeach()
+endfunction()
+
+# GFX07 intentionally has its own opt-in suite: it uses the same producer,
+# fixture, image, and structured-report contract as other qualifications, but
+# validates a native DeferredQuality frame rather than changing the fixed PR
+# SceneLifecycle smoke.  Do not mark a missing Windows Vulkan device skippable:
+# the required-suite runner turns a skipped/disabled/not-run CTest case into a
+# gate failure together with its JUnit evidence.
+function(rvx_add_renderverse_gfx07_deferred_native BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX07 Deferred qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}GFX07DeferredModelViewer")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --backend ${BACKEND_NAME}
+            --pipeline deferred
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
+        TIMEOUT 180
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name model-viewer
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-render-pipeline deferred
+            --require-deferred-opaque-execution
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+            --require-render-feature-executed 4
+            --require-render-feature-executed 5
+            --require-render-feature-executed 6
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_pr_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        scene-lifecycle SceneLifecycleDirect water-bottle
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        SUITE pr-smoke
+        ASSET_LICENSE CC0-1.0
+        SAMPLE_ARGS
+            --render-path direct
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-asset-entry water-bottle
+            --require-supported-feature SceneLifecycleProbe
+            --require-supported-feature DeferredEcsCommands
+            --require-supported-feature GenerationSafeEntityIdentity)
+endfunction()
+
+function(rvx_add_renderverse_compatibility_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        scene-lifecycle SceneLifecycleCompatibility water-bottle
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        SUITE compatibility-smoke
+        ASSET_LICENSE CC0-1.0
+        SAMPLE_ARGS
+            --render-path direct
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-asset-entry water-bottle
+            --require-supported-feature SceneLifecycleProbe)
+endfunction()
+
+function(rvx_add_renderverse_weekly_soak BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "Weekly soak requires RenderVerseSamples")
+    endif()
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}WeeklySoak")
+    set(lifetime_root
+        "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/WeeklySoak/${BACKEND_LABEL}")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --asset r7-triangle
+            --backend ${BACKEND_NAME}
+            --render-path direct
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 180000
+            --ready-max-frames 4096
+            --width 320
+            --height 180
+            --quality low
+            --deterministic-orbit
+            --startup-report "${lifetime_root}/startup.json"
+            --lifetime-warmup-frames 120
+            --lifetime-observation-frames 9880
+            --lifetime-min-duration-ms 300000
+            --lifetime-resize-interval 2400
+            --lifetime-resize-settle-frames 60
+            --lifetime-report "${lifetime_root}/lifetime.json"
+            --report "${lifetime_root}/sample.json"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples SampleQualificationReportValidation
+        TAGS product.samples trait.gpu backend.${BACKEND_NAME}
+        suite.model-viewer suite.lifetime suite.soak suite.weekly-soak
+        SUITE weekly-soak
+        TIMEOUT 3600
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}Artifacts"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Evidence
+        COMMAND $<TARGET_FILE:SampleQualificationReportValidation>
+            --startup-report "${lifetime_root}/startup.json"
+            --lifetime-report "${lifetime_root}/lifetime.json"
+            --sample-report "${lifetime_root}/sample.json"
+            --backend ${BACKEND_NAME}
+            --render-path direct
+            --asset-mode source
+            --expected-texture-count 0
+            --expected-visible-objects 1
+            --expected-draw-packets 1
+            --expected-opaque-draws 1
+            --max-first-present-ms 5000
+            --require-resize
+        BUILD_TARGETS SampleQualificationReportValidation
+        TAGS product.samples trait.diagnostics backend.${BACKEND_NAME}
+            suite.model-viewer suite.lifetime suite.soak
+        SUITE weekly-soak
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}Artifacts"
+    )
+endfunction()
+
+function(rvx_add_renderverse_p0_cross_path_parity SAMPLE_LABEL BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET VisualGoldenValidation)
+        return()
+    endif()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}")
+    set(direct_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}Direct_320x180.ppm")
+    set(gpu_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}GPUDriven_320x180.ppm")
+    set(parity_diff
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_DirectVsGPUDriven_diff.ppm")
+    set(parity_report
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_DirectVsGPUDriven.json")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}CrossPathParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${gpu_capture}"
+            --actual "${direct_capture}"
+            --diff "${parity_diff}"
+            --report "${parity_report}"
+            --tolerance 0.0
+            --max-different-pixels 0
+        BUILD_TARGETS VisualGoldenValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED
+            "${test_prefix}GPUDrivenFreshCapture;${test_prefix}DirectFreshCapture")
+endfunction()
+
+function(rvx_add_renderverse_p0_matrix SAMPLE_ID SAMPLE_LABEL ASSET_ID ASSET_LICENSE
+         BACKEND_NAME BACKEND_LABEL)
+    cmake_parse_arguments(
+        RVX_P0
+        ""
+        "ENVIRONMENT_ID;ENVIRONMENT_LICENSE;ENVIRONMENT_SOURCE_URI;READY_MAX_FRAMES"
+        "CONTENT_IDS;REPORT_ARGS"
+        ${ARGN})
+    if(RVX_P0_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR
+            "rvx_add_renderverse_p0_matrix received unparsed arguments: ${RVX_P0_UNPARSED_ARGUMENTS}")
+    endif()
+
+    if(NOT RVX_P0_READY_MAX_FRAMES)
+        set(RVX_P0_READY_MAX_FRAMES 600)
+    endif()
+
+    foreach(path_label Direct GPUDriven)
+        if(path_label STREQUAL "Direct")
+            set(render_path direct)
+            set(execution_gate --require-direct-execution)
+        else()
+            set(render_path gpu-driven)
+            set(execution_gate --require-gpu-driven-execution)
+        endif()
+
+        set(report_args
+            --render-path ${render_path}
+            --require-requested-render-path ${render_path}
+            --require-actual-render-path ${render_path}
+            --require-requested-physics-backend built-in
+            --require-actual-physics-backend built-in
+            --forbid-physics-backend-fallback
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            ${execution_gate}
+            --asset-license-spdx ${ASSET_LICENSE}
+            --require-phase stable)
+        foreach(content_id IN LISTS RVX_P0_CONTENT_IDS)
+            list(APPEND report_args --require-asset-content-id ${content_id})
+        endforeach()
+        if(RVX_P0_ENVIRONMENT_ID)
+            list(APPEND report_args
+                --environment-asset-id ${RVX_P0_ENVIRONMENT_ID}
+                --environment-license-spdx ${RVX_P0_ENVIRONMENT_LICENSE}
+                --environment-source-uri ${RVX_P0_ENVIRONMENT_SOURCE_URI}
+                --require-environment-redistributable)
+        endif()
+
+        rvx_add_renderverse_primary_smoke(
+            ${SAMPLE_ID} ${SAMPLE_LABEL}${path_label}
+            ${ASSET_ID} ${BACKEND_NAME} ${BACKEND_LABEL}
+            WAIT_READY
+            ASSESSMENT
+            ASSESSMENT_PROFILE qualification
+            READY_TIMEOUT_MS 120000
+            READY_MAX_FRAMES ${RVX_P0_READY_MAX_FRAMES}
+            SAMPLE_ARGS
+                --render-path ${render_path}
+            REPORT_ARGS
+                ${report_args}
+                ${RVX_P0_REPORT_ARGS})
+    endforeach()
+
+    rvx_add_renderverse_p0_cross_path_parity(
+        ${SAMPLE_LABEL} ${BACKEND_NAME} ${BACKEND_LABEL})
+endfunction()
+
+function(rvx_add_renderverse_base_render_path_matrices BACKEND_NAME BACKEND_LABEL)
+    set(generated_fixture_license LicenseRef-RenderVerseX-Generated-Fixture)
+
+    rvx_add_renderverse_p0_matrix(
+        model-rendering ModelRendering shadow-plane-caster
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL})
+
+    rvx_add_renderverse_p0_matrix(
+        asset-gallery AssetGallery r7-triangle
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL}
+        REPORT_ARGS
+            --min-visible-objects 3
+            --require-enabled-feature ResourceSceneAdapters
+            --require-enabled-feature CatalogStaticGallery
+            --require-enabled-feature BoundsCameraFraming
+            --require-unsupported-feature RuntimeAssetSwitching
+            --require-asset-entry r7-triangle
+            --require-asset-entry shadow-plane-caster
+            --require-asset-entry pbr-material-grid
+            --require-resource-diagnostic "gallery assets=3")
+
+    rvx_add_renderverse_p0_matrix(
+        lighting-shadows LightingShadows shadow-plane-caster
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL}
+        REPORT_ARGS
+            --require-enabled-feature ShadowCasterReceiverFixture
+            --require-enabled-feature CascadedDirectionalShadowRequested
+            --require-enabled-feature DirectionalShadow
+            --require-directional-shadow
+            --require-resource-diagnostic "shadow atlas resolution=1024"
+            --require-resource-diagnostic "shadow cascade count=1")
+
+    rvx_add_renderverse_p0_matrix(
+        render-pipeline RenderPipeline shadow-plane-caster
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL}
+        REPORT_ARGS
+            --require-enabled-feature EngineRenderPipelineConfiguration
+            --require-enabled-feature DirectionalShadow
+            --require-enabled-feature PostProcessRenderGraph
+            --require-directional-shadow
+            --min-render-graph-passes 8
+            --min-enabled-post-process-effects 2
+            --min-post-process-graph-passes 2
+            --forbid-unsupported-post-process
+            --require-resource-diagnostic
+                "pipeline ownership=Render/RenderGraph/PostProcessStack")
+
+    rvx_add_renderverse_p0_matrix(
+        model-viewer ModelViewer r7-triangle
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL}
+        REPORT_ARGS
+            --require-enabled-feature BoundsCameraFraming
+            --require-enabled-feature OrbitCamera
+            --require-enabled-feature ModelRenderReady
+            --require-enabled-feature ProceduralSkyScene
+            --forbid-fallback-reason PacketEnvironmentResourcesUnavailable)
+
+    rvx_add_renderverse_p0_matrix(
+        pbr-materials PBRMaterials pbr-material-grid
+        ${generated_fixture_license} ${BACKEND_NAME} ${BACKEND_LABEL}
+        READY_MAX_FRAMES 192
+        ENVIRONMENT_ID pbr-reference-environment
+        ENVIRONMENT_LICENSE ${generated_fixture_license}
+        ENVIRONMENT_SOURCE_URI
+            repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        REPORT_ARGS
+            --require-enabled-feature PBRMetallicRoughnessMaterials
+            --require-enabled-feature PBRMaterialParameterCube
+            --require-enabled-feature PBRBaseColorFamilyAxis
+            --require-enabled-feature MetallicRoughnessFactorCube
+            --require-enabled-feature SharedMeshSceneInstances
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-texture-ibl
+            --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+            --require-enabled-feature EnvironmentResourceLoad
+            --require-enabled-feature EnvironmentIBL
+            --require-enabled-feature DiffuseIBL
+            --require-enabled-feature SpecularIBL
+            --require-enabled-feature TextureIBL
+            --require-enabled-feature ControlledStudioLighting
+            --require-enabled-feature BoundsCameraFraming
+            --require-resource-diagnostic "pbr materials=125"
+            --require-resource-diagnostic "matrix shape=5x5x5"
+            --require-resource-diagnostic "scene mesh instances=125"
+            --require-resource-diagnostic "opaque draw packets=125")
+endfunction()
+
+function(rvx_add_renderverse_scene_lifecycle_matrix BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_p0_matrix(
+        scene-lifecycle SceneLifecycle water-bottle
+        CC0-1.0 ${BACKEND_NAME} ${BACKEND_LABEL}
+        CONTENT_IDS
+            b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
+            4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
+        REPORT_ARGS
+            --require-asset-entry water-bottle
+            --require-action Spawn
+            --require-action ReparentKeepLocal
+            --require-action ReparentKeepWorld
+            --require-action RecycleSecondaryCamera
+            --require-action PresentSecondaryCamera
+            --require-action RestorePrimaryCamera
+            --require-action MutateLight
+            --require-action MutateMaterialSlots
+            --require-action DestroyAndReuseEntitySlot
+            --require-invariant EntitySlotReuse
+            --require-invariant CameraEntityReuse
+            --require-invariant KeepLocal
+            --require-invariant KeepWorld
+            --require-invariant CameraTemporalReset
+            --require-invariant LightWriteVersion
+            --require-invariant MaterialSlotWriteVersion
+            --require-invariant RetirementQueuesDrained
+            --require-metric secondary-camera-presentation
+            --require-metric primary-camera-presentation
+            --require-metric-equals final-owned-entity-count=5
+            --require-metric-equals expected-owned-entity-count=5
+            --require-metric light-write-version
+            --require-metric material-slot-write-version
+            --require-metric-equals terminal-pending-destroy=0
+            --require-metric-equals terminal-cleanup-required=0
+            --require-metric-equals terminal-retiring=0
+            --require-metric-equals terminal-recyclable=0
+            --require-metric-equals terminal-render-pending-upload=0
+            --require-metric-equals terminal-render-retirement=0
+            --require-supported-feature SceneLifecycleProbe
+            --require-supported-feature DeferredEcsCommands
+            --require-supported-feature GenerationSafeEntityIdentity
+            --require-supported-feature TransformHierarchyAuthorityProbe
+            --require-supported-feature EcsCameraLifecycleProbe
+            --require-supported-feature RuntimeLightFragmentMutationProbe
+            --require-supported-feature RuntimeMaterialSlotMutationProbe)
+endfunction()
+
+function(rvx_add_renderverse_asset_streaming_matrix BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_p0_matrix(
+        asset-streaming AssetStreaming water-bottle CC0-1.0
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        READY_MAX_FRAMES 2000
+        CONTENT_IDS
+            b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
+            4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
+            9582c0dc0dee813be77f60e6ddf7213987c7e11497bf3cc66fd7b18957ae0d26
+            d9649a867305e7152ea1dcc5c30f4624fcb17fe7d4f7468da00e9b1997f1bb6c
+            c7e93451e25a1ee35247d265dbd06c760de904ba339890a97c248648c3170431
+            1d7d24ff3eb0f54e30834bf14717c3a303cb179e41fca4829545768e0999d46a
+        REPORT_ARGS
+            --require-asset-entry water-bottle
+            --require-asset-entry corset
+            --require-asset-entry crytek-sponza
+            --require-action QueueThreeModelsAndDuplicateSubscriber
+            --require-action PresentFallbackFrame
+            --require-action VerifyRequestCoalescing
+            --require-action CancelDuplicateSubscriber
+            --require-action RequestUnknownAssetAndRollback
+            --require-action InstantiateMinimumResidentModels
+            --require-action CommitRealTextures
+            --require-action CancelPublishedLargeModel
+            --require-action AwaitExactRetirement
+            --require-action ReloadSameAssetId
+            --require-action PresentReloadedRevision
+            --require-action DrainAllQueues
+            --require-invariant FirstFrameBeforeFullyResident
+            --require-invariant RequestCoalescing
+            --require-invariant UnknownAssetRollback
+            --require-invariant IncrementalTexturePublication
+            --require-invariant ExactRetirement
+            --require-invariant ReloadContentIdentityAndGeneration
+            --require-invariant DrainedQueues
+            --require-metric-equals pendingOperations=0
+            --require-metric-equals activeSubscribers=0
+            --require-metric-equals pendingAsyncJobs=0
+            --require-metric-equals pendingAsyncCompletions=0
+            --require-metric-equals decodeQueued=0
+            --require-metric-equals decodeActive=0
+            --require-metric-equals pendingPublications=0
+            --require-metric-equals pendingUploads=0
+            --require-metric-equals pendingReplacements=0
+            --require-metric-equals pendingRollbacks=0
+            --require-metric-equals pendingRetirements=0
+            --require-metric-equals queuedLeaseUnloads=0
+            --require-metric closureUnloadRequests
+            --require-supported-feature AsynchronousModelRequests
+            --require-supported-feature CatalogAssetIdRequests
+            --require-supported-feature CoalescedSubscriberCancellation
+            --require-supported-feature UnknownAssetNotFoundRollback
+            --require-supported-feature FallbackMinimumResidency
+            --require-supported-feature TextureContentReplacement
+            --require-supported-feature CompletionOwnedRetirement
+            --require-supported-feature RetiredAssetIdReload
+            --require-supported-feature DescriptorRevisionEvidence)
+endfunction()
+
+function(rvx_add_renderverse_interior_matrix BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_p0_matrix(
+        interior-rendering InteriorRendering crytek-sponza CC-BY-3.0
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        ENVIRONMENT_ID kloofendal-48d-partly-cloudy-pure-sky
+        ENVIRONMENT_LICENSE CC0-1.0
+        ENVIRONMENT_SOURCE_URI https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr
+        CONTENT_IDS
+            c7e93451e25a1ee35247d265dbd06c760de904ba339890a97c248648c3170431
+            1d7d24ff3eb0f54e30834bf14717c3a303cb179e41fca4829545768e0999d46a
+            5244534e9cf5b606f2ff513aa00ddb161b0a4826ffd88a0d3bd03ac29247d198
+            5976bfa6aee89beecfd51d98b8b47f625965c1df245d0816fd708860d64ab449
+            f94c219679ca4b47844ab7e7f9c3012c8195f2f1002a102aed6a1a7f9249737d
+            62bad1e475a107ac0941a1b19bc6231fee6de5ae5558ed12115da03e12d4af34
+        REPORT_ARGS
+            --require-asset-entry crytek-sponza
+            --require-asset-entry kloofendal-48d-partly-cloudy-pure-sky
+            --require-asset-entry interior-rendering-p0a
+            --require-directional-shadow
+            --require-texture-ibl
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-action PresentQualifiedInteriorFrame
+            --require-invariant VerifiedProductionAssetComposition
+            --require-invariant DeterministicTransparentGlassPanels
+            --require-invariant CompletedInteriorRenderContract
+            --require-metric productionMeshCount
+            --require-metric productionMaterialCount
+            --require-metric productionTextureCount
+            --require-metric-equals transparentGlassPanelCount=2
+            --require-supported-feature AsynchronousModelRequest
+            --require-supported-feature AsynchronousEnvironmentRequest
+            --require-supported-feature ProductionSponzaAsset
+            --require-supported-feature DeterministicTransparentGlassPanels
+            --require-supported-feature LocalLightsWithoutLocalShadows
+            --require-supported-feature InteriorRenderingDiagnosticsQualified
+            --require-supported-feature EnvironmentResourceLoad
+            --require-supported-feature EnvironmentIBL
+            --require-supported-feature TransparentPassObserved
+            --require-supported-feature ClusteredLightingObserved
+            --require-supported-feature DirectionalCSMObserved
+            --require-supported-feature TextureIBLEnabled
+            --require-unsupported-feature PointShadow
+            --require-unsupported-feature SpotShadow
+            --require-unsupported-feature HZBOcclusion
+            --require-resource-diagnostic "directional cascades requested=3"
+            --require-resource-diagnostic "directional shadow map requested=2048"
+            --require-resource-diagnostic "point lights requested=8"
+            --require-resource-diagnostic "spot lights requested=4"
+            --require-resource-diagnostic "point local-shadow requests=0"
+            --require-resource-diagnostic "spot local-shadow requests=0"
+            --require-resource-diagnostic "HZB requests=0")
+endfunction()
+
+function(rvx_add_renderverse_physics_sandbox_matrix BACKEND_NAME BACKEND_LABEL)
+    foreach(path_label Direct GPUDriven)
+        if(path_label STREQUAL "Direct")
+            set(render_path direct)
+            set(execution_gate --require-direct-execution)
+        else()
+            set(render_path gpu-driven)
+            set(execution_gate --require-gpu-driven-execution)
+        endif()
+
+        rvx_add_renderverse_primary_smoke(
+            physics-sandbox PhysicsSandbox${path_label}
+            interior-rendering-p0a ${BACKEND_NAME} ${BACKEND_LABEL}
+            TIMEOUT 300
+            WAIT_READY
+            ASSESSMENT
+            ASSESSMENT_PROFILE qualification
+            READY_TIMEOUT_MS 120000
+            READY_MAX_FRAMES 1200
+            SAMPLE_ARGS
+                --asset interior-rendering-p0a
+                --render-path ${render_path}
+            REPORT_ARGS
+                --render-path ${render_path}
+                --require-requested-render-path ${render_path}
+                --require-actual-render-path ${render_path}
+                --require-requested-physics-backend built-in
+                --require-actual-physics-backend built-in
+                --forbid-physics-backend-fallback
+                --require-native-validation-available
+                --require-native-validation-enabled
+                --require-native-validation-read-complete
+                --require-native-validation-error-count 0
+                --require-native-validation-corruption-count 0
+                ${execution_gate}
+                --require-readiness-wait
+                --require-phase stable
+                --require-asset-entry interior-rendering-p0a
+                --require-asset-content-id f94c219679ca4b47844ab7e7f9c3012c8195f2f1002a102aed6a1a7f9249737d
+                --require-asset-content-id 62bad1e475a107ac0941a1b19bc6231fee6de5ae5558ed12115da03e12d4af34
+                --require-action CreateBodies
+                --require-action Settle120Steps
+                --require-action DriveKinematicPlatform120Steps
+                --require-action VerifyDynamicContacts
+                --require-action RebuildCollider
+                --require-action DestroyBody
+                --require-action RecreateSameSlot
+                --require-action RejectStaleHandle
+                --require-invariant BuiltInAuthority
+                --require-invariant DynamicPhysicsToScene
+                --require-invariant DynamicFloorContact
+                --require-invariant ColliderFragmentRefresh
+                --require-invariant ProbeCleanup
+                --require-invariant StaleSceneRefRejected
+                --require-invariant TerminalCensus
+                --require-metric sceneRuntimeId
+                --require-metric sceneFrameSequence
+                --require-metric physicsFixedStepSequence
+                --require-metric fixedSteps
+                --require-metric requestedFixedSteps
+                --require-metric executedFixedSteps
+                --require-metric kinematicPoseWrites
+                --require-metric kinematicLastTargetStep
+                --require-metric dynamicFloorContactEvidence
+                --require-metric-equals fixedDeltaNumerator=1
+                --require-metric-equals fixedDeltaDenominator=60
+                --require-metric-equals maxSubsteps=4
+                --require-metric-equals deterministicSeed=1381390416
+                --require-metric-equals staticBodies=1
+                --require-metric-equals dynamicBodies=17
+                --require-metric-equals kinematicBodies=1
+                --require-metric-equals bodyCount=19
+                --require-metric-equals colliderCount=19
+                --require-metric-equals bridgeBindings=19
+                --require-metric-equals pendingBridgeCleanup=0
+                --require-metric-equals bridgeStructuralContinuityLoss=0
+                --require-metric-equals bridgeCleanupContinuityLoss=0
+                --require-metric-equals bridgeAuthoritativeReconcile=1
+                --require-metric-equals modelFullyResident=1
+                --require-metric-equals staleRefRejected=1
+                --require-enabled-feature PureEcsPhysicsFragments
+                --require-enabled-feature WorldEcsPhysicsDiagnostics
+                --assessment-block-grade ADVISORY
+                --require-resource-diagnostic "model path="
+                --require-resource-diagnostic "model meshes=8"
+                --require-resource-diagnostic "model materials=8"
+                --require-resource-diagnostic "render path=${render_path}"
+                --require-resource-diagnostic "requested backend=${BACKEND_NAME}"
+                --require-resource-diagnostic "realized backend=${BACKEND_NAME}")
+    endforeach()
+
+    rvx_add_renderverse_p0_cross_path_parity(
+        PhysicsSandbox ${BACKEND_NAME} ${BACKEND_LABEL})
+endfunction()
+
+function(rvx_add_renderverse_animation_character_matrix BACKEND_NAME BACKEND_LABEL)
+    # Keep these records as one CTest argument each.  The escaped semicolons
+    # are required because CMake otherwise treats the typed receipt fields as
+    # a list before it writes CTestTestfile.cmake.
+    string(JOIN "$<SEMICOLON>" casual_female_cook_admission
+        "assetId=casual-female" "packageContentId=8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca/3598370/11" "required=true" "accepted=true"
+        "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female>"
+        "declaredSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1" "observedSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1"
+        "declaredCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9" "observedCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9"
+        "declaredManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1" "observedManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1"
+        "cookSettingsHash=d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa" "recipeHash=28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676" "toolName=RVXCook" "toolVersion=2.0.0")
+    string(JOIN "$<SEMICOLON>" root_motion_cook_admission
+        "assetId=casual-female-walk-root-motion" "packageContentId=a1237867f0594b079b1e87269684cead024c7e598d94613c954b59742c9b3164/56159/2" "required=true" "accepted=true"
+        "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion>"
+        "declaredSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1" "observedSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1"
+        "declaredCooked=cooked-artifact/self-contained-artifact/da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e/54464/1" "observedCooked=cooked-artifact/self-contained-artifact/da42d46d158d171239419ed677224e234842e37201a7abc94e07333f111e050e/54464/1"
+        "declaredManifest=cook-manifest/self-contained-artifact/6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289/1695/1" "observedManifest=cook-manifest/self-contained-artifact/6e094f49be10722e503f0d98823ba7ef4212fe050b4e1dfc73e11169c68f6289/1695/1"
+        "cookSettingsHash=8eb7720e13e68209be75e55b81ab4ee0d731dda72389f53cffe2391e77da3a27" "recipeHash=bc445631a2989716a9c08158b45dc7ee73293e0eb9afe43156e003beab5e6070" "toolName=RVXCook" "toolVersion=2.0.0")
+    string(JOIN "$<SEMICOLON>" root_motion_asset_receipt
+        "assetId=casual-female-walk-root-motion" "role=animation" "kind=animation" "packageContentId=8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544/56159/2"
+        "expected=cooked-artifact/self-contained-artifact/269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca/54464/1" "observed=cooked-artifact/self-contained-artifact/269b877fd96d5ed54c47cb66108daeff7ce99ab4853fd68ad1707d242d9246ca/54464/1"
+        "verificationStatus=verified" "loaded=true" "verified=true")
+
+    foreach(path_label Direct GPUDriven)
+        if(path_label STREQUAL "Direct")
+            set(render_path direct)
+            set(execution_gate --require-direct-execution)
+            set(request_feature DirectPathRequested)
+        else()
+            set(render_path gpu-driven)
+            set(execution_gate --require-gpu-driven-execution)
+            set(request_feature GPUDrivenPathRequested)
+        endif()
+
+        rvx_add_renderverse_primary_smoke(
+            animation-character AnimationCharacter${path_label}
+            casual-female ${BACKEND_NAME} ${BACKEND_LABEL}
+            TIMEOUT 300
+            WAIT_READY
+            ASSESSMENT
+            ASSESSMENT_PROFILE qualification
+            ASSET_LICENSE CC0-1.0
+            READY_TIMEOUT_MS 120000
+            READY_MAX_FRAMES 2400
+            SAMPLE_ARGS
+                --render-path ${render_path}
+            REPORT_ARGS
+                --render-path ${render_path}
+                --require-requested-render-path ${render_path}
+                --require-actual-render-path ${render_path}
+                --require-requested-physics-backend built-in
+                --require-actual-physics-backend built-in
+                --forbid-physics-backend-fallback
+                --require-native-validation-available
+                --require-native-validation-enabled
+                --require-native-validation-read-complete
+                --require-native-validation-error-count 0
+                --require-native-validation-corruption-count 0
+                ${execution_gate}
+                --require-readiness-wait
+                --require-phase stable
+                --min-visible-objects 7
+                --require-asset-entry casual-female
+                --require-asset-entry casual-female-walk-root-motion
+                --require-asset-entry water-bottle
+                --require-asset-content-id 87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a
+                --require-asset-content-id 8a61c5ccb742e47d76ad47c5fcbd24fb048b705e1516a0861ab1e700618d98ca
+                --require-asset-content-id b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
+                --require-asset-content-id 4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
+                --require-cook-admission "${casual_female_cook_admission}"
+                --require-cook-admission "${root_motion_cook_admission}"
+                --require-asset-receipt "${root_motion_asset_receipt}"
+                --require-action BindEcsCharacter
+                --require-action EvaluateFixed120
+                --require-action ConsumeRootMotion120
+                --require-action PresentSkinningPalette
+                --require-invariant ExactEcsBinding
+                --require-invariant FixedSchedule
+                --require-invariant RootMotionEpoch
+                --require-invariant PresentedPalette
+                --require-metric fixedSteps
+                --require-metric poseEvaluations
+                --require-metric rootMotionIntents
+                --require-metric rootMotionMillimetres
+                --require-metric paletteHash
+                --require-metric-equals fixedSteps=120
+                --require-metric-equals poseEvaluations=120
+                --require-metric-equals rootMotionIntents=120
+                --require-metric-equals rootMotionMillimetres=2000
+                --require-enabled-feature ModelResourceLoad
+                --require-enabled-feature SceneInstantiation
+                --require-enabled-feature EcsCharacterModel
+                --require-enabled-feature EcsSkinningPalette
+                --require-enabled-feature EcsAnimationAsset
+                --require-enabled-feature EcsRootMotion
+                --require-enabled-feature EcsAnimationPhysicsBinding
+                --require-enabled-feature EcsFixedAnimation
+                --require-enabled-feature EcsPresentedSkinningPalette
+                --require-enabled-feature RenderPathPolicySelection
+                --require-enabled-feature ${request_feature}
+                --require-unsupported-feature Jolt
+                --require-resource-diagnostic "fixed steps=120"
+                --require-resource-diagnostic "root-motion intents=120"
+                --require-resource-diagnostic "render path=${render_path}")
+    endforeach()
+
+    rvx_add_renderverse_p0_cross_path_parity(
+        AnimationCharacter ${BACKEND_NAME} ${BACKEND_LABEL})
+
+endfunction()
+
+function(rvx_add_renderverse_pbr_response_validation BACKEND_NAME BACKEND_LABEL SAMPLE_LABEL)
+    if(NOT TARGET ImageContentValidation)
+        return()
+    endif()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ResponseValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --require-pbr-grid-response
+            --min-pbr-metallic-luma-delta 40
+            --min-pbr-roughness-contrast-delta 2
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.pbr
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_pbr_texture_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterialsTexture pbr-material-texture-cube
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        WAIT_READY
+        SAMPLE_ARGS
+            --asset pbr-material-texture-cube
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMetallicRoughnessTexture
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessTextureCube
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --require-opaque-material-texture-flags 4
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=5"
+        --require-resource-diagnostic "metallic-roughness texture=5x5"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=metallic-roughness texture"
+        --require-resource-diagnostic "texture cube materials=5"
+        --require-resource-diagnostic "texture cube combinations=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(
+        ${BACKEND_NAME} ${BACKEND_LABEL} PBRMaterialsTexture)
+endfunction()
+
+function(rvx_add_renderverse_pbr_workflow_parity BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET VisualGoldenValidation)
+        return()
+    endif()
+
+    set(factor_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterials_320x180.ppm")
+    set(texture_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTexture_320x180.ppm")
+    set(diff_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowDiff.ppm")
+    set(parity_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowParity.json")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowParity
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${factor_capture}"
+            --actual "${texture_capture}"
+            --diff "${diff_capture}"
+            --report "${parity_report}"
+            --tolerance 0.0
+            --max-different-pixels 0
+        BUILD_TARGETS VisualGoldenValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.pbr suite.parity
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED
+            "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsFreshCapture;RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTextureFreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKEND_LABEL)
+    if(NOT RVX_ENABLE_EXTERNAL_ASSET_TESTS OR
+       NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET SampleQualificationReportValidation)
+        return()
+    endif()
+    if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+    endif()
+
+    cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+        NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_MODEL_ROOT)
+    set(external_catalog "${RVX_EXTERNAL_MODEL_ROOT}/catalog.json")
+    set(external_model
+        "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo/scene.gltf")
+    set(external_license
+        "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo/license.txt")
+    foreach(required_file
+            "${external_catalog}"
+            "${external_model}"
+            "${external_license}")
+        if(NOT EXISTS "${required_file}")
+            message(FATAL_ERROR
+                "External Model Viewer gate requires ${required_file}")
+        endif()
+    endforeach()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/ExternalAssets")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/ExternalAssets")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}ExternalPorscheModelViewer")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.json")
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Validation
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --asset free-1975-porsche-911-930-turbo
+            --catalog "${external_catalog}"
+            --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 180000
+            --ready-max-frames 4096
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${capture}"
+            --report "${report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation SampleQualificationReportValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name model-viewer
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 1
+            --min-visible-objects 50
+            --asset-id free-1975-porsche-911-930-turbo
+            --asset-license-spdx CC-BY-4.0
+            --require-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-ready
+            --require-readiness-wait
+            --require-enabled-feature ModelResourceLoad
+            --require-enabled-feature SceneInstantiation
+            --require-enabled-feature ModelInspection
+            --require-enabled-feature ModelRenderReady
+            --require-enabled-feature BoundsCameraFraming
+            --require-enabled-feature OrbitCamera
+            --require-resource-diagnostic "model meshes=75"
+            --require-resource-diagnostic "model materials=14"
+            --require-resource-diagnostic "model nodes=141"
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    if(TARGET RVXCook)
+        # RVXCook publishes transactionally but intentionally requires the
+        # output parent to exist. Prepare every generated configuration here
+        # so the external fixture works from a clean multi-config build tree.
+        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts")
+        if(CMAKE_CONFIGURATION_TYPES)
+            foreach(_rvx_external_cook_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+                file(MAKE_DIRECTORY
+                    "${CMAKE_BINARY_DIR}/artifacts/${_rvx_external_cook_config}")
+            endforeach()
+        elseif(CMAKE_BUILD_TYPE)
+            file(MAKE_DIRECTORY
+                "${CMAKE_BINARY_DIR}/artifacts/${CMAKE_BUILD_TYPE}")
+        endif()
+        set(cooked_output_root
+            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerCookedPorsche")
+        set(cooked_model "${cooked_output_root}/scene.rva")
+        set(cooked_fixture RenderVerseSamplesExternalPorscheCookedModelFixture)
+    endif()
+    if(TARGET RVXCook AND NOT TEST ${cooked_fixture})
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${cooked_fixture}
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo"
+                --output "${cooked_output_root}"
+                --manifest "${cooked_output_root}/CookManifest.rvxmanifest"
+                --model-only
+                --non-recursive
+                --fail-on-errors
+            BUILD_TARGETS RVXCook
+            TAGS product.tools subsystem.resource trait.external-assets suite.cook suite.model suite.qualification
+            TIMEOUT 600
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP "${cooked_fixture}"
+        )
+    endif()
+
+    foreach(asset_mode source cooked)
+        if(asset_mode STREQUAL "cooked" AND NOT TARGET RVXCook)
+            continue()
+        endif()
+        if(asset_mode STREQUAL "source")
+            set(mode_label Source)
+            set(model_arguments
+                --asset free-1975-porsche-911-930-turbo
+                --catalog "${external_catalog}"
+                --asset-root "${RVX_EXTERNAL_MODEL_ROOT}")
+            set(mode_run_arguments --smoke)
+            set(mode_fixture "")
+        else()
+            set(mode_label Cooked)
+            set(model_arguments --model "${cooked_model}")
+            # The generated model product is intentionally outside the source
+            # catalog. It is still validation-enabled, but cannot claim the
+            # catalog-backed redistributable provenance required by --smoke.
+            set(mode_run_arguments "")
+            set(mode_fixture ${cooked_fixture})
+        endif()
+
+        set(direct_capture "")
+        set(gpu_capture "")
+        set(direct_lifetime_test "")
+        set(gpu_lifetime_test "")
+        foreach(render_path direct gpu-driven)
+            if(render_path STREQUAL "direct")
+                set(path_label Direct)
+            else()
+                set(path_label GPUDriven)
+            endif()
+            if(asset_mode STREQUAL "source")
+                # Preserve the established source qualification test names.
+                set(lifetime_prefix "${test_prefix}${path_label}")
+            else()
+                set(lifetime_prefix "${test_prefix}${mode_label}${path_label}")
+            endif()
+            set(lifetime_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_600.json")
+            set(lifetime_sample_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_sample.json")
+            set(startup_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerStartup/${lifetime_prefix}.json")
+            set(lifetime_capture
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_320x180.ppm")
+            rvx_add_validation_test(
+                LANE qualification
+                NAME ${lifetime_prefix}Lifetime600
+                COMMAND $<TARGET_FILE:RenderVerseSamples>
+                    --sample model-viewer
+                    ${model_arguments}
+                    --backend ${BACKEND_NAME}
+                    --render-path ${render_path}
+                    ${mode_run_arguments}
+                    --frames 1
+                    --wait-ready
+                    --ready-timeout-ms 180000
+                    --ready-max-frames 4096
+                    --width 320
+                    --height 180
+                    --quality low
+                    --deterministic-orbit
+                    --startup-report "${startup_report}"
+                    --lifetime-warmup-frames 120
+                    --lifetime-observation-frames 480
+                    --lifetime-resize-interval 240
+                    --lifetime-resize-settle-frames 30
+                    --lifetime-report "${lifetime_report}"
+                    --screenshot "${lifetime_capture}"
+                    --report "${lifetime_sample_report}"
+                    --diagnostics
+                    --validation
+                BUILD_TARGETS RenderVerseSamples SampleQualificationReportValidation
+                TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.qualification suite.${asset_mode} suite.${render_path}
+                TIMEOUT 1200
+                WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+                RESOURCE_LOCK rvx_gpu
+                FIXTURES_SETUP "${lifetime_prefix}Artifacts"
+                FIXTURES_REQUIRED "${mode_fixture}"
+            )
+
+            set(qualification_test ${lifetime_prefix}QualificationValidation)
+            rvx_add_validation_test(
+                LANE qualification
+                NAME ${qualification_test}
+                COMMAND $<TARGET_FILE:SampleQualificationReportValidation>
+                    --startup-report "${startup_report}"
+                    --lifetime-report "${lifetime_report}"
+                    --sample-report "${lifetime_sample_report}"
+                    --backend ${BACKEND_NAME}
+                    --render-path ${render_path}
+                    --asset-mode ${asset_mode}
+                    --expected-texture-count 27
+                    --expected-visible-objects 25
+                    --expected-draw-packets 75
+                    --expected-opaque-draws 17
+                    --expected-model-meshes 75
+                    --expected-model-materials 14
+                    --expected-model-nodes 141
+                    --expected-model-material-extension-feature-mask 30064771072
+                    --required-presented-material-feature-mask 12884901888
+                    --max-first-present-ms 5000
+                    --require-resize
+                BUILD_TARGETS SampleQualificationReportValidation
+                TAGS product.samples trait.diagnostics backend.${BACKEND_NAME} suite.model-viewer suite.startup suite.residency suite.lifetime suite.qualification suite.${asset_mode} suite.${render_path}
+                TIMEOUT 30
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                FIXTURES_REQUIRED "${lifetime_prefix}Artifacts"
+            )
+
+            if(render_path STREQUAL "direct")
+                set(direct_capture "${lifetime_capture}")
+                set(direct_lifetime_test ${lifetime_prefix}Lifetime600)
+            else()
+                set(gpu_capture "${lifetime_capture}")
+                set(gpu_lifetime_test ${lifetime_prefix}Lifetime600)
+            endif()
+
+            if(RVX_ENABLE_LONG_RUNNING_QUALIFICATION_TESTS)
+                set(soak_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000.json")
+                set(soak_sample_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000_sample.json")
+                set(soak_startup_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerStartup/${lifetime_prefix}_10000.json")
+                rvx_add_validation_test(
+                    LANE qualification
+                    NAME ${lifetime_prefix}Lifetime10000
+                    COMMAND $<TARGET_FILE:RenderVerseSamples>
+                        --sample model-viewer
+                        ${model_arguments}
+                        --backend ${BACKEND_NAME}
+                        --render-path ${render_path}
+                        ${mode_run_arguments}
+                        --frames 1
+                        --wait-ready
+                        --ready-timeout-ms 180000
+                        --ready-max-frames 4096
+                        --width 320
+                        --height 180
+                        --quality low
+                        --deterministic-orbit
+                        --startup-report "${soak_startup_report}"
+                        --lifetime-warmup-frames 120
+                        --lifetime-observation-frames 9880
+                        --lifetime-min-duration-ms 300000
+                        --lifetime-resize-interval 2400
+                        --lifetime-resize-settle-frames 60
+                        --lifetime-report "${soak_report}"
+                        --report "${soak_sample_report}"
+                        --diagnostics
+                        --validation
+                    BUILD_TARGETS RenderVerseSamples
+                    TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.soak suite.qualification suite.${asset_mode} suite.${render_path}
+                    TIMEOUT 3600
+                    WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+                    RESOURCE_LOCK rvx_gpu
+                    FIXTURES_REQUIRED "${mode_fixture}"
+                )
+            endif()
+        endforeach()
+
+        if(TARGET VisualGoldenValidation)
+            set(path_parity_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${test_prefix}${mode_label}DirectGPUParity.json")
+            set(path_parity_diff
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${test_prefix}${mode_label}DirectGPUParity.diff.ppm")
+            rvx_add_validation_test(
+                LANE qualification
+                NAME ${test_prefix}${mode_label}DirectGPUParity
+                COMMAND $<TARGET_FILE:VisualGoldenValidation>
+                    --expected "${direct_capture}"
+                    --actual "${gpu_capture}"
+                    --diff "${path_parity_diff}"
+                    --report "${path_parity_report}"
+                    --tolerance 0.0
+                    --max-different-pixels 0
+                BUILD_TARGETS VisualGoldenValidation
+                TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.parity suite.qualification suite.${asset_mode}
+                TIMEOUT 30
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                FIXTURES_REQUIRED
+                    "${direct_lifetime_test}Artifacts;${gpu_lifetime_test}Artifacts"
+            )
+        endif()
+    endforeach()
+endfunction()
+
+function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEND_LABEL)
+    if(NOT RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS OR
+       NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+    if(NOT RVX_ENABLE_EXTERNAL_ASSET_TESTS)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS requires RVX_ENABLE_EXTERNAL_ASSET_TESTS")
+    endif()
+    if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+    endif()
+
+    cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+        NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_ENVIRONMENT_ROOT)
+    set(external_catalog "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/catalog.json")
+    set(external_environment
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/textures/valley_of_desolation_4k.exr")
+    set(external_catalog_companion
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/textures/cowboy_town_hall_8k.exr")
+    set(external_license
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/LICENSE.polyhaven-cc0.txt")
+    foreach(required_file
+            "${external_catalog}"
+            "${external_environment}"
+            "${external_catalog_companion}"
+            "${external_license}")
+        if(NOT EXISTS "${required_file}")
+            message(FATAL_ERROR
+                "External environment gate requires ${required_file}")
+        endif()
+    endforeach()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/ExternalAssets")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/ExternalAssets")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}ExternalPolyHavenPBR")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.json")
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Validation
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/Samples/PBRMaterialGrid.gltf"
+            --environment valley-of-desolation-4k
+            --catalog "${external_catalog}"
+            --asset-root "${RVX_EXTERNAL_ENVIRONMENT_ROOT}"
+            --backend ${BACKEND_NAME}
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${capture}"
+            --report "${report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name pbr-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 8
+            --min-visible-objects 1
+            --environment-asset-id valley-of-desolation-4k
+            --environment-license-spdx CC0-1.0
+            --environment-source-uri https://polyhaven.com/a/valley_of_desolation
+            --require-environment-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-texture-ibl
+            --require-ready
+            --require-readiness-wait
+            --require-enabled-feature PBRMetallicRoughnessMaterials
+            --require-enabled-feature EnvironmentResourceLoad
+            --require-enabled-feature EnvironmentIBL
+            --require-enabled-feature DiffuseIBL
+            --require-enabled-feature SpecularIBL
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_readiness_smoke BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsReadiness")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    set(smoke_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Smoke
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 60000
+            --ready-max-frames 192
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${smoke_actual}"
+            --report "${smoke_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
+        TIMEOUT 120
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${smoke_report}"
+            --sample-name pbr-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 2
+            --min-visible-objects 1
+            --environment-asset-id pbr-reference-environment
+            --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+            --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+            --require-environment-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-texture-ibl
+            --require-ready
+            --require-readiness-wait
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
+    if(NOT RVX_ENABLE_P0_QUALIFICATION_MATRIX)
+        return()
+    endif()
+    foreach(required_target
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            VisualGoldenValidation)
+        if(NOT TARGET ${required_target})
+            message(FATAL_ERROR
+                "RVX_ENABLE_P0_QUALIFICATION_MATRIX requires ${required_target} for the gpu-driven sample matrix")
+        endif()
+    endforeach()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}GPUDriven")
+    set(gpu_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_GPU_320x180.ppm")
+    set(direct_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Direct_320x180.ppm")
+    set(parity_diff
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Parity_320x180.diff.ppm")
+    set(parity_report
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Parity_320x180.json")
+    set(gpu_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_GPU_320x180.json")
+    set(direct_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_Direct_320x180.json")
+
+    foreach(render_path gpu-driven direct)
+        if(render_path STREQUAL "gpu-driven")
+            set(path_label GPU)
+            set(capture "${gpu_capture}")
+            set(report "${gpu_report}")
+            set(execution_gate --require-gpu-driven-execution)
+            set(request_feature GPUDrivenPathRequested)
+            set(render_path_args --render-path gpu-driven)
+        else()
+            set(path_label Direct)
+            set(capture "${direct_capture}")
+            set(report "${direct_report}")
+            set(execution_gate --require-direct-execution)
+            set(request_feature DirectPathRequested)
+            set(render_path_args --render-path direct)
+        endif()
+
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${test_prefix}${path_label}Smoke
+            COMMAND $<TARGET_FILE:RenderVerseSamples>
+                --sample gpu-driven
+                ${render_path_args}
+                --backend ${BACKEND_NAME}
+                --smoke
+                --frames 1
+                --wait-ready
+                --ready-timeout-ms 30000
+                --ready-max-frames 64
+                --width 320
+                --height 180
+                --quality low
+                --screenshot "${capture}"
+                --report "${report}"
+                --diagnostics
+                --validation
+            BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation VisualGoldenValidation
+            TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
+            TIMEOUT 120
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_SETUP "${test_prefix}${path_label}FreshCapture"
+        )
+
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${test_prefix}${path_label}ImageContentValidation
+            COMMAND $<TARGET_FILE:ImageContentValidation>
+                --image "${capture}"
+                --min-width 320
+                --min-height 180
+                --min-unique-colors 16
+                --min-luma-range 8
+                --near-black-threshold 8
+                --max-near-black-ratio 0.95
+                --sample-step 2
+            BUILD_TARGETS ImageContentValidation
+            TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_REQUIRED "${test_prefix}${path_label}FreshCapture"
+        )
+
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${test_prefix}${path_label}ReportValidation
+            COMMAND $<TARGET_FILE:SampleReportContentValidation>
+                --report "${report}"
+                --sample-name gpu-driven
+                --category visual
+                --backend ${BACKEND_NAME}
+                --quality low
+                --render-path ${render_path}
+                --require-requested-render-path ${render_path}
+                --require-actual-render-path ${render_path}
+                --min-frame-count 2
+                --asset-id water-bottle
+                --asset-license-spdx CC0-1.0
+                --require-redistributable
+                --require-asset-content-id b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
+                --require-asset-content-id 4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
+                --min-visible-objects 25
+                --require-ready
+                --require-readiness-wait
+                --require-enabled-feature ModelResourceLoad
+                --require-enabled-feature SceneInstantiation
+                --require-enabled-feature SharedSceneExtractionInput
+                --require-enabled-feature SharedModelResourceInstancing
+                --require-enabled-feature RenderPathPolicySelection
+                --require-enabled-feature ${request_feature}
+                --require-resource-diagnostic "scene model instances=25"
+                --require-resource-diagnostic "unique model resources=1"
+                ${execution_gate}
+            BUILD_TARGETS SampleReportContentValidation
+            TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_REQUIRED "${test_prefix}${path_label}FreshCapture"
+        )
+    endforeach()
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}CrossPathParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${gpu_capture}"
+            --actual "${direct_capture}"
+            --diff "${parity_diff}"
+            --report "${parity_report}"
+            --tolerance 0.0
+            --max-different-pixels 0
+        BUILD_TARGETS VisualGoldenValidation
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED
+            "${test_prefix}GPUFreshCapture;${test_prefix}DirectFreshCapture"
+    )
+endfunction()
+
+if(RVX_ENABLE_PR_SMOKE)
+    if(WIN32 AND RVX_ENABLE_DX12)
+        rvx_add_renderverse_pr_smoke(dx12 DX12)
+    elseif(APPLE AND RVX_ENABLE_METAL)
+        rvx_add_renderverse_pr_smoke(metal Metal)
+    elseif(UNIX AND RVX_ENABLE_VULKAN)
+        rvx_add_renderverse_pr_smoke(vulkan Vulkan)
+    else()
+        message(FATAL_ERROR
+            "RVX_ENABLE_PR_SMOKE requires the platform primary backend (DX12, Vulkan, or Metal)")
+    endif()
+endif()
+
+if(RVX_ENABLE_COMPATIBILITY_SMOKE)
+    set(RVX_COMPATIBILITY_SMOKE_COUNT 0)
+    if(WIN32 AND RVX_ENABLE_DX11)
+        rvx_add_renderverse_compatibility_smoke(dx11 DX11)
+        math(EXPR RVX_COMPATIBILITY_SMOKE_COUNT "${RVX_COMPATIBILITY_SMOKE_COUNT} + 1")
+    endif()
+    if(RVX_ENABLE_OPENGL)
+        rvx_add_renderverse_compatibility_smoke(opengl OpenGL)
+        math(EXPR RVX_COMPATIBILITY_SMOKE_COUNT "${RVX_COMPATIBILITY_SMOKE_COUNT} + 1")
+    endif()
+    if(RVX_COMPATIBILITY_SMOKE_COUNT EQUAL 0)
+        message(FATAL_ERROR
+            "RVX_ENABLE_COMPATIBILITY_SMOKE requires DX11 or OpenGL")
+    endif()
+endif()
+
+if(RVX_ENABLE_WEEKLY_SOAK)
+    if(WIN32 AND RVX_ENABLE_DX12)
+        rvx_add_renderverse_weekly_soak(dx12 DX12)
+    elseif(APPLE AND RVX_ENABLE_METAL)
+        rvx_add_renderverse_weekly_soak(metal Metal)
+    elseif(UNIX AND RVX_ENABLE_VULKAN)
+        rvx_add_renderverse_weekly_soak(vulkan Vulkan)
+    else()
+        message(FATAL_ERROR
+            "RVX_ENABLE_WEEKLY_SOAK requires the platform primary backend")
+    endif()
+endif()
+
+if(WIN32 AND RVX_ENABLE_DX12 AND NOT RVX_ENABLE_PR_SMOKE)
+    if(RVX_ENABLE_P0_QUALIFICATION_MATRIX)
+    rvx_add_renderverse_scene_lifecycle_matrix(dx12 DX12)
+    rvx_add_renderverse_asset_streaming_matrix(dx12 DX12)
+    rvx_add_renderverse_interior_matrix(dx12 DX12)
+    rvx_add_renderverse_primary_smoke(
+        rendering-stress RenderingStressDirect interior-rendering-p0a dx12 DX12
+        TIMEOUT 300
+        WAIT_READY
+        ASSESSMENT
+        ASSESSMENT_PROFILE qualification
+        READY_TIMEOUT_MS 120000
+        READY_MAX_FRAMES 600
+        SAMPLE_ARGS
+            --render-path direct
+            --workload-scale pr
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-requested-physics-backend auto
+            --require-actual-physics-backend built-in
+            --forbid-physics-backend-fallback
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-direct-execution
+            --require-enabled-feature DeterministicRenderingStressStateMachine
+            --require-enabled-feature SharedModelResourceProceduralActors
+            --require-enabled-feature RetainedSceneDeltaDiagnostics
+            --require-enabled-feature GPUSceneDeltaDiagnostics
+            --require-resource-diagnostic "workload scale=pr"
+            --require-resource-diagnostic "workload objects=1000"
+            --require-resource-diagnostic "workload dirty=10"
+            --require-resource-diagnostic "workload churn=100"
+            --require-resource-diagnostic "phase=Complete")
+    rvx_add_renderverse_primary_smoke(
+        rendering-stress RenderingStressGPUDriven interior-rendering-p0a dx12 DX12
+        TIMEOUT 300
+        WAIT_READY
+        ASSESSMENT
+        ASSESSMENT_PROFILE qualification
+        READY_TIMEOUT_MS 120000
+        READY_MAX_FRAMES 600
+        SAMPLE_ARGS
+            --render-path gpu-driven
+            --workload-scale pr
+        REPORT_ARGS
+            --render-path gpu-driven
+            --require-requested-render-path gpu-driven
+            --require-actual-render-path gpu-driven
+            --require-requested-physics-backend auto
+            --require-actual-physics-backend built-in
+            --forbid-physics-backend-fallback
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-gpu-driven-execution
+            --require-enabled-feature DeterministicRenderingStressStateMachine
+            --require-enabled-feature SharedModelResourceProceduralActors
+            --require-enabled-feature RetainedSceneDeltaDiagnostics
+            --require-enabled-feature GPUSceneDeltaDiagnostics
+            --require-resource-diagnostic "workload scale=pr"
+            --require-resource-diagnostic "workload objects=1000"
+            --require-resource-diagnostic "workload dirty=10"
+            --require-resource-diagnostic "workload churn=100"
+            --require-resource-diagnostic "phase=Complete")
+    rvx_add_renderverse_p0_cross_path_parity(RenderingStress dx12 DX12)
+    endif()
+    if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
+    rvx_add_renderverse_physics_sandbox_matrix(dx12 DX12)
+    rvx_add_renderverse_animation_character_matrix(dx12 DX12)
+    endif()
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster dx12 DX12)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle dx12 DX12
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle dx12 DX12
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
+        --require-enabled-feature ProceduralSkyScene
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid dx12 DX12
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_base_render_path_matrices(dx12 DX12)
+    rvx_add_renderverse_pbr_response_validation(dx12 DX12 PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(dx12 DX12)
+    rvx_add_renderverse_pbr_workflow_parity(dx12 DX12)
+    rvx_add_renderverse_external_model_viewer_validation(dx12 DX12)
+    rvx_add_renderverse_external_environment_validation(dx12 DX12)
+    rvx_add_renderverse_readiness_smoke(dx12 DX12)
+    rvx_add_renderverse_gpu_driven_parity(dx12 DX12)
+endif()
+if(RVX_ENABLE_VULKAN AND NOT RVX_ENABLE_PR_SMOKE)
+    if(RVX_ENABLE_P0_QUALIFICATION_MATRIX)
+    rvx_add_renderverse_scene_lifecycle_matrix(vulkan Vulkan)
+    rvx_add_renderverse_asset_streaming_matrix(vulkan Vulkan)
+    rvx_add_renderverse_interior_matrix(vulkan Vulkan)
+    rvx_add_renderverse_primary_smoke(
+        rendering-stress RenderingStressDirect interior-rendering-p0a vulkan Vulkan
+        TIMEOUT 300
+        WAIT_READY
+        ASSESSMENT
+        ASSESSMENT_PROFILE qualification
+        READY_TIMEOUT_MS 120000
+        READY_MAX_FRAMES 600
+        SAMPLE_ARGS
+            --render-path direct
+            --workload-scale pr
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-requested-physics-backend auto
+            --require-actual-physics-backend built-in
+            --forbid-physics-backend-fallback
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-direct-execution
+            --require-enabled-feature DeterministicRenderingStressStateMachine
+            --require-enabled-feature SharedModelResourceProceduralActors
+            --require-enabled-feature RetainedSceneDeltaDiagnostics
+            --require-enabled-feature GPUSceneDeltaDiagnostics
+            --require-resource-diagnostic "workload scale=pr"
+            --require-resource-diagnostic "workload objects=1000"
+            --require-resource-diagnostic "workload dirty=10"
+            --require-resource-diagnostic "workload churn=100"
+            --require-resource-diagnostic "phase=Complete")
+    rvx_add_renderverse_primary_smoke(
+        rendering-stress RenderingStressGPUDriven interior-rendering-p0a vulkan Vulkan
+        TIMEOUT 300
+        WAIT_READY
+        ASSESSMENT
+        ASSESSMENT_PROFILE qualification
+        READY_TIMEOUT_MS 120000
+        READY_MAX_FRAMES 600
+        SAMPLE_ARGS
+            --render-path gpu-driven
+            --workload-scale pr
+        REPORT_ARGS
+            --render-path gpu-driven
+            --require-requested-render-path gpu-driven
+            --require-actual-render-path gpu-driven
+            --require-requested-physics-backend auto
+            --require-actual-physics-backend built-in
+            --forbid-physics-backend-fallback
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-gpu-driven-execution
+            --require-enabled-feature DeterministicRenderingStressStateMachine
+            --require-enabled-feature SharedModelResourceProceduralActors
+            --require-enabled-feature RetainedSceneDeltaDiagnostics
+            --require-enabled-feature GPUSceneDeltaDiagnostics
+            --require-resource-diagnostic "workload scale=pr"
+            --require-resource-diagnostic "workload objects=1000"
+            --require-resource-diagnostic "workload dirty=10"
+            --require-resource-diagnostic "workload churn=100"
+            --require-resource-diagnostic "phase=Complete")
+    rvx_add_renderverse_p0_cross_path_parity(RenderingStress vulkan Vulkan)
+    endif()
+    if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
+    rvx_add_renderverse_physics_sandbox_matrix(vulkan Vulkan)
+    rvx_add_renderverse_animation_character_matrix(vulkan Vulkan)
+    endif()
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster vulkan Vulkan)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle vulkan Vulkan
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle vulkan Vulkan
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
+        --require-enabled-feature ProceduralSkyScene
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid vulkan Vulkan
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_base_render_path_matrices(vulkan Vulkan)
+    rvx_add_renderverse_pbr_response_validation(vulkan Vulkan PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(vulkan Vulkan)
+    rvx_add_renderverse_pbr_workflow_parity(vulkan Vulkan)
+    rvx_add_renderverse_external_model_viewer_validation(vulkan Vulkan)
+    rvx_add_renderverse_external_environment_validation(vulkan Vulkan)
+    rvx_add_renderverse_readiness_smoke(vulkan Vulkan)
+    rvx_add_renderverse_gpu_driven_parity(vulkan Vulkan)
+endif()
+if(APPLE AND RVX_ENABLE_METAL AND NOT RVX_ENABLE_PR_SMOKE)
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster metal Metal)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle metal Metal
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster metal Metal
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster metal Metal
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle metal Metal
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle metal Metal
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
+        --require-enabled-feature ProceduralSkyScene
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid metal Metal
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(metal Metal PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(metal Metal)
+    rvx_add_renderverse_pbr_workflow_parity(metal Metal)
+    rvx_add_renderverse_external_environment_validation(metal Metal)
+    rvx_add_renderverse_readiness_smoke(metal Metal)
+    rvx_add_renderverse_gpu_driven_parity(metal Metal)
+endif()
+function(rvx_add_renderverse_p0_cross_backend_parity SAMPLE_LABEL)
+    if(NOT WIN32 OR
+       NOT RVX_ENABLE_DX12 OR
+       NOT RVX_ENABLE_VULKAN OR
+       NOT TARGET VisualGoldenValidation OR
+       NOT TARGET RenderVerseSamples)
+        return()
+    endif()
+
+    foreach(path_label Direct GPUDriven)
+        set(dx12_capture
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesDX12${SAMPLE_LABEL}${path_label}_320x180.ppm")
+        set(vulkan_capture
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesVulkan${SAMPLE_LABEL}${path_label}_320x180.ppm")
+        set(parity_prefix
+            "RenderVerseSamplesCrossBackend${SAMPLE_LABEL}${path_label}ParityValidation")
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${parity_prefix}
+            COMMAND $<TARGET_FILE:VisualGoldenValidation>
+                --expected "${dx12_capture}"
+                --actual "${vulkan_capture}"
+                --diff "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${parity_prefix}_DX12_Vulkan_diff.ppm"
+                --report "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${parity_prefix}_DX12_Vulkan.json"
+                --tolerance 0.0
+                --max-different-pixels 0
+            BUILD_TARGETS VisualGoldenValidation
+            TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.parity suite.cross-backend
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_REQUIRED
+                "RenderVerseSamplesDX12${SAMPLE_LABEL}${path_label}FreshCapture;RenderVerseSamplesVulkan${SAMPLE_LABEL}${path_label}FreshCapture")
+    endforeach()
+endfunction()
+
+function(rvx_add_renderverse_gpu_driven_cross_backend_parity)
+    if(NOT RVX_ENABLE_P0_QUALIFICATION_MATRIX)
+        return()
+    endif()
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN)
+        message(FATAL_ERROR
+            "The gpu-driven cross-backend qualification requires Windows DX12 and Vulkan")
+    endif()
+    foreach(required_target VisualGoldenValidation RenderVerseSamples)
+        if(NOT TARGET ${required_target})
+            message(FATAL_ERROR
+                "RVX_ENABLE_P0_QUALIFICATION_MATRIX requires ${required_target} for gpu-driven cross-backend parity")
+        endif()
+    endforeach()
+
+    foreach(path_label GPU Direct)
+        set(dx12_capture
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesDX12GPUDriven_${path_label}_320x180.ppm")
+        set(vulkan_capture
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesVulkanGPUDriven_${path_label}_320x180.ppm")
+        set(parity_prefix
+            "RenderVerseSamplesCrossBackendGPUDriven${path_label}ParityValidation")
+        rvx_add_validation_test(
+            LANE qualification
+            NAME ${parity_prefix}
+            COMMAND $<TARGET_FILE:VisualGoldenValidation>
+                --expected "${dx12_capture}"
+                --actual "${vulkan_capture}"
+                --diff "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${parity_prefix}_DX12_Vulkan_diff.ppm"
+                --report "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${parity_prefix}_DX12_Vulkan.json"
+                --tolerance 0.0
+                --max-different-pixels 0
+            BUILD_TARGETS VisualGoldenValidation
+            TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.gpu-driven suite.parity suite.cross-backend
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_REQUIRED
+                "RenderVerseSamplesDX12GPUDriven${path_label}FreshCapture;RenderVerseSamplesVulkanGPUDriven${path_label}FreshCapture")
+    endforeach()
+endfunction()
+
+if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
+    # The suite target is RVXValidationSuiteGfx07Deferred; its CTest label is
+    # suite.gfx07-deferred (and the narrower suite.gfx07 tag) for local runs.
+    rvx_add_renderverse_gfx07_deferred_native(dx12 DX12)
+    rvx_add_renderverse_gfx07_deferred_native(vulkan Vulkan)
+endif()
+
+if(RVX_ENABLE_GFX08_LIGHTING_NATIVE)
+    # The suite target is RVXValidationSuiteGfx08Lighting and its exact CTest
+    # label is suite.gfx08-lighting.
+    rvx_add_renderverse_gfx08_lighting_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx08_lighting_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx08_lighting_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx08_lighting_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX09_ANIMATION_NATIVE)
+    # The suite target is RVXValidationSuiteGfx09Animation and its exact CTest
+    # label is suite.gfx09-animation.
+    rvx_add_renderverse_gfx09_animation_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx09_animation_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx09_animation_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx09_animation_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX10_POST_PROCESS_NATIVE)
+    # The suite target is RVXValidationSuiteGfx10Postprocess and its exact
+    # CTest label is suite.gfx10-postprocess.
+    rvx_add_renderverse_gfx10_post_process_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx10_post_process_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx10_post_process_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx10_post_process_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX11_TAA_NATIVE)
+    # The suite target is RVXValidationSuiteGfx11Taa and its exact CTest label
+    # is suite.gfx11-taa.
+    rvx_add_renderverse_gfx11_taa_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx11_taa_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx11_taa_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx11_taa_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX12_EXPOSURE_NATIVE)
+    # The suite target is RVXValidationSuiteGfx12Exposure and its exact CTest
+    # label is suite.gfx12-exposure. Eight producer combinations, each with
+    # Capture/Image/Receipt, form the required 24-test matrix.
+    rvx_add_renderverse_gfx12_exposure_native(
+        dx12 DX12 forward-plus ForwardPlus
+        physical-exposure PhysicalExposure 120)
+    rvx_add_renderverse_gfx12_exposure_native(
+        dx12 DX12 forward-plus ForwardPlus
+        auto-exposure AutoExposure 180)
+    rvx_add_renderverse_gfx12_exposure_native(
+        dx12 DX12 deferred Deferred
+        physical-exposure PhysicalExposure 120)
+    rvx_add_renderverse_gfx12_exposure_native(
+        dx12 DX12 deferred Deferred
+        auto-exposure AutoExposure 180)
+    rvx_add_renderverse_gfx12_exposure_native(
+        vulkan Vulkan forward-plus ForwardPlus
+        physical-exposure PhysicalExposure 120)
+    rvx_add_renderverse_gfx12_exposure_native(
+        vulkan Vulkan forward-plus ForwardPlus
+        auto-exposure AutoExposure 180)
+    rvx_add_renderverse_gfx12_exposure_native(
+        vulkan Vulkan deferred Deferred
+        physical-exposure PhysicalExposure 120)
+    rvx_add_renderverse_gfx12_exposure_native(
+        vulkan Vulkan deferred Deferred
+        auto-exposure AutoExposure 180)
+endif()
+
+if(RVX_ENABLE_GFX13_GTAO_NATIVE)
+    # The suite target is RVXValidationSuiteGfx13Gtao and its exact CTest
+    # label is suite.gfx13-gtao. Four producer combinations, each with
+    # Capture/Image/Receipt, form the required 12-test matrix.
+    rvx_add_renderverse_gfx13_gtao_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx13_gtao_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx13_gtao_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx13_gtao_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX14_TOON_NATIVE)
+    # The suite target is RVXValidationSuiteGfx14Toon and its exact CTest
+    # label is suite.gfx14-toon. Four producer combinations, each with
+    # Capture/Image/Receipt, form the required 12-test matrix.
+    rvx_add_renderverse_gfx14_toon_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx14_toon_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx14_toon_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx14_toon_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE)
+    # Four producer combinations, each with Capture/Image/Receipt, form the
+    # required 12-test cooked-only functional qualification matrix.
+    rvx_add_renderverse_gfx15_translucency_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx15_translucency_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx15_translucency_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx15_translucency_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX17_VFX_NATIVE)
+    # Exactly 24 strict native tests: fire/smoke x DX12/Vulkan x
+    # Forward+/Deferred x Capture/Image/Receipt.  No unit or integration test
+    # carries suite.gfx17-vfx.
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 forward-plus ForwardPlus particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 forward-plus ForwardPlus particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 deferred Deferred particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 deferred Deferred particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan forward-plus ForwardPlus particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan forward-plus ForwardPlus particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-smoke ParticleSmoke 180)
+endif()
+
+if(RVX_ENABLE_GFX18_WATER_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. No contract or gameplay test carries suite.gfx18-water.
+    rvx_add_renderverse_gfx18_water_native(dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx18_water_native(dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx18_water_native(vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx18_water_native(vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. Hi-Z SSR is intentionally not claimed here while
+    # the lighting-shadows Sample keeps screen-space reflections disabled.
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. The producer requests Hi-Z SSR and the receipt
+    # validator rejects requested-only, scheduled-only, or fallback evidence.
+    rvx_add_renderverse_gfx19_reflections_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_reflections_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx19_reflections_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_reflections_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX24_NATIVE_CANDIDATES)
+    rvx_add_renderverse_gfx24_native_candidates()
+endif()
+if(RVX_ENABLE_GFX24_PERFORMANCE_CALIBRATION)
+    rvx_add_renderverse_gfx24_performance_calibration()
+endif()
+if(RVX_ENABLE_GFX24_RASTER_CORRECTNESS)
+    # Exactly four CTest entries on each platform: Forward+/Deferred producer
+    # plus its non-GPU series validator. The generated suite target is
+    # RVXValidationSuiteGfx24RasterCorrectness.
+    rvx_add_renderverse_gfx24_raster_correctness()
+endif()
+if(RVX_ENABLE_GFX25_NATIVE_CANDIDATES)
+    rvx_add_renderverse_gfx25_native_candidates()
+endif()
+
+if(WIN32
+    AND RVX_ENABLE_DX12
+    AND RVX_ENABLE_VULKAN
+    AND RVX_ENABLE_P0_QUALIFICATION_MATRIX
+    AND TARGET VisualGoldenValidation
+    AND TARGET RenderVerseSamples)
+    rvx_add_renderverse_p0_cross_backend_parity(SceneLifecycle)
+    rvx_add_renderverse_p0_cross_backend_parity(AssetStreaming)
+    rvx_add_renderverse_p0_cross_backend_parity(InteriorRendering)
+    rvx_add_renderverse_p0_cross_backend_parity(ModelRendering)
+    rvx_add_renderverse_p0_cross_backend_parity(AssetGallery)
+    rvx_add_renderverse_p0_cross_backend_parity(LightingShadows)
+    rvx_add_renderverse_p0_cross_backend_parity(RenderPipeline)
+    rvx_add_renderverse_p0_cross_backend_parity(ModelViewer)
+    rvx_add_renderverse_p0_cross_backend_parity(PBRMaterials)
+    if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
+        rvx_add_renderverse_p0_cross_backend_parity(AnimationCharacter)
+    endif()
+    set(RVX_RENDERING_STRESS_DX12_DIRECT_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesDX12RenderingStressDirect_320x180.ppm")
+    set(RVX_RENDERING_STRESS_VULKAN_DIRECT_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesVulkanRenderingStressDirect_320x180.ppm")
+    set(RVX_RENDERING_STRESS_DX12_GPU_DRIVEN_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesDX12RenderingStressGPUDriven_320x180.ppm")
+    set(RVX_RENDERING_STRESS_VULKAN_GPU_DRIVEN_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesVulkanRenderingStressGPUDriven_320x180.ppm")
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RenderVerseSamplesCrossBackendRenderingStressDirectParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${RVX_RENDERING_STRESS_DX12_DIRECT_ACTUAL}"
+            --actual "${RVX_RENDERING_STRESS_VULKAN_DIRECT_ACTUAL}"
+            --diff "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesRenderingStressDirect_DX12_Vulkan_320x180.diff.ppm"
+            --report "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesRenderingStressDirect_DX12_Vulkan_320x180.json"
+            --tolerance 0.0
+            --max-different-pixels 0
+        BUILD_TARGETS VisualGoldenValidation
+        TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.parity suite.cross-backend
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED
+            "RenderVerseSamplesDX12RenderingStressDirectFreshCapture;RenderVerseSamplesVulkanRenderingStressDirectFreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RenderVerseSamplesCrossBackendRenderingStressGPUDrivenParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${RVX_RENDERING_STRESS_DX12_GPU_DRIVEN_ACTUAL}"
+            --actual "${RVX_RENDERING_STRESS_VULKAN_GPU_DRIVEN_ACTUAL}"
+            --diff "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesRenderingStressGPUDriven_DX12_Vulkan_320x180.diff.ppm"
+            --report "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamplesRenderingStressGPUDriven_DX12_Vulkan_320x180.json"
+            --tolerance 0.0
+            --max-different-pixels 0
+        BUILD_TARGETS VisualGoldenValidation
+        TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.gpu-driven suite.parity suite.cross-backend
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED
+            "RenderVerseSamplesDX12RenderingStressGPUDrivenFreshCapture;RenderVerseSamplesVulkanRenderingStressGPUDrivenFreshCapture"
+    )
+endif()
+
+rvx_add_renderverse_gpu_driven_cross_backend_parity()
+
+if(WIN32
+    AND RVX_ENABLE_DX12
+    AND RVX_ENABLE_VULKAN
+    AND RVX_ENABLE_P1_QUALIFICATION_MATRIX
+    AND TARGET VisualGoldenValidation
+    AND TARGET RenderVerseSamples)
+    rvx_add_renderverse_p0_cross_backend_parity(PhysicsSandbox)
+endif()
+
+if(RVX_ENABLE_OPENGL AND TARGET RVXEditor)
+    set(RVX_EDITOR_SMOKE_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/Editor/EditorViewportSmoke.ppm")
+    set(RVX_EDITOR_WORKSPACE_PATH_SMOKE_CWD
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Editor/WorkspacePathSmokeCwd")
+    set(RVX_EDITOR_WORKSPACE_PATH_SMOKE_ACTUAL
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/Editor/EditorWorkspacePathSmoke.ppm")
+    file(MAKE_DIRECTORY "${RVX_EDITOR_WORKSPACE_PATH_SMOKE_CWD}")
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RVXEditorSmoke
+        COMMAND $<TARGET_FILE:RVXEditor>
+            --smoke
+            --frames 20
+            --screenshot "${RVX_EDITOR_SMOKE_ACTUAL}"
+        BUILD_TARGETS RVXEditor ImageContentValidation
+        TAGS product.editor trait.visual trait.gpu backend.opengl suite.smoke
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP RVXEditorSmokeFreshCapture
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RVXEditorSmokeImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${RVX_EDITOR_SMOKE_ACTUAL}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 32
+            --min-luma-range 32
+            --near-black-threshold 8
+            --max-near-black-ratio 0.98
+            --sample-step 4
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.editor trait.visual trait.gpu backend.opengl suite.smoke
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED RVXEditorSmokeFreshCapture
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RVXEditorWorkspacePathSmoke
+        COMMAND $<TARGET_FILE:RVXEditor>
+            --smoke
+            --frames 8
+            --windowed
+            --screenshot "${RVX_EDITOR_WORKSPACE_PATH_SMOKE_ACTUAL}"
+        BUILD_TARGETS RVXEditor ImageContentValidation
+        TAGS product.editor trait.visual trait.gpu backend.opengl suite.workspace-path
+        TIMEOUT 120
+        WORKING_DIRECTORY "${RVX_EDITOR_WORKSPACE_PATH_SMOKE_CWD}"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP RVXEditorWorkspacePathSmokeFreshCapture
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME RVXEditorWorkspacePathSmokeImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${RVX_EDITOR_WORKSPACE_PATH_SMOKE_ACTUAL}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 32
+            --min-luma-range 32
+            --near-black-threshold 8
+            --max-near-black-ratio 0.98
+            --sample-step 4
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.editor trait.visual trait.gpu backend.opengl suite.workspace-path
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED RVXEditorWorkspacePathSmokeFreshCapture
+    )
+endif()

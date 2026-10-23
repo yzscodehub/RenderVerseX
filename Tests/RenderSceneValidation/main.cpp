@@ -1,5 +1,7 @@
+#include "Core/Log.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
@@ -134,6 +136,24 @@ namespace RVX
             renderer.UpdateLiveMutationEvidence();
             return renderer.m_mutationEvidenceEpoch;
         }
+
+        static const RenderObject& ApplyMotionHistoryWithoutViewReset(SceneRenderer& renderer)
+        {
+            renderer.m_viewData.resetTemporalHistory = false;
+            renderer.ApplyObjectMotionHistory();
+            return renderer.m_renderScene.GetObject(0);
+        }
+
+        static const Mat4* FindObjectMotionHistory(
+            const SceneRenderer& renderer,
+            uint64 objectId) noexcept
+        {
+            const auto found =
+                renderer.m_previousObjectWorldMatrices.find(objectId);
+            return found != renderer.m_previousObjectWorldMatrices.end()
+                ? &found->second.worldMatrix
+                : nullptr;
+        }
     };
 } // namespace RVX
 
@@ -141,6 +161,30 @@ using namespace RVX;
 
 namespace
 {
+    class ScopedRenderSceneTestLog final
+    {
+    public:
+        ScopedRenderSceneTestLog()
+        {
+            if (!Log::GetCoreLogger())
+            {
+                Log::Initialize();
+                m_owned = true;
+            }
+        }
+
+        ~ScopedRenderSceneTestLog()
+        {
+            if (m_owned)
+            {
+                Log::Shutdown();
+            }
+        }
+
+    private:
+        bool m_owned = false;
+    };
+
     class SkinningSemanticTestBuffer final : public RHIBuffer
     {
     public:
@@ -436,6 +480,13 @@ namespace
         ParticleRenderSnapshotItem particle;
         particle.instanceId = 7;
         particle.systemId = 7;
+        particle.header.captureSequence = 1;
+        particle.header.configurationRevision = 1;
+        particle.header.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 7,
+            .entityGeneration = 0,
+        };
         particle.systemAssetId = {.value = 8};
         particle.systemName = "packet-owned-feature";
         particle.worldBounds = AABB(Vec3{-1.0f}, Vec3{1.0f});
@@ -449,6 +500,11 @@ namespace
     {
         RenderPrimitiveSnapshot primitive;
         primitive.objectId = 42;
+        primitive.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 42,
+            .entityGeneration = 0,
+        };
         primitive.mesh = mesh;
         primitive.material = material;
         primitive.worldTransform = Mat4Identity();
@@ -461,6 +517,29 @@ namespace
         primitive.sortKey = 900;
         primitive.skinMatrices.push_back(Mat4Identity());
         return primitive;
+    }
+
+    void CompleteFrameIdentity(RenderFrameHeaderV5& header,
+                               RenderViewSnapshot& view,
+                               uint32 width,
+                               uint32 height)
+    {
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = header.sequence;
+        header.deterministicSeed = 1;
+        header.outputWidth = width;
+        header.outputHeight = height;
+        view.identity = {
+            .sceneRuntimeId = header.worldRevision,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
+        view.viewportWidth = width;
+        view.viewportHeight = height;
+        view.deltaTime = 1.0F / 60.0F;
     }
 
     struct V5FrameInput
@@ -498,8 +577,7 @@ namespace
         header.explicitDiscontinuity = discontinuity;
 
         RenderViewSnapshot view;
-        view.viewportWidth = 1280;
-        view.viewportHeight = 720;
+        CompleteFrameIdentity(header, view, 1280, 720);
         view.cameraPosition = {0.0f, 0.0f, 5.0f};
         RenderExtractionDiagnostics diagnostics;
         diagnostics.code = RenderExtractionCode::Complete;
@@ -527,8 +605,7 @@ namespace
         header.temporalEpoch = temporalEpoch;
         header.explicitDiscontinuity = discontinuity;
         RenderViewSnapshot view;
-        view.viewportWidth = 1280;
-        view.viewportHeight = 720;
+        CompleteFrameIdentity(header, view, 1280, 720);
         RenderExtractionDiagnostics diagnostics;
         diagnostics.code = RenderExtractionCode::Complete;
         diagnostics.complete = true;
@@ -557,6 +634,92 @@ namespace
             {std::move(primitive)});
         EXPECT_NE(input.frame, nullptr);
         return scene.ApplyFrameV5(*input.frame, input.database, registry);
+    }
+
+    RenderPrimitiveSnapshot MakeSkinnedPrimitive(
+        RenderResourceHandle mesh,
+        float32 paletteValue,
+        uint64 poseSequence,
+        uint64 providerComponentId = 0x0000000A00000001ULL,
+        uint64 sourceModelResourceId = 1001,
+        uint32 paletteCount = 2)
+    {
+        RenderPrimitiveSnapshot primitive = MakePrimitive(mesh);
+        primitive.skinMatrices.assign(paletteCount, Mat4Identity());
+        for (uint32 index = 0; index < paletteCount; ++index)
+        {
+            primitive.skinMatrices[index][3] = Vec4(
+                paletteValue + static_cast<float32>(index), 0.0f, 0.0f, 1.0f);
+        }
+        primitive.hasSkinningPaletteProvider = true;
+        primitive.skinningPalette.providerComponentId = providerComponentId;
+        primitive.skinningPalette.sourceModelResourceId = sourceModelResourceId;
+        primitive.skinningPalette.poseSequence = poseSequence;
+        const SkinningPaletteHash hash = ComputeSkinningPaletteHash(
+            primitive.skinMatrices);
+        EXPECT_TRUE(hash.IsValid());
+        primitive.skinningPalette.paletteHash = hash.value;
+        primitive.skinningPalette.paletteCount = hash.matrixCount;
+        return primitive;
+    }
+
+    RenderFrameApplyResult ApplyPersistentPrimitive(
+        RenderScene& scene,
+        RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence,
+        RenderPrimitiveSnapshot primitive,
+        bool fullReset = false)
+    {
+        const bool initialPublication = database.GetRevision() == 0;
+        const bool useFullReset = fullReset || initialPublication;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(useFullReset ? 0 : database.GetRevision(),
+                          useFullReset);
+        EXPECT_TRUE(accumulator.UpsertPrimitive(std::move(primitive),
+                                                useFullReset));
+        const uint64 revision = database.GetRevision() + 1;
+        EXPECT_TRUE(database.Apply(accumulator.Build(revision)).IsApplied());
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, revision);
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
+    }
+
+    RenderFrameApplyResult ApplyPersistentRemoval(
+        RenderScene& scene,
+        RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence,
+        uint64 objectId)
+    {
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(database.GetRevision());
+        EXPECT_TRUE(accumulator.RemovePrimitive(objectId));
+        const uint64 revision = database.GetRevision() + 1;
+        EXPECT_TRUE(database.Apply(accumulator.Build(revision)).IsApplied());
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, revision);
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
+    }
+
+    RenderFrameApplyResult ApplyPersistentStaticFrame(
+        RenderScene& scene,
+        const RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence)
+    {
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, database.GetRevision());
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
     }
 } // namespace
 
@@ -594,6 +757,11 @@ TEST(RenderSceneValidation,
 {
     RenderScene scene;
 
+    RenderLight unitless;
+    unitless.lightId = 99;
+    EXPECT_FALSE(scene.AddLight(unitless));
+    EXPECT_EQ(scene.GetLightCount(), 0U);
+
     RenderObject includedObject;
     includedObject.entityId = 1;
     includedObject.drawable = true;
@@ -612,26 +780,30 @@ TEST(RenderSceneValidation,
     excludedDirectional.lightId = 3;
     excludedDirectional.type = RenderLight::Type::Directional;
     excludedDirectional.intensity = 8.0F;
+    excludedDirectional.intensityUnit = RenderLightIntensityUnit::Lux;
+    excludedDirectional.canonicalIntensityUnit = RenderLightIntensityUnit::Lux;
     excludedDirectional.layerMask = 0x00000002U;
     excludedDirectional.castsShadow = true;
-    scene.AddLight(excludedDirectional);
+    EXPECT_TRUE(scene.AddLight(excludedDirectional));
 
     RenderLight includedDirectional = excludedDirectional;
     includedDirectional.lightId = 4;
     includedDirectional.intensity = 2.0F;
     includedDirectional.layerMask = 0x00000001U;
-    scene.AddLight(includedDirectional);
+    EXPECT_TRUE(scene.AddLight(includedDirectional));
 
     RenderLight excludedPoint;
     excludedPoint.lightId = 5;
     excludedPoint.type = RenderLight::Type::Point;
+    excludedPoint.intensityUnit = RenderLightIntensityUnit::Candela;
+    excludedPoint.canonicalIntensityUnit = RenderLightIntensityUnit::Candela;
     excludedPoint.layerMask = 0x00000002U;
-    scene.AddLight(excludedPoint);
+    EXPECT_TRUE(scene.AddLight(excludedPoint));
 
     RenderLight includedPoint = excludedPoint;
     includedPoint.lightId = 6;
     includedPoint.layerMask = 0x00000001U;
-    scene.AddLight(includedPoint);
+    EXPECT_TRUE(scene.AddLight(includedPoint));
 
     RenderViewSnapshot view;
     view.cullingMask = 0x00000001U;
@@ -661,6 +833,248 @@ TEST(RenderSceneValidation,
 }
 
 TEST(RenderSceneValidation,
+     NormalizesRetainedLightIntensityAndPreservesAuthoringMetadata)
+{
+    RegistryFixture resources;
+    RenderLightSnapshot snapshot;
+    snapshot.lightId = 88;
+    snapshot.source = {
+        .sceneRuntimeId = 1,
+        .entitySlot = 88,
+        .entityGeneration = 0,
+    };
+    snapshot.type = RenderLightType::Point;
+    snapshot.intensityUnit = RenderLightIntensityUnit::Lumen;
+    snapshot.intensity = 12.5663706144F;
+    snapshot.colorTemperatureKelvin = 5000.0F;
+
+    RenderSceneMutationAccumulator accumulator;
+    accumulator.Begin(0, true);
+    ASSERT_TRUE(accumulator.UpsertLight(snapshot, true));
+    accumulator.UpsertSky({});
+    accumulator.UpsertEnvironment({});
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(accumulator.Build(1)).IsApplied());
+
+    const std::unique_ptr<const RenderFramePacketV5> frame =
+        MakeFramePacketV5(1, 1);
+    ASSERT_NE(frame, nullptr);
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(*frame, database, resources.registry).IsApplied());
+
+    ASSERT_EQ(scene.GetLightCount(), 1U);
+    const RenderLight& light = scene.GetLight(0);
+    EXPECT_NEAR(light.intensity, 1.0F, 1.0e-5F);
+    EXPECT_EQ(light.intensityUnit, RenderLightIntensityUnit::Lumen);
+    EXPECT_EQ(light.canonicalIntensityUnit,
+              RenderLightIntensityUnit::Candela);
+    ASSERT_TRUE(light.colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*light.colorTemperatureKelvin, 5000.0F);
+}
+
+TEST(RenderSceneValidation,
+     RejectsInvalidPhotometricLightAtMutationBoundary)
+{
+    RenderLightSnapshot snapshot;
+    snapshot.lightId = 89;
+    snapshot.source = {
+        .sceneRuntimeId = 1,
+        .entitySlot = 89,
+        .entityGeneration = 0,
+    };
+    snapshot.type = RenderLightType::Directional;
+    snapshot.intensityUnit = RenderLightIntensityUnit::Lumen;
+
+    RenderSceneMutationAccumulator accumulator;
+    accumulator.Begin(0, true);
+    EXPECT_FALSE(accumulator.UpsertLight(snapshot, true));
+    EXPECT_TRUE(accumulator.Build(1).lights.empty());
+}
+
+TEST(RenderSceneValidation,
+     LightManagerCollectsExactlyTheImmutableLightingPlanSelection)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = 3;
+    request.spotLightCapacity = 3;
+    request.lightCandidates = {
+        {.lightId = 40,
+         .type = RenderLightType::Directional,
+         .priority = 20,
+         .direction = {0.0F, -1.0F, 0.0F},
+         .color = {1.0F, 0.9F, 0.8F},
+         .normalizedIntensity = 120000.0F,
+         .castsShadows = true},
+        {.lightId = 41,
+         .type = RenderLightType::Directional,
+         .priority = 10,
+         .normalizedIntensity = 30000.0F},
+        {.lightId = 1,
+         .type = RenderLightType::Point,
+         .priority = 5,
+         .position = {1.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 4.0F,
+         .range = 2.0F,
+         .castsShadows = true},
+        {.lightId = 2,
+         .type = RenderLightType::Spot,
+         .priority = 9,
+         .position = {2.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 3.0F,
+         .range = 3.0F,
+         .innerConeRadians = 0.25F,
+         .outerConeRadians = 0.50F,
+         .castsShadows = true},
+        {.lightId = 3,
+         .type = RenderLightType::Point,
+         .priority = 6,
+         .position = {3.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 2.0F,
+         .range = 4.0F},
+    };
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+    ASSERT_TRUE(built.plan.IsValid());
+
+    LightManager lights;
+    ASSERT_TRUE(lights.CollectLights(built.plan));
+    // CPU collection only stages immutable data.  A plan becomes bindable
+    // after LightManager maps and fully replaces all GPU upload buffers.
+    EXPECT_FALSE(lights.IsLightingPlanBound());
+    EXPECT_EQ(lights.GetLightingPlanCollectionCode(),
+              LightingPlanCollectionCode::Staged);
+    EXPECT_EQ(lights.GetLightingPlanIdentity(), 0U);
+    EXPECT_EQ(lights.GetPrimaryDirectionalLightId(), 40U);
+    EXPECT_TRUE(lights.HasPrimaryDirectionalShadowRequest());
+    EXPECT_FLOAT_EQ(lights.GetMainLight().intensity, 120000.0F);
+    ASSERT_EQ(lights.GetPointLights().size(), 2U);
+    EXPECT_FLOAT_EQ(lights.GetPointLights()[0].position.x, 3.0F);
+    EXPECT_FLOAT_EQ(lights.GetPointLights()[1].position.x, 1.0F);
+    EXPECT_EQ(lights.GetSpotLightCount(), 1U);
+    EXPECT_EQ(lights.GetPointShadowRequestCount(), 1U);
+    EXPECT_EQ(lights.GetSpotShadowRequestCount(), 1U);
+    EXPECT_EQ(lights.GetPlanLocalLightRequestedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightOverflowCount(), 0U);
+}
+
+TEST(RenderSceneValidation,
+     LightManagerUsesPlanAggregateAndPerTypeOverflowEvidence)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = 1;
+    request.spotLightCapacity = 1;
+    request.allowLocalLightTruncation = true;
+    request.lightCandidates = {
+        {.lightId = 1,
+         .type = RenderLightType::Point,
+         .priority = 1,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F},
+        {.lightId = 2,
+         .type = RenderLightType::Spot,
+         .priority = 2,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F,
+         .innerConeRadians = 0.25F,
+         .outerConeRadians = 0.50F},
+        {.lightId = 3,
+         .type = RenderLightType::Point,
+         .priority = 0,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F},
+    };
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+    ASSERT_TRUE(built.plan.GetCapacityEvidence().overflowed);
+
+    LightManager lights;
+    ASSERT_TRUE(lights.CollectLights(built.plan));
+    EXPECT_EQ(lights.GetPlanLocalLightRequestedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 2U);
+    EXPECT_EQ(lights.GetPlanLocalLightOverflowCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightCount(), 1U);
+    EXPECT_EQ(lights.GetSpotLightCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightRequestedCount(), 2U);
+    EXPECT_EQ(lights.GetSpotLightRequestedCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightOverflowCount(), 1U);
+    EXPECT_EQ(lights.GetSpotLightOverflowCount(), 0U);
+}
+
+TEST(RenderSceneValidation,
+     LightManagerFailsClosedWhenLightingPlanCannotFitPerTypeBuffers)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = LightManager::MaxPointLights + 1U;
+    request.spotLightCapacity = 1;
+    request.lightCandidates.reserve(request.pointLightCapacity);
+    for (uint32 index = 0; index < request.pointLightCapacity; ++index)
+    {
+        request.lightCandidates.push_back(
+            {.lightId = static_cast<uint64>(index) + 1U,
+             .type = RenderLightType::Point,
+             .position = {static_cast<float32>(index), 0.0F, 0.0F},
+             .normalizedIntensity = 1.0F,
+             .range = 1.0F});
+    }
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+
+    LightManager lights;
+    EXPECT_FALSE(lights.CollectLights(built.plan));
+    EXPECT_EQ(lights.GetLightingPlanCollectionCode(),
+              LightingPlanCollectionCode::PerTypeCapacityExceeded);
+    EXPECT_FALSE(lights.IsLightingPlanBound());
+    EXPECT_EQ(lights.GetPointLightCount(), 0U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 0U);
+}
+
+TEST(RenderSceneValidation,
      AppliesV5DirectlyFromPersistentDatabaseWithoutCompatibilityPacket)
 {
     RegistryFixture resources;
@@ -684,8 +1098,7 @@ TEST(RenderSceneValidation,
     header.worldRevision = 9;
     header.temporalEpoch = 2;
     RenderViewSnapshot view;
-    view.viewportWidth = 1280;
-    view.viewportHeight = 720;
+    CompleteFrameIdentity(header, view, 1280, 720);
     RenderExtractionDiagnostics diagnostics;
     diagnostics.complete = true;
     const auto frame = RenderFramePacketV5::Create(
@@ -726,6 +1139,7 @@ TEST(RenderSceneValidation,
         RenderPrimitiveSnapshot primitive = MakePrimitive(
             mesh, {}, {static_cast<float32>(index), 0.0F, 0.0F});
         primitive.objectId = static_cast<uint64>(index) + 1U;
+        primitive.source.entitySlot = index + 1U;
         ASSERT_TRUE(reset.UpsertPrimitive(std::move(primitive), true));
     }
     RenderSceneDatabase database;
@@ -756,6 +1170,9 @@ TEST(RenderSceneValidation,
         scene.ApplyFrameV5(*settleFrame, database, resources.registry);
     ASSERT_TRUE(settled.IsApplied());
     ASSERT_TRUE(settled.sceneMutated);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 2U);
+    EXPECT_EQ(scene.GetViewFamily().frame.sequence, 2U);
+    EXPECT_EQ(scene.GetViewFamily().identity.frameSequence, 2U);
     EXPECT_EQ(scene.GetGPUSceneChangedObjectIds().size(), objectCount);
     scene.MarkAcceptedFrameRendered();
 
@@ -784,6 +1201,7 @@ TEST(RenderSceneValidation,
     RenderPrimitiveSnapshot changed = MakePrimitive(
         mesh, {}, {25.0F, 4.0F, 0.0F});
     changed.objectId = 26;
+    changed.source.entitySlot = 26;
     RenderSceneMutationAccumulator update;
     update.Begin(1);
     ASSERT_TRUE(update.UpsertPrimitive(std::move(changed)));
@@ -845,6 +1263,26 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(1U, presented.completion.requiredSceneRevision);
     EXPECT_EQ(1U, presented.completion.appliedSceneRevision);
     EXPECT_EQ(1U, presented.scene.fullRebuildCount);
+    ASSERT_TRUE(presented.presentedScene.IsValid());
+    EXPECT_EQ(initial.database.GetInstanceId(),
+              presented.presentedScene.databaseInstanceId);
+    EXPECT_EQ(301U,
+              presented.presentedScene.completedPresentedFrameSequence);
+    EXPECT_EQ(0U, presented.presentedScene.baseSceneRevision);
+    EXPECT_EQ(1U, presented.presentedScene.requiredSceneRevision);
+    EXPECT_EQ(1U, presented.presentedScene.appliedSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::FullReset,
+              presented.presentedScene.databaseTransition);
+    EXPECT_EQ(RenderSceneRealizationMode::FullRebuild,
+              presented.presentedScene.realizationMode);
+    EXPECT_EQ(1U,
+              presented.presentedScene.mutations.primitives.upsertCount);
+    EXPECT_EQ(1U,
+              presented.presentedScene.mutations.particles.upsertCount);
+    EXPECT_EQ(1U, presented.presentedScene.mutations.sky.upsertCount);
+    EXPECT_EQ(1U,
+              presented.presentedScene.mutations.environment.upsertCount);
+    EXPECT_NE(0U, presented.presentedScene.canonicalMutationDigest);
 
     // Applying/recording a later static frame cannot replace the completed
     // watermark before that frame has actually crossed the present boundary.
@@ -859,6 +1297,9 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence
                   .completion.completedPresentationCount,
               presented.completion.completedPresentationCount);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.presentedScene
+                  .completedPresentedFrameSequence,
+              presented.presentedScene.completedPresentedFrameSequence);
 
     const std::unique_ptr<const RenderFramePacketV5> rejectedFrame =
         MakeFramePacketV5(302, 1, 1, 1, false);
@@ -878,6 +1319,16 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(2U, staticPresented.completion.completedPresentationCount);
     EXPECT_EQ(presented.scene.fullRebuildCount,
               staticPresented.scene.fullRebuildCount);
+    ASSERT_TRUE(staticPresented.presentedScene.IsValid());
+    EXPECT_EQ(302U,
+              staticPresented.presentedScene.completedPresentedFrameSequence);
+    EXPECT_EQ(1U, staticPresented.presentedScene.baseSceneRevision);
+    EXPECT_EQ(1U, staticPresented.presentedScene.appliedSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::None,
+              staticPresented.presentedScene.databaseTransition);
+    EXPECT_EQ(RenderSceneRealizationMode::Incremental,
+              staticPresented.presentedScene.realizationMode);
+    EXPECT_TRUE(staticPresented.presentedScene.mutations.Empty());
 
     // A skipped accepted sequence still crosses exactly one completed
     // presentation boundary; no missed-frame inference is involved.
@@ -892,6 +1343,503 @@ TEST(RenderSceneValidation,
         renderer.GetFrameDiagnostics().mutationEvidence;
     EXPECT_EQ(304U, skippedPresented.completion.completedFrameSequence);
     EXPECT_EQ(3U, skippedPresented.completion.completedPresentationCount);
+    EXPECT_EQ(RenderSceneRealizationMode::StaticReuse,
+              skippedPresented.presentedScene.realizationMode);
+}
+
+TEST(RenderSceneValidation,
+     PresentedSceneReceiptAllowsRequiredRevisionBehindAppliedRevision)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {902}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    RenderPrimitiveSnapshot primitive = MakePrimitive(mesh);
+    ASSERT_TRUE(reset.UpsertPrimitive(primitive, true));
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+
+    SceneRenderer renderer;
+    const auto initialFrame = MakeFramePacketV5(401, 1, 1, 1);
+    ASSERT_NE(initialFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initialFrame, database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+
+    const auto settleFrame = MakeFramePacketV5(402, 1, 1, 1);
+    ASSERT_NE(settleFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *settleFrame, database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+
+    primitive.sortKey = 2;
+    RenderSceneMutationAccumulator second;
+    second.Begin(1);
+    ASSERT_TRUE(second.UpsertPrimitive(primitive));
+    ASSERT_TRUE(database.Apply(second.Build(2)).IsApplied());
+    primitive.sortKey = 3;
+    RenderSceneMutationAccumulator third;
+    third.Begin(2);
+    ASSERT_TRUE(third.UpsertPrimitive(primitive));
+    ASSERT_TRUE(database.Apply(third.Build(3)).IsApplied());
+
+    const auto laggingFrame = MakeFramePacketV5(403, 2, 1, 1);
+    ASSERT_NE(laggingFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *laggingFrame, database, resources.registry).IsApplied());
+
+    const RenderPresentedSceneReceipt beforePresent =
+        renderer.GetFrameDiagnostics().mutationEvidence.presentedScene;
+    ASSERT_TRUE(beforePresent.IsValid());
+    EXPECT_EQ(402U, beforePresent.completedPresentedFrameSequence);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderPresentedSceneReceipt receipt =
+        renderer.GetFrameDiagnostics().mutationEvidence.presentedScene;
+    ASSERT_TRUE(receipt.IsValid());
+    EXPECT_EQ(403U, receipt.completedPresentedFrameSequence);
+    EXPECT_EQ(2U, receipt.requiredSceneRevision);
+    EXPECT_EQ(1U, receipt.baseSceneRevision);
+    EXPECT_EQ(3U, receipt.appliedSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::Incremental,
+              receipt.databaseTransition);
+    EXPECT_EQ(RenderSceneRealizationMode::Incremental,
+              receipt.realizationMode);
+    EXPECT_EQ(2U, receipt.mutations.primitives.upsertCount);
+    EXPECT_EQ(0U, receipt.mutations.primitives.removeCount);
+}
+
+TEST(RenderSceneValidation,
+     AbandonedAppliedFrameCarriesMutationsIntoNextStaticPresentation)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {903}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertPrimitive(MakePrimitive(mesh), true));
+    reset.UpsertSky(RenderSkySnapshot{});
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+
+    SceneRenderer renderer;
+    const auto initialFrame = MakeFramePacketV5(501, 1, 1, 1);
+    ASSERT_NE(initialFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initialFrame, database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+
+    const auto settleFrame = MakeFramePacketV5(502, 1, 1, 1);
+    ASSERT_NE(settleFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *settleFrame, database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    ASSERT_EQ(502U, renderer.GetFrameDiagnostics().mutationEvidence
+                        .presentedScene.completedPresentedFrameSequence);
+
+    RenderSkySnapshot changedSky;
+    changedSky.intensity = 2.0F;
+    RenderSceneMutationAccumulator update;
+    update.Begin(1);
+    update.UpsertSky(changedSky);
+    ASSERT_TRUE(database.Apply(update.Build(2)).IsApplied());
+
+    // This candidate reaches retained Scene Apply but is abandoned before the
+    // successful Present boundary. Completed evidence and its database
+    // watermark must remain at revision 1.
+    const auto abandonedFrame = MakeFramePacketV5(503, 2, 1, 1);
+    ASSERT_NE(abandonedFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *abandonedFrame, database, resources.registry).IsApplied());
+    EXPECT_EQ(502U, renderer.GetFrameDiagnostics().mutationEvidence
+                        .presentedScene.completedPresentedFrameSequence);
+
+    const auto retryFrame = MakeFramePacketV5(504, 2, 1, 1);
+    ASSERT_NE(retryFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *retryFrame, database, resources.registry).IsApplied());
+    const RenderPresentedSceneReceipt& pending =
+        renderer.GetRenderScene().GetPendingPresentedSceneReceipt();
+    EXPECT_FALSE(pending.available);
+    ASSERT_TRUE(pending.IsStructurallyValid());
+    EXPECT_EQ(1U, pending.baseSceneRevision);
+    EXPECT_EQ(2U, pending.requiredSceneRevision);
+    EXPECT_EQ(2U, pending.appliedSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::Incremental,
+              pending.databaseTransition);
+    EXPECT_EQ(RenderSceneRealizationMode::StaticReuse,
+              pending.realizationMode);
+    EXPECT_EQ(1U, pending.mutations.sky.upsertCount);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderPresentedSceneReceipt retried =
+        renderer.GetFrameDiagnostics().mutationEvidence.presentedScene;
+    ASSERT_TRUE(retried.IsValid());
+    EXPECT_EQ(504U, retried.completedPresentedFrameSequence);
+    EXPECT_EQ(1U, retried.baseSceneRevision);
+    EXPECT_EQ(2U, retried.appliedSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::Incremental,
+              retried.databaseTransition);
+    EXPECT_EQ(RenderSceneRealizationMode::StaticReuse,
+              retried.realizationMode);
+    EXPECT_EQ(1U, retried.mutations.sky.upsertCount);
+
+    const auto afterCommitFrame = MakeFramePacketV5(505, 2, 1, 1);
+    ASSERT_NE(afterCommitFrame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *afterCommitFrame, database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    const RenderPresentedSceneReceipt afterCommit =
+        renderer.GetFrameDiagnostics().mutationEvidence.presentedScene;
+    ASSERT_TRUE(afterCommit.IsValid());
+    EXPECT_EQ(2U, afterCommit.baseSceneRevision);
+    EXPECT_EQ(RenderSceneDatabaseTransition::None,
+              afterCommit.databaseTransition);
+    EXPECT_TRUE(afterCommit.mutations.Empty());
+}
+
+TEST(RenderSceneValidation,
+     ObjectMotionHistoryAdvancesOnlyForSuccessfullyPresentedFrame)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {904}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput first = MakeFrame(
+        601,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F})});
+    ASSERT_NE(first.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *first.frame, first.database, resources.registry).IsApplied());
+    EXPECT_EQ(nullptr,
+              SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42));
+    renderer.MarkAcceptedFramePresented();
+    const Mat4* firstPresented =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(firstPresented, nullptr);
+    EXPECT_FLOAT_EQ((*firstPresented)[3].x, 1.0F);
+
+    V5FrameInput abandoned = MakeFrame(
+        602,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {2.0F, 0.0F, 0.0F})});
+    ASSERT_NE(abandoned.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *abandoned.frame, abandoned.database, resources.registry).IsApplied());
+    const Mat4* afterAbandonedApply =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(afterAbandonedApply, nullptr);
+    EXPECT_FLOAT_EQ((*afterAbandonedApply)[3].x, 1.0F);
+
+    V5FrameInput retry = MakeFrame(
+        603,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F})});
+    ASSERT_NE(retry.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *retry.frame, retry.database, resources.registry).IsApplied());
+    const Mat4* beforeRetryPresent =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(beforeRetryPresent, nullptr);
+    EXPECT_FLOAT_EQ((*beforeRetryPresent)[3].x, 1.0F);
+
+    renderer.MarkAcceptedFramePresented();
+    const Mat4* retryPresented =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(retryPresented, nullptr);
+    EXPECT_FLOAT_EQ((*retryPresented)[3].x, 3.0F);
+}
+
+TEST(RenderSceneValidation,
+     ObjectMotionHistoryDoesNotAdvanceOnRejectedPhysicalPresentation)
+{
+    ScopedRenderSceneTestLog log;
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {906}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput first = MakeFrame(
+        701,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F})});
+    ASSERT_NE(first.frame, nullptr);
+    ASSERT_TRUE(
+        renderer.ApplyFrameV5(*first.frame, first.database, resources.registry)
+            .IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    const Mat4* firstPresented =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(firstPresented, nullptr);
+    EXPECT_FLOAT_EQ((*firstPresented)[3].x, 1.0F);
+
+    V5FrameInput rejected = MakeFrame(
+        702,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {2.0F, 0.0F, 0.0F})});
+    ASSERT_NE(rejected.frame, nullptr);
+    ASSERT_TRUE(
+        renderer.ApplyFrameV5(*rejected.frame, rejected.database, resources.registry)
+            .IsApplied());
+    renderer.MarkAcceptedFramePresented(false);
+    const Mat4* afterRejected =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(afterRejected, nullptr);
+    EXPECT_FLOAT_EQ((*afterRejected)[3].x, 1.0F);
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryUsesOnlyLastSuccessfullyPresentedPalette)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({905}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    RenderSceneDatabase database;
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    701,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1))
+                    .IsApplied());
+    const RenderObject& first = scene.GetObject(0);
+    EXPECT_FALSE(first.HasValidPreviousSkinningPalette());
+
+    scene.MarkAcceptedFrameRendered();
+    // Complete the pre-existing world-transform settle publication before
+    // exercising incremental pose changes.
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 702)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    703,
+                    MakeSkinnedPrimitive(mesh, 2.0f, 2))
+                    .IsApplied());
+    const RenderObject& second = scene.GetObject(0);
+    ASSERT_TRUE(second.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(second.previousSkinningPalette.poseSequence, 1U);
+    ASSERT_EQ(second.previousSkinningMatrices.size(), 2U);
+    EXPECT_FLOAT_EQ(second.previousSkinningMatrices[0][3].x, 1.0f);
+
+    // Applying a newer pose without presentation must continue to reference
+    // the first actual presentation, not the previous ApplyFrame call.
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    704,
+                    MakeSkinnedPrimitive(mesh, 3.0f, 3))
+                    .IsApplied());
+    const RenderObject& third = scene.GetObject(0);
+    ASSERT_TRUE(third.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(third.previousSkinningPalette.poseSequence, 1U);
+    EXPECT_FLOAT_EQ(third.previousSkinningMatrices[0][3].x, 1.0f);
+
+    // A rejected packet must not advance the pending palette either.
+    const std::unique_ptr<const RenderFramePacketV5> rejected =
+        MakeFramePacketV5(705, database.GetRevision() + 1U);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(scene.ApplyFrameV5(*rejected, database, resources.registry).code,
+              RenderFrameApplyCode::InvalidPacket);
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    706,
+                    MakeSkinnedPrimitive(mesh, 4.0f, 4))
+                    .IsApplied());
+    const RenderObject& retry = scene.GetObject(0);
+    ASSERT_TRUE(retry.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(retry.previousSkinningPalette.poseSequence, 1U);
+    EXPECT_FLOAT_EQ(retry.previousSkinningMatrices[0][3].x, 1.0f);
+
+    scene.MarkAcceptedFrameRendered();
+    const RenderObject& settledAfterPresent = scene.GetObject(0);
+    ASSERT_TRUE(settledAfterPresent.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(settledAfterPresent.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(
+        settledAfterPresent.previousSkinningMatrices[0][3].x, 4.0f);
+
+    // No scene delta means the retained object itself is reused. Its previous
+    // palette must already be the just-presented pose or velocity would repeat
+    // the prior P4-P1 deformation indefinitely.
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 707)
+                    .IsApplied());
+    const RenderObject& retainedStatic = scene.GetObject(0);
+    ASSERT_TRUE(retainedStatic.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(retainedStatic.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(retainedStatic.previousSkinningMatrices[0][3].x, 4.0f);
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    708,
+                    MakeSkinnedPrimitive(mesh, 5.0f, 5))
+                    .IsApplied());
+    const RenderObject& afterPresent = scene.GetObject(0);
+    ASSERT_TRUE(afterPresent.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(afterPresent.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(afterPresent.previousSkinningMatrices[0][3].x, 4.0f);
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryRejectsIncompatibleProviderModelAndCount)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({906}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    RenderSceneDatabase database;
+    constexpr uint64 provider = 0x0000000B00000001ULL;
+    constexpr uint64 model = 1002;
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    801,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1, provider, model))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 802)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    803,
+                    MakeSkinnedPrimitive(mesh, 2.0f, 2, provider + 1U, model))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    804,
+                    MakeSkinnedPrimitive(mesh, 3.0f, 3, provider, model + 1U))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    805,
+                    MakeSkinnedPrimitive(mesh, 4.0f, 4, provider, model, 1))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryInvalidatesForRemovalFullResetAndClear)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({907}, RenderResourceKind::Mesh, true);
+    constexpr uint64 provider = 0x0000000C00000001ULL;
+    constexpr uint64 model = 1003;
+
+    RenderScene scene;
+    RenderSceneDatabase database;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    901,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1, provider, model))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 902)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentRemoval(
+                    scene, database, resources.registry, 903, 42)
+                    .IsApplied());
+    EXPECT_EQ(scene.GetObjectCount(), 0U);
+    RenderPrimitiveSnapshot rebound =
+        MakeSkinnedPrimitive(mesh, 2.0f, 2, provider, model);
+    rebound.objectId = 43;
+    rebound.source.entitySlot = 43;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    904,
+                    std::move(rebound))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    scene.MarkAcceptedFrameRendered();
+    RenderPrimitiveSnapshot afterFullReset =
+        MakeSkinnedPrimitive(mesh, 3.0f, 3, provider, model);
+    afterFullReset.objectId = 43;
+    afterFullReset.source.entitySlot = 43;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    905,
+                    std::move(afterFullReset),
+                    true)
+                    .IsApplied());
+    EXPECT_TRUE(scene.IsTemporalHistoryReset());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    scene.Clear();
+    RenderPrimitiveSnapshot afterClear =
+        MakeSkinnedPrimitive(mesh, 4.0f, 4, provider, model);
+    afterClear.objectId = 45;
+    afterClear.source.entitySlot = 45;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    906,
+                    std::move(afterClear),
+                    true)
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
 }
 
 TEST(RenderSceneValidation,
@@ -1381,6 +2329,7 @@ TEST(RenderSceneValidation,
 
     RenderPrimitiveSnapshot leading = MakePrimitive(mesh, material);
     leading.objectId = 43;
+    leading.source.entitySlot = 43;
     RenderPrimitiveSnapshot retained = MakePrimitive(
         mesh, material, {7.0f, 0.0f, 0.0f});
     retained.skinMatrices = {Mat4Identity(), Mat4Identity()};
@@ -1925,6 +2874,127 @@ TEST(RenderSceneValidation, AcceptsQueuedRequiredMeshBeforeRegistryCreation)
     EXPECT_FALSE(scene.GetObject(0).drawable);
 }
 
+TEST(RenderSceneValidation, MeshIdentityChangeRejectsHistoryWithoutAdvancingAbandonedFrames)
+{
+    RegistryFixture resources;
+    const auto a = resources.Add({9101}, RenderResourceKind::Mesh, true);
+    const auto b = resources.Add({9102}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(a, {}, {1, 0, 0})).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false,
+                      MakePrimitive(b, {}, {2, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{2, 0, 0}));
+    ASSERT_TRUE(Apply(scene, resources.registry, 3, 1, 1, false,
+                      MakePrimitive(a, {}, {3, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{1, 0, 0}));
+    ASSERT_TRUE(Apply(scene, resources.registry, 4, 1, 1, false,
+                      MakePrimitive(b, {}, {4, 0, 0})).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 5, 1, 1, false,
+                      MakePrimitive(b, {}, {5, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{4, 0, 0}));
+}
+
+TEST(RenderSceneValidation, MeshContentReplacementInvalidatesHistoryButUnrelatedChangesDoNot)
+{
+    RegistryFixture resources;
+    const auto mesh = resources.Add({9111}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, {}, {1, 0, 0})).IsApplied());
+    const uint64 firstRevision = scene.GetObject(0).meshContentRevision;
+    ASSERT_NE(firstRevision, 0u);
+    scene.MarkAcceptedFrameRendered();
+    static_cast<void>(resources.Add({9112}, RenderResourceKind::Texture, true));
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false,
+                      MakePrimitive(mesh, {}, {2, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(scene.GetObject(0).meshContentRevision, firstRevision);
+    resources.ReplaceReadyResource(mesh, RenderResourceKind::Mesh, 1);
+    ASSERT_TRUE(Apply(scene, resources.registry, 3, 1, 1, false,
+                      MakePrimitive(mesh, {}, {3, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).mesh, mesh);
+    EXPECT_NE(scene.GetObject(0).meshContentRevision, firstRevision);
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    ASSERT_TRUE(Apply(scene, resources.registry, 4, 1, 1, false,
+                      MakePrimitive(mesh, {}, {4, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene, resources.registry, 5, 1, 1, false,
+                      MakePrimitive(mesh, {}, {5, 0, 0})).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]), (Vec3{4, 0, 0}));
+}
+
+TEST(RenderSceneValidation, PreferredMeshReadinessDoesNotReuseFallbackShapeHistory)
+{
+    RegistryFixture resources;
+    const auto preferred = resources.Add({9121}, RenderResourceKind::Mesh, false);
+    const auto fallback = resources.Add({9122}, RenderResourceKind::Mesh, true);
+    auto primitive = MakePrimitive(preferred, {}, {1, 0, 0});
+    primitive.fallbackMesh = fallback;
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false, primitive).IsApplied());
+    ASSERT_EQ(scene.GetObject(0).mesh, fallback);
+    scene.MarkAcceptedFrameRendered();
+    MeshUploadCreateInfo info;
+    info.indexCount = 3;
+    resources.CompletePendingMesh(preferred, info,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    ASSERT_TRUE(Apply(scene, resources.registry, 2, 1, 1, false, primitive).IsApplied());
+    EXPECT_EQ(scene.GetObject(0).mesh, preferred);
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0u);
+}
+
+TEST(RenderSceneValidation, MotionHistoryRequiresExactMeshGenerationRevisionAndDeformationMode)
+{
+    RenderObject object;
+    object.mesh = {1, 1};
+    object.meshContentRevision = 7;
+    const auto history = RenderObjectMotionHistory::Capture(object);
+    EXPECT_TRUE(history.IsCompatible(object));
+    object.worldMatrix[3].x = 10.0f;
+    EXPECT_TRUE(history.IsCompatible(object));
+    ++object.mesh.generation;
+    EXPECT_FALSE(history.IsCompatible(object));
+    --object.mesh.generation;
+    ++object.meshContentRevision;
+    EXPECT_FALSE(history.IsCompatible(object));
+    object.meshContentRevision = 0;
+    EXPECT_FALSE(history.IsCompatible(object));
+    object.meshContentRevision = 7;
+    object.skinningMatrices.push_back(Mat4Identity());
+    EXPECT_FALSE(history.IsCompatible(object));
+}
+
+TEST(RenderSceneValidation, RendererMotionCacheCannotRestoreAnIncompatibleMeshHistory)
+{
+    RegistryFixture resources;
+    const auto a = resources.Add({9131}, RenderResourceKind::Mesh, true);
+    const auto b = resources.Add({9132}, RenderResourceKind::Mesh, true);
+    SceneRenderer renderer;
+    auto first = MakeFrame(801, 1, 1, false, {MakePrimitive(a, {}, {1, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*first.frame, first.database, resources.registry).IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    auto abandoned = MakeFrame(802, 1, 1, false, {MakePrimitive(b, {}, {2, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*abandoned.frame, abandoned.database, resources.registry).IsApplied());
+    EXPECT_EQ(SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer).previousWorldMatrixValid, 0u);
+    auto retry = MakeFrame(803, 1, 1, false, {MakePrimitive(a, {}, {3, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*retry.frame, retry.database, resources.registry).IsApplied());
+    const auto& restored = SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer);
+    EXPECT_EQ(restored.previousWorldMatrixValid, 1u);
+    EXPECT_EQ(Vec3(restored.previousWorldMatrix[3]), (Vec3{1, 0, 0}));
+    resources.ReplaceReadyResource(a, RenderResourceKind::Mesh, 1);
+    auto replaced = MakeFrame(804, 1, 1, false, {MakePrimitive(a, {}, {4, 0, 0})});
+    ASSERT_TRUE(renderer.ApplyFrameV5(*replaced.frame, replaced.database, resources.registry).IsApplied());
+    EXPECT_EQ(SceneRendererTestAccess::ApplyMotionHistoryWithoutViewReset(renderer).previousWorldMatrixValid, 0u);
+}
+
 TEST(RenderSceneValidation, SequenceGapPreservesRenderedTemporalHistory)
 {
     RegistryFixture resources;
@@ -2107,6 +3177,8 @@ TEST(RenderSceneValidation,
         mesh, {}, {3.0F, 0.0F, 0.0F});
     first.objectId = 99;
     duplicate.objectId = 99;
+    first.source.entitySlot = 99;
+    duplicate.source.entitySlot = 99;
     RenderSceneUpdateBatch invalidBatch;
     invalidBatch.targetSceneRevision = 2;
     invalidBatch.fullReset = true;

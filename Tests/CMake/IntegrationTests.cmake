@@ -1,0 +1,523 @@
+# Multi-module and product-composition validation.
+rvx_add_gtest(
+    NAME CookedEnvironmentAudioArtifactValidation
+    LANE integration
+    SOURCES CookedEnvironmentAudioArtifactValidation/main.cpp
+    LIBS RVX::Core RVX::ResourceRuntime RVX::AssetPipeline
+    TAGS subsystem.resource suite.cook
+    TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME EngineEcsWorldOwnershipValidation
+    LANE integration
+    SOURCES EngineEcsWorldOwnershipValidation/main.cpp
+    LIBS RVX::Engine
+    TAGS subsystem.engine subsystem.world subsystem.scene subsystem.ecs suite.authority
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME EcsSceneRenderProofGatewayValidation
+    LANE integration
+    SOURCES EcsSceneRenderProofGatewayValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::RenderExtraction
+        RVX::ResourceSceneAdapters
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
+    TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME EcsRenderFramePipelineValidation
+    LANE integration
+    SOURCES EcsRenderFramePipelineValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::RenderExtraction
+        RVX::ResourceSceneAdapters
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
+    TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME EcsRenderRuntimeCompositionValidation
+    LANE integration
+    SOURCES EcsRenderRuntimeCompositionValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::RenderExtraction
+        RVX::ResourceSceneAdapters
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
+    TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME EcsWorldRuntimeCompositionValidation
+    LANE integration
+    SOURCES EcsWorldRuntimeCompositionValidation/main.cpp
+    LIBS
+        RVX::AssetImport
+        RVX::Engine
+        RVX::AnimationSceneAdapters
+        RVX::Audio
+        RVX::PhysicsSceneAdapters
+        RVX::ResourceSceneAdapters
+        RVX::Scripting
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
+    TAGS subsystem.engine subsystem.world subsystem.render subsystem.resource subsystem.scene subsystem.ecs
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME EcsRenderEntityRetirementCoordinatorValidation
+    LANE integration
+    SOURCES EcsRenderEntityRetirementCoordinatorValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::ResourceSceneAdapters
+        RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
+    TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs suite.retirement
+    TIMEOUT 30
+)
+
+if(RVX_ENABLE_TSAN)
+    rvx_add_gtest(
+        NAME RenderConcurrencyTSAN
+        LANE integration
+        SOURCES RenderConcurrencyTSAN/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RenderContracts
+            RVX_RenderRuntimeCore
+        INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+        TAGS trait.tsan
+        TIMEOUT 180
+    )
+endif()
+
+# Product command-line failures are composition behavior, not unit behavior.
+if(TARGET RenderVerseSamples)
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesUnknownAssetFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample model-rendering --asset definitely-unknown --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesUnsupportedRenderPathFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample model-rendering --render-path gpu-driven --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.render suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesMissingModelFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample model-rendering --model "${CMAKE_CURRENT_BINARY_DIR}/DefinitelyMissing/model.gltf" --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesUnknownEnvironmentFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample pbr-materials --environment definitely-unknown --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesEnvironmentKindMismatchFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample pbr-materials --environment pbr-material-grid --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesUnsupportedEnvironmentFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample model-rendering --environment pbr-reference-environment --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+    rvx_add_validation_test(
+        LANE integration
+        NAME RenderVerseSamplesMissingEnvironmentFileFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples> --sample pbr-materials --environment-file "${CMAKE_CURRENT_BINARY_DIR}/DefinitelyMissing/environment.exr" --backend auto --frames 1
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples subsystem.resource suite.cli
+        TIMEOUT 30
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        WILL_FAIL
+    )
+endif()
+
+rvx_add_gtest(
+    NAME RenderThreadRuntimeValidation
+    LANE integration
+    SOURCES RenderThreadRuntimeValidation/main.cpp
+    LIBS
+        RVX::Render
+        RVX::RenderExtraction
+        RVX_RenderTestSupport
+        RVX_RenderRuntimeCore
+        RVX::RHI_BackendFactory
+        ${RVX_ALL_BACKENDS}
+    INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME RenderHonestyValidation
+    LANE integration
+    SOURCES RenderHonestyValidation/main.cpp
+    LIBS
+        RVX::AssetImport
+        RVX::Core
+        RVX::Render
+        RVX::ResourceRuntime
+        RVX::ResourceSource
+        RVX::ShaderCompiler
+        RVX::ShaderContracts
+        RVX::AssetPipeline
+        RVX::RHI
+        RVX::Terrain
+        Particle
+    INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Particle/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+        ${CMAKE_SOURCE_DIR}/Source/Developer/ShaderCompiler/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Terrain/Private
+        ${CMAKE_SOURCE_DIR}/Source/Developer/AssetPipeline/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
+    TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME RenderSceneValidation
+    LANE integration
+    SOURCES RenderSceneValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RuntimeServices
+        RVX::World
+        RVX::ResourceRuntime
+        RVX::RenderExtraction
+        RVX::Scene
+        RVX::Render
+        RVX::Animation
+        RVX::RHI
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderExtraction/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private/Renderer
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/World/Include
+    TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME RenderPassValidation
+    LANE integration
+    SOURCES
+        RenderPassValidation/main.cpp
+        Common/RenderRuntimeTestHarness.cpp
+    LIBS
+        RVX::Core
+        RVX::Render
+        RVX::RenderGraph
+        RVX::ResourceRuntime
+        RVX::RHI
+        RVX::RHI_BackendFactory
+        ${RVX_ALL_BACKENDS}
+        RVX::Scene
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
+    TIMEOUT 120
+)
+
+if(TARGET RVX::Editor)
+    rvx_add_gtest(
+        NAME EditorContextValidation
+        LANE integration
+        SOURCES EditorContextValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::Editor
+            RVX::ResourceSceneAdapters
+            RVX::Scene
+            RVX::RHI_BackendFactory
+            ${RVX_ALL_BACKENDS}
+        INCLUDES
+            ${CMAKE_SOURCE_DIR}/Editor/Include
+        TAGS product.editor
+        TIMEOUT 120
+    )
+endif()
+
+rvx_add_gtest(
+    NAME AppModeBoundaryValidation
+    LANE integration
+    SOURCES AppModeBoundaryValidation/main.cpp
+    LIBS
+        RVX::Core
+    TIMEOUT 120
+)
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME SampleWorldRequirementsValidation
+    LANE integration
+    SOURCES SampleWorldRequirementsValidation/main.cpp
+    LIBS
+        RVX::Engine
+        RVX::SampleCommon
+        RVX::World
+    TAGS product.samples subsystem.world
+    TIMEOUT 60
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME FrameworkAssessmentValidation
+    LANE integration
+    SOURCES FrameworkAssessmentValidation/main.cpp
+    LIBS RVX::SampleCommon
+    TAGS product.samples trait.diagnostics
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+    rvx_add_gtest(
+        NAME SampleSceneLifetimeScopeValidation
+        LANE integration
+        SOURCES SampleSceneLifetimeScopeValidation/main.cpp
+        LIBS RVX::SampleCommon
+        TAGS product.samples subsystem.scene suite.lifetime
+        TIMEOUT 30
+    )
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME SceneLifecycleSampleValidation
+    LANE integration
+    SOURCES
+        SceneLifecycleSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/SceneLifecycleSample.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    TAGS product.samples subsystem.scene
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME PhysicsSandboxSampleValidation
+    LANE integration
+    SOURCES
+        PhysicsSandboxSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/PhysicsSandboxSample.cpp
+    LIBS
+        RVX::Core
+        RVX::Physics
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    TAGS product.samples subsystem.physics
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME AnimationCharacterSampleValidation
+    LANE integration
+    SOURCES
+        AnimationCharacterSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/AnimationCharacterSample.cpp
+    LIBS
+        RVX::Animation
+        RVX::AnimationSceneAdapters
+        RVX::Core
+        RVX::Physics
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    TAGS product.samples subsystem.animation subsystem.physics
+    TIMEOUT 60
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME AssetStreamingSampleValidation
+    LANE integration
+    SOURCES
+        AssetStreamingSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/AssetStreamingSample.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS product.samples subsystem.resource
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME InteriorRenderingSampleValidation
+    LANE integration
+    SOURCES
+        InteriorRenderingSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/InteriorRenderingSample.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS product.samples subsystem.render
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVX_SampleCommon)
+rvx_add_gtest(
+    NAME RenderingStressSampleValidation
+    LANE integration
+    SOURCES
+        RenderingStressSampleValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples/Scenes/RenderingStressSample.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::ResourceRuntime
+        RVX::ResourceSceneAdapters
+        RVX::SampleCommon
+        RVX::Scene
+        RVX::World
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS product.samples subsystem.render trait.stress
+    TIMEOUT 30
+)
+endif()
+
+if(TARGET RVXCook)
+    add_dependencies(RenderHonestyValidation RVXCook)
+    target_compile_definitions(RenderHonestyValidation PRIVATE
+        RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>")
+
+    rvx_add_gtest(
+        NAME ParticleEffectCookPipelineValidation
+        LANE integration
+        SOURCES ParticleEffectCookPipelineValidation/main.cpp
+        LIBS RVX::AssetPipeline RVX::Core RVX::Particle RVX::ResourceRuntime
+        DEFINES
+            RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+            RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>"
+        TAGS product.tools subsystem.particle subsystem.resource suite.cook
+        TIMEOUT 120
+    )
+    add_dependencies(ParticleEffectCookPipelineValidation RVXCook)
+endif()
+
+if(RVX_ENABLE_FBX AND TARGET RVXCook)
+    rvx_add_gtest(
+        NAME FBXCookPipelineValidation
+        LANE integration
+        SOURCES FBXCookPipelineValidation/main.cpp
+        LIBS RVX::Core RVX::ResourceRuntime
+        DEFINES
+            RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+            RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>"
+        TAGS product.tools subsystem.resource suite.fbx suite.cook
+        TIMEOUT 120
+    )
+    add_dependencies(FBXCookPipelineValidation RVXCook)
+endif()
+if(MSVC)
+    target_compile_options(RenderPassValidation PRIVATE /bigobj)
+endif()
+if(TARGET RVX::Editor)
+    target_compile_options(EditorContextValidation PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+endif()

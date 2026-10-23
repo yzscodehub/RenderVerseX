@@ -1,5 +1,5 @@
+#include "AssetImport/AudioLoader.h"
 #include "Core/Log.h"
-#include "Resource/Loader/AudioLoader.h"
 
 #include <gtest/gtest.h>
 
@@ -88,7 +88,7 @@ TEST(AudioResourceValidation, StreamingRequestFailsWithUnsupportedDiagnostic)
     const std::filesystem::path wavPath = WriteSilentWav("rvx_audio_resource_streaming_unsupported.wav");
     ASSERT_FALSE(wavPath.empty());
 
-    RVX::Resource::AudioLoader loader(nullptr);
+    RVX::Resource::AudioLoader loader;
     RVX::Resource::AudioLoadOptions options;
     options.enableStreaming = true;
 
@@ -107,7 +107,7 @@ TEST(AudioResourceValidation, ThresholdFallbackLoadsFullyWithoutFakeStreaming)
     const std::filesystem::path wavPath = WriteSilentWav("rvx_audio_resource_threshold_fallback.wav");
     ASSERT_FALSE(wavPath.empty());
 
-    RVX::Resource::AudioLoader loader(nullptr);
+    RVX::Resource::AudioLoader loader;
     RVX::Resource::AudioLoadOptions options;
     options.streamingThreshold = 1;
 

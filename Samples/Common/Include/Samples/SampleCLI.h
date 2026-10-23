@@ -9,25 +9,86 @@
 #include "Core/Types.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/RenderDiagnostics.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHIDefinitions.h"
 #include "Resource/ResourceContentIdentity.h"
 #include "Samples/SampleAssetCatalog.h"
+#include "Samples/SampleFeatureReporter.h"
+#include "Samples/SampleInfo.h"
+#include "Samples/SampleParticleVfxDiagnostics.h"
+#include "Samples/SampleWaterSurfaceDiagnostics.h"
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <iosfwd>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace RVX
 {
+    /** Host-only projection; scenario headers expose only the resulting diagnostic value. */
+    [[nodiscard]] bool HasSampleTransparentTemporalExecution(
+        const RenderExecutionReceipt& receipt, uint64 expectedPresentedFrame) noexcept;
+
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 19;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 36;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_POST_PROCESS_EXECUTION_SCHEMA_VERSION = 21;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION = 22;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_EXPOSURE_EXECUTION_SCHEMA_VERSION = 23;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION = 24;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_MOTION_REPROJECTION_SCHEMA_VERSION =
+            25;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TOON_EXECUTION_SCHEMA_VERSION = 26;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TRANSLUCENCY_EXECUTION_SCHEMA_VERSION = 27;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION = 28;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_PARTICLE_VFX_EXECUTION_SCHEMA_VERSION = 29;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_WATER_SURFACE_EXECUTION_SCHEMA_VERSION = 30;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_RUNTIME_ONLY_COMPOSITION_SCHEMA_VERSION = 31;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_HIZ_REFLECTION_EXECUTION_SCHEMA_VERSION = 32;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_OPAQUE_SCENE_COLOR_PYRAMID_SCHEMA_VERSION = 33;
+    /** Schema 34 has the legacy SSR projection without A3 trace-resolution evidence. */
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_HALF_RESOLUTION_SSR_EXECUTION_SCHEMA_VERSION = 34;
+    /** Schema 35 has presentation receipts without Material V2 routing facts. */
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_PRESENTED_MATERIAL_V2_SCHEMA_VERSION = 35;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION = 16;
+
+    /**
+     * @brief Compatibility boundary for presentation-qualified renderer
+     *        receipts consumed by Samples.
+     *
+     * Samples deliberately accept only the current RenderExecutionReceipt ABI:
+     * an older receipt may be structurally meaningful for its own producer,
+     * but cannot prove fields introduced by a current qualification contract.
+     */
+    [[nodiscard]] constexpr bool IsCurrentRenderExecutionReceiptSchema(
+        const uint32 schemaVersion) noexcept
+    {
+        return schemaVersion == RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+    }
 
     /** @brief Serialized value-only receipt evidence for one render upload stream. */
     struct SampleRenderUploadWorkDiagnostics
@@ -232,11 +293,19 @@ namespace RVX
         bool fallbackUsed = false;
         uint64 frameSequence = 0;
         uint64 presentationSequence = 0;
+        uint64 parameterLayoutHash = 0;
+        uint64 featureMask = 0;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::Unsupported;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return material.IsValid() && contentRevision != 0 &&
                    descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   parameterLayoutHash == GetMaterialParameterLayoutHashV2() &&
+                   shadingModel <= MaterialShadingModel::ThinTransmission &&
+                   surfacePathEligibility < SurfacePathEligibility::Unsupported &&
                    frameSequence != 0 && presentationSequence != 0;
         }
     };
@@ -278,12 +347,762 @@ namespace RVX
         bool gpuSceneCullingQualificationEnabled = false;
         /** @brief Explicit one-shot Direct Opaque physical readback. */
         bool directOpaqueRasterReadbackQualificationEnabled = false;
+        /** @brief Explicit one-shot post-Present exposure-state readback. */
+        bool exposureQualificationProbeEnabled = false;
+        /** @brief Explicit one-shot post-Present GTAO readback. */
+        bool ambientOcclusionQualificationProbeEnabled = false;
+        /** Explicit one-shot post-Present Hi-Z SSR route-mask readback. */
+        bool hiZReflectionQualificationProbeEnabled = false;
+        /**
+         * @brief Explicit one-shot Toon/outline presentation probe.
+         *
+         * The runner accepts this intent now, but it must remain fail-closed
+         * until the Render facade publishes the matching immutable receipt and
+         * implements RequestToonOutlineQualificationProbe().
+         */
+        bool toonOutlineQualificationProbeEnabled = false;
+        /** GFX15 qualification intent; execution evidence remains renderer-owned. */
+        bool translucencyQualificationProbeEnabled = false;
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
         bool diagnostics = false;
         bool enableValidation = true;
         bool showHelp = false;
+    };
+
+    /**
+     * @brief Narrow, presentation-bound post-process execution evidence.
+     *
+     * This is deliberately a value projection rather than a copy of
+     * RenderExecutionReceipt. Sample scenarios may evaluate the public
+     * contract without receiving renderer-private graph or pass objects.
+     */
+    struct SamplePostProcessExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        uint64 sceneRuntimeId = 0;
+        uint64 cameraEntityPacked = 0;
+        uint32 subViewIndex = 0;
+
+        bool postProcessFeatureFound = false;
+        bool postProcessFeatureSelected = false;
+        bool postProcessFeatureExecuted = false;
+        bool postProcessFeatureFallbackUsed = false;
+        uint32 postProcessFeatureGraphPassCount = 0;
+        uint32 postProcessFeatureExecutedGraphPassCount = 0;
+
+        bool postProcessReceiptStructurallyValid = false;
+        uint64 planContentHash = 0;
+        /** Renderer-projected immutable exposure state; never scenario-authored. */
+        uint64 exposureStateContentHash = 0;
+        uint64 toneMapExposureStateHash = 0;
+        uint64 bloomExposureStateHash = 0;
+        uint64 taaExposureStateHash = 0;
+        RenderExposureMode exposureMode = RenderExposureMode::ManualEV100;
+        bool exposureRequested = false;
+        bool exposurePipelineReady = false;
+        bool exposureInputsReady = false;
+        bool exposureExecuted = false;
+        uint32 exposureHistogramPassCount = 0;
+        uint32 exposureAdaptationPassCount = 0;
+        bool exposureHistoryAvailableBefore = false;
+        bool exposureHistorySampled = false;
+        bool exposureHistoryCandidateProduced = false;
+        bool exposureHistoryCommitted = false;
+        bool exposureHistoryAbandoned = false;
+        RenderHistoryResetReason exposureHistoryResetReasons =
+            RenderHistoryResetReason::None;
+        bool exposureProbeRequested = false;
+        bool exposureProbeReady = false;
+        float32 targetEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 adaptedEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 exposureScale = std::numeric_limits<float32>::quiet_NaN();
+        float32 preExposure = std::numeric_limits<float32>::quiet_NaN();
+        float32 previousPreExposure =
+            std::numeric_limits<float32>::quiet_NaN();
+        uint32 toneMappingPassCount = 0;
+        uint32 bloomPassCount = 0;
+        uint32 colorGradingPassCount = 0;
+        uint32 fxaaPassCount = 0;
+        uint32 taaPassCount = 0;
+        RenderAntiAliasingMode antiAliasingMode =
+            RenderAntiAliasingMode::None;
+        bool taaRequested = false;
+        bool taaPipelineReady = false;
+        bool taaInputsReady = false;
+        bool taaExecuted = false;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        Vec2 currentJitterPixels = Vec2(0.0f);
+        Vec2 previousJitterPixels = Vec2(0.0f);
+        uint32 taaResolveGraphPassCount = 0;
+        /** Independent history-store nodes; fused TAA requires zero. */
+        uint32 taaHistoryStoreGraphPassCount = 0;
+        PostProcessColorDomain inputColorDomain =
+            PostProcessColorDomain::Unknown;
+        PostProcessColorDomain plannedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        PostProcessColorDomain storedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        RHIFormat finalOutputFormat = RHIFormat::Unknown;
+        PostProcessTransfer toneMappingTransfer = PostProcessTransfer::None;
+        PostProcessTransfer presentationTransfer = PostProcessTransfer::None;
+        bool hdrInputReady = false;
+        bool displayLinearOutputReady = false;
+        bool encodedOutputReady = false;
+        bool fallbackUsed = false;
+        std::string diagnostic;
+
+        /** @brief True only for a structurally valid, exactly presented main view. */
+        [[nodiscard]] bool HasQualifiedPresentation() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const bool commonColorContract =
+                inputColorDomain == PostProcessColorDomain::SceneLinearHDR &&
+                storedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayEncodedLDR &&
+                finalOutputFormat != RHIFormat::Unknown;
+            const bool srgbPresentationContract =
+                commonColorContract &&
+                plannedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayLinearLDR &&
+                IsSRGBFormat(finalOutputFormat) &&
+                toneMappingTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayLinear &&
+                presentationTransfer ==
+                    PostProcessTransfer::DisplayLinearToEncoded &&
+                displayLinearOutputReady;
+            const bool unormPresentationContract =
+                commonColorContract &&
+                plannedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayEncodedLDR &&
+                !IsSRGBFormat(finalOutputFormat) &&
+                toneMappingTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                presentationTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                !displayLinearOutputReady;
+
+            const bool supportedExecutionReceipt =
+                IsCurrentRenderExecutionReceiptSchema(
+                    executionReceiptSchemaVersion);
+            return available && supportedExecutionReceipt &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView &&
+                   postProcessFeatureFound && postProcessFeatureSelected &&
+                   postProcessFeatureExecuted && !postProcessFeatureFallbackUsed &&
+                   postProcessFeatureGraphPassCount != 0 &&
+                   postProcessFeatureExecutedGraphPassCount ==
+                       postProcessFeatureGraphPassCount &&
+                   postProcessReceiptStructurallyValid &&
+                   planContentHash != 0 && toneMappingPassCount == 1 &&
+                   hdrInputReady &&
+                   encodedOutputReady && !fallbackUsed &&
+                   (srgbPresentationContract || unormPresentationContract);
+        }
+
+        /** @brief Exact immutable exposure-state identity shared by HDR consumers. */
+        [[nodiscard]] bool HasSharedExposureState() const noexcept
+        {
+            const bool bloomMatches = bloomPassCount == 0
+                ? bloomExposureStateHash == 0
+                : bloomExposureStateHash == exposureStateContentHash;
+            const bool taaMatches = antiAliasingMode != RenderAntiAliasingMode::TAA
+                ? taaExposureStateHash == 0
+                : taaExposureStateHash == exposureStateContentHash;
+            return exposureStateContentHash != 0 &&
+                   toneMapExposureStateHash == exposureStateContentHash &&
+                   bloomMatches && taaMatches;
+        }
+
+        /** @brief Probe values obey the sole public EV100 calibration. */
+        [[nodiscard]] bool HasPhysicallyConsistentExposureProbe(
+            float32 exposureCompensationEV = 0.0f) const noexcept
+        {
+            if (!exposureProbeRequested || !exposureProbeReady ||
+                targetEV100 < RVX_RENDER_EXPOSURE_MIN_EV100 ||
+                targetEV100 > RVX_RENDER_EXPOSURE_MAX_EV100 ||
+                adaptedEV100 < RVX_RENDER_EXPOSURE_MIN_EV100 ||
+                adaptedEV100 > RVX_RENDER_EXPOSURE_MAX_EV100)
+            {
+                return false;
+            }
+            float32 expectedScale = 0.0f;
+            if (!TryCalculateRenderExposureScale(
+                    adaptedEV100, exposureCompensationEV, expectedScale))
+            {
+                return false;
+            }
+            return AreRenderExposureScalesEquivalent(
+                       exposureScale, expectedScale) &&
+                   IsValidRenderExposureScale(preExposure) &&
+                   IsValidRenderExposureScale(previousPreExposure);
+        }
+
+        /** @brief Exact GFX12 Manual EV100 receipt with qualification readback. */
+        [[nodiscard]] bool IsManualEV100ExposureQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() && HasSharedExposureState() &&
+                   exposureMode == RenderExposureMode::ManualEV100 &&
+                   exposureRequested && exposurePipelineReady &&
+                   exposureInputsReady && exposureExecuted &&
+                   exposureHistogramPassCount == 0 &&
+                   exposureAdaptationPassCount == 1 &&
+                   exposureHistoryAvailableBefore && exposureHistorySampled &&
+                   exposureHistoryCandidateProduced &&
+                   exposureHistoryCommitted && !exposureHistoryAbandoned &&
+                   exposureHistoryResetReasons == RenderHistoryResetReason::None &&
+                   HasPhysicallyConsistentExposureProbe() &&
+                   AreRenderExposureScalesEquivalent(
+                       preExposure, exposureScale) &&
+                   AreRenderExposureScalesEquivalent(
+                       previousPreExposure, exposureScale) &&
+                   bloomPassCount == 1 &&
+                   IsTemporalAAQualificationReady();
+        }
+
+        /** @brief Exact GFX12 histogram-auto receipt with Present-safe history. */
+        [[nodiscard]] bool IsHistogramAutoExposureQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() && HasSharedExposureState() &&
+                   exposureMode == RenderExposureMode::HistogramAuto &&
+                   exposureRequested && exposurePipelineReady &&
+                   exposureInputsReady && exposureExecuted &&
+                   exposureHistogramPassCount == 2 &&
+                   exposureAdaptationPassCount == 1 &&
+                   exposureHistoryAvailableBefore && exposureHistorySampled &&
+                   exposureHistoryCandidateProduced && exposureHistoryCommitted &&
+                   !exposureHistoryAbandoned &&
+                   exposureHistoryResetReasons == RenderHistoryResetReason::None &&
+                   HasPhysicallyConsistentExposureProbe() &&
+                   bloomPassCount == 1 &&
+                   IsTemporalAAQualificationReady();
+        }
+
+        /** @brief Exact GFX10 Bloom/ColorGrade/FXAA qualification contract. */
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() &&
+                   antiAliasingMode == RenderAntiAliasingMode::FXAA &&
+                   bloomPassCount == 1 && colorGradingPassCount == 1 &&
+                   fxaaPassCount == 1 && taaPassCount == 0 && !taaRequested &&
+                   !taaPipelineReady && !taaInputsReady && !taaExecuted &&
+                   !historyAvailableBefore && !historySampled &&
+                   !historyCandidateProduced && !historyCommitted &&
+                   !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   currentJitterPixels == Vec2(0.0f) &&
+                   previousJitterPixels == Vec2(0.0f) &&
+                   taaResolveGraphPassCount == 0 &&
+                   taaHistoryStoreGraphPassCount == 0;
+        }
+
+        /** @brief Exact GFX11 temporal resolve and present-commit qualification. */
+        [[nodiscard]] bool IsTemporalAAQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() &&
+                   antiAliasingMode == RenderAntiAliasingMode::TAA &&
+                   fxaaPassCount == 0 && taaPassCount == 1 && taaRequested &&
+                   taaPipelineReady && taaInputsReady && taaExecuted &&
+                   historyAvailableBefore && historySampled &&
+                   historyCandidateProduced && historyCommitted &&
+                   !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   std::isfinite(currentJitterPixels.x) &&
+                   std::isfinite(currentJitterPixels.y) &&
+                   std::isfinite(previousJitterPixels.x) &&
+                   std::isfinite(previousJitterPixels.y) &&
+                   currentJitterPixels != previousJitterPixels &&
+                   taaResolveGraphPassCount == 1 &&
+                   taaHistoryStoreGraphPassCount == 0;
+        }
+    };
+
+    /**
+     * @brief Narrow, presentation-bound ambient-occlusion execution evidence.
+     *
+     * This remains a separate projection from post processing: GTAO produces a
+     * scene texture consumed by indirect lighting before HDR post processing.
+     * Sample scenarios only receive immutable receipt values, never graph
+     * handles, pass objects, or renderer-private history resources.
+     */
+    struct SampleAmbientOcclusionExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        uint64 sceneRuntimeId = 0;
+        uint64 cameraEntityPacked = 0;
+        uint32 subViewIndex = 0;
+
+        bool receiptStructurallyValid = false;
+        uint64 planContentHash = 0;
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool lightingConsumerExecuted = false;
+        bool linearDepthInputReady = false;
+        bool worldNormalInputReady = false;
+        /** @brief The GTAO resolve consumed the view's motion-vector field. */
+        bool velocityInputReady = false;
+        /** @brief The source velocity pass executed for the presented view. */
+        bool velocityProducerExecuted = false;
+        bool outputPublished = false;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        uint32 horizonSearchGraphPassCount = 0;
+        uint32 bilateralDenoiseGraphPassCount = 0;
+        uint32 temporalResolveGraphPassCount = 0;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        /** @brief History sampling used motion-vector reprojection. */
+        bool motionReprojectionUsed = false;
+        /** @brief The qualified frame contains genuine unjittered camera motion. */
+        bool viewProjectionMotionObserved = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        uint64 aoFieldContentHash = 0;
+        uint64 lightingAOFieldContentHash = 0;
+        uint64 velocityFieldIdentity = 0;
+        uint32 consumerMask = 0;
+        bool probeRequested = false;
+        bool probeReady = false;
+        uint32 probeSampleCount = 0;
+        uint32 probeOccludedSampleCount = 0;
+        float32 probeMinVisibility = std::numeric_limits<float32>::quiet_NaN();
+        float32 probeMeanVisibility = std::numeric_limits<float32>::quiet_NaN();
+        float32 probeMaxVisibility = std::numeric_limits<float32>::quiet_NaN();
+        bool fallbackUsed = false;
+        std::string diagnostic;
+
+        /** @brief True once GTAO was genuinely executed for the presented view. */
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && receiptStructurallyValid &&
+                   planContentHash != 0 && requested && pipelineReady &&
+                   inputsReady && executed && linearDepthInputReady &&
+                   worldNormalInputReady && velocityInputReady &&
+                   velocityProducerExecuted && velocityFieldIdentity != 0 &&
+                   outputPublished &&
+                   outputFormat == RHIFormat::R8_UNORM &&
+                   horizonSearchGraphPassCount != 0 &&
+                   bilateralDenoiseGraphPassCount >= 2 &&
+                   temporalResolveGraphPassCount == 1 && !fallbackUsed;
+        }
+
+        /** @brief True only after a non-neutral probe and post-Present history commit. */
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            constexpr uint32 ExpectedIndirectOnlyConsumerMask = 0x7u;
+            return IsExecutionReady() && historyAvailableBefore &&
+                   historySampled && motionReprojectionUsed &&
+                   viewProjectionMotionObserved &&
+                   historyCandidateProduced &&
+                   historyCommitted && !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   lightingConsumerExecuted && aoFieldContentHash != 0 &&
+                   aoFieldContentHash == lightingAOFieldContentHash &&
+                   consumerMask == ExpectedIndirectOnlyConsumerMask &&
+                   probeRequested && probeReady && probeSampleCount != 0 &&
+                   probeOccludedSampleCount != 0 &&
+                   probeOccludedSampleCount < probeSampleCount &&
+                   std::isfinite(probeMinVisibility) &&
+                   std::isfinite(probeMeanVisibility) &&
+                   std::isfinite(probeMaxVisibility) &&
+                   probeMinVisibility >= 0.0f && probeMinVisibility < 1.0f &&
+                   probeMeanVisibility >= probeMinVisibility &&
+                   probeMeanVisibility < 1.0f &&
+                   probeMaxVisibility >= probeMeanVisibility &&
+                   probeMaxVisibility <= 1.0f;
+        }
+    };
+
+    /**
+     * @brief Presentation-bound evidence for the exact Hi-Z screen-space route.
+     *
+     * Reflection scheduling alone is deliberately insufficient.  The sample
+     * sees this projection only after the renderer's route-mask readback has
+     * completed for the same frame that crossed the presentation boundary.
+     */
+    struct SampleHiZReflectionExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool graphExecutionFinalized = false;
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool hiZBuilt = false;
+        bool globalIBLReady = false;
+        bool fallbackChainResolved = false;
+        bool screenSpaceRequested = false;
+        bool screenSpaceTraceInputsReady = false;
+        bool screenSpaceTraceScheduled = false;
+        bool halfResolutionTrace = false;
+        bool guidedUpscaleScheduled = false;
+        bool guidedUpscaleExecuted = false;
+        bool screenSpaceApplied = false;
+        bool probesApplied = false;
+        bool reflectionRouteEvidenceReady = false;
+        uint32 routeMaskRadianceSchemaVersion = 0;
+        bool localProbeRadianceQualified = false;
+        bool globalIBLRadianceQualified = false;
+        uint32 readyProbeCount = 0;
+        uint32 hiZMipCount = 0;
+        uint32 hiZGraphPassCount = 0;
+        uint32 traceGraphPassCount = 0;
+        uint32 resolveGraphPassCount = 0;
+        RenderOutputExtent traceExtent{};
+        RenderOutputExtent resolvedExtent{};
+        uint64 reflectionFrameSequence = 0;
+        uint64 reflectionPlanIdentity = 0;
+        uint64 lightingPlanIdentity = 0;
+        uint64 configurationIdentity = 0;
+        uint64 pipelineIdentity = 0;
+        uint64 depthPyramidIdentity = 0;
+        uint64 reflectionSurfaceIdentity = 0;
+        uint64 exposureStateContentHash = 0;
+        uint64 screenSpaceHitPixelCount = 0;
+        uint64 localProbePixelCount = 0;
+        uint64 globalIBLPixelCount = 0;
+        uint64 reflectionReadbackSampleCount = 0;
+        uint64 reflectionRouteSampleCount = 0;
+        uint64 backgroundPixelCount = 0;
+        uint64 nonReflectivePixelCount = 0;
+        std::string fallbackReason;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const RenderOutputExtent expectedHalfExtent{
+                resolvedExtent.width / 2U + resolvedExtent.width % 2U,
+                resolvedExtent.height / 2U + resolvedExtent.height % 2U};
+            const bool traceResolutionMatches = traceExtent.IsValid() &&
+                resolvedExtent.IsValid() &&
+                (halfResolutionTrace
+                    ? (traceExtent == expectedHalfExtent &&
+                       guidedUpscaleScheduled && guidedUpscaleExecuted)
+                    : (traceExtent == resolvedExtent &&
+                       !guidedUpscaleScheduled && !guidedUpscaleExecuted));
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && graphExecutionFinalized && requested &&
+                   supported && scheduled && executed && hiZBuilt &&
+                   globalIBLReady && fallbackChainResolved &&
+                   screenSpaceRequested && screenSpaceTraceInputsReady &&
+                   screenSpaceTraceScheduled &&
+                   screenSpaceApplied && probesApplied &&
+                   reflectionRouteEvidenceReady &&
+                   routeMaskRadianceSchemaVersion == 1 &&
+                   localProbeRadianceQualified &&
+                   globalIBLRadianceQualified && readyProbeCount != 0 &&
+                   hiZMipCount != 0 && hiZGraphPassCount == hiZMipCount &&
+                   traceGraphPassCount == 1 && resolveGraphPassCount == 1 &&
+                   traceResolutionMatches &&
+                   reflectionFrameSequence == receiptFrameSequence &&
+                   reflectionPlanIdentity != 0 && lightingPlanIdentity != 0 &&
+                   configurationIdentity != 0 && pipelineIdentity != 0 &&
+                   depthPyramidIdentity != 0 && reflectionSurfaceIdentity != 0 &&
+                   exposureStateContentHash != 0 &&
+                   screenSpaceHitPixelCount != 0 &&
+                   localProbePixelCount != 0 &&
+                   globalIBLPixelCount != 0 &&
+                   reflectionReadbackSampleCount != 0 &&
+                   reflectionRouteSampleCount != 0 &&
+                   screenSpaceHitPixelCount + localProbePixelCount +
+                           globalIBLPixelCount ==
+                       reflectionRouteSampleCount &&
+                   backgroundPixelCount + nonReflectivePixelCount +
+                           reflectionRouteSampleCount ==
+                       reflectionReadbackSampleCount &&
+                   fallbackReason.empty();
+        }
+    };
+
+    /**
+     * @brief Presentation-bound value projection of ToonLit raster evidence.
+     *
+     * The host constructs this only from an immutable schema-v11 renderer
+     * receipt.  The public report intentionally contains only stable material
+     * execution facts; it never derives a result from requested sample policy.
+     */
+    struct SampleToonLightingExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        /** Canonical program family resolved from the renderer value identity. */
+        std::string programFamily;
+        uint32 materialCount = 0;
+        uint32 drawCount = 0;
+        uint32 forwardShadedDrawCount = 0;
+        uint32 deferredShadedDrawCount = 0;
+        uint32 standardLitFallbackCount = 0;
+        uint32 materialFallbackCount = 0;
+        bool bandsApplied = false;
+        bool specularThresholdApplied = false;
+        bool rimApplied = false;
+        bool shadowTintApplied = false;
+        uint32 materialTableSchemaVersion = 0;
+        uint64 materialTableContentHash = 0;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const bool oneRasterPathExecuted =
+                (forwardShadedDrawCount != 0) !=
+                (deferredShadedDrawCount != 0);
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && requested && pipelineReady && inputsReady &&
+                   executed && !programFamily.empty() && materialCount != 0 &&
+                   drawCount != 0 &&
+                   forwardShadedDrawCount + deferredShadedDrawCount == drawCount &&
+                   oneRasterPathExecuted && standardLitFallbackCount == 0 &&
+                   materialFallbackCount == 0 && bandsApplied &&
+                   specularThresholdApplied && rimApplied && shadowTintApplied &&
+                   materialTableSchemaVersion != 0 &&
+                   materialTableContentHash != 0;
+        }
+    };
+
+    /**
+     * @brief Presentation-bound value projection of the HDR Toon outline.
+     *
+     * Qualification-only verifier metadata remains in-process so the public
+     * JSON shape stays limited to its documented, capability-facing facts.
+     */
+    struct SampleToonOutlineExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool depthInputReady = false;
+        bool worldNormalInputReady = false;
+        bool materialIdentityInputReady = false;
+        bool materialTableInputReady = false;
+        bool temporalOrderingValidated = false;
+        uint32 taaSequenceIndex = 0;
+        uint32 outlineSequenceIndex = 0;
+        uint32 toneMapSequenceIndex = 0;
+        uint32 eligibleToonMaterialCount = 0;
+        uint64 outlinedPixelCount = 0;
+        uint64 nonToonAffectedPixelCount = 0;
+        bool resolutionAware = false;
+        uint64 settingsHash = 0;
+        bool fallbackUsed = false;
+
+        /** Internal-only exact verifier state, copied from the renderer. */
+        bool qualificationRequested = false;
+        bool qualificationReady = false;
+        uint32 renderWidth = 0;
+        uint32 renderHeight = 0;
+        uint64 materialTableContentHash = 0;
+        std::string diagnostic;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && requested && pipelineReady && inputsReady &&
+                   executed && depthInputReady && worldNormalInputReady &&
+                   materialIdentityInputReady && materialTableInputReady &&
+                   temporalOrderingValidated && eligibleToonMaterialCount != 0 &&
+                   outlineSequenceIndex != 0 && toneMapSequenceIndex != 0 &&
+                   outlineSequenceIndex < toneMapSequenceIndex &&
+                   (taaSequenceIndex == 0 || taaSequenceIndex < outlineSequenceIndex) &&
+                   settingsHash != 0 && materialTableContentHash != 0 &&
+                   !fallbackUsed;
+        }
+
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            return IsExecutionReady() && qualificationRequested &&
+                   qualificationReady && taaSequenceIndex != 0 &&
+                   taaSequenceIndex < outlineSequenceIndex &&
+                   outlineSequenceIndex < toneMapSequenceIndex &&
+                   outlinedPixelCount != 0 && nonToonAffectedPixelCount == 0 &&
+                   resolutionAware && renderWidth != 0 && renderHeight != 0 &&
+                   diagnostic.empty();
+        }
+    };
+
+    /**
+     * @brief Presentation-bound proof that the translucent feature completed
+     *        one weighted-blended OIT transaction.
+     *
+     * The projection deliberately contains only stable receipt facts. Sample
+     * scenarios cannot infer it from quality policy, material authoring, or
+     * graph scheduling: a presented, current renderer receipt must prove the
+     * clear, at least one mesh/particle accumulation contributor, and the
+     * composite in that exact order.
+     */
+    struct SampleWeightedBlendedOITExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool featureFound = false;
+        bool featureSelected = false;
+        bool featureRequired = false;
+        bool featureExecuted = false;
+        bool featureFallbackUsed = false;
+        bool allFeatureGraphPassesExecuted = false;
+        uint32 featureGraphPassCount = 0;
+        uint32 featureExecutedGraphPassCount = 0;
+        uint32 clearGraphPassCount = 0;
+        uint32 meshWeightedGraphPassCount = 0;
+        uint32 particleWeightedGraphPassCount = 0;
+        uint32 compositeGraphPassCount = 0;
+        bool passOrderValid = false;
+        std::string diagnostic;
+
+        [[nodiscard]] bool HasQualifiedExecution() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const uint32 weightedContributorCount =
+                meshWeightedGraphPassCount + particleWeightedGraphPassCount;
+            return available &&
+                   IsCurrentRenderExecutionReceiptSchema(
+                       executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && featureFound && featureSelected &&
+                   featureRequired && featureExecuted && !featureFallbackUsed &&
+                   featureGraphPassCount != 0 &&
+                   featureExecutedGraphPassCount == featureGraphPassCount &&
+                   allFeatureGraphPassesExecuted && clearGraphPassCount == 1 &&
+                   weightedContributorCount != 0 && compositeGraphPassCount == 1 &&
+                   passOrderValid && diagnostic.empty();
+        }
     };
 
     struct SampleRenderDiagnostics
@@ -340,6 +1159,42 @@ namespace RVX
         uint32 enabledPostProcessEffectCount = 0;
         uint32 unsupportedPostProcessSkippedCount = 0;
         uint32 postProcessGraphPassCount = 0;
+        /** @brief Exact, main-view execution projection for post-process only. */
+        SamplePostProcessExecutionDiagnostics postProcessActualExecution{};
+        /** @brief Exact, main-view execution projection for GTAO only. */
+        SampleAmbientOcclusionExecutionDiagnostics
+            ambientOcclusionActualExecution{};
+        /** Exact, presentation-bound Hi-Z SSR route evidence. */
+        SampleHiZReflectionExecutionDiagnostics
+            hizReflectionActualExecution{};
+        /** Exact, main-view execution projection for ToonLit raster work. */
+        SampleToonLightingExecutionDiagnostics toonLightingActualExecution{};
+        /** Exact, main-view execution projection for HDR Toon outlines. */
+        SampleToonOutlineExecutionDiagnostics toonOutlineActualExecution{};
+        /** Exact, main-view execution projection for GFX17 CPU billboard VFX. */
+        SampleParticleVfxExecutionDiagnostics particleVfxActualExecution{};
+        /** Exact, main-view execution projection for GFX18 Gerstner water. */
+        SampleWaterSurfaceExecutionDiagnostics waterSurfaceActualExecution{};
+        /** Exact main-view receipt projection for GFX22 weighted-blended OIT. */
+        SampleWeightedBlendedOITExecutionDiagnostics
+            weightedBlendedOITActualExecution{};
+        /** Renderer-owned GFX15 sorted-translucency receipt facts. */
+        uint32 transparentAlphaBlendDrawCount = 0;
+        uint32 transparentPremultipliedDrawCount = 0;
+        uint32 transparentAdditiveDrawCount = 0;
+        uint32 transparentThinTransmissionDrawCount = 0;
+        bool transparentOpaqueSceneColorPyramidReady = false;
+        bool transparentOpaqueSceneColorPyramidBuilt = false;
+        bool transparentReactiveMaskAttachmentBound = false;
+        bool transparentTemporalExecutionQualified = false;
+        uint32 transparentReactiveMaskWriteDrawCount = 0;
+        uint32 transparentPriorityBucketCount = 0;
+        uint32 transparentFallbackCount = 0;
+        /** Exact frame identity for the flat GFX15 renderer projection. */
+        uint64 transparentFrameFeatureSequence = 0;
+        uint64 transparentReceiptFrameSequence = 0;
+        uint64 transparentLastPresentedFrameSequence = 0;
+        bool transparentPresentedFrameAligned = false;
         bool clusteredLightingInitialized = false;
         uint32 clusteredLightingActiveClusters = 0;
         bool textureIBLEnabled = false;
@@ -370,6 +1225,10 @@ namespace RVX
         uint32 spotShadowRequestedCount = 0;
         bool spotShadowSupported = false;
         std::string spotShadowReason;
+        uint32 localShadowRequestCount = 0;
+        uint32 localShadowCasterDrawCount = 0;
+        bool localShadowAtlasReady = false;
+        std::string localShadowFallbackReason;
         bool hzbRequested = false;
         bool hzbSupported = false;
         bool hzbEnabled = false;
@@ -497,6 +1356,7 @@ namespace RVX
         bool gpuDrivenOpaqueIndirectSubmitted = false;
         uint32 gpuDrivenOpaqueDirectDrawCount = 0;
         uint32 gpuDrivenOpaqueIndirectBatchCount = 0;
+        uint32 gpuDrivenOpaqueSubmittedSourcePacketCount = 0;
         uint32 gpuDrivenOpaqueIndirectDrawUpperBound = 0;
         std::string gpuDrivenOpaqueFallbackReason;
         SampleRasterTranscript directOpaqueRasterTranscript{};
@@ -593,7 +1453,7 @@ namespace RVX
         bool loaded = false;
         /** Legacy v11 alias for the verified package identity. */
         AssetContentId sourceContentId;
-        /** Canonical package identity declared by catalog v3. */
+        /** Canonical package identity declared by catalog v4. */
         AssetContentId packageContentId;
         /** Catalog expectation and owner-thread observed receipt are distinct. */
         Resource::ResourceContentIdentity expectedContentIdentity;
@@ -603,6 +1463,16 @@ namespace RVX
         bool verified = false;
         bool cookedAdmissionRequired = false;
         bool cookedAdmissionAccepted = false;
+        /** True when the catalog admitted only the staged cooked package. */
+        bool cookPackageOnly = false;
+        /**
+         * @brief Runtime domain observed from the exact loader receipt.
+         *
+         * Values use RuntimeResourcePolicy spelling (for example
+         * CookedArtifact); ResourceContentIdentity fields retain their
+         * lower-case identity-domain spelling.
+         */
+        std::string actualLoadDomain = "Unknown";
         std::string cookedAdmissionCode;
         std::string cookedAdmissionDetail;
         std::filesystem::path cookManifestPath;
@@ -686,6 +1556,65 @@ namespace RVX
         std::vector<SampleReportScenarioMetric> metrics;
     };
 
+    /** @brief Exact runtime composition selected for this Sample execution. */
+    struct SampleRuntimeCompositionEvidence
+    {
+        bool runtimeOnlyComposition = false;
+        bool cookedShaderProvider = false;
+        bool sourceShaderFallbackEnabled = true;
+        bool cookedResourcePolicy = false;
+        std::filesystem::path cookedShaderRoot;
+        std::filesystem::path cookedResourceRoot;
+        std::string shaderProgramProvider = "Development";
+        std::string diagnostic;
+
+        [[nodiscard]] bool HasCookedOnlyShaderProvider() const noexcept
+        {
+            return runtimeOnlyComposition && cookedShaderProvider &&
+                   !sourceShaderFallbackEnabled && cookedResourcePolicy &&
+                   !cookedShaderRoot.empty() && !cookedResourceRoot.empty() &&
+                   shaderProgramProvider == "CookedShaderArtifactV2" &&
+                   diagnostic.empty();
+        }
+    };
+
+    /**
+     * @brief Completion-qualified evidence for one Sample visual contract.
+     *
+     * Fixed time remains an exact integer rational. An absent observed
+     * pipeline is serialized as "unavailable" and cannot satisfy report
+     * validation. Schema v21 additionally binds this contract to the exact
+     * presentation-qualified renderer execution receipt.
+     */
+    struct SampleVisualContractReceipt
+    {
+        std::string manifestSchema = "RVX.SampleManifest";
+        uint32 manifestSchemaVersion = 0;
+        std::string manifestContentSha256;
+        uint32 visualContractVersion = 0;
+        SampleDomain domain = SampleDomain::Rendering;
+        SampleIntent intent = SampleIntent::Demonstration;
+        SamplePipelineRecipe requestedPipeline =
+            SamplePipelineRecipe::Minimal;
+        std::optional<SamplePipelineRecipe> observedPipeline;
+        SampleQualityTier quality = SampleQualityTier::Default;
+        std::string cameraBookmarkId;
+        uint32 fixedTimeNumerator = 0;
+        uint32 fixedTimeDenominator = 0;
+        uint32 deterministicSeed = 0;
+        uint32 captureTick = 0;
+        uint64 captureCarryingFrameSequence = 0;
+        /** @brief Independently observed capture identity for receipt binding. */
+        uint64 captureSceneRuntimeId = 0;
+        uint64 captureCameraEntityPacked = 0;
+        uint64 captureSceneRevision = 0;
+        uint64 captureSurfaceGeneration = 0;
+        uint64 captureConfigurationRevision = 0;
+        bool deterministicQualification = false;
+        std::optional<RenderExecutionReceipt> renderExecutionReceipt;
+        bool satisfied = false;
+    };
+
     /** @brief Optional raw ToneMapping input/final-output pixel receipt. */
     struct SamplePixelProbeReport
     {
@@ -743,6 +1672,8 @@ namespace RVX
     {
         std::string schemaId = "RVX.SampleReport";
         uint32 schemaVersion = RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        /** Opaque required-suite identity; empty outside validation runners. */
+        std::string validationRunId;
         std::string sampleName;
         std::string category = "sample";
         RHIBackendType requestedBackend = RHIBackendType::Auto;
@@ -781,8 +1712,10 @@ namespace RVX
         bool assetLoaded = false;
         std::vector<SampleReportAsset> assets;
         SampleReportReadiness readiness;
+        SampleRuntimeCompositionEvidence runtimeComposition;
         SampleAssessmentSummary assessment;
         SampleReportScenario scenario;
+        std::optional<SampleVisualContractReceipt> visualContractReceipt;
         std::vector<std::string> enabledFeatures;
         std::vector<std::string> unsupportedFeatures;
         std::vector<std::string> fallbackReasons;
@@ -813,24 +1746,6 @@ namespace RVX
         uint32 frameCount = 0;
     };
 
-    class SampleFeatureReporter
-    {
-    public:
-        explicit SampleFeatureReporter(SampleReport& report);
-
-        void Enable(std::string feature);
-        void Unsupported(std::string feature);
-        void Fallback(std::string reason);
-        void ResourceDiagnostic(std::string diagnostic);
-        void SetScenarioContractRevision(uint32 contractRevision);
-        void SetScenarioPhase(std::string phase);
-        bool AppendScenarioAction(SampleReportScenarioAction action);
-        bool AppendScenarioInvariant(SampleReportScenarioInvariant invariant);
-        bool AppendScenarioMetric(SampleReportScenarioMetric metric);
-
-    private:
-        SampleReport* m_report = nullptr;
-    };
     bool ParseSampleBackend(const std::string& text, RHIBackendType& outBackend);
     const char* GetSampleBackendName(RHIBackendType backend);
 
@@ -840,6 +1755,25 @@ namespace RVX
                         std::string* outError = nullptr);
 
     void PrintSampleCLIUsage(std::ostream& stream, const char* executableName);
+
+    /**
+     * @brief Write the canonical JSON representation of one renderer receipt.
+     *
+     * Sample reports use this human-readable projection. Qualification digest
+     * binding uses RenderExecutionReceiptDigest so it can be computed inside
+     * the Render completion owner without a Samples dependency.
+     */
+    void WriteRenderExecutionReceiptJson(
+        std::ostream& stream,
+        const RenderExecutionReceipt& receipt);
+
+    /** @brief Return the deterministic, locale-independent receipt JSON bytes. */
+    [[nodiscard]] std::string SerializeRenderExecutionReceiptJson(
+        const RenderExecutionReceipt& receipt);
+
+    /** @brief SHA-256 from Render's full canonical receipt representation. */
+    [[nodiscard]] std::string ComputeRenderExecutionReceiptSha256(
+        const RenderExecutionReceipt& receipt);
 
     void WriteSampleReportJson(std::ostream& stream, const SampleReport& report);
     bool WriteSampleReportJson(const SampleReport& report,
@@ -852,6 +1786,68 @@ namespace RVX
     /** @brief Required GPU culling lanes must all match both evidence layers. */
     [[nodiscard]] bool HasRequiredGPUCullingQualificationMatch(
         const SampleRenderDiagnostics& diagnostics) noexcept;
+
+    /**
+     * @brief Project renderer-owned GFX14 evidence into the public Sample ABI.
+     *
+     * These functions fail closed for a non-presented or non-schema-v11
+     * receipt.  Sample scenarios must not manufacture the corresponding
+     * values from settings, assets, or image output.
+     */
+    [[nodiscard]] SampleToonLightingExecutionDiagnostics
+        ProjectSampleToonLightingExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleToonOutlineExecutionDiagnostics
+        ProjectSampleToonOutlineExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleParticleVfxExecutionDiagnostics
+        ProjectSampleParticleVfxExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleWaterSurfaceExecutionDiagnostics
+        ProjectSampleWaterSurfaceExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+
+    /** Terminal state of the exact presented Toon-outline qualification target. */
+    enum class SampleToonOutlineQualificationTargetState : uint8
+    {
+        Unrelated = 0,
+        Pending,
+        Ready,
+        Failed,
+    };
+
+    /** Fail-closed target evaluation used by the host completion-only pump. */
+    struct SampleToonOutlineQualificationTargetEvaluation
+    {
+        SampleToonOutlineQualificationTargetState state =
+            SampleToonOutlineQualificationTargetState::Unrelated;
+        std::string diagnostic;
+
+        [[nodiscard]] bool IsReady() const noexcept
+        {
+            return state ==
+                SampleToonOutlineQualificationTargetState::Ready;
+        }
+
+        [[nodiscard]] bool IsFailed() const noexcept
+        {
+            return state ==
+                SampleToonOutlineQualificationTargetState::Failed;
+        }
+    };
+
+    /**
+     * @brief Evaluate only the exact frame/view receipt selected for capture.
+     *
+     * A matching receipt with a terminal renderer diagnostic, completed but
+     * semantically invalid pixel evidence, or a missing requested probe is a
+     * failure.  Only an exact matching receipt without terminal evidence may
+     * remain pending.
+     */
+    [[nodiscard]] SampleToonOutlineQualificationTargetEvaluation
+        EvaluateSampleToonOutlineQualificationTarget(
+            const RenderDiagnosticsSnapshot& renderDiagnostics,
+            uint64 targetFrameSequence);
 
     SampleReport BuildSampleReport(const SampleAppDesc& desc, const SampleRunContext& context);
     int RunReportOnlySample(int argc, char* argv[], const SampleAppDesc& desc);

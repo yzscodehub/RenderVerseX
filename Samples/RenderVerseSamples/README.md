@@ -19,6 +19,8 @@ RenderVerseSamples --sample lighting-shadows
 RenderVerseSamples --sample render-pipeline
 RenderVerseSamples --sample gpu-driven
 RenderVerseSamples --sample gpu-driven --render-path direct
+RenderVerseSamples --sample particle-fire --pipeline forward-plus --fixed-delta 0.0166666666666667 --capture-tick 120
+RenderVerseSamples --sample particle-smoke --pipeline deferred --fixed-delta 0.0166666666666667 --capture-tick 180
 ```
 
 Graphics API selection is a host/automation concern, not a scene concern:
@@ -42,6 +44,8 @@ No sample controller branches on DX12, Vulkan, Metal, DX11, or OpenGL.
 | `render-pipeline` | Engine-owned shadow, scene, sky, bloom, and tone-mapping Pass chain | Fixed pipeline fixture |
 | `rendering-stress` | Deterministic retained-scene/GPU-scene stress with fixed object churn profile | `r7-triangle` plus PR workload (`1k` objects, dirty `10`, churn `100`) |
 | `gpu-driven` | Direct/GPU-driven parity over identical scene semantics | Select with `--render-path` |
+| `particle-fire` | Cooked CPU billboard fire: HDR flipbook, additive blend, distortion, reactive mask, and one bounded light hint | Fixed package-only `.rvxvfx` |
+| `particle-smoke` | Cooked CPU billboard smoke: premultiplied blend, required soft depth, and reactive mask | Fixed package-only `.rvxvfx` |
 
 `asset-gallery` intentionally does not offer in-process model switching yet.
 Per-run selection remains deterministic until scene destruction and Resource
@@ -67,6 +71,10 @@ instead of consuming a material-parameter axis for implementation provenance.
   catalog/root pair.
 - Smoke runs accept only redistributable catalog assets with complete license
   and source metadata.
+- Particle VFX scenarios accept only the runner-admitted Effect catalog id; at
+  runtime they read the staged `.rvxvfx` package and its same-directory cooked
+  atlas. They do not import, compile, or read authoring `.rvxparticle`/`.tga`
+  inputs.
 
 Catalog paths are normalized and required to stay under the selected asset
 root. Missing entries, traversal, duplicate ids, incomplete provenance, and
@@ -93,13 +101,12 @@ Direct success requires a Direct execution report and no indirect submission.
 DX12/Vulkan parity gates render the same `gpu-driven` scene twice and require
 zero differing pixels. Metal registers the same gates when built on Apple.
 
-## Legacy targets
+The GFX17 fire/smoke 640×360 DX12/Vulkan Forward+/Deferred matrix is a
+functional gate: it proves a presentation-aligned particle packet, atlas,
+upload, draw, and effect-specific receipt. 1280×720 visual-quality/ROI
+qualification is intentionally reserved for GFX24.
 
-`Samples/Basic` contains low-level contract and diagnostic executables. Many
-targets share an implementation and are not product-level visual examples.
-
-`Samples/Showcase` contains legacy validation/report harnesses retained during
-incremental migration. Target names there must not be treated as evidence that
-the corresponding feature has a complete visual sample. New product-facing
-work belongs in an independent controller under `Scenes/` and is registered in
-`RegisterSamples.cpp`.
+All product-facing samples are independent controllers under `Scenes/` and are
+registered in `RegisterSamples.cpp`. Low-level backend and contract coverage
+belongs in `Tests`; removed `Samples/Basic` and `Samples/Showcase` layouts must
+not be restored.

@@ -1,4 +1,5 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/MaterialCopyProbe.h"
 #include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
 #include "DX12CommandContext.h"
@@ -8,14 +9,18 @@
 #include "DX12Pipeline.h"
 #include "DX12Resources.h"
 #include "DX12SwapChain.h"
+#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "GPUScene/GPUSceneDatabase.h"
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUUploadService.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "Render/PipelineCache.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Submission/RasterInstanceStream.h"
+#include "RenderContracts/RenderExposure.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
@@ -25,13 +30,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -66,7 +75,8 @@ namespace
         std::filesystem::path current = std::filesystem::current_path();
         for (uint32 i = 0; i < 8; ++i)
         {
-            const std::filesystem::path candidate = current / "Render" / "Shaders";
+            const std::filesystem::path candidate =
+                current / "Source" / "Runtime" / "Render" / "Shaders";
             if (std::filesystem::exists(candidate / "DefaultLit.hlsl"))
             {
                 return candidate;
@@ -141,6 +151,30 @@ namespace
         return (value + alignment - 1) & ~(alignment - 1);
     }
 
+    /**
+     * @brief Keep the baseline native suite fail-closed without pretending
+     * optional DXR hardware exists on WARP or pre-DXR adapters.
+     *
+     * Dedicated RT jobs require the supported branch. The ordinary native
+     * lane still validates that an unavailable pipeline reports zero limits
+     * and never registers a skipped test in required JUnit evidence.
+     */
+    bool CanRunOptionalDXRQualification(const RHICapabilities& capabilities)
+    {
+        if (capabilities.supportsRaytracingPipeline)
+        {
+            EXPECT_GT(capabilities.maxRayRecursionDepth, 0u);
+            return true;
+        }
+
+        EXPECT_FALSE(capabilities.supportsRaytracing);
+        EXPECT_EQ(capabilities.maxRayRecursionDepth, 0u);
+        EXPECT_EQ(capabilities.shaderGroupHandleSize, 0u);
+        EXPECT_EQ(capabilities.shaderGroupHandleAlignment, 0u);
+        EXPECT_EQ(capabilities.shaderTableBaseAlignment, 0u);
+        return false;
+    }
+
     struct RayTracingTestAlphaMetadata
     {
         uint32 flags = 0;
@@ -200,6 +234,20 @@ namespace
 
     static_assert(sizeof(RayTracingTestMaterialMetadata) == 208,
                   "RayTracingTestMaterialMetadata must match RayTracedShadow.hlsl material metadata layout");
+
+    struct alignas(16) NativeSurfaceExposureState
+    {
+        float32 exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {
+            0u,
+            0u,
+            static_cast<uint32>(RenderExposureMode::ManualEV100),
+            1u};
+    };
+
+    static_assert(sizeof(NativeSurfaceExposureState) == RVX_EXPOSURE_STATE_STRIDE,
+                  "Native exposure state must match Exposure.hlsli");
 
     RHIBufferRef CreateUploadBufferWithData(IRHIDevice& device,
                                             uint64 bufferSize,
@@ -378,6 +426,12 @@ namespace
             }
             errorCount += message->Severity == D3D12_MESSAGE_SEVERITY_ERROR;
             corruptionCount += message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION;
+            if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
+            {
+                ADD_FAILURE() << gateName << " DX12 message id=" << message->ID
+                              << ": " << message->pDescription;
+            }
         }
         infoQueue->ClearStoredMessages();
         if (errorCount != 0 || corruptionCount != 0)
@@ -615,7 +669,7 @@ namespace
 
         RHIDeviceDesc deviceDesc;
         deviceDesc.enableDebugLayer = true;
-        auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+        auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
         if (!device || device->GetBackendType() != RHIBackendType::DX12)
         {
             ADD_FAILURE() << debugName << " failed to realize a DX12 device";
@@ -843,6 +897,1081 @@ namespace
         return pixel[0] > 200u && pixel[1] < 32u && pixel[2] < 32u;
     }
 
+    struct NativeCullRasterReadback
+    {
+        std::array<uint8, 4> centerPixel{};
+        bool completed = false;
+    };
+
+    /**
+     * @brief Draw an object-space counter-clockwise triangle through an
+     * explicitly selected front-face policy and read back its center pixel.
+     *
+     * The caller supplies the backend's canonical front-face state. The
+     * reversed index order represents a negative-determinant world transform
+     * without adding a shader-side special case to this native evidence path.
+     */
+    NativeCullRasterReadback ExecuteNativeCullRasterScenario(
+        RHIFrontFace frontFace,
+        RHICullMode cullMode,
+        bool reverseIndices,
+        const char* debugName)
+    {
+        NativeCullRasterReadback result;
+
+        RHIDeviceDesc deviceDesc;
+        deviceDesc.enableDebugLayer = true;
+        auto device = RVX::Test::CreateNativeValidationDevice(
+            RHIBackendType::DX12, deviceDesc);
+        if (!device || device->GetBackendType() != RHIBackendType::DX12)
+        {
+            ADD_FAILURE() << debugName << " failed to realize a DX12 device";
+            return result;
+        }
+
+        auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+        if (!dx12Device || !dx12Device->GetD3DDevice() ||
+            !ClearDX12InfoQueue(*dx12Device, debugName))
+        {
+            return result;
+        }
+
+        constexpr const char* kVertexShaderSource = R"(
+            struct Output { float4 position : SV_Position; };
+            Output VSMain(uint vertexId : SV_VertexID)
+            {
+                const float2 position = vertexId == 0
+                    ? float2(-0.55, -0.55)
+                    : (vertexId == 1
+                        ? float2(0.55, -0.55)
+                        : float2(0.00, 0.55));
+                Output output;
+                output.position = float4(position, 0.0, 1.0);
+                return output;
+            }
+        )";
+        constexpr const char* kPixelShaderSource = R"(
+            float4 PSMain(bool isFrontFace : SV_IsFrontFace) : SV_Target0
+            {
+                return isFrontFace
+                    ? float4(0.0, 1.0, 0.0, 1.0)
+                    : float4(1.0, 0.0, 0.0, 1.0);
+            }
+        )";
+
+        RHIShaderRef vertexShader = CompileInlineDX12GraphicsShader(
+            *device, RHIShaderStage::Vertex, "VSMain", kVertexShaderSource,
+            "vs_6_0", "NativeCullRasterVS");
+        RHIShaderRef pixelShader = CompileInlineDX12GraphicsShader(
+            *device, RHIShaderStage::Pixel, "PSMain", kPixelShaderSource,
+            "ps_6_0", "NativeCullRasterPS");
+        if (!vertexShader || !pixelShader)
+        {
+            return result;
+        }
+
+        RHIPipelineLayoutDesc layoutDesc;
+        layoutDesc.debugName = "NativeCullRasterLayout";
+        RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(layoutDesc);
+        if (!pipelineLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create a pipeline layout";
+            return result;
+        }
+
+        RHIGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.vertexShader = vertexShader.Get();
+        pipelineDesc.pixelShader = pixelShader.Get();
+        pipelineDesc.pipelineLayout = pipelineLayout.Get();
+        pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+        pipelineDesc.rasterizerState.cullMode = cullMode;
+        pipelineDesc.rasterizerState.frontFace = frontFace;
+        pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+        pipelineDesc.numRenderTargets = 1;
+        pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+        pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+        pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+        pipelineDesc.debugName = "NativeCullRasterPipeline";
+        RHIPipelineRef pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+        if (!pipeline)
+        {
+            ADD_FAILURE() << debugName << " failed to create a raster pipeline";
+            return result;
+        }
+
+        const std::array<uint32, 3> indices = reverseIndices
+            ? std::array<uint32, 3>{0u, 2u, 1u}
+            : std::array<uint32, 3>{0u, 1u, 2u};
+        RHIBufferRef indexBuffer = CreateUploadBufferWithData(
+            *device, sizeof(indices), RHIBufferUsage::Index, sizeof(uint32),
+            indices.data(), sizeof(indices), "NativeCullRasterIndices");
+
+        constexpr uint32 kExtent = 32u;
+        constexpr uint32 kRowPitch = 256u;
+        RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
+            kExtent,
+            kExtent,
+            RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        renderTargetDesc.debugName = "NativeCullRasterRenderTarget";
+        RHITextureRef renderTarget = device->CreateTexture(renderTargetDesc);
+        RHITextureViewRef renderTargetView = CreateTestTextureView(
+            *device,
+            renderTarget.Get(),
+            RHITextureViewType::RenderTarget,
+            RHIFormat::RGBA8_UNORM,
+            "NativeCullRasterRTV");
+
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(kRowPitch) * kExtent;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "NativeCullRasterReadback";
+        RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+        if (!indexBuffer || !renderTarget || !renderTargetView || !readbackBuffer)
+        {
+            ADD_FAILURE() << debugName << " failed to create raster resources";
+            return result;
+        }
+
+        RHICommandContextRef context = device->CreateCommandContext(
+            RHICommandQueueType::Graphics);
+        RHIFenceRef fence = device->CreateFence(0);
+        if (!context || !fence)
+        {
+            ADD_FAILURE() << debugName << " failed to create a context or fence";
+            return result;
+        }
+
+        context->Begin();
+        context->TextureBarrier(renderTarget.Get(), RHIResourceState::Common,
+                                RHIResourceState::RenderTarget);
+        RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                      RHIStoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f});
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f, static_cast<float>(kExtent),
+                              static_cast<float>(kExtent), 0.0f, 1.0f});
+        context->SetScissor({0, 0, kExtent, kExtent});
+        context->SetPipeline(pipeline.Get());
+        context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
+        context->DrawIndexed(3u, 1u, 0u, 0, 0u);
+        context->EndRenderPass();
+        context->TextureBarrier(renderTarget.Get(), RHIResourceState::RenderTarget,
+                                RHIResourceState::CopySource);
+        RHIBufferTextureCopyDesc readbackCopy;
+        readbackCopy.bufferRowPitch = kRowPitch;
+        readbackCopy.textureRegion = {0, 0, kExtent, kExtent};
+        context->CopyTextureToBuffer(renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        context->End();
+
+        const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
+        if (submittedValue == 0)
+        {
+            ADD_FAILURE() << debugName << " failed to submit raster work";
+            return result;
+        }
+        device->WaitForFence(fence.Get(), submittedValue);
+        if (fence->GetCompletedValue() < submittedValue)
+        {
+            ADD_FAILURE() << debugName << " did not complete its raster fence";
+            return result;
+        }
+
+        const auto* mappedReadback = static_cast<const uint8*>(readbackBuffer->Map());
+        if (!mappedReadback)
+        {
+            ADD_FAILURE() << debugName << " failed to map raster readback";
+            return result;
+        }
+        const size_t pixelOffset = static_cast<size_t>(kExtent / 2u) * kRowPitch +
+            static_cast<size_t>(kExtent / 2u) * 4u;
+        std::memcpy(result.centerPixel.data(), mappedReadback + pixelOffset,
+                    result.centerPixel.size());
+        readbackBuffer->Unmap();
+
+        device->WaitIdle();
+        result.completed = VerifyDX12InfoQueueClean(*dx12Device, debugName);
+        return result;
+    }
+
+    bool IsNativeCullRasterGreen(const NativeCullRasterReadback& readback)
+    {
+        return readback.centerPixel[0] < 32u && readback.centerPixel[1] > 200u &&
+            readback.centerPixel[2] < 32u && readback.centerPixel[3] == 255u;
+    }
+
+    bool IsNativeCullRasterRed(const NativeCullRasterReadback& readback)
+    {
+        return readback.centerPixel[0] > 200u && readback.centerPixel[1] < 32u &&
+            readback.centerPixel[2] < 32u && readback.centerPixel[3] == 255u;
+    }
+
+    /**
+     * @brief Pixel coverage captured from a real native raster submission.
+     *
+     * Each pipeline executes the shared on-disk SurfaceMaterial.hlsli alpha
+     * path with a production-shaped MaterialGPUConstants cbuffer.  The four
+     * entry points represent the Main, Depth, Shadow, and Velocity consumers;
+     * their marker differs only after RVXApplyAlphaMask has accepted a pixel.
+     */
+    struct NativeSurfaceAlphaMaskReadback
+    {
+        static constexpr uint32 Extent = 32u;
+        std::array<uint8, Extent * Extent> coverage{};
+        std::array<uint8, 4> centerPixel{};
+        uint8 reactiveCenter = 0u;
+        bool completed = false;
+    };
+
+    RHIShaderRef CompileDX12SurfaceMaterialValidationShader(
+        IRHIDevice& device,
+        RHIShaderStage stage,
+        const char* entryPoint,
+        const char* source,
+        const std::filesystem::path& sourcePath,
+        const char* debugName)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+        if (!compiler)
+        {
+            ADD_FAILURE() << "Shader compiler is unavailable for " << debugName;
+            return {};
+        }
+
+        const std::string sourcePathText = sourcePath.string();
+        ShaderCompileOptions options;
+        options.stage = stage;
+        options.entryPoint = entryPoint;
+        options.sourceCode = source;
+        options.sourcePath = sourcePathText.c_str();
+        options.targetProfile = stage == RHIShaderStage::Vertex ? "vs_6_0" : "ps_6_0";
+        options.targetBackend = RHIBackendType::DX12;
+        options.enableDebugInfo = true;
+
+        ShaderCompileResult compiled = compiler->Compile(options);
+        if (!compiled.success)
+        {
+            ADD_FAILURE() << "Failed to compile " << debugName << ": "
+                          << compiled.errorMessage;
+            return {};
+        }
+
+        RHIShaderDesc shaderDesc;
+        shaderDesc.stage = stage;
+        shaderDesc.bytecode = compiled.bytecode.data();
+        shaderDesc.bytecodeSize = static_cast<uint64>(compiled.bytecode.size());
+        shaderDesc.entryPoint = entryPoint;
+        shaderDesc.debugName = debugName;
+        return device.CreateShader(shaderDesc);
+    }
+
+    NativeSurfaceAlphaMaskReadback ExecuteNativeSurfaceAlphaMaskScenario(
+        const char* sourceFile,
+        const char* pixelEntry,
+        bool useUV1,
+        const char* debugName,
+        bool normalMapProbe = false,
+        Vec4 authoredTangent = {1.0f, 0.0f, 0.0f, 1.0f},
+        bool thinTransmissionProbe = false)
+    {
+        NativeSurfaceAlphaMaskReadback result;
+
+        RHIDeviceDesc deviceDesc;
+        deviceDesc.enableDebugLayer = true;
+        auto device = RVX::Test::CreateNativeValidationDevice(
+            RHIBackendType::DX12, deviceDesc);
+        if (!device || device->GetBackendType() != RHIBackendType::DX12)
+        {
+            ADD_FAILURE() << debugName << " failed to realize a DX12 device";
+            return result;
+        }
+
+        auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+        if (!dx12Device || !dx12Device->GetD3DDevice() ||
+            !ClearDX12InfoQueue(*dx12Device, debugName))
+        {
+            return result;
+        }
+
+        const std::filesystem::path shaderDirectory = FindRenderShaderDirectory();
+        if (shaderDirectory.empty())
+        {
+            ADD_FAILURE() << debugName << " could not locate Render/Shaders";
+            return result;
+        }
+
+        // These vertex shims exist only to provide the semantic contract each
+        // production pixel entry consumes.  Alpha policy itself is never
+        // reimplemented here: every scenario compiles the on-disk production
+        // pixel entry below.
+        constexpr const char* kMainVertexShaderSource = R"(
+            struct VSInput
+            {
+                float2 Position : POSITION;
+                float2 TexCoord : TEXCOORD0;
+                float2 TexCoord1 : TEXCOORD1;
+                float4 Tangent : TANGENT;
+            };
+            struct PSInput
+            {
+                float4 Position : SV_POSITION;
+                float3 WorldPos : TEXCOORD0;
+                float3 WorldNormal : TEXCOORD1;
+                float2 TexCoord : TEXCOORD2;
+                float4 WorldTangent : TEXCOORD3;
+                nointerpolation float ReceivesShadowValue : TEXCOORD4;
+                nointerpolation uint MaterialParameterSlot : TEXCOORD5;
+                float2 TexCoord1 : TEXCOORD6;
+            };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position, 0.0, 1.0);
+                output.WorldPos = float3(0.0, 0.0, 1.0);
+                output.WorldNormal = float3(0.0, 0.0, 1.0);
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                output.WorldTangent = input.Tangent;
+                output.ReceivesShadowValue = 0.0;
+                output.MaterialParameterSlot = 0xffffffffu;
+                return output;
+            }
+        )";
+
+        constexpr const char* kDepthVertexShaderSource = R"(
+            struct VSInput
+            {
+                float2 Position : POSITION;
+                float2 TexCoord : TEXCOORD0;
+                float2 TexCoord1 : TEXCOORD1;
+            };
+            struct PSInput
+            {
+                float4 Position : SV_POSITION;
+                float2 TexCoord : TEXCOORD0;
+                float2 TexCoord1 : TEXCOORD1;
+            };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position, 0.5, 1.0);
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                return output;
+            }
+        )";
+        constexpr const char* kVelocityVertexShaderSource = R"(
+            struct VSInput
+            {
+                float2 Position : POSITION;
+                float2 TexCoord : TEXCOORD0;
+                float2 TexCoord1 : TEXCOORD1;
+            };
+            struct PSInput
+            {
+                float4 Position : SV_POSITION;
+                float4 CurrentClip : TEXCOORD0;
+                float4 PreviousClip : TEXCOORD1;
+                float HistoryValid : TEXCOORD2;
+                float2 TexCoord : TEXCOORD3;
+                float2 TexCoord1 : TEXCOORD4;
+                nointerpolation float NdcYScale : TEXCOORD5;
+            };
+            PSInput VSMain(VSInput input)
+            {
+                PSInput output;
+                output.Position = float4(input.Position, 0.5, 1.0);
+                output.CurrentClip = output.Position;
+                output.PreviousClip = output.Position;
+                output.HistoryValid = 1.0;
+                output.TexCoord = input.TexCoord;
+                output.TexCoord1 = input.TexCoord1;
+                output.NdcYScale = 1.0;
+                return output;
+            }
+        )";
+
+        const std::filesystem::path virtualSourcePath =
+            shaderDirectory / "NativeSurfaceMaterialSilhouetteValidation.hlsl";
+        const std::filesystem::path productionShaderPath = shaderDirectory / sourceFile;
+        std::ifstream productionShaderFile(productionShaderPath, std::ios::binary);
+        std::string productionPixelSource{
+            std::istreambuf_iterator<char>(productionShaderFile),
+            std::istreambuf_iterator<char>()};
+        if (productionPixelSource.empty())
+        {
+            ADD_FAILURE() << debugName << " could not read " << productionShaderPath.string();
+            return result;
+        }
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::AppendMaterialCopyProbe(productionPixelSource, shaderDirectory);
+        }
+        const bool isDepthOnly = std::string_view(sourceFile) == "DepthOnly.hlsl";
+        const bool isVelocity = std::string_view(sourceFile) == "ObjectVelocity.hlsl";
+        const bool isThinTransmission = thinTransmissionProbe;
+        if (normalMapProbe && (isDepthOnly || isVelocity))
+        {
+            ADD_FAILURE() << debugName << " normal-map probe requires DefaultLit::PSMain";
+            return result;
+        }
+        const char* vertexSource = isDepthOnly
+            ? kDepthVertexShaderSource
+            : (isVelocity ? kVelocityVertexShaderSource : kMainVertexShaderSource);
+        RHIShaderRef vertexShader = CompileDX12SurfaceMaterialValidationShader(
+            *device, RHIShaderStage::Vertex, "VSMain", vertexSource,
+            virtualSourcePath, "NativeSurfaceMaterialSilhouetteVS");
+        RHIShaderRef pixelShader = CompileDX12SurfaceMaterialValidationShader(
+            *device, RHIShaderStage::Pixel, pixelEntry, productionPixelSource.c_str(),
+            productionShaderPath, debugName);
+        if (!vertexShader || !pixelShader)
+        {
+            return result;
+        }
+
+        RHIDescriptorSetLayoutDesc frameLayoutDesc;
+        frameLayoutDesc.debugName = "NativeSurfaceAlphaFrameSet";
+        frameLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::AllGraphics);
+        frameLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(3, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(4, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(5, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(10, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
+                                   RHIBindingType::ShaderResourceBuffer,
+                                   RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        // DefaultLit always declares the local-shadow atlas in space0.  Keep
+        // the native fixture ABI-complete even when its frozen light data has
+        // zero local-shadow pages and the shader takes the fully-lit path.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        // Keep the native fixture aligned with DefaultLit's fixed frame-set
+        // ABI. PSMain samples this Texture3D through the existing s13
+        // linear-clamp sampler even when the scenario renders only opaque
+        // material coverage.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
+        RHIDescriptorSetLayoutDesc emptyLayoutDesc;
+        emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
+        RHIDescriptorSetLayoutRef emptySet1 = device->CreateDescriptorSetLayout(emptyLayoutDesc);
+        RHIDescriptorSetLayoutDesc materialLayoutDesc;
+        materialLayoutDesc.debugName = "NativeSurfaceAlphaMaterialSet";
+        materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                                      RHIShaderStage::AllGraphics);
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
+        {
+            materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                          RHIShaderStage::Pixel);
+        }
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
+        {
+            materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
+                                          RHIShaderStage::Pixel);
+        }
+        materialLayoutDesc.AddBinding(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                      RHIBindingType::ShaderResourceBuffer,
+                                      RHIShaderStage::Pixel);
+        RHIDescriptorSetLayoutRef materialLayout =
+            device->CreateDescriptorSetLayout(materialLayoutDesc);
+        if (!frameLayout || !emptySet1 || !materialLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create descriptor layouts";
+            return result;
+        }
+
+        RHIPipelineLayoutDesc pipelineLayoutDesc;
+        pipelineLayoutDesc.setLayouts = {frameLayout.Get(), emptySet1.Get(), materialLayout.Get()};
+        pipelineLayoutDesc.debugName = "NativeSurfaceAlphaPipelineLayout";
+        RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+        if (!pipelineLayout)
+        {
+            ADD_FAILURE() << debugName << " failed to create a pipeline layout";
+            return result;
+        }
+
+        struct NativeSurfaceVertex
+        {
+            float32 position[2];
+            float32 uv0[2];
+            float32 uv1[2];
+            float32 tangent[4];
+        };
+        const std::array<NativeSurfaceVertex, 3> vertices
+        {{
+            {{-1.0f, -1.0f}, {0.05f, 0.05f}, {0.10f, 0.90f},
+             {authoredTangent.x, authoredTangent.y, authoredTangent.z, authoredTangent.w}},
+            {{-1.0f,  3.0f}, {0.05f, 0.05f}, {0.20f, 1.40f},
+             {authoredTangent.x, authoredTangent.y, authoredTangent.z, authoredTangent.w}},
+            {{ 3.0f, -1.0f}, {0.05f, 0.05f}, {1.30f, 0.80f},
+             {authoredTangent.x, authoredTangent.y, authoredTangent.z, authoredTangent.w}},
+        }};
+        RHIBufferRef vertexBuffer = CreateUploadBufferWithData(
+            *device, sizeof(vertices), RHIBufferUsage::Vertex,
+            sizeof(NativeSurfaceVertex), vertices.data(), sizeof(vertices),
+            "NativeSurfaceAlphaVertices");
+
+        MaterialGPUConstants material;
+        material.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
+        material.textureFlags = normalMapProbe
+            ? static_cast<uint32>(MaterialTextureFlags::HasNormal)
+            : (isThinTransmission ? 0u
+                                  : static_cast<uint32>(MaterialTextureFlags::HasBaseColor));
+        material.alphaMode = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUAlphaMode::Blend
+            : (normalMapProbe
+            ? MaterialGPUAlphaMode::Opaque
+            : MaterialGPUAlphaMode::Mask));
+        material.alphaCutoff = 0.5f;
+        material.workflow = static_cast<uint32>((normalMapProbe || isThinTransmission)
+            ? MaterialGPUWorkflow::MetallicRoughness
+            : MaterialGPUWorkflow::Unlit);
+        // DefaultLit rejects a workflow/shading-model disagreement before
+        // producing color. The alpha-silhouette fixture deliberately uses the
+        // Unlit branch, while the normal-map probe exercises StandardLit.
+        material.shadingModel = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUShadingModel::ThinTransmission
+            : (normalMapProbe
+            ? MaterialGPUShadingModel::StandardLit
+            : MaterialGPUShadingModel::Unlit));
+        material.blendMode = static_cast<uint32>(isThinTransmission
+            ? MaterialGPUBlendMode::AlphaBlend
+            : (normalMapProbe
+            ? MaterialGPUBlendMode::Opaque
+            : MaterialGPUBlendMode::Masked));
+        material.metallicFactor = 0.0f;
+        material.roughnessFactor = 1.0f;
+        material.normalScale = 1.0f;
+        if (isThinTransmission)
+        {
+            material.baseColorFactor = {0.8f, 0.8f, 0.8f, 1.0f};
+            material.thinTransmissionParams = {1.0f, 1.5f, 1.0f, 1.0f};
+            material.attenuationColor = {0.5f, 0.5f, 0.5f, 0.0f};
+        }
+        material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
+        material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
+        if (RVX::Test::IsMaterialCopyProbe(pixelEntry))
+        {
+            RVX::Test::FillMaterialCopySentinels(material);
+        }
+        constexpr uint32 kConstantBufferAlignment = 256u;
+        constexpr uint32 kMaterialConstantBufferSize =
+            (static_cast<uint32>(sizeof(MaterialGPUConstants)) +
+             kConstantBufferAlignment - 1u) /
+            kConstantBufferAlignment * kConstantBufferAlignment;
+        RHIBufferRef materialBuffer = CreateUploadBufferWithData(
+            *device, kMaterialConstantBufferSize, RHIBufferUsage::Constant,
+            0, &material, sizeof(material), "NativeSurfaceAlphaMaterialConstants");
+
+        const std::array<uint8, 16> alphaTexels = normalMapProbe
+            ? std::array<uint8, 16>{{
+                  // Tangent-space (+X, 0, +Z), deliberately non-flat.
+                  255u, 128u, 160u, 255u,
+                  255u, 128u, 160u, 255u,
+                  255u, 128u, 160u, 255u,
+                  255u, 128u, 160u, 255u,
+              }}
+            : std::array<uint8, 16>{{
+                  255u, 255u, 255u,   0u,
+                  255u, 255u, 255u, 255u,
+                  255u, 255u, 255u, 255u,
+                  255u, 255u, 255u,   0u,
+              }};
+        constexpr uint32 kRowPitch = 256u;
+        RHIBufferRef textureUpload = CreateTextureUploadBuffer2D(
+            *device, alphaTexels.data(), 2u, 2u, 4u, kRowPitch,
+            "NativeSurfaceAlphaTextureUpload");
+        RHITextureDesc sourceTextureDesc = RHITextureDesc::Texture2D(
+            2u, 2u, RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        sourceTextureDesc.debugName = "NativeSurfaceAlphaTexture";
+        RHITextureRef sourceTexture = device->CreateTexture(sourceTextureDesc);
+        RHITextureViewRef sourceTextureView = CreateTestTextureView(
+            *device, sourceTexture.Get(), RHITextureViewType::ShaderResource,
+            RHIFormat::RGBA8_UNORM, "NativeSurfaceAlphaTextureSRV");
+        RHITextureDesc environmentCubeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA8_UNORM, RHITextureUsage::ShaderResource);
+        environmentCubeDesc.dimension = RHITextureDimension::TextureCube;
+        environmentCubeDesc.arraySize = 1u;
+        environmentCubeDesc.debugName = "NativeSurfaceAlphaEnvironmentCube";
+        RHITextureRef environmentCube = device->CreateTexture(environmentCubeDesc);
+        RHITextureViewDesc environmentCubeViewDesc;
+        environmentCubeViewDesc.type = RHITextureViewType::ShaderResource;
+        environmentCubeViewDesc.format = RHIFormat::RGBA8_UNORM;
+        environmentCubeViewDesc.dimension = RHITextureDimension::TextureCube;
+        environmentCubeViewDesc.debugName = "NativeSurfaceAlphaEnvironmentCubeSRV";
+        RHITextureViewRef environmentCubeView = device->CreateTextureView(
+            environmentCube.Get(), environmentCubeViewDesc);
+        // Use a true D32 Texture2DArray SRV for DefaultLit t17 rather than
+        // binding an unrelated 2D fallback.  The zeroed frame constants set
+        // LocalShadowPageCount to zero, so this resource must be valid for
+        // binding but is intentionally not sampled by these surface tests.
+        RHITextureDesc localShadowAtlasDesc = RHITextureDesc::DepthStencil(
+            1u, 1u, RHIFormat::D32_FLOAT);
+        localShadowAtlasDesc.arraySize = 1u;
+        localShadowAtlasDesc.debugName = "NativeSurfaceAlphaLocalShadowAtlas";
+        RHITextureRef localShadowAtlas = device->CreateTexture(localShadowAtlasDesc);
+        RHITextureViewDesc localShadowAtlasViewDesc;
+        localShadowAtlasViewDesc.type = RHITextureViewType::ShaderResource;
+        localShadowAtlasViewDesc.format = RHIFormat::D32_FLOAT;
+        localShadowAtlasViewDesc.dimension = RHITextureDimension::Texture2D;
+        localShadowAtlasViewDesc.subresourceRange = RHISubresourceRange::All();
+        localShadowAtlasViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+        localShadowAtlasViewDesc.debugName = "NativeSurfaceAlphaLocalShadowAtlasSRV";
+        RHITextureViewRef localShadowAtlasView = device->CreateTextureView(
+            localShadowAtlas.Get(), localShadowAtlasViewDesc);
+        // Match PipelineCache's identity fallback: a real 1x1x1 RGBA16F
+        // Texture3D whose scattering is zero and transmittance is one. A 2D
+        // placeholder would satisfy neither DefaultLit's reflection nor its
+        // sampled surface-extinction contract.
+        RHITextureDesc froxelVolumeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        froxelVolumeDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeDesc.depth = 1u;
+        froxelVolumeDesc.arraySize = 1u;
+        froxelVolumeDesc.mipLevels = 1u;
+        froxelVolumeDesc.debugName = "NativeSurfaceAlphaFroxelVolume";
+        RHITextureRef froxelVolume = device->CreateTexture(froxelVolumeDesc);
+        RHITextureViewDesc froxelVolumeViewDesc;
+        froxelVolumeViewDesc.type = RHITextureViewType::ShaderResource;
+        froxelVolumeViewDesc.format = RHIFormat::RGBA16_FLOAT;
+        froxelVolumeViewDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeViewDesc.subresourceRange = RHISubresourceRange::All();
+        froxelVolumeViewDesc.debugName = "NativeSurfaceAlphaFroxelVolumeSRV";
+        RHITextureViewRef froxelVolumeView = device->CreateTextureView(
+            froxelVolume.Get(), froxelVolumeViewDesc);
+        const std::array<uint16, 4> neutralFroxelTexel = {
+            0u, 0u, 0u, 0x3c00u}; // (0, 0, 0, 1) in RGBA16F.
+        RHIBufferRef froxelVolumeUpload = CreateTextureUploadBuffer2D(
+            *device, neutralFroxelTexel.data(), 1u, 1u,
+            static_cast<uint32>(sizeof(neutralFroxelTexel)), kRowPitch,
+            "NativeSurfaceAlphaFroxelVolumeUpload");
+        RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
+        samplerDesc.debugName = "NativeSurfaceAlphaPointClamp";
+        RHISamplerRef sampler = device->CreateSampler(samplerDesc);
+        RHISamplerDesc froxelSamplerDesc = RHISamplerDesc::LinearClamp();
+        froxelSamplerDesc.debugName = "NativeSurfaceAlphaFroxelLinearClamp";
+        RHISamplerRef froxelSampler = device->CreateSampler(froxelSamplerDesc);
+
+        std::array<uint8, 512> zeroedFrameConstants{};
+        if (isThinTransmission)
+        {
+            // The production projection guard requires a valid camera. The
+            // surface at z=1 exits at z=0 and sees canonical background depth 1.
+            const Mat4 viewProjection(1.0f);
+            const Vec4 cameraPositionAndTime = {0.0f, 0.0f, 4.0f, 0.0f};
+            std::memcpy(zeroedFrameConstants.data(),
+                        &viewProjection, sizeof(viewProjection));
+            std::memcpy(zeroedFrameConstants.data() + 64u,
+                        &cameraPositionAndTime, sizeof(cameraPositionAndTime));
+        }
+        if (normalMapProbe)
+        {
+            const Vec4 cameraPositionAndTime = {0.0f, 0.0f, 4.0f, 0.0f};
+            const Vec4 lightDirectionAndIntensity = {-1.0f, 0.0f, -0.20f, 6.0f};
+            const Vec4 directionalLightColor = {1.0f, 1.0f, 1.0f, 0.0f};
+            // Match DefaultLit::ViewConstants: VP at 0, camera at 64,
+            // direction/intensity at 80, and light color at 96 bytes.
+            std::memcpy(zeroedFrameConstants.data() + 64u,
+                        &cameraPositionAndTime, sizeof(cameraPositionAndTime));
+            std::memcpy(zeroedFrameConstants.data() + 80u,
+                        &lightDirectionAndIntensity, sizeof(lightDirectionAndIntensity));
+            std::memcpy(zeroedFrameConstants.data() + 96u,
+                        &directionalLightColor, sizeof(directionalLightColor));
+        }
+        RHIBufferRef frameConstantsBuffer = CreateUploadBufferWithData(
+            *device, zeroedFrameConstants.size(), RHIBufferUsage::Constant,
+            0, zeroedFrameConstants.data(), zeroedFrameConstants.size(),
+            "NativeSurfaceAlphaFrameConstants");
+        const std::array<uint8, 256> zeroedStructuredElements{};
+        RHIBufferRef dummyStructuredBuffer = CreateUploadBufferWithData(
+            *device, zeroedStructuredElements.size(),
+            RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+            16u, zeroedStructuredElements.data(), zeroedStructuredElements.size(),
+            "NativeSurfaceAlphaDummyStructuredBuffer");
+        const NativeSurfaceExposureState exposureState{};
+        RHIBufferRef exposureStateBuffer = CreateUploadBufferWithData(
+            *device, sizeof(exposureState),
+            RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+            sizeof(exposureState), &exposureState, sizeof(exposureState),
+            "NativeSurfaceAlphaExposureState");
+
+        RHIDescriptorSetDesc frameSetDesc;
+        frameSetDesc.layout = frameLayout.Get();
+        frameSetDesc.debugName = "NativeSurfaceAlphaFrameDescriptorSet";
+        frameSetDesc.BindBuffer(0, frameConstantsBuffer.Get());
+        frameSetDesc.BindTexture(1, sourceTextureView.Get());
+        frameSetDesc.BindSampler(2, sampler.Get());
+        frameSetDesc.BindBuffer(3, frameConstantsBuffer.Get());
+        frameSetDesc.BindBuffer(4, dummyStructuredBuffer.Get());
+        frameSetDesc.BindBuffer(5, dummyStructuredBuffer.Get());
+        frameSetDesc.BindTexture(6, sourceTextureView.Get());
+        frameSetDesc.BindBuffer(7, frameConstantsBuffer.Get());
+        frameSetDesc.BindBuffer(8, dummyStructuredBuffer.Get());
+        frameSetDesc.BindBuffer(9, dummyStructuredBuffer.Get());
+        frameSetDesc.BindTexture(10, environmentCubeView.Get());
+        frameSetDesc.BindTexture(11, environmentCubeView.Get());
+        frameSetDesc.BindTexture(12, sourceTextureView.Get());
+        frameSetDesc.BindSampler(13, froxelSampler.Get());
+        frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
+                                exposureStateBuffer.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            sourceTextureView.Get());
+        frameSetDesc.BindTexture(PipelineCache::DefaultLitTransmissionDepthPyramidBinding,
+                                 sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitOpaqueSceneColorPyramidBinding,
+            sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            localShadowAtlasView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            froxelVolumeView.Get());
+        RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
+
+        RHIDescriptorSetDesc materialSetDesc;
+        materialSetDesc.layout = materialLayout.Get();
+        materialSetDesc.debugName = "NativeSurfaceAlphaMaterialDescriptorSet";
+        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
+                                  kMaterialConstantBufferSize);
+        for (uint32 binding = 1;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             ++binding)
+        {
+            materialSetDesc.BindTexture(binding, sourceTextureView.Get());
+        }
+        for (uint32 binding = 1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+             binding <= RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2;
+             ++binding)
+        {
+            materialSetDesc.BindSampler(binding, sampler.Get());
+        }
+        materialSetDesc.BindBuffer(1 + RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT * 2,
+                                   dummyStructuredBuffer.Get());
+        RHIDescriptorSetRef materialSet = device->CreateDescriptorSet(materialSetDesc);
+
+        RHITextureRef renderTarget;
+        RHITextureViewRef renderTargetView;
+        RHITextureRef reactiveTarget;
+        RHITextureViewRef reactiveTargetView;
+        RHITextureRef depthTarget;
+        RHITextureViewRef depthTargetView;
+        if (isDepthOnly)
+        {
+            RHITextureDesc depthTargetDesc = RHITextureDesc::DepthStencil(
+                NativeSurfaceAlphaMaskReadback::Extent,
+                NativeSurfaceAlphaMaskReadback::Extent,
+                RHIFormat::D32_FLOAT);
+            depthTargetDesc.usage = depthTargetDesc.usage | RHITextureUsage::CopySrc;
+            depthTargetDesc.debugName = "NativeSurfaceAlphaDepthTarget";
+            depthTarget = device->CreateTexture(depthTargetDesc);
+            depthTargetView = CreateTestTextureView(
+                *device, depthTarget.Get(), RHITextureViewType::DepthStencil,
+                RHIFormat::D32_FLOAT, "NativeSurfaceAlphaDSV");
+        }
+        else
+        {
+            RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
+                NativeSurfaceAlphaMaskReadback::Extent,
+                NativeSurfaceAlphaMaskReadback::Extent,
+                RHIFormat::RGBA8_UNORM,
+                RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+            renderTargetDesc.debugName = "NativeSurfaceAlphaRenderTarget";
+            renderTarget = device->CreateTexture(renderTargetDesc);
+            renderTargetView = CreateTestTextureView(
+                *device, renderTarget.Get(), RHITextureViewType::RenderTarget,
+                RHIFormat::RGBA8_UNORM, "NativeSurfaceAlphaRTV");
+            if (isThinTransmission)
+            {
+                RHITextureDesc reactiveTargetDesc = RHITextureDesc::Texture2D(
+                    NativeSurfaceAlphaMaskReadback::Extent,
+                    NativeSurfaceAlphaMaskReadback::Extent,
+                    RHIFormat::R8_UNORM,
+                    RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+                reactiveTargetDesc.debugName = "NativeThinTransmissionReactiveMask";
+                reactiveTarget = device->CreateTexture(reactiveTargetDesc);
+                reactiveTargetView = CreateTestTextureView(
+                    *device, reactiveTarget.Get(), RHITextureViewType::RenderTarget,
+                    RHIFormat::R8_UNORM, "NativeThinTransmissionReactiveMaskRTV");
+            }
+        }
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(kRowPitch) *
+            NativeSurfaceAlphaMaskReadback::Extent;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "NativeSurfaceAlphaReadback";
+        RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+        RHIBufferRef reactiveReadbackBuffer;
+        if (isThinTransmission)
+        {
+            RHIBufferDesc reactiveReadbackDesc = readbackDesc;
+            reactiveReadbackDesc.debugName = "NativeThinTransmissionReactiveMaskReadback";
+            reactiveReadbackBuffer = device->CreateBuffer(reactiveReadbackDesc);
+        }
+        if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
+            !sourceTextureView || !environmentCube || !environmentCubeView ||
+            !localShadowAtlas || !localShadowAtlasView || !froxelVolume ||
+            !froxelVolumeView || !froxelVolumeUpload || !sampler || !froxelSampler ||
+            !frameConstantsBuffer ||
+            !dummyStructuredBuffer || !exposureStateBuffer || !frameSet ||
+            !materialSet || !readbackBuffer ||
+            (isThinTransmission && (!reactiveTarget || !reactiveTargetView ||
+                                    !reactiveReadbackBuffer)) ||
+            (isDepthOnly && (!depthTarget || !depthTargetView)) ||
+            (!isDepthOnly && (!renderTarget || !renderTargetView)))
+        {
+            ADD_FAILURE() << debugName << " failed to create surface alpha resources";
+            return result;
+        }
+
+        RHIGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.vertexShader = vertexShader.Get();
+        pipelineDesc.pixelShader = pixelShader.Get();
+        pipelineDesc.pipelineLayout = pipelineLayout.Get();
+        pipelineDesc.inputLayout.AddElement("POSITION", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 0);
+        pipelineDesc.inputLayout.elements.back().semanticIndex = 1;
+        pipelineDesc.inputLayout.AddElement("TANGENT", RHIFormat::RGBA32_FLOAT, 0);
+        pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+        pipelineDesc.depthStencilState = isDepthOnly
+            ? RHIDepthStencilState::Default()
+            : RHIDepthStencilState::Disabled();
+        pipelineDesc.numRenderTargets = isDepthOnly ? 0u : (isThinTransmission ? 2u : 1u);
+        pipelineDesc.renderTargetFormats[0] = isDepthOnly
+            ? RHIFormat::Unknown
+            : RHIFormat::RGBA8_UNORM;
+        pipelineDesc.renderTargetFormats[1] = isThinTransmission
+            ? RHIFormat::R8_UNORM
+            : RHIFormat::Unknown;
+        pipelineDesc.depthStencilFormat = isDepthOnly
+            ? RHIFormat::D32_FLOAT
+            : RHIFormat::Unknown;
+        pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+        pipelineDesc.debugName = debugName;
+        RHIPipelineRef pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+        if (!pipeline)
+        {
+            ADD_FAILURE() << debugName << " failed to create a graphics pipeline";
+            return result;
+        }
+
+        RHICommandContextRef context = device->CreateCommandContext(RHICommandQueueType::Graphics);
+        RHIFenceRef fence = device->CreateFence(0);
+        if (!context || !fence)
+        {
+            ADD_FAILURE() << debugName << " failed to create a command context or fence";
+            return result;
+        }
+
+        context->Begin();
+        context->TextureBarrier(sourceTexture.Get(), RHIResourceState::Common,
+                                RHIResourceState::CopyDest);
+        RHIBufferTextureCopyDesc uploadCopy;
+        uploadCopy.bufferRowPitch = kRowPitch;
+        uploadCopy.textureRegion = {0, 0, 2, 2};
+        context->CopyBufferToTexture(textureUpload.Get(), sourceTexture.Get(), uploadCopy);
+        context->TextureBarrier(sourceTexture.Get(), RHIResourceState::CopyDest,
+                                RHIResourceState::ShaderResource);
+        context->TextureBarrier(froxelVolume.Get(), RHIResourceState::Common,
+                                RHIResourceState::CopyDest);
+        RHIBufferTextureCopyDesc froxelUploadCopy;
+        froxelUploadCopy.bufferRowPitch = kRowPitch;
+        froxelUploadCopy.bufferImageHeight = 1u;
+        froxelUploadCopy.textureRegion = {0, 0, 1, 1};
+        froxelUploadCopy.textureDepthSlice = 0u;
+        context->CopyBufferToTexture(
+            froxelVolumeUpload.Get(), froxelVolume.Get(), froxelUploadCopy);
+        context->TextureBarrier(froxelVolume.Get(), RHIResourceState::CopyDest,
+                                RHIResourceState::ShaderResource);
+        if (isDepthOnly)
+        {
+            context->TextureBarrier(depthTarget.Get(), RHIResourceState::Common,
+                                    RHIResourceState::DepthWrite);
+        }
+        else
+        {
+            context->TextureBarrier(renderTarget.Get(), RHIResourceState::Common,
+                                    RHIResourceState::RenderTarget);
+            if (isThinTransmission)
+            {
+                context->TextureBarrier(reactiveTarget.Get(), RHIResourceState::Common,
+                                        RHIResourceState::RenderTarget);
+            }
+        }
+        RHIRenderPassDesc renderPass;
+        if (isDepthOnly)
+        {
+            renderPass.SetDepthStencil(depthTargetView.Get(), RHILoadOp::Clear,
+                                       RHIStoreOp::Store, 1.0f);
+        }
+        else
+        {
+            const RHIClearColor clearColor = isVelocity
+                ? RHIClearColor{1.0f, 0.0f, 0.0f, 1.0f}
+                : RHIClearColor{0.0f, 0.0f, 0.0f, 1.0f};
+            renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                          RHIStoreOp::Store, clearColor);
+            if (isThinTransmission)
+            {
+                renderPass.AddColorAttachment(
+                    reactiveTargetView.Get(), RHILoadOp::Clear,
+                    RHIStoreOp::Store, RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+            }
+        }
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f,
+                              static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent),
+                              static_cast<float>(NativeSurfaceAlphaMaskReadback::Extent),
+                              0.0f, 1.0f});
+        context->SetScissor({0, 0, NativeSurfaceAlphaMaskReadback::Extent,
+                             NativeSurfaceAlphaMaskReadback::Extent});
+        context->SetPipeline(pipeline.Get());
+        context->SetDescriptorSet(0, frameSet.Get());
+        context->SetDescriptorSet(2, materialSet.Get());
+        context->SetVertexBuffer(0, vertexBuffer.Get());
+        context->Draw(3u, 1u, 0u, 0u);
+        context->EndRenderPass();
+        if (isDepthOnly)
+        {
+            context->TextureBarrier(depthTarget.Get(), RHIResourceState::DepthWrite,
+                                    RHIResourceState::CopySource);
+        }
+        else
+        {
+            context->TextureBarrier(renderTarget.Get(), RHIResourceState::RenderTarget,
+                                    RHIResourceState::CopySource);
+            if (isThinTransmission)
+            {
+                context->TextureBarrier(reactiveTarget.Get(), RHIResourceState::RenderTarget,
+                                        RHIResourceState::CopySource);
+            }
+        }
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::Common,
+                                RHIResourceState::CopyDest});
+        if (isThinTransmission)
+        {
+            context->BufferBarrier({reactiveReadbackBuffer.Get(), RHIResourceState::Common,
+                                    RHIResourceState::CopyDest});
+        }
+        RHIBufferTextureCopyDesc readbackCopy;
+        readbackCopy.bufferRowPitch = kRowPitch;
+        readbackCopy.textureRegion = {0, 0, NativeSurfaceAlphaMaskReadback::Extent,
+                                      NativeSurfaceAlphaMaskReadback::Extent};
+        context->CopyTextureToBuffer(
+            isDepthOnly ? depthTarget.Get() : renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        if (isThinTransmission)
+        {
+            context->CopyTextureToBuffer(
+                reactiveTarget.Get(), reactiveReadbackBuffer.Get(), readbackCopy);
+            context->BufferBarrier({reactiveReadbackBuffer.Get(), RHIResourceState::CopyDest,
+                                    RHIResourceState::Common});
+        }
+        context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::CopyDest,
+                                RHIResourceState::Common});
+        context->End();
+
+        const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
+        if (submittedValue == 0u)
+        {
+            ADD_FAILURE() << debugName << " failed to submit surface alpha work";
+            return result;
+        }
+        device->WaitForFence(fence.Get(), submittedValue);
+        if (fence->GetCompletedValue() < submittedValue)
+        {
+            ADD_FAILURE() << debugName << " did not complete its surface alpha fence";
+            return result;
+        }
+
+        const auto* bytes = static_cast<const uint8*>(readbackBuffer->Map());
+        if (!bytes)
+        {
+            ADD_FAILURE() << debugName << " failed to map surface alpha readback";
+            return result;
+        }
+        for (uint32 y = 0; y < NativeSurfaceAlphaMaskReadback::Extent; ++y)
+        {
+            for (uint32 x = 0; x < NativeSurfaceAlphaMaskReadback::Extent; ++x)
+            {
+                const size_t offset = static_cast<size_t>(y) * kRowPitch + x * 4u;
+                if (isDepthOnly)
+                {
+                    float depth = 1.0f;
+                    std::memcpy(&depth, bytes + offset, sizeof(depth));
+                    result.coverage[y * NativeSurfaceAlphaMaskReadback::Extent + x] =
+                        depth < 0.75f ? 1u : 0u;
+                }
+                else if (isVelocity)
+                {
+                    // ObjectVelocity writes zero motion for identical current and
+                    // previous clip positions.  The render target starts red so a
+                    // black pixel is unambiguously a surviving production PS call.
+                    result.coverage[y * NativeSurfaceAlphaMaskReadback::Extent + x] =
+                        bytes[offset] < 32u ? 1u : 0u;
+                }
+                else
+                {
+                    result.coverage[y * NativeSurfaceAlphaMaskReadback::Extent + x] =
+                        bytes[offset] > (isThinTransmission ? 32u : 200u) ? 1u : 0u;
+                }
+            }
+        }
+        const size_t centerOffset =
+            static_cast<size_t>(NativeSurfaceAlphaMaskReadback::Extent / 2u) * kRowPitch +
+            static_cast<size_t>(NativeSurfaceAlphaMaskReadback::Extent / 2u) * 4u;
+        std::memcpy(result.centerPixel.data(), bytes + centerOffset, result.centerPixel.size());
+        readbackBuffer->Unmap();
+        if (isThinTransmission)
+        {
+            const auto* reactiveBytes = static_cast<const uint8*>(
+                reactiveReadbackBuffer->Map());
+            if (!reactiveBytes)
+            {
+                ADD_FAILURE() << debugName << " failed to map ThinTransmission reactive readback";
+                return result;
+            }
+            result.reactiveCenter = reactiveBytes[
+                static_cast<size_t>(NativeSurfaceAlphaMaskReadback::Extent / 2u) *
+                    kRowPitch + NativeSurfaceAlphaMaskReadback::Extent / 2u];
+            reactiveReadbackBuffer->Unmap();
+        }
+        device->WaitIdle();
+        result.completed = VerifyDX12InfoQueueClean(*dx12Device, debugName);
+        return result;
+    }
+
     class NativeBufferRetirementProbe final : public RefCounted
     {
     public:
@@ -880,7 +2009,7 @@ TEST(DX12Validation, DeviceCreation)
     RHIDeviceDesc desc;
     desc.enableDebugLayer = true;
 
-    auto device = CreateRHIDevice(RHIBackendType::DX12, desc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::DX12);
 }
@@ -912,7 +2041,7 @@ TEST(DX12Validation, SwapChainTearingFlagsAreCreationAndPresentCoherent)
 TEST(DX12Validation, DriverIdentityMatchesSelectedAdapter)
 {
     RHIDeviceDesc desc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, desc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -938,10 +2067,48 @@ TEST(DX12Validation, DriverIdentityMatchesSelectedAdapter)
     EXPECT_EQ(reportedVersion, expectedVersion);
 }
 
+TEST(DX12Validation, IndependentFloatBlendCapabilitiesMatchNativeQueries)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    EXPECT_TRUE(capabilities.supportsIndependentColorAttachmentBlend);
+
+    constexpr std::array<std::pair<RHIFormat, DXGI_FORMAT>, 2> formats = {{
+        {RHIFormat::R16_FLOAT, DXGI_FORMAT_R16_FLOAT},
+        {RHIFormat::RGBA16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT},
+    }};
+    for (const auto& [format, nativeFormat] : formats)
+    {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT nativeSupport{};
+        nativeSupport.Format = nativeFormat;
+        ASSERT_TRUE(SUCCEEDED(
+            dx12Device->GetD3DDevice()->CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                &nativeSupport,
+                sizeof(nativeSupport))));
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachment(format),
+            (nativeSupport.Support1 &
+             D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachmentBlend(format),
+            (nativeSupport.Support1 &
+             D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0 &&
+                (nativeSupport.Support1 &
+                 D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0);
+    }
+}
+
 TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLayout)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1071,7 +2238,7 @@ TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLay
 TEST(DX12Validation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     // Test Default buffer
@@ -1090,7 +2257,7 @@ TEST(DX12Validation, BufferCreation)
 TEST(DX12Validation, UploadBuffer)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     // Test Upload buffer with data
@@ -1115,7 +2282,7 @@ TEST(DX12Validation, UploadBuffer)
 TEST(DX12Validation, RangeMappedWriteReportsCoherentUploadAndStagingRanges)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHIBufferDesc bufferDesc;
@@ -1196,7 +2363,7 @@ TEST(DX12Validation, RangeMappedWriteReportsCoherentUploadAndStagingRanges)
 TEST(DX12Validation, TextureCreation)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto textureDesc = RHITextureDesc::Texture2D(512, 512, RHIFormat::RGBA8_UNORM);
@@ -1211,7 +2378,7 @@ TEST(DX12Validation, TextureCreation)
 TEST(DX12Validation, RenderTargetTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto textureDesc = RHITextureDesc::RenderTarget(1920, 1080, RHIFormat::RGBA16_FLOAT);
@@ -1224,7 +2391,7 @@ TEST(DX12Validation, RenderTargetTexture)
 TEST(DX12Validation, DepthStencilTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto textureDesc = RHITextureDesc::DepthStencil(1920, 1080, RHIFormat::D24_UNORM_S8_UINT);
@@ -1238,7 +2405,7 @@ TEST(DX12Validation, DepthStencilTexture)
 TEST(DX12Validation, OptionalOptimizedClearUsesExactColorAndReverseDepthValues)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHITextureDesc absentDesc = RHITextureDesc::RenderTarget(
@@ -1281,7 +2448,7 @@ TEST(DX12Validation, OptionalOptimizedClearUsesExactColorAndReverseDepthValues)
 TEST(DX12Validation, TextureView)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto textureDesc = RHITextureDesc::Texture2D(256, 256, RHIFormat::RGBA8_UNORM);
@@ -1298,7 +2465,7 @@ TEST(DX12Validation, TextureView)
 TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto sampledTextureDesc = RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM);
@@ -1371,7 +2538,7 @@ TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
 TEST(DX12Validation, Texture2DArrayLayerViewsCreateNativeDescriptors)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto depthArrayDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
@@ -1404,7 +2571,7 @@ TEST(DX12Validation, Texture2DArrayLayerViewsCreateNativeDescriptors)
 TEST(DX12Validation, PagedCpuDescriptorAllocatorIsLazyGenerationSafeAndBudgeted)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1494,7 +2661,7 @@ TEST(DX12Validation, InvalidCpuDescriptorGateNeverInvokesNativeCreation)
 TEST(DX12Validation, TexturesAllocateDescriptorsOnlyForExplicitViews)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1584,7 +2751,7 @@ TEST(DX12Validation, TexturesAllocateDescriptorsOnlyForExplicitViews)
 TEST(DX12Validation, Sampler)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHISamplerDesc samplerDesc;
@@ -1603,7 +2770,7 @@ TEST(DX12Validation, Sampler)
 TEST(DX12Validation, CommandContext)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
@@ -1620,7 +2787,7 @@ TEST(DX12Validation,
      GraphicsTimestampQueriesResolveAfterExactFenceCompletion)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& capabilities = device->GetCapabilities();
@@ -1694,7 +2861,7 @@ TEST(DX12Validation, ClosedQueryCommandsDoNotReachNativeCommandList)
     constexpr const char* kGateName = "ClosedQueryCommandsDoNotReachNativeCommandList";
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1742,7 +2909,7 @@ TEST(DX12Validation, TerminalDeviceLossHRESULTClassification)
 TEST(DX12Validation, DeviceRemovalDuringCapabilityDiscoveryUsesOwnedFaultPath)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1761,7 +2928,7 @@ TEST(DX12Validation, DeviceRemovalDuringCapabilityDiscoveryUsesOwnedFaultPath)
 TEST(DX12Validation, Fence)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto fence = device->CreateFence(0);
@@ -1777,7 +2944,7 @@ TEST(DX12Validation, Fence)
 TEST(DX12Validation, SynchronizationCapabilities)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& caps = device->GetCapabilities();
@@ -1800,7 +2967,7 @@ TEST(DX12Validation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
 
@@ -1846,7 +3013,7 @@ TEST(DX12Validation, QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGra
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -1937,7 +3104,7 @@ TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     GPUUploadService uploadService;
@@ -1968,7 +3135,7 @@ TEST(DX12Validation, LargeMipTextureUploadKeepsCrossQueueTimelineAlive)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     auto* dx12Device = static_cast<DX12Device*>(device.get());
 
@@ -2016,7 +3183,7 @@ TEST(DX12Validation, BlockCompressedSmallMipsUseLegalCopyFootprints)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     auto* dx12Device = static_cast<DX12Device*>(device.get());
 
@@ -2058,6 +3225,7 @@ TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
     RenderContextConfig config;
     config.backendType = RHIBackendType::DX12;
     config.enableValidation = false;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
     config.frameBuffering = 2;
     config.appName = "DX12RenderContextValidation";
 
@@ -2066,13 +3234,6 @@ TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
     {
         GTEST_SKIP() << "DX12 RenderContext is not available";
     }
-    if (RVX::Test::IsSoftwareAdapterName(
-            context.GetDevice()->GetCapabilities().adapterName))
-    {
-        context.Shutdown();
-        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
-    }
-
     const uint32 frameSlot = context.GetFrameIndex();
     ASSERT_TRUE(context.BeginFrame());
     const GPUCompletionPoint submittedPoint = context.EndFrame();
@@ -2093,6 +3254,7 @@ TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     RenderContextConfig config;
     config.backendType = RHIBackendType::DX12;
     config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
     config.frameBuffering = 2;
     config.appName = "DX12RenderContextQueueGatewayValidation";
 
@@ -2101,13 +3263,6 @@ TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     {
         GTEST_SKIP() << "DX12 RenderContext is not available";
     }
-    if (RVX::Test::IsSoftwareAdapterName(
-            context.GetDevice()->GetCapabilities().adapterName))
-    {
-        context.Shutdown();
-        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
-    }
-
     ASSERT_TRUE(
         context.GetDevice()->GetCapabilities().supportsQueueSubmissionPlan);
     RHICommandContextRef computeContext =
@@ -2151,6 +3306,26 @@ TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     std::vector<RHICommandContextRef> ownedContexts;
     ownedContexts.push_back(std::move(computeContext));
     ownedContexts.push_back(std::move(graphTerminalContext));
+    size_t plannedContextCount = 0;
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        plannedContextCount += batch.contexts.size();
+    }
+    ASSERT_EQ(ownedContexts.size(), plannedContextCount);
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        for (RHICommandContext* plannedContext : batch.contexts)
+        {
+            const bool owned = std::any_of(
+                ownedContexts.begin(),
+                ownedContexts.end(),
+                [plannedContext](const RHICommandContextRef& context)
+                {
+                    return context.Get() == plannedContext;
+                });
+            ASSERT_TRUE(owned);
+        }
+    }
     ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
                                              std::move(ownedContexts)));
 
@@ -2179,7 +3354,7 @@ TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
 TEST(DX12Validation, DescriptorAndBarrierCapabilities)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& caps = device->GetCapabilities();
@@ -2195,7 +3370,7 @@ TEST(DX12Validation, DescriptorAndBarrierCapabilities)
 TEST(DX12Validation, DescriptorValidationRejectsInvalidInputs)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHIDescriptorSetLayoutDesc duplicateLayout;
@@ -2239,7 +3414,7 @@ TEST(DX12Validation, DescriptorValidationRejectsInvalidInputs)
 TEST(DX12Validation, SubmitReturnsMonotonicFenceValues)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto fence = device->CreateFence(0);
@@ -2267,7 +3442,7 @@ TEST(DX12Validation, SubmitReturnsMonotonicFenceValues)
 TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto ctx = device->CreateCommandContext(RHICommandQueueType::Graphics);
@@ -2460,6 +3635,171 @@ TEST(DX12Validation, IndexedIndirectMaximumCountStaysWithinValidatedRanges)
 }
 
 TEST(DX12Validation,
+     NativeBackCullMirroringAndNoCullFrontFaceProduceExpectedPixels)
+{
+    // D3D12's rasterizer identifies the engine's CCW object-space mesh data
+    // as RHI counter-clockwise, despite its top-left viewport coordinates.
+    // A negative world determinant reverses that state. The no-cull cases
+    // additionally prove that SV_IsFrontFace follows the same policy for
+    // double-sided surface lighting.
+    const NativeCullRasterReadback canonicalBack = ExecuteNativeCullRasterScenario(
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::Back,
+        false,
+        "DX12CanonicalBackCull");
+    ASSERT_TRUE(canonicalBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(canonicalBack))
+        << "canonical RGBA=(" << static_cast<uint32>(canonicalBack.centerPixel[0])
+        << ", " << static_cast<uint32>(canonicalBack.centerPixel[1])
+        << ", " << static_cast<uint32>(canonicalBack.centerPixel[2])
+        << ", " << static_cast<uint32>(canonicalBack.centerPixel[3]) << ")";
+
+    const NativeCullRasterReadback mirroredBack = ExecuteNativeCullRasterScenario(
+        RHIFrontFace::Clockwise,
+        RHICullMode::Back,
+        true,
+        "DX12MirroredBackCull");
+    ASSERT_TRUE(mirroredBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(mirroredBack))
+        << "mirrored RGBA=(" << static_cast<uint32>(mirroredBack.centerPixel[0])
+        << ", " << static_cast<uint32>(mirroredBack.centerPixel[1])
+        << ", " << static_cast<uint32>(mirroredBack.centerPixel[2])
+        << ", " << static_cast<uint32>(mirroredBack.centerPixel[3]) << ")";
+
+    const NativeCullRasterReadback noCullFront = ExecuteNativeCullRasterScenario(
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::None,
+        false,
+        "DX12NoCullFrontFace");
+    ASSERT_TRUE(noCullFront.completed);
+    EXPECT_TRUE(IsNativeCullRasterGreen(noCullFront))
+        << "no-cull front RGBA=(" << static_cast<uint32>(noCullFront.centerPixel[0])
+        << ", " << static_cast<uint32>(noCullFront.centerPixel[1])
+        << ", " << static_cast<uint32>(noCullFront.centerPixel[2])
+        << ", " << static_cast<uint32>(noCullFront.centerPixel[3]) << ")";
+
+    const NativeCullRasterReadback noCullBack = ExecuteNativeCullRasterScenario(
+        RHIFrontFace::CounterClockwise,
+        RHICullMode::None,
+        true,
+        "DX12NoCullBackFace");
+    ASSERT_TRUE(noCullBack.completed);
+    EXPECT_TRUE(IsNativeCullRasterRed(noCullBack))
+        << "no-cull back RGBA=(" << static_cast<uint32>(noCullBack.centerPixel[0])
+        << ", " << static_cast<uint32>(noCullBack.centerPixel[1])
+        << ", " << static_cast<uint32>(noCullBack.centerPixel[2])
+        << ", " << static_cast<uint32>(noCullBack.centerPixel[3]) << ")";
+}
+
+TEST(DX12Validation, NativeMaterialConstantReconstructionCopiesEveryField)
+{
+    const auto correct = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMaterialCopyProbe", false, "DX12MaterialCopy");
+    const auto missing = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMaterialCopyMissingFieldProbe", false, "DX12MaterialCopyMissing");
+    ASSERT_TRUE(correct.completed);
+    ASSERT_TRUE(missing.completed);
+    EXPECT_EQ(correct.centerPixel, (std::array<uint8, 4>{255, 255, 255, 255}));
+    EXPECT_EQ(missing.centerPixel, (std::array<uint8, 4>{0, 255, 0, 255}));
+}
+
+TEST(DX12Validation,
+     NativeSurfaceMaterialAlphaSilhouetteMatchesMainDepthShadowAndVelocityConsumers)
+{
+    const NativeSurfaceAlphaMaskReadback main = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMain", true, "DX12SurfaceAlphaMain");
+    const NativeSurfaceAlphaMaskReadback depth = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DepthOnly.hlsl", "PSMainMasked", true, "DX12SurfaceAlphaDepth");
+    const NativeSurfaceAlphaMaskReadback shadow = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DepthOnly.hlsl", "PSMainMasked", true, "DX12SurfaceAlphaShadow");
+    const NativeSurfaceAlphaMaskReadback velocity = ExecuteNativeSurfaceAlphaMaskScenario(
+        "ObjectVelocity.hlsl", "PSMainMasked", true, "DX12SurfaceAlphaVelocity");
+    const NativeSurfaceAlphaMaskReadback uv0Control = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl", "PSMain", false, "DX12SurfaceAlphaUV0Control");
+
+    ASSERT_TRUE(main.completed);
+    ASSERT_TRUE(depth.completed);
+    ASSERT_TRUE(shadow.completed);
+    ASSERT_TRUE(velocity.completed);
+    ASSERT_TRUE(uv0Control.completed);
+
+    EXPECT_EQ(main.coverage, depth.coverage);
+    EXPECT_EQ(main.coverage, shadow.coverage);
+    EXPECT_EQ(main.coverage, velocity.coverage);
+
+    const uint32 coveredPixelCount = static_cast<uint32>(std::count(
+        main.coverage.begin(), main.coverage.end(), static_cast<uint8>(1u)));
+    EXPECT_GT(coveredPixelCount, NativeSurfaceAlphaMaskReadback::Extent);
+    EXPECT_LT(coveredPixelCount,
+              NativeSurfaceAlphaMaskReadback::Extent *
+                  (NativeSurfaceAlphaMaskReadback::Extent - 1u));
+    EXPECT_NE(main.coverage, uv0Control.coverage)
+        << "UV1 plus the non-trivial material transform must affect the native silhouette";
+}
+
+TEST(DX12Validation,
+     NativeThinTransmissionExecutesSceneColorBeerLambertAndReactiveMask)
+{
+    const NativeSurfaceAlphaMaskReadback thin = ExecuteNativeSurfaceAlphaMaskScenario(
+        "DefaultLit.hlsl",
+        "PSForwardTranslucencyGuarded",
+        false,
+        "DX12ThinTransmissionForward",
+        false,
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        true);
+
+    ASSERT_TRUE(thin.completed);
+    const uint32 coveredPixels = static_cast<uint32>(std::count(
+        thin.coverage.begin(), thin.coverage.end(), static_cast<uint8>(1u)));
+    EXPECT_GT(coveredPixels, NativeSurfaceAlphaMaskReadback::Extent);
+    EXPECT_GT(thin.centerPixel[0], 32u)
+        << "ThinTransmission must not discard before sampling the opaque scene pyramid";
+    EXPECT_LT(thin.centerPixel[0], 240u)
+        << "Beer-Lambert attenuation must alter the white scene-color pyramid input";
+    EXPECT_GT(thin.reactiveCenter, 200u)
+        << "PSForwardTranslucencyGuarded must write the reactive-mask MRT";
+}
+
+TEST(DX12Validation,
+     NativeDefaultLitAuthoredTangentsDriveNormalMapLighting)
+{
+    // CPU reference for the test normal (+X, 0, +Z) under a (+X, 0, +Z)
+    // light: an authored +X tangent must strongly face the light, while an
+    // authored +Y tangent maps the same sample to +Y/+Z and must not. The
+    // production DefaultLit::PSMain performs the actual TBN construction.
+    constexpr float kNormalZ = 0.2549f;
+    constexpr float kLightZ = 0.1961f;
+    const float expectedTangentX =
+        (1.0f + kNormalZ * kLightZ) /
+        std::sqrt((1.0f + kNormalZ * kNormalZ) * (1.0f + kLightZ * kLightZ));
+    const float expectedTangentY =
+        (kNormalZ * kLightZ) /
+        std::sqrt((1.0f + kNormalZ * kNormalZ) * (1.0f + kLightZ * kLightZ));
+    ASSERT_GT(expectedTangentX, expectedTangentY + 0.8f);
+
+    const NativeSurfaceAlphaMaskReadback tangentX =
+        ExecuteNativeSurfaceAlphaMaskScenario(
+            "DefaultLit.hlsl", "PSMain", false,
+            "DX12DefaultLitAuthoredTangentX", true,
+            {1.0f, 0.0f, 0.0f, 1.0f});
+    const NativeSurfaceAlphaMaskReadback tangentY =
+        ExecuteNativeSurfaceAlphaMaskScenario(
+            "DefaultLit.hlsl", "PSMain", false,
+            "DX12DefaultLitAuthoredTangentY", true,
+            {0.0f, 1.0f, 0.0f, 1.0f});
+
+    ASSERT_TRUE(tangentX.completed);
+    ASSERT_TRUE(tangentY.completed);
+    // A flat or derivative-reconstructed normal would make the two draws
+    // nearly identical. The measured production output must follow the CPU
+    // reference's authored-basis ordering by a visible margin.
+    EXPECT_GT(tangentX.centerPixel[0], tangentY.centerPixel[0] + 24u);
+    EXPECT_GT(tangentX.centerPixel[1], tangentY.centerPixel[1] + 24u);
+    EXPECT_GT(tangentX.centerPixel[2], tangentY.centerPixel[2] + 24u);
+}
+
+TEST(DX12Validation,
      IndexedIndirectCountFirstInstanceRasterMatchesDirectInstanceInput)
 {
     constexpr const char* kGateName =
@@ -2471,7 +3811,7 @@ TEST(DX12Validation,
 
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -2813,7 +4153,7 @@ TEST(DX12Validation, IndexedIndirectResourcesRetireAfterFenceCompletion)
 {
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -2886,7 +4226,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
         "GPUSceneExactLeaseRetirementAndFailureClosure";
     RHIDeviceDesc deviceDesc;
     deviceDesc.enableDebugLayer = true;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
@@ -3098,7 +4438,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
 TEST(DX12Validation, Heap)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHIHeapDesc heapDesc;
@@ -3116,7 +4456,7 @@ TEST(DX12Validation, Heap)
 TEST(DX12Validation, PlacedTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     // Create heap
@@ -3149,7 +4489,7 @@ TEST(DX12Validation, PlacedTexture)
 TEST(DX12Validation, PlacedTextureAliasingBarrierRecordsOnNativeCommandList)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
@@ -3199,7 +4539,7 @@ TEST(DX12Validation, PlacedTextureAliasingBarrierRecordsOnNativeCommandList)
 TEST(DX12Validation, PlacedBuffer)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     // Create heap for buffers
@@ -3230,7 +4570,7 @@ TEST(DX12Validation, PlacedBuffer)
 TEST(DX12Validation, MultipleBufferTypes)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     // Vertex buffer
@@ -3271,11 +4611,12 @@ TEST(DX12Validation, MultipleBufferTypes)
 TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& caps = device->GetCapabilities();
-    EXPECT_FALSE(caps.supportsAccelerationStructureCompaction);
+    EXPECT_EQ(caps.supportsAccelerationStructureCompaction,
+              caps.supportsRaytracing);
 
     if (!caps.supportsRaytracing)
     {
@@ -3291,6 +4632,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
 
     EXPECT_TRUE(caps.supportsRaytracingPipeline);
     EXPECT_TRUE(caps.supportsAccelerationStructureUpdate);
+    EXPECT_TRUE(caps.supportsAccelerationStructureCompaction);
     EXPECT_GT(caps.maxRayRecursionDepth, 0u);
     EXPECT_GT(caps.shaderGroupHandleSize, 0u);
     EXPECT_GT(caps.shaderGroupHandleAlignment, 0u);
@@ -3307,13 +4649,35 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     invalidTypeASDesc.debugName = "InvalidTypeAS";
     EXPECT_EQ(device->CreateAccelerationStructure(invalidTypeASDesc).Get(), nullptr);
 
+    RHIAccelerationStructureCompactedSizeQueryDesc invalidQueryDesc;
+    invalidQueryDesc.count = 0;
+    EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                  invalidQueryDesc).Get(),
+              nullptr);
+
+    invalidQueryDesc.count = 1;
+    invalidQueryDesc.queueType = RHICommandQueueType::Copy;
+    EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                  invalidQueryDesc).Get(),
+              nullptr);
+
+    RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+    queryDesc.count = 2;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.debugName = "DX12CompactedSizeQuery";
+    auto compactedSizeQuery =
+        device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+    ASSERT_NE(compactedSizeQuery.Get(), nullptr);
+    EXPECT_EQ(compactedSizeQuery->GetCount(), queryDesc.count);
+    EXPECT_EQ(compactedSizeQuery->GetQueueType(), queryDesc.queueType);
+
     RHIBufferDesc vertexBufferDesc;
     vertexBufferDesc.size = sizeof(float) * 9;
     vertexBufferDesc.usage = RHIBufferUsage::Vertex |
                              RHIBufferUsage::AccelerationStructureInput |
                              RHIBufferUsage::DeviceAddress;
     vertexBufferDesc.memoryType = RHIMemoryType::Upload;
-    vertexBufferDesc.debugName = "CompactionUnsupportedBLASVertices";
+    vertexBufferDesc.debugName = "CompactionBLASVertices";
     auto vertexBuffer = device->CreateBuffer(vertexBufferDesc);
     ASSERT_NE(vertexBuffer.Get(), nullptr);
 
@@ -3328,7 +4692,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     blasDesc.geometries.push_back(geometryDesc);
     blasDesc.buildFlags = RHIAccelerationStructureBuildFlags::AllowCompaction |
                           RHIAccelerationStructureBuildFlags::PreferFastTrace;
-    EXPECT_FALSE(device->GetBottomLevelASBuildSizes(blasDesc).IsValid());
+    EXPECT_TRUE(device->GetBottomLevelASBuildSizes(blasDesc).IsValid());
 
     RHIBufferDesc instanceBufferDesc;
     instanceBufferDesc.size = sizeof(RHIRayTracingInstanceRecord);
@@ -3336,7 +4700,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
                                RHIBufferUsage::AccelerationStructureInput |
                                RHIBufferUsage::DeviceAddress;
     instanceBufferDesc.memoryType = RHIMemoryType::Upload;
-    instanceBufferDesc.debugName = "CompactionUnsupportedTLASInstances";
+    instanceBufferDesc.debugName = "CompactionTLASInstances";
     auto instanceBuffer = device->CreateBuffer(instanceBufferDesc);
     ASSERT_NE(instanceBuffer.Get(), nullptr);
 
@@ -3345,24 +4709,236 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     tlasDesc.instanceCount = 1;
     tlasDesc.buildFlags = RHIAccelerationStructureBuildFlags::AllowCompaction |
                           RHIAccelerationStructureBuildFlags::PreferFastTrace;
-    EXPECT_FALSE(device->GetTopLevelASBuildSizes(tlasDesc).IsValid());
+    EXPECT_TRUE(device->GetTopLevelASBuildSizes(tlasDesc).IsValid());
+}
+
+TEST(DX12Validation, RayTracingCompactedSizeQueryAndCopySubmitNativeDXRWork)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    ASSERT_TRUE(device->GetCapabilities().supportsAccelerationStructureCompaction)
+        << "The required DX12 compaction validation needs the complete native path";
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, "DX12 AS compaction"));
+
+    constexpr float kVertices[] = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f};
+    RHIBufferDesc vertexDesc;
+    vertexDesc.size = sizeof(kVertices);
+    vertexDesc.usage = RHIBufferUsage::Vertex |
+                       RHIBufferUsage::AccelerationStructureInput |
+                       RHIBufferUsage::DeviceAddress;
+    vertexDesc.memoryType = RHIMemoryType::Upload;
+    vertexDesc.stride = sizeof(float) * 3;
+    vertexDesc.debugName = "CompactionNativeVertices";
+    RHIBufferRef vertices = device->CreateBuffer(vertexDesc);
+    ASSERT_NE(vertices.Get(), nullptr);
+    void* mappedVertices = vertices->Map();
+    ASSERT_NE(mappedVertices, nullptr);
+    std::memcpy(mappedVertices, kVertices, sizeof(kVertices));
+    vertices->Unmap();
+
+    RHIRayTracingGeometryDesc geometry;
+    geometry.type = RHIRayTracingGeometryType::Triangles;
+    geometry.flags = RHIRayTracingGeometryFlags::Opaque;
+    geometry.triangles.vertexBuffer = vertices.Get();
+    geometry.triangles.vertexCount = 3;
+    geometry.triangles.vertexStride = sizeof(float) * 3;
+    geometry.triangles.vertexFormat = RHIFormat::RGB32_FLOAT;
+
+    RHIBottomLevelASDesc buildDesc;
+    buildDesc.geometries.push_back(geometry);
+    buildDesc.buildFlags =
+        RHIAccelerationStructureBuildFlags::AllowCompaction |
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    buildDesc.debugName = "CompactionNativeBLASBuild";
+    const RHIAccelerationStructureBuildSizes buildSizes =
+        device->GetBottomLevelASBuildSizes(buildDesc);
+    ASSERT_TRUE(buildSizes.IsValid());
+
+    RHIAccelerationStructureDesc sourceDesc;
+    sourceDesc.type = RHIAccelerationStructureType::BottomLevel;
+    sourceDesc.size = buildSizes.accelerationStructureSize;
+    sourceDesc.debugName = "CompactionNativeBLASSource";
+    RHIAccelerationStructureRef source =
+        device->CreateAccelerationStructure(sourceDesc);
+    ASSERT_NE(source.Get(), nullptr);
+
+    RHIBufferDesc scratchDesc;
+    scratchDesc.size = buildSizes.buildScratchSize;
+    scratchDesc.usage = RHIBufferUsage::UnorderedAccess |
+                        RHIBufferUsage::DeviceAddress;
+    scratchDesc.memoryType = RHIMemoryType::Default;
+    scratchDesc.debugName = "CompactionNativeBLASScratch";
+    RHIBufferRef scratch = device->CreateBuffer(scratchDesc);
+    ASSERT_NE(scratch.Get(), nullptr);
+
+    RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+    queryDesc.count = 1;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.debugName = "CompactionNativeQuery";
+    RHIAccelerationStructureCompactedSizeQueryRef query =
+        device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+    ASSERT_NE(query.Get(), nullptr);
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(uint64);
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "CompactionNativeReadback";
+    RHIBufferRef readback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readback.Get(), nullptr);
+
+    RHICommandContextRef buildContext =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(buildContext.Get(), nullptr);
+    buildContext->Begin();
+    buildContext->BufferBarrier({
+        scratch.Get(), RHIResourceState::Common, RHIResourceState::UnorderedAccess});
+    buildContext->BuildBottomLevelAccelerationStructure(
+        source.Get(), buildDesc, scratch.Get());
+    RHIAccelerationStructure* sourceHandle = source.Get();
+    buildContext->WriteAccelerationStructureCompactedSizes(
+        query.Get(), 0, std::span<RHIAccelerationStructure* const>(
+                            &sourceHandle, 1));
+    buildContext->ResolveAccelerationStructureCompactedSizes(
+        query.Get(), 0, 1, readback.Get());
+    buildContext->End();
+
+    RHIFenceRef fence = device->CreateFence(0);
+    ASSERT_NE(fence.Get(), nullptr);
+    const uint64 buildSubmission =
+        device->SubmitCommandContext(buildContext.Get(), fence.Get());
+    ASSERT_NE(buildSubmission, 0u);
+    auto* dx12Source = dynamic_cast<DX12AccelerationStructure*>(source.Get());
+    ASSERT_NE(dx12Source, nullptr);
+    EXPECT_TRUE(dx12Source->SubmittedBuildWasOnQueue(
+        RHICommandQueueType::Graphics));
+    EXPECT_FALSE(dx12Source->SubmittedBuildWasOnQueue(
+        RHICommandQueueType::Compute));
+    device->WaitForFence(fence.Get(), buildSubmission);
+
+    const auto* compactedSizeData = static_cast<const uint64*>(readback->Map());
+    ASSERT_NE(compactedSizeData, nullptr);
+    const uint64 compactedSize = compactedSizeData[0];
+    readback->Unmap();
+    ASSERT_GT(compactedSize, 0u);
+    ASSERT_LE(compactedSize, buildSizes.accelerationStructureSize);
+
+    RHIAccelerationStructureDesc compactedDesc;
+    compactedDesc.type = RHIAccelerationStructureType::BottomLevel;
+    compactedDesc.size = AlignUp(
+        compactedSize,
+        RVX_RAY_TRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+    compactedDesc.debugName = "CompactionNativeBLASDestination";
+    RHIAccelerationStructureRef compacted =
+        device->CreateAccelerationStructure(compactedDesc);
+    ASSERT_NE(compacted.Get(), nullptr);
+
+    RHIRayTracingInstanceDesc compactedInstance;
+    compactedInstance.bottomLevel = compacted.Get();
+    compactedInstance.instanceMask = 0xFFu;
+    const RHIRayTracingInstanceRecord compactedInstanceRecord =
+        PackRHIRayTracingInstanceRecord(
+            compactedInstance, compacted->GetGPUVirtualAddress());
+    RHIBufferDesc compactedInstanceBufferDesc;
+    compactedInstanceBufferDesc.size = sizeof(compactedInstanceRecord);
+    compactedInstanceBufferDesc.usage =
+        RHIBufferUsage::AccelerationStructureInput |
+        RHIBufferUsage::DeviceAddress;
+    compactedInstanceBufferDesc.memoryType = RHIMemoryType::Upload;
+    compactedInstanceBufferDesc.stride = sizeof(compactedInstanceRecord);
+    compactedInstanceBufferDesc.debugName = "CompactionNativeInstance";
+    RHIBufferRef compactedInstanceBuffer =
+        device->CreateBuffer(compactedInstanceBufferDesc);
+    ASSERT_NE(compactedInstanceBuffer.Get(), nullptr);
+    void* compactedInstanceData = compactedInstanceBuffer->Map();
+    ASSERT_NE(compactedInstanceData, nullptr);
+    std::memcpy(compactedInstanceData,
+                &compactedInstanceRecord,
+                sizeof(compactedInstanceRecord));
+    compactedInstanceBuffer->Unmap();
+
+    RHITopLevelASDesc compactedTlasBuildDesc;
+    compactedTlasBuildDesc.instanceBuffer = compactedInstanceBuffer.Get();
+    compactedTlasBuildDesc.instanceCount = 1;
+    compactedTlasBuildDesc.buildFlags =
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    compactedTlasBuildDesc.debugName = "CompactionNativeTLASBuild";
+    const RHIAccelerationStructureBuildSizes compactedTlasSizes =
+        device->GetTopLevelASBuildSizes(compactedTlasBuildDesc);
+    ASSERT_TRUE(compactedTlasSizes.IsValid());
+    RHIAccelerationStructureDesc compactedTlasDesc;
+    compactedTlasDesc.type = RHIAccelerationStructureType::TopLevel;
+    compactedTlasDesc.size = compactedTlasSizes.accelerationStructureSize;
+    compactedTlasDesc.debugName = "CompactionNativeTLAS";
+    RHIAccelerationStructureRef compactedTlas =
+        device->CreateAccelerationStructure(compactedTlasDesc);
+    ASSERT_NE(compactedTlas.Get(), nullptr);
+    RHIBufferDesc compactedTlasScratchDesc;
+    compactedTlasScratchDesc.size = compactedTlasSizes.buildScratchSize;
+    compactedTlasScratchDesc.usage = RHIBufferUsage::UnorderedAccess |
+                                     RHIBufferUsage::DeviceAddress;
+    compactedTlasScratchDesc.memoryType = RHIMemoryType::Default;
+    compactedTlasScratchDesc.debugName = "CompactionNativeTLASScratch";
+    RHIBufferRef compactedTlasScratch =
+        device->CreateBuffer(compactedTlasScratchDesc);
+    ASSERT_NE(compactedTlasScratch.Get(), nullptr);
+
+    RHICommandContextRef copyContext =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(copyContext.Get(), nullptr);
+    copyContext->Begin();
+    copyContext->CopyAccelerationStructureCompact(
+        compacted.Get(), source.Get(), compactedSize);
+    copyContext->BufferBarrier({
+        compactedInstanceBuffer.Get(), RHIResourceState::Common,
+        RHIResourceState::AccelerationStructureBuildRead});
+    copyContext->BufferBarrier({
+        compactedTlasScratch.Get(), RHIResourceState::Common,
+        RHIResourceState::UnorderedAccess});
+    copyContext->BuildTopLevelAccelerationStructure(
+        compactedTlas.Get(),
+        compactedTlasBuildDesc,
+        compactedTlasScratch.Get());
+    copyContext->End();
+    const uint64 copySubmission =
+        device->SubmitCommandContext(copyContext.Get(), fence.Get());
+    ASSERT_NE(copySubmission, 0u);
+    device->WaitForFence(fence.Get(), copySubmission);
+    EXPECT_GE(fence->GetCompletedValue(), copySubmission);
+    auto* dx12CompactedTlas =
+        dynamic_cast<DX12AccelerationStructure*>(compactedTlas.Get());
+    ASSERT_NE(dx12CompactedTlas, nullptr);
+    EXPECT_TRUE(dx12CompactedTlas->HasSubmittedBuild());
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, "DX12 AS compaction"));
 }
 
 TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
-    PipelineCache cache;
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     EXPECT_NE(cache.GetRayTracedShadowSetLayout(), nullptr);
     EXPECT_NE(cache.GetRayTracedShadowLayout(), nullptr);
@@ -3435,7 +5011,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
 
     const RHIDescriptorSetLayout* reflectionSetLayout = cache.GetRayTracedReflectionSetLayout();
     ASSERT_NE(reflectionSetLayout, nullptr);
-    ASSERT_EQ(reflectionSetLayout->GetEntries().size(), 18u);
+    ASSERT_EQ(reflectionSetLayout->GetEntries().size(), 19u);
     const RHIBindingLayoutEntry* reflectionTlasBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_TLAS_BINDING);
     const RHIBindingLayoutEntry* reflectionOutputBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_BINDING);
     const RHIBindingLayoutEntry* reflectionSceneColorBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_SCENE_COLOR_BINDING);
@@ -3454,6 +5030,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     const RHIBindingLayoutEntry* reflectionNormalBuffersBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING);
     const RHIBindingLayoutEntry* reflectionTangentBuffersBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING);
     const RHIBindingLayoutEntry* reflectionVelocityBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING);
+    const RHIBindingLayoutEntry* reflectionExposureStateBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING);
     ASSERT_NE(reflectionTlasBinding, nullptr);
     ASSERT_NE(reflectionOutputBinding, nullptr);
     ASSERT_NE(reflectionSceneColorBinding, nullptr);
@@ -3472,6 +5049,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     ASSERT_NE(reflectionNormalBuffersBinding, nullptr);
     ASSERT_NE(reflectionTangentBuffersBinding, nullptr);
     ASSERT_NE(reflectionVelocityBinding, nullptr);
+    ASSERT_NE(reflectionExposureStateBinding, nullptr);
     EXPECT_EQ(reflectionTlasBinding->type, RHIBindingType::AccelerationStructure);
     EXPECT_EQ(reflectionOutputBinding->type, RHIBindingType::StorageTexture);
     EXPECT_EQ(reflectionSceneColorBinding->type, RHIBindingType::SampledTexture);
@@ -3495,6 +5073,8 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     EXPECT_EQ(reflectionTangentBuffersBinding->type, RHIBindingType::ShaderResourceBuffer);
     EXPECT_EQ(reflectionTangentBuffersBinding->count, RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS);
     EXPECT_EQ(reflectionVelocityBinding->type, RHIBindingType::SampledTexture);
+    EXPECT_EQ(reflectionExposureStateBinding->type, RHIBindingType::ShaderResourceBuffer);
+    EXPECT_EQ(reflectionExposureStateBinding->visibility, RHIShaderStage::AllRayTracing);
 
     const RHIDescriptorSetLayout* reflectionDenoiseSetLayout = cache.GetRayTracedReflectionDenoiseSetLayout();
     ASSERT_NE(reflectionDenoiseSetLayout, nullptr);
@@ -3518,13 +5098,13 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
 TEST(DX12Validation, RayTracingPipelineRejectsRecursionDepthAboveDeviceLimit)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& caps = device->GetCapabilities();
-    if (!caps.supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(caps))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     ASSERT_GT(caps.maxRayRecursionDepth, 0u);
@@ -3567,12 +5147,12 @@ TEST(DX12Validation, RayTracingPipelineRejectsRecursionDepthAboveDeviceLimit)
 TEST(DX12Validation, RayTracingMinimalPipelineBuildsASAndSubmitsDispatch)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     constexpr const char* kMinimalRayGen = R"(
@@ -3739,12 +5319,12 @@ TEST(DX12Validation, RayTracingMinimalPipelineBuildsASAndSubmitsDispatch)
 TEST(DX12Validation, RayTracingDescriptorSetWritesStorageTexture)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     constexpr uint32 kExpectedPixel = 0x5A17C0DEu;
@@ -3866,12 +5446,12 @@ TEST(DX12Validation, RayTracingDescriptorSetWritesStorageTexture)
 TEST(DX12Validation, RayTracingTraceRayHitsTriangleAndWritesClosestHitPayload)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     constexpr uint32 kClosestHitValue = 0xA11CE123u;
@@ -4156,12 +5736,12 @@ TEST(DX12Validation, RayTracingTraceRayHitsTriangleAndWritesClosestHitPayload)
 TEST(DX12Validation, RayTracedShadowProductionShaderTracesTriangleAndWritesMask)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     constexpr uint32 kReadbackRowPitch = 256u;
@@ -4190,9 +5770,13 @@ TEST(DX12Validation, RayTracedShadowProductionShaderTracesTriangleAndWritesMask)
                   "RayTracedShadowTestConstants must match RayTracedShadow.hlsl cbuffer layout");
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
-    PipelineCache cache;
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     RHIPipeline* pipeline = cache.GetRayTracedShadowPipeline();
     RHIShaderTable* shaderTable = cache.GetRayTracedShadowShaderTable();
@@ -4772,12 +6356,12 @@ TEST(DX12Validation, RayTracedShadowProductionShaderTracesTriangleAndWritesMask)
 TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesMaterialResponse)
 {
     RHIDeviceDesc deviceDesc;
-    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::DX12, deviceDesc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
-    if (!device->GetCapabilities().supportsRaytracingPipeline)
+    if (!CanRunOptionalDXRQualification(device->GetCapabilities()))
     {
-        GTEST_SKIP() << "DXR ray tracing pipelines are not supported on this device";
+        return;
     }
 
     constexpr uint32 kUploadRowPitch = 256u;
@@ -4808,6 +6392,12 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     constexpr float kExpectedR = kBaseColorR * 0.96f + kExpectedSpecular;
     constexpr float kExpectedG = kBaseColorG * 0.96f + kExpectedSpecular;
     constexpr float kExpectedB = kBaseColorB * 0.96f + kExpectedSpecular;
+    constexpr float kCurrentProducerPreExposure =
+        0.5f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+    constexpr float kPreviousProducerPreExposure =
+        0.25f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+    constexpr float kPreviousHistoryPreExposure =
+        0.125f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
 
     struct RayTracedReflectionTestConstants
     {
@@ -4825,10 +6415,31 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     static_assert(sizeof(RayTracedReflectionTestConstants) == 256,
                   "RayTracedReflectionTestConstants must match RayTracedReflection.hlsl cbuffer layout");
 
-    const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    struct RayTracedReflectionExposureState
+    {
+        float32 exposureValues[4] = {
+            kCurrentProducerPreExposure,
+            kPreviousProducerPreExposure,
+            kPreviousHistoryPreExposure,
+            1.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {
+            0x6137a51fu,
+            0x9c4e28d3u,
+            static_cast<uint32>(RenderExposureMode::ManualEV100),
+            1u};
+    };
+    static_assert(sizeof(RayTracedReflectionExposureState) ==
+                  RVX_EXPOSURE_STATE_STRIDE);
 
-    PipelineCache cache;
+    const std::filesystem::path shaderDir = FindRenderShaderDirectory();
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
+
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     RHIPipeline* pipeline = cache.GetRayTracedReflectionPipeline();
     RHIShaderTable* shaderTable = cache.GetRayTracedReflectionShaderTable();
@@ -4847,6 +6458,17 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         sizeof(constants),
         "ProductionReflectionConstants");
     ASSERT_NE(constantBuffer.Get(), nullptr);
+
+    RayTracedReflectionExposureState exposureState;
+    RHIBufferRef exposureStateBuffer = CreateUploadBufferWithData(
+        *device,
+        sizeof(exposureState),
+        RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+        sizeof(exposureState),
+        &exposureState,
+        sizeof(exposureState),
+        "ProductionReflectionExposureState");
+    ASSERT_NE(exposureStateBuffer.Get(), nullptr);
 
     RayTracingTestMaterialMetadata materialMetadata;
     materialMetadata.baseColorFactor = Vec4(kBaseColorR, kBaseColorG, kBaseColorB, 1.0f);
@@ -5279,7 +6901,11 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     }
 
     float velocity[kSceneWidth * kSceneHeight * 2u] = {};
-    const float previousReflection[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float previousReflection[4] = {
+        kExpectedR * kPreviousProducerPreExposure * 2.0f,
+        kExpectedG * kPreviousProducerPreExposure * 2.0f,
+        kExpectedB * kPreviousProducerPreExposure * 2.0f,
+        1.0f};
     const float previousDepth = 0.5f;
     const float previousNormal[4] = {0.5f, 0.5f, 1.0f, 1.0f};
     const float fallbackTexel[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -5407,6 +7033,9 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_DEPTH_BINDING, sceneDepthSRV.Get());
     descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_CONSTANTS_BINDING, constantBuffer.Get(), 0, sizeof(constants));
     descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_METADATA_BINDING, materialMetadataBuffer.Get());
+    descriptorDesc.BindBuffer(
+        RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING,
+        exposureStateBuffer.Get());
     auto resolveMaterialTextureView = [&](uint32 textureIndex) -> RHITextureView*
     {
         switch (textureIndex)
@@ -5667,9 +7296,15 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     float observedHit[4] = {};
     ASSERT_TRUE(writeMaterialMetadata(1.0f, false, "alpha-pass"));
     ASSERT_TRUE(dispatchAndReadReflection("alpha-pass", observedHit));
-    EXPECT_NEAR(observedHit[0], kExpectedR, 2.0e-3f);
-    EXPECT_NEAR(observedHit[1], kExpectedG, 2.0e-3f);
-    EXPECT_NEAR(observedHit[2], kExpectedB, 2.0e-3f);
+    EXPECT_NEAR(observedHit[0],
+                kExpectedR * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedHit[1],
+                kExpectedG * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedHit[2],
+                kExpectedB * kCurrentProducerPreExposure,
+                2.0e-3f);
     EXPECT_NEAR(observedHit[3], 1.0f, 1.0e-4f);
 
     float observedCutout[4] = {};
@@ -5706,9 +7341,15 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         Vec4(0.2f, 0.1f, 0.05f, 2.0f),
         "pbr-textures"));
     ASSERT_TRUE(dispatchAndReadReflection("pbr-textures", observedPBRTextures));
-    EXPECT_NEAR(observedPBRTextures[0], 0.4352f, 2.0e-3f);
-    EXPECT_NEAR(observedPBRTextures[1], 0.1217f, 2.0e-3f);
-    EXPECT_NEAR(observedPBRTextures[2], 0.112075f, 2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[0],
+                0.4352f * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[1],
+                0.1217f * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[2],
+                0.112075f * kCurrentProducerPreExposure,
+                2.0e-3f);
     EXPECT_NEAR(observedPBRTextures[3], 1.0f, 1.0e-4f);
 
     float observedNormalMap[4] = {};
@@ -5726,10 +7367,68 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         Vec4(0.0f, 0.0f, 0.0f, 1.0f),
         "normal-map"));
     ASSERT_TRUE(dispatchAndReadReflection("normal-map", observedNormalMap));
-    EXPECT_NEAR(observedNormalMap[0], 0.916235f, 3.0e-3f);
-    EXPECT_NEAR(observedNormalMap[1], 0.898399f, 3.0e-3f);
-    EXPECT_NEAR(observedNormalMap[2], 0.889481f, 3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[0],
+                0.916235f * kCurrentProducerPreExposure,
+                3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[1],
+                0.898399f * kCurrentProducerPreExposure,
+                3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[2],
+                0.889481f * kCurrentProducerPreExposure,
+                3.0e-3f);
     EXPECT_NEAR(observedNormalMap[3], 1.0f, 1.0e-4f);
+
+    // Exercise the production shader's temporal exposure-domain conversion.
+    // The stored history is authored at y and contains twice the physical hit
+    // response.  Multiplying it by x/y therefore produces twice the current
+    // pre-exposed response, and a fixed 0.85 history weight yields 1.85x.
+    ASSERT_TRUE(writeGeometryMetadata(false, false, "pre-exposure-history"));
+    ASSERT_TRUE(writeMaterialMetadata(1.0f, false, "pre-exposure-history"));
+    constants.historyParams.x = 1.0f;
+    constants.historyClampParams.x = 0.0f;
+    void* mappedConstants = constantBuffer->Map();
+    ASSERT_NE(mappedConstants, nullptr);
+    std::memcpy(mappedConstants, &constants, sizeof(constants));
+    constantBuffer->Unmap();
+
+    float observedPreExposureHistory[4] = {};
+    ASSERT_TRUE(dispatchAndReadReflection(
+        "pre-exposure-history", observedPreExposureHistory));
+    constexpr float kHistoryBlendScale = 1.85f;
+    EXPECT_NEAR(observedPreExposureHistory[0],
+                kExpectedR * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[1],
+                kExpectedG * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[2],
+                kExpectedB * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[3], 1.0f, 1.0e-4f);
+
+    // A finite but shader-ABI-out-of-range exposure must not silently fall
+    // back to unit exposure or reuse the valid history above.
+    RayTracedReflectionExposureState invalidExposureState = exposureState;
+    invalidExposureState.exposureValues[0] = std::nextafter(
+        RVX_RENDER_EXPOSURE_MAX_SCALE,
+        std::numeric_limits<float32>::infinity());
+    void* mappedExposureState = exposureStateBuffer->Map();
+    ASSERT_NE(mappedExposureState, nullptr);
+    std::memcpy(mappedExposureState,
+                &invalidExposureState,
+                sizeof(invalidExposureState));
+    exposureStateBuffer->Unmap();
+
+    float observedInvalidExposure[4] = {};
+    ASSERT_TRUE(dispatchAndReadReflection(
+        "invalid-pre-exposure", observedInvalidExposure));
+    EXPECT_NEAR(observedInvalidExposure[0], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[1], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[2], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[3], 0.0f, 1.0e-4f);
 
     device->WaitIdle();
     cache.Shutdown();

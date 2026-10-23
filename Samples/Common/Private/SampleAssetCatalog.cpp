@@ -211,6 +211,32 @@ namespace RVX
                 output = SampleAssetKind::Animation;
                 return true;
             }
+            if (text == "effect")
+            {
+                output = SampleAssetKind::Effect;
+                return true;
+            }
+            return false;
+        }
+
+        bool ParseUsagePolicy(const std::string& text,
+                              SampleAssetUsagePolicy& output)
+        {
+            if (text == "required-qualification")
+            {
+                output = SampleAssetUsagePolicy::RequiredQualification;
+                return true;
+            }
+            if (text == "development-only")
+            {
+                output = SampleAssetUsagePolicy::DevelopmentOnly;
+                return true;
+            }
+            if (text == "optional-nightly")
+            {
+                output = SampleAssetUsagePolicy::OptionalNightly;
+                return true;
+            }
             return false;
         }
 
@@ -304,6 +330,8 @@ namespace RVX
         }
 
         bool IsLowerSHA256Digest(const std::string& digest);
+        bool IsRvaPath(const std::filesystem::path& path);
+        bool IsRvxVfxPath(const std::filesystem::path& path);
         bool ParseStrictPosixRelativePath(const std::string& text,
                                           std::filesystem::path& output,
                                           std::string& outError);
@@ -324,6 +352,7 @@ namespace RVX
             if (text == "Script") { output = CookAssetType::Script; return true; }
             if (text == "Model") { output = CookAssetType::Model; return true; }
             if (text == "Environment") { output = CookAssetType::Environment; return true; }
+            if (text == "Effect") { output = CookAssetType::Effect; return true; }
             return false;
         }
 
@@ -453,6 +482,17 @@ namespace RVX
                 return false;
             }
 
+            const auto packageOnly = cook->find("packageOnly");
+            if (packageOnly != cook->end())
+            {
+                if (!packageOnly->is_boolean())
+                {
+                    outError = "Sample asset cook packageOnly must be a boolean";
+                    return false;
+                }
+                output.packageOnly = packageOnly->get<bool>();
+            }
+
             output.cookSettingsHash = std::move(cookSettingsHash);
             output.recipeHash = std::move(recipeHash);
             output.declared = true;
@@ -521,6 +561,52 @@ namespace RVX
                 return false;
             }
             output = candidate;
+            return true;
+        }
+
+        bool ValidatePackageOnlyCookContract(const SampleAssetEntry& entry,
+                                             std::string& outError)
+        {
+            if (!entry.cook.declared || !entry.cook.packageOnly)
+            {
+                return true;
+            }
+
+            const bool modelArtifact =
+                entry.kind == SampleAssetKind::Model &&
+                entry.cook.selector.type == Resource::CookAssetType::Model &&
+                IsRvaPath(entry.path);
+            const bool environmentArtifact =
+                entry.kind == SampleAssetKind::Environment &&
+                entry.cook.selector.type == Resource::CookAssetType::Environment &&
+                IsRvaPath(entry.path);
+            const bool effectArtifact =
+                entry.kind == SampleAssetKind::Effect &&
+                entry.cook.selector.type == Resource::CookAssetType::Effect &&
+                IsRvxVfxPath(entry.path);
+            if ((!modelArtifact && !environmentArtifact && !effectArtifact) ||
+                !entry.contentIdentity.IsValid() ||
+                entry.contentIdentity.domain !=
+                    Resource::ResourceContentIdentityDomain::CookedArtifact ||
+                entry.contentIdentity.scope !=
+                    Resource::ResourceContentIdentityScope::SelfContainedArtifact)
+            {
+                outError = "Package-only sample asset must be a Model or Environment "
+                           "(.rva), or an Effect (.rvxvfx), with a matching selector "
+                           "and self-contained CookedArtifact identity";
+                return false;
+            }
+
+            const std::filesystem::path expectedPath =
+                (entry.cook.cookedRoot /
+                 std::filesystem::path(entry.cook.selector.outputPath))
+                    .lexically_normal();
+            if (!IsSafeRelativePath(expectedPath) || entry.path != expectedPath)
+            {
+                outError = "Package-only sample asset path must exactly equal "
+                           "cookedRoot/selector.outputPath";
+                return false;
+            }
             return true;
         }
 
@@ -722,6 +808,28 @@ namespace RVX
             return extension == ".gltf";
         }
 
+        bool IsRvaPath(const std::filesystem::path& path)
+        {
+            std::string extension = path.extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char character)
+                           {
+                               return static_cast<char>(std::tolower(character));
+                           });
+            return extension == ".rva";
+        }
+
+        bool IsRvxVfxPath(const std::filesystem::path& path)
+        {
+            std::string extension = path.extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char character)
+                           {
+                               return static_cast<char>(std::tolower(character));
+                           });
+            return extension == ".rvxvfx";
+        }
+
         bool ParseGltfLocalUri(const std::string& uri,
                                std::string& output,
                                std::string& outError)
@@ -766,7 +874,7 @@ namespace RVX
             const Json document = Json::parse(stream, nullptr, false);
             if (!stream || document.is_discarded() || !document.is_object())
             {
-                outError = "Schema-v3 glTF root is not valid JSON";
+                outError = "Schema-v4 glTF root is not valid JSON";
                 return false;
             }
 
@@ -837,7 +945,7 @@ namespace RVX
             return validateCollection("buffers") && validateCollection("images");
         }
 
-        bool ParseAndVerifyV3Manifest(const Json& asset,
+        bool ParseAndVerifyV4Manifest(const Json& asset,
                                       SampleAssetEntry& entry,
                                       const std::filesystem::path& assetRoot,
                                       std::string& outError)
@@ -847,7 +955,7 @@ namespace RVX
             if (assetContentId == asset.end() || files == asset.end() ||
                 !files->is_array() || files->empty())
             {
-                outError = "Schema-v3 asset requires assetContentId and non-empty files[]";
+                outError = "Schema-v4 asset requires assetContentId and non-empty files[]";
                 return false;
             }
             if (!ParseAssetContentId(*assetContentId, entry.assetContentId, outError))
@@ -866,7 +974,7 @@ namespace RVX
             {
                 if (!file.is_object())
                 {
-                    outError = "Schema-v3 asset files[] entry must be an object";
+                    outError = "Schema-v4 asset files[] entry must be an object";
                     return false;
                 }
 
@@ -876,30 +984,30 @@ namespace RVX
                     !ReadRequiredString(file, "purpose", parsedFile.purpose, outError) ||
                     !ReadRequiredString(file, "sha256", parsedFile.sha256, outError))
                 {
-                    outError = "Schema-v3 files[] " + outError;
+                    outError = "Schema-v4 files[] " + outError;
                     return false;
                 }
                 const auto byteCount = file.find("byteCount");
                 if (byteCount == file.end() || !byteCount->is_number_unsigned())
                 {
-                    outError = "Schema-v3 files[] byteCount must be an unsigned integer";
+                    outError = "Schema-v4 files[] byteCount must be an unsigned integer";
                     return false;
                 }
                 if (!IsLowerSHA256Digest(parsedFile.sha256))
                 {
-                    outError = "Schema-v3 files[] sha256 must be a lowercase SHA-256 digest";
+                    outError = "Schema-v4 files[] sha256 must be a lowercase SHA-256 digest";
                     return false;
                 }
                 if (!ParseStrictPosixRelativePath(pathText, parsedFile.path, outError))
                 {
-                    outError = "Schema-v3 files[] path is invalid: " + outError;
+                    outError = "Schema-v4 files[] path is invalid: " + outError;
                     return false;
                 }
 
                 const std::string canonicalPath = parsedFile.path.generic_string();
                 if (!previousPath.empty() && canonicalPath <= previousPath)
                 {
-                    outError = "Schema-v3 files[] paths must be strictly increasing canonical POSIX paths";
+                    outError = "Schema-v4 files[] paths must be strictly increasing canonical POSIX paths";
                     return false;
                 }
                 previousPath = canonicalPath;
@@ -914,7 +1022,7 @@ namespace RVX
                 if (!canonicalFilePaths.emplace(
                         MakeCanonicalPathKey(parsedFile.resolvedPath)).second)
                 {
-                    outError = "Schema-v3 files[] contains duplicate canonical paths";
+                    outError = "Schema-v4 files[] contains duplicate canonical paths";
                     return false;
                 }
 
@@ -931,14 +1039,14 @@ namespace RVX
                 if (parsedFile.byteCount != observedByteCount ||
                     parsedFile.sha256 != observedDigest)
                 {
-                    outError = "Schema-v3 asset package file hash or byte count drift: " +
+                    outError = "Schema-v4 asset package file hash or byte count drift: " +
                                canonicalPath;
                     return false;
                 }
                 if (aggregateByteCount >
                     std::numeric_limits<uint64>::max() - parsedFile.byteCount)
                 {
-                    outError = "Schema-v3 asset package byte count overflows uint64";
+                    outError = "Schema-v4 asset package byte count overflows uint64";
                     return false;
                 }
                 aggregateByteCount += parsedFile.byteCount;
@@ -954,14 +1062,14 @@ namespace RVX
 
             if (!rootListed)
             {
-                outError = "Schema-v3 files[] must list the entry path";
+                outError = "Schema-v4 files[] must list the entry path";
                 return false;
             }
             if (entry.assetContentId.fileCount != entry.files.size() ||
                 entry.assetContentId.byteCount != aggregateByteCount ||
                 entry.assetContentId.digest != aggregateHasher.FinalizeHex())
             {
-                outError = "Schema-v3 assetContentId does not match the verified files[] package";
+                outError = "Schema-v4 assetContentId does not match the verified files[] package";
                 return false;
             }
             if (IsGltfPath(entry.path) &&
@@ -994,6 +1102,22 @@ namespace RVX
             case SampleAssetKind::Texture: return "texture";
             case SampleAssetKind::Environment: return "environment";
             case SampleAssetKind::Animation: return "animation";
+            case SampleAssetKind::Effect: return "effect";
+            default: return "unknown";
+        }
+    }
+
+    const char* GetSampleAssetUsagePolicyName(
+        SampleAssetUsagePolicy policy) noexcept
+    {
+        switch (policy)
+        {
+            case SampleAssetUsagePolicy::RequiredQualification:
+                return "required-qualification";
+            case SampleAssetUsagePolicy::DevelopmentOnly:
+                return "development-only";
+            case SampleAssetUsagePolicy::OptionalNightly:
+                return "optional-nightly";
             default: return "unknown";
         }
     }
@@ -1048,9 +1172,7 @@ namespace RVX
         if (schema == document.end() || !schema->is_string() ||
             schema->get<std::string>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_ID ||
             version == document.end() || !version->is_number_unsigned() ||
-            (version->get<uint64>() != 1 &&
-             version->get<uint64>() != 2 &&
-             version->get<uint64>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION) ||
+            version->get<uint64>() != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION ||
             assets == document.end() || !assets->is_array() || assets->empty())
         {
             SetError(outError,
@@ -1084,6 +1206,32 @@ namespace RVX
             if (!IsValidAssetId(entry.id) || !ParseAssetKind(kind, entry.kind))
             {
                 SetError(outError, "Invalid sample asset id or kind: " + entry.id);
+                return false;
+            }
+
+            const auto usagePolicy = asset.find("usagePolicy");
+            const auto qualificationEligible =
+                asset.find("qualificationEligible");
+            if (usagePolicy == asset.end() || !usagePolicy->is_string() ||
+                qualificationEligible == asset.end() ||
+                !qualificationEligible->is_boolean() ||
+                !ParseUsagePolicy(usagePolicy->get<std::string>(),
+                                  entry.usagePolicy))
+            {
+                SetError(outError,
+                         "Sample asset requires a valid usagePolicy and "
+                         "qualificationEligible metadata: " + entry.id);
+                return false;
+            }
+            entry.qualificationEligible = qualificationEligible->get<bool>();
+            const bool requiresQualification =
+                entry.usagePolicy ==
+                SampleAssetUsagePolicy::RequiredQualification;
+            if (entry.qualificationEligible != requiresQualification)
+            {
+                SetError(outError,
+                         "Sample asset usagePolicy and qualificationEligible "
+                         "must agree: " + entry.id);
                 return false;
             }
             if (m_entries.contains(entry.id))
@@ -1129,7 +1277,7 @@ namespace RVX
                 return false;
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (!ReadRequiredString(*license,
                                         "coverage",
@@ -1161,7 +1309,7 @@ namespace RVX
 
             entry.redistributable = redistributable->get<bool>();
             const auto attribution = asset.find("attribution");
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (attribution == asset.end() || !attribution->is_string() ||
                     attribution->get<std::string>().empty())
@@ -1186,7 +1334,7 @@ namespace RVX
             }
 
             const auto modificationNotice = asset.find("modificationNotice");
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (modificationNotice == asset.end() ||
                     !modificationNotice->is_string() ||
@@ -1211,7 +1359,7 @@ namespace RVX
                 entry.modificationNotice = modificationNotice->get<std::string>();
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 const auto derivedFrom = asset.find("derivedFrom");
                 const auto generation = asset.find("generation");
@@ -1259,14 +1407,14 @@ namespace RVX
                 }
             }
 
-            if (catalogSchemaVersion >= 3)
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 if (!ParseStrictPosixRelativePath(path, entry.path, parseError) ||
                     !ParseStrictPosixRelativePath(licenseFile,
                                                   entry.license.file,
                                                   parseError))
                 {
-                    SetError(outError, "Schema-v3 " + parseError + " for asset " + entry.id);
+                    SetError(outError, "Schema-v4 " + parseError + " for asset " + entry.id);
                     return false;
                 }
             }
@@ -1310,8 +1458,8 @@ namespace RVX
                 }
             }
 
-            if (catalogSchemaVersion >= 3 &&
-                !ParseAndVerifyV3Manifest(asset,
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION &&
+                !ParseAndVerifyV4Manifest(asset,
                                           entry,
                                           m_assetRoot,
                                           parseError))
@@ -1321,15 +1469,21 @@ namespace RVX
             }
 
             const auto cook = asset.find("cook");
-            if (cook != asset.end() && catalogSchemaVersion < 3)
+            if (cook != asset.end() &&
+                catalogSchemaVersion != RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION)
             {
                 SetError(outError,
-                         "Sample asset cook requires catalog schema v3: " +
+                         "Sample asset cook requires catalog schema v4: " +
                              entry.id);
                 return false;
             }
-            if (catalogSchemaVersion >= 3 &&
+            if (catalogSchemaVersion == RVX_SAMPLE_ASSET_CATALOG_SCHEMA_VERSION &&
                 !ParseCookDeclaration(asset, entry.cook, parseError))
+            {
+                SetError(outError, parseError + " for asset " + entry.id);
+                return false;
+            }
+            if (!ValidatePackageOnlyCookContract(entry, parseError))
             {
                 SetError(outError, parseError + " for asset " + entry.id);
                 return false;
@@ -1428,6 +1582,38 @@ namespace RVX
             return result;
         }
 
+        if (entry->cook.packageOnly)
+        {
+            const std::filesystem::path expectedRelative =
+                (entry->cook.cookedRoot /
+                 std::filesystem::path(entry->cook.selector.outputPath))
+                    .lexically_normal();
+            std::filesystem::path runtimePath;
+            std::filesystem::path expectedPath;
+            if (!ResolveCatalogFile(m_assetRoot,
+                                    entry->path,
+                                    "package-only runtime asset",
+                                    runtimePath,
+                                    error) ||
+                !ResolveCatalogFile(m_assetRoot,
+                                    expectedRelative,
+                                    "selected cooked artifact",
+                                    expectedPath,
+                                    error))
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = std::move(error);
+                return result;
+            }
+            if (runtimePath != expectedPath || !IsContainedPath(cookedRoot, runtimePath))
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Package-only runtime asset is not the canonical "
+                                "selected artifact below cookedRoot";
+                return result;
+            }
+        }
+
         Resource::CookManifest manifest;
         if (!Resource::LoadCookManifest(manifestPath, manifest, error))
         {
@@ -1448,6 +1634,7 @@ namespace RVX
             entry->cook.manifestContentIdentity;
         expectation.expectedCookSettingsHash = entry->cook.cookSettingsHash;
         expectation.expectedRecipeHash = entry->cook.recipeHash;
+        expectation.verifyMountedSource = !entry->cook.packageOnly;
         result.resourceReceipt = Resource::VerifyCookedAssetAdmission(
             manifest,
             m_assetRoot,
@@ -1458,6 +1645,41 @@ namespace RVX
             result.code = SampleCookedAssetAdmissionCode::ResourceAdmissionFailed;
             result.detail = result.resourceReceipt.detail;
             return result;
+        }
+
+        if (entry->cook.packageOnly)
+        {
+            const uint32 selectedIndex = result.resourceReceipt.selectedEntryIndex;
+            if (selectedIndex >= manifest.entries.size())
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Cook admission accepted without a valid selected entry";
+                return result;
+            }
+
+            const Resource::CookManifestEntry& selected =
+                manifest.entries[selectedIndex];
+            const auto selectedArtifact = std::find_if(
+                selected.artifacts.begin(), selected.artifacts.end(),
+                [&entry](const Resource::CookFileIdentity& artifact)
+                {
+                    return artifact.relativePath == entry->cook.selector.outputPath;
+                });
+            if (selectedArtifact == selected.artifacts.end() ||
+                !entry->contentIdentity.IsValid() ||
+                entry->contentIdentity.domain !=
+                    Resource::ResourceContentIdentityDomain::CookedArtifact ||
+                entry->contentIdentity.scope !=
+                    Resource::ResourceContentIdentityScope::SelfContainedArtifact ||
+                entry->contentIdentity.digest != selectedArtifact->sha256 ||
+                entry->contentIdentity.byteCount != selectedArtifact->byteCount ||
+                entry->contentIdentity.fileCount != 1)
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Package-only runtime content identity does not "
+                                "match the selected cooked artifact";
+                return result;
+            }
         }
 
         result.code = SampleCookedAssetAdmissionCode::Accepted;

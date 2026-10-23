@@ -11,186 +11,687 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
 jobs:
-  windows:
-    name: Windows (DX11/DX12/Vulkan)
+  architecture:
+    name: Ubuntu Architecture
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install configure dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+      - name: Prepare vcpkg cache
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-architecture-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-architecture-
+      - name: Configure architecture graph
+        run: cmake --preset linux_x64_debug
+      - name: Record dependency-aware validation plan
+        run: >-
+          python3 Scripts/plan_validation.py
+          --root .
+          --manifest Docs/module-boundaries.json
+          --module-inventory build/linux_x64_debug/Architecture/RVXModuleInventory-Debug.json
+          --base-ref origin/master
+          --head-ref HEAD
+          --mode observation
+          --output build/linux_x64_debug/BuildTruth/ValidationSelectionPlan.json
+      - name: Run fail-closed architecture suite
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_debug
+          -BuildPreset linux_x64_debug
+          -TestPreset linux_x64_debug_architecture
+          -BuildDir build/linux_x64_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationArchitecture
+          -RequiredLabel lane.architecture
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Run policy self-tests
+        run: python3 -m unittest discover -s Scripts -p "test_*.py" -v
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Upload architecture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-linux
+          path: build/linux_x64_debug/BuildTruth
+
+  windows-debug:
+    name: Windows Debug
     runs-on: windows-2022
     env:
       VCPKG_ROOT: C:/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: Prepare vcpkg binary cache dir
-        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+        with: {fetch-depth: 0, lfs: true}
+      - name: Prepare vcpkg cache
         shell: pwsh
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-windows-
-
-      - name: Build truth (Windows Debug)
+      - name: Build truth
         shell: pwsh
-        env:
-          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
         run: >-
           ./Scripts/run_build_truth.ps1
           -ConfigurePreset win_x64_debug
           -BuildPreset win_x64_debug
-          -TestPreset win_x64_debug_unit_lint
+          -LaneTestPresets "win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native"
           -BuildDir build/win_x64_debug
           -Configuration Debug
           -BaseRef origin/master
-          -NativeTestRegex "^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$"
           -RequiredNativeBackend DX12
           -Fresh
-
-      - name: Upload build-truth evidence
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_pr_debug
+          -BuildPreset win_x64_pr_debug
+          -TestPreset win_x64_pr_debug_smoke
+          -BuildDir build/win_x64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload Windows evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-windows-debug
-          path: build/win_x64_debug/BuildTruth
+          path: |
+            build/win_x64_debug/BuildTruth
+            build/win_x64_pr_debug/BuildTruth
+            build/win_x64_pr_debug/Tests/VisualArtifacts
+            build/win_x64_pr_debug/Tests/SampleReports
+            build/win_x64_pr_debug/Tests/StartupTimelines
 
-  linux:
-    name: Linux (Vulkan/OpenGL configure)
+  linux-debug:
+    name: Linux Debug
     runs-on: ubuntu-24.04
     env:
-      LIBGL_ALWAYS_SOFTWARE: "1"
       VCPKG_ROOT: /usr/local/share/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: Install system deps for vcpkg ports
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install runtime dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
-
-      - name: Select Lavapipe Vulkan ICD
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool \
+            fonts-dejavu-core fonts-noto-cjk
+      - name: Select and verify Lavapipe
         shell: bash
         run: |
-          mapfile -t lavapipe_icds < <(
-            dpkg-query -L mesa-vulkan-drivers |
-              awk '/\/lvp_icd[^/]*\.json$/ { print }' |
-              sort -u
-          )
-          if [[ "${#lavapipe_icds[@]}" -ne 1 || ! -f "${lavapipe_icds[0]}" ]]; then
-            echo "::error::mesa-vulkan-drivers did not install exactly one usable Lavapipe ICD manifest"
-            dpkg-query -L mesa-vulkan-drivers | sort
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          if [[ "${#manifests[@]}" -ne 1 || ! -f "${manifests[0]}" ]]; then
+            echo "::error::Expected exactly one Lavapipe ICD manifest"
             exit 1
           fi
-          lavapipe_icd="${lavapipe_icds[0]}"
-          echo "VK_DRIVER_FILES=$lavapipe_icd" >> "$GITHUB_ENV"
-          echo "VK_ICD_FILENAMES=$lavapipe_icd" >> "$GITHUB_ENV"
-          echo "Using Lavapipe ICD: $lavapipe_icd"
-
-      - name: Verify Lavapipe Vulkan ICD
-        run: |
-          test -f "$VK_DRIVER_FILES"
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
           xvfb-run -a vulkaninfo --summary
-
-      - name: Prepare vcpkg binary cache dir
+      - name: Prepare vcpkg cache
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-linux-
-
-      - name: Build truth (Linux Debug)
+      - name: Build truth
         shell: bash
-        env:
-          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
         run: |
           xvfb-run -a pwsh -NoProfile -File ./Scripts/run_build_truth.ps1 \
             -ConfigurePreset linux_x64_debug \
             -BuildPreset linux_x64_debug \
-            -TestPreset linux_x64_debug_unit_lint \
+            -LaneTestPresets 'linux_x64_debug_unit,linux_x64_debug_integration,linux_x64_debug_native' \
             -BuildDir build/linux_x64_debug \
             -Configuration Debug \
             -BaseRef origin/master \
-            -NativeTestRegex '^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$' \
             -RequiredNativeBackend Vulkan \
             -Fresh
-
-      - name: Configure ThreadSanitizer
-        run: cmake --preset linux_x64_tsan
-
-      - name: Build ThreadSanitizer stress target
-        run: cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
-
-      - name: Run ThreadSanitizer stress
-        env:
-          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
-        run: |
-          mkdir -p build/linux_x64_tsan/BuildTruth
-          ctest --preset linux_x64_tsan \
-            --output-junit build/linux_x64_tsan/BuildTruth/RenderConcurrencyTSAN.junit.xml
-
-      - name: Upload build-truth evidence
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_pr_debug
+          -BuildPreset linux_x64_pr_debug
+          -TestPreset linux_x64_pr_debug_smoke
+          -BuildDir build/linux_x64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload Linux evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-linux-debug
           path: |
             build/linux_x64_debug/BuildTruth
-            build/linux_x64_tsan/BuildTruth
+            build/linux_x64_pr_debug/BuildTruth
+            build/linux_x64_pr_debug/Tests/VisualArtifacts
+            build/linux_x64_pr_debug/Tests/SampleReports
+            build/linux_x64_pr_debug/Tests/StartupTimelines
 
-  macos:
-    name: macOS ARM64 (Metal)
-    runs-on: macos-15
+  linux-tsan:
+    name: Linux TSAN
+    runs-on: ubuntu-24.04
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      VCPKG_ROOT: /usr/local/share/vcpkg
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+      - name: Prepare vcpkg cache
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
         with:
-          fetch-depth: 0
-          lfs: true
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-linux-tsan-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-linux-tsan-
+      - name: Configure TSAN
+        run: cmake --preset linux_x64_tsan
+      - name: Run fail-closed focused concurrency validation
+        env:
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_tsan
+          -BuildPreset linux_x64_tsan
+          -TestPreset linux_x64_tsan
+          -BuildDir build/linux_x64_tsan
+          -Configuration Debug
+          -BuildTarget RenderConcurrencyTSAN
+          -RequiredLabel lane.integration
+          -BaseRef origin/master
+          -SkipConfigure
+      - name: Upload TSAN evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tsan
+          path: build/linux_x64_tsan/BuildTruth
 
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-15
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
       - name: Resolve vcpkg root
         run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
-
-      - name: Prepare vcpkg binary cache dir
+      - name: Prepare vcpkg cache
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-macos-arm64-
-
-      - name: Build truth (macOS ARM64 Debug)
+      - name: Build truth
         shell: pwsh
         run: >-
           ./Scripts/run_build_truth.ps1
           -ConfigurePreset mac_arm64_debug
           -BuildPreset mac_arm64_debug
-          -TestPreset mac_arm64_debug_unit_lint
+          -LaneTestPresets "mac_arm64_debug_unit,mac_arm64_debug_integration,mac_arm64_debug_native"
           -BuildDir build/mac_arm64_debug
           -Configuration Debug
           -BaseRef origin/master
-          -NativeTestRegex "^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$"
           -RequiredNativeBackend Metal
           -Fresh
-
-      - name: Upload build-truth evidence
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset mac_arm64_pr_debug
+          -BuildPreset mac_arm64_pr_debug
+          -TestPreset mac_arm64_pr_debug_smoke
+          -BuildDir build/mac_arm64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload macOS evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-macos-arm64-debug
-          path: build/mac_arm64_debug/BuildTruth
+          path: |
+            build/mac_arm64_debug/BuildTruth
+            build/mac_arm64_pr_debug/BuildTruth
+            build/mac_arm64_pr_debug/Tests/VisualArtifacts
+            build/mac_arm64_pr_debug/Tests/SampleReports
+            build/mac_arm64_pr_debug/Tests/StartupTimelines
+
+  shipping:
+    name: Shipping (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: Windows, runner: windows-2022, vcpkg_root: 'C:/vcpkg', host_preset: win_x64_shipping_host_release, shipping_preset: win_x64_shipping_release, test_preset: win_x64_shipping_release_shipping, build_dir: build/win_x64_shipping_release}
+          - {platform: Linux, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, host_preset: linux_x64_shipping_host_release, shipping_preset: linux_x64_shipping_release, test_preset: linux_x64_shipping_release_shipping, build_dir: build/linux_x64_shipping_release}
+          - {platform: macOS, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, host_preset: mac_arm64_shipping_host_release, shipping_preset: mac_arm64_shipping_release, test_preset: mac_arm64_shipping_release_shipping, build_dir: build/mac_arm64_shipping_release}
+    runs-on: ${{ matrix.runner }}
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg_root }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve macOS vcpkg root
+        if: runner.os == 'macOS'
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER=1" >> "$GITHUB_ENV"
+      - name: Enable explicit Windows software-adapter fallback
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER=1'
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-shipping-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-shipping-${{ matrix.platform }}-
+      - name: Configure host cooker
+        run: cmake --preset ${{ matrix.host_preset }}
+      - name: Build host cooker
+        run: cmake --build --preset ${{ matrix.host_preset }} --parallel 3
+      - name: Run fail-closed Shipping validation
+        if: runner.os != 'Linux'
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.shipping_preset }}
+          -BuildPreset ${{ matrix.shipping_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteRequiredShipping
+          -RequiredLabel suite.required-shipping
+          -ExpectedTestCount 5
+          -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Linux Shipping validation
+        if: runner.os == 'Linux'
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.shipping_preset }}
+          -BuildPreset ${{ matrix.shipping_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteRequiredShipping
+          -RequiredLabel suite.required-shipping
+          -ExpectedTestCount 5
+          -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload Shipping evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shipping-${{ matrix.platform }}
+          path: |
+            build/*shipping_release/BuildTruth
+            build/*shipping_release/Tests/Shipping/ShippingFixtures
+          if-no-files-found: error
+
+  raster-correctness:
+    name: GFX24 Raster Correctness (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-2022
+            vcpkg_root: C:/vcpkg
+            configure_preset: win_x64_gfx24_raster_release
+            build_preset: win_x64_gfx24_raster_release
+            test_preset: win_x64_gfx24_raster_release_run
+            build_dir: build/win_x64_gfx24_raster_release
+            backend: DX12
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json'
+          - platform: Linux
+            runner: ubuntu-24.04
+            vcpkg_root: /usr/local/share/vcpkg
+            configure_preset: linux_x64_gfx24_raster_release
+            build_preset: linux_x64_gfx24_raster_release
+            test_preset: linux_x64_gfx24_raster_release_run
+            build_dir: build/linux_x64_gfx24_raster_release
+            backend: Vulkan
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json'
+          - platform: macOS
+            runner: macos-15
+            vcpkg_root: /usr/local/share/vcpkg
+            configure_preset: macos_arm64_gfx24_raster_release
+            build_preset: macos_arm64_gfx24_raster_release
+            test_preset: macos_arm64_gfx24_raster_release_run
+            build_dir: build/macos_arm64_gfx24_raster_release
+            backend: Metal
+            required_evidence: 'Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series-validation.json'
+    runs-on: ${{ matrix.runner }}
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg_root }}
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve macOS vcpkg root
+        if: runner.os == 'macOS'
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - name: Install Linux raster dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool \
+            fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-raster-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-raster-${{ matrix.platform }}-
+      - name: Run fail-closed GFX24 raster correctness
+        if: runner.os != 'Linux'
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.configure_preset }}
+          -BuildPreset ${{ matrix.build_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence '${{ matrix.required_evidence }}'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Linux GFX24 raster correctness
+        if: runner.os == 'Linux'
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.configure_preset }}
+          -BuildPreset ${{ matrix.build_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence '${{ matrix.required_evidence }}'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload GFX24 raster evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-raster-${{ matrix.platform }}
+          path: |
+            ${{ matrix.build_dir }}/BuildTruth
+            ${{ matrix.build_dir }}/Tests/Gfx24RasterCorrectness
+          if-no-files-found: error
+
+  windows-gfx24-hardware:
+    name: Windows DX12 GFX24 Performance and DXR
+    runs-on: [self-hosted, Windows, X64, rvx-gpu-dx12-perf, rtx4070ti]
+    env:
+      VCPKG_ROOT: C:/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-hardware-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-hardware-windows-
+      - name: Run fail-closed DX12 approved Golden validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_gfx24_approved_golden_release
+          -BuildPreset win_x64_gfx24_approved_golden_release
+          -TestPreset win_x64_gfx24_approved_golden_release_run
+          -BuildDir build/win_x64_gfx24_approved_golden_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence 'Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/golden-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series-validation.json;Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/golden-validation.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fixed DX12 performance calibration
+        shell: pwsh
+        run: >-
+          ./Scripts/run_render_quality_performance_calibration.ps1
+          -ConfigurePreset win_x64_gfx24_performance_calibration_release
+          -BuildPreset win_x64_gfx24_performance_calibration_release
+          -TestPreset win_x64_gfx24_performance_calibration_release_run
+          -BuildDir build/gfx24_perf_calibration
+          -OutputRoot build/gfx24_perf_calibration/PerformanceCalibration
+      - name: Run fail-closed DX12 hardware ray tracing
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_gfx24_hardware_rt_release
+          -BuildPreset win_x64_gfx24_hardware_rt_release
+          -TestPreset win_x64_gfx24_hardware_rt_release_run
+          -BuildDir build/win_x64_gfx24_hardware_rt_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24HardwareRtDx12
+          -RequiredLabel suite.gfx24-hardware-rt-dx12
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload DX12 performance and ray-tracing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-hardware-dx12
+          path: |
+            build/win_x64_gfx24_approved_golden_release/BuildTruth
+            build/win_x64_gfx24_approved_golden_release/Tests/Gfx24RasterCorrectness
+            build/gfx24_perf_calibration/PerformanceCalibration
+            build/gfx24_perf_calibration/BuildTruth
+            build/win_x64_gfx24_hardware_rt_release/BuildTruth
+            build/win_x64_gfx24_hardware_rt_release/Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json
+            .agent-harness/receipts/RequiredSuite.*.json
+          if-no-files-found: error
+
+  linux-gfx24-vulkan-rt:
+    name: Linux Vulkan GFX24 Ray Tracing
+    runs-on: [self-hosted, Linux, X64, rvx-gpu-vulkan-rt, rtx4070ti]
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Verify Vulkan hardware adapter
+        shell: bash
+        run: |
+          command -v vulkaninfo >/dev/null
+          vulkaninfo --summary | tee vulkaninfo-summary.txt
+          if grep -Eqi 'lavapipe|llvmpipe|swiftshader' vulkaninfo-summary.txt; then
+            echo '::error::A hardware Vulkan adapter is required for this job'
+            exit 1
+          fi
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-gfx24-hardware-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-gfx24-hardware-linux-
+      - name: Run fail-closed Vulkan hardware raster correctness
+        shell: bash
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_gfx24_raster_release
+          -BuildPreset linux_x64_gfx24_raster_release
+          -TestPreset linux_x64_gfx24_raster_release_run
+          -BuildDir build/linux_x64_gfx24_raster_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24RasterCorrectness
+          -RequiredLabel suite.gfx24-raster-correctness
+          -ExpectedTestCount 4
+          -RequiredEvidence 'Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series-validation.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json;Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series-validation.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Vulkan hardware ray tracing
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_gfx24_hardware_rt_release
+          -BuildPreset linux_x64_gfx24_hardware_rt_release
+          -TestPreset linux_x64_gfx24_hardware_rt_release_run
+          -BuildDir build/linux_x64_gfx24_hardware_rt_release
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteGfx24HardwareRtVulkan
+          -RequiredLabel suite.gfx24-hardware-rt-vulkan
+          -ExpectedTestCount 6
+          -RequiredEvidence 'Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json;Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Upload Vulkan raster and ray-tracing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-hardware-vulkan
+          path: |
+            build/linux_x64_gfx24_raster_release/BuildTruth
+            build/linux_x64_gfx24_raster_release/Tests/Gfx24RasterCorrectness
+            build/linux_x64_gfx24_hardware_rt_release/BuildTruth
+            build/linux_x64_gfx24_hardware_rt_release/Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json
+            build/linux_x64_gfx24_hardware_rt_release/Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json
+            .agent-harness/receipts/RequiredSuite.*.json
+          if-no-files-found: error
+
+  raster-cross-backend:
+    name: GFX24 Raster Cross-Backend Qualification
+    if: ${{ needs.raster-correctness.result == 'success' }}
+    needs: [raster-correctness]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Download Windows raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-Windows
+          path: artifacts/windows
+      - name: Download Linux raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-Linux
+          path: artifacts/linux
+      - name: Download macOS raster evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gfx24-raster-macOS
+          path: artifacts/macos
+      - name: Run fail-closed cross-backend visual comparison
+        run: >-
+          python3 Scripts/compare_render_quality_backends.py
+          --sample-manifest Samples/RenderVerseSamples/Manifests/renderverse-samples.json
+          --policy Tests/RenderQuality/Policies/cross-backend-visual-policy-v1.json
+          --expected-source-commit ${{ github.sha }}
+          --series windows/dx12/forward-plus=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/ForwardPlus/series.json
+          --series windows/dx12/deferred=artifacts/windows/Tests/Gfx24RasterCorrectness/Release/DX12/Deferred/series.json
+          --series linux/vulkan/forward-plus=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/ForwardPlus/series.json
+          --series linux/vulkan/deferred=artifacts/linux/Tests/Gfx24RasterCorrectness/Release/Vulkan/Deferred/series.json
+          --series macos/metal/forward-plus=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/ForwardPlus/series.json
+          --series macos/metal/deferred=artifacts/macos/Tests/Gfx24RasterCorrectness/Release/Metal/Deferred/series.json
+          --report artifacts/cross-backend/BuildTruth/cross-backend-comparison.json
+      - name: Upload cross-backend visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx24-raster-cross-backend
+          path: artifacts/cross-backend/BuildTruth/cross-backend-comparison.json
+          if-no-files-found: error
+
+  pr-verdict:
+    name: PR Verdict
+    if: always()
+    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping, raster-correctness, windows-gfx24-hardware, linux-gfx24-vulkan-rt, raster-cross-backend]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PR gate
+        env:
+          ARCHITECTURE: ${{ needs.architecture.result }}
+          WINDOWS_DEBUG: ${{ needs.windows-debug.result }}
+          LINUX_DEBUG: ${{ needs.linux-debug.result }}
+          LINUX_TSAN: ${{ needs.linux-tsan.result }}
+          MACOS_ARM64: ${{ needs.macos-arm64.result }}
+          SHIPPING: ${{ needs.shipping.result }}
+          RASTER_CORRECTNESS: ${{ needs.raster-correctness.result }}
+          WINDOWS_GFX24_HARDWARE: ${{ needs.windows-gfx24-hardware.result }}
+          LINUX_GFX24_VULKAN_RT: ${{ needs.linux-gfx24-vulkan-rt.result }}
+          RASTER_CROSS_BACKEND: ${{ needs.raster-cross-backend.result }}
+        run: |
+          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING" "$RASTER_CORRECTNESS" "$WINDOWS_GFX24_HARDWARE" "$LINUX_GFX24_VULKAN_RT" "$RASTER_CROSS_BACKEND"; do
+            test "$result" = success || exit 1
+          done

@@ -1,0 +1,642 @@
+#include "Resource/Cooked/CookedMaterialArtifact.h"
+#include "Resource/Loader/CookedMaterialLoader.h"
+#include "Resource/RenderUploadRequestBuilder.h"
+#include "Resource/Types/MaterialResource.h"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace
+{
+    namespace fs = std::filesystem;
+
+    class TemporaryDirectory final
+    {
+    public:
+        TemporaryDirectory()
+        {
+            const auto stamp = std::chrono::steady_clock::now()
+                .time_since_epoch().count();
+            m_path = fs::temp_directory_path() /
+                ("rvx_cooked_material_loader_" + std::to_string(stamp));
+            fs::create_directories(m_path / "textures");
+        }
+
+        ~TemporaryDirectory()
+        {
+            std::error_code error;
+            fs::remove_all(m_path, error);
+        }
+
+        [[nodiscard]] const fs::path& Get() const noexcept { return m_path; }
+
+    private:
+        fs::path m_path;
+    };
+
+    bool WriteBytes(const fs::path& path, const std::vector<RVX::uint8>& bytes)
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file.is_open())
+            return false;
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        return file.good();
+    }
+
+    bool WriteTexture(const fs::path& path,
+                      RVX::Resource::TextureUsage usage,
+                      bool srgb,
+                      RVX::uint8 pixelSeed = 1u)
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file.is_open())
+            return false;
+        file << "RVX_TEXTURE_PREBAKE_V1\n"
+             << "width=1\n"
+             << "height=1\n"
+             << "depth=1\n"
+             << "mipLevels=1\n"
+             << "arrayLayers=1\n"
+             << "format=RGBA8\n"
+             << "usage=" << (usage == RVX::Resource::TextureUsage::Color
+                                  ? "Color"
+                                  : usage == RVX::Resource::TextureUsage::Normal
+                                      ? "Normal"
+                                      : "Data") << "\n"
+             << "srgb=" << (srgb ? 1 : 0) << "\n"
+             << "compression=UncompressedRGBA\n"
+             << "dataSize=4\n"
+             << "RVX_TEXTURE_DATA_BEGIN\n";
+        const char pixels[] = {
+            static_cast<char>(pixelSeed),
+            static_cast<char>(pixelSeed + 1u),
+            static_cast<char>(pixelSeed + 2u),
+            static_cast<char>(pixelSeed + 3u)};
+        file.write(pixels, sizeof(pixels));
+        file << "\nRVX_TEXTURE_PREBAKE_END\n";
+        return file.good();
+    }
+
+    RVX::Hash::SHA256Digest HashFile(const fs::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        const std::vector<RVX::uint8> bytes{
+            std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>()};
+        return RVX::Hash::ComputeSHA256(bytes.data(), bytes.size());
+    }
+
+    RVX::Hash::SHA256Digest FixtureTextureHash()
+    {
+        return RVX::Hash::ComputeSHA256("fixture-texture");
+    }
+
+    RVX::Resource::CookedMaterialArtifact MakeArtifact(
+        std::string texturePath = "textures/albedo.rva",
+        RVX::Hash::SHA256Digest expectedContentHash = FixtureTextureHash())
+    {
+        RVX::Resource::CookedMaterialArtifact artifact;
+        artifact.logicalMaterialId = "Materials/LoaderValidation";
+        artifact.material.parameters.baseColorFactor = {0.2f, 0.3f, 0.4f, 1.0f};
+        RVX::Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = RVX::MaterialTextureSlot::BaseColor;
+        binding.artifactPath = std::move(texturePath);
+        binding.expectedContentHash = expectedContentHash;
+        binding.usage = RVX::Resource::TextureUsage::Color;
+        binding.isSRGB = true;
+        binding.fallbackSemantic =
+            RVX::Resource::TextureFallbackSemantic::White;
+        artifact.textureBindings.push_back(std::move(binding));
+        std::string error;
+        EXPECT_TRUE(RVX::Resource::FinalizeCookedMaterialArtifact(
+            artifact, error)) << error;
+        return artifact;
+    }
+
+    RVX::Resource::ResourceLoadPreparationContext MakeContext(
+        const fs::path& path)
+    {
+        RVX::Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = RVX::Resource::MakeAssetKey(
+            context.resolvedPath, RVX::Resource::ResourceType::Material);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = RVX::Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+        return context;
+    }
+
+    bool WriteMaterial(const fs::path& path,
+                       RVX::Resource::CookedMaterialArtifact artifact)
+    {
+        std::string error;
+        if (!RVX::Resource::FinalizeCookedMaterialArtifact(artifact, error))
+            return false;
+        std::vector<RVX::uint8> bytes;
+        return RVX::Resource::SerializeCookedMaterialArtifact(
+                   artifact, bytes, error) &&
+            WriteBytes(path, bytes);
+    }
+
+    bool SkipEncodedString(const std::vector<RVX::uint8>& bytes,
+                           size_t& offset)
+    {
+        if (offset > bytes.size() || bytes.size() - offset < sizeof(RVX::uint32))
+            return false;
+        const RVX::uint32 count =
+            static_cast<RVX::uint32>(bytes[offset]) |
+            (static_cast<RVX::uint32>(bytes[offset + 1]) << 8u) |
+            (static_cast<RVX::uint32>(bytes[offset + 2]) << 16u) |
+            (static_cast<RVX::uint32>(bytes[offset + 3]) << 24u);
+        offset += sizeof(RVX::uint32);
+        if (count > bytes.size() - offset)
+            return false;
+        offset += count;
+        return true;
+    }
+
+    bool WriteInvalidLayoutMaterial(const fs::path& path)
+    {
+        RVX::Resource::CookedMaterialArtifact artifact = MakeArtifact();
+        std::string error;
+        std::vector<RVX::uint8> bytes;
+        if (!RVX::Resource::SerializeCookedMaterialArtifact(
+                artifact, bytes, error))
+        {
+            return false;
+        }
+
+        const size_t payloadOffset =
+            RVX::Resource::RVX_MATERIAL_ARTIFACT_MAGIC.size() +
+            sizeof(RVX::uint32) + sizeof(RVX::uint64) +
+            RVX::Hash::RVX_SHA256_DIGEST_SIZE;
+        if (payloadOffset > bytes.size())
+            return false;
+        size_t layoutHashOffset = payloadOffset;
+        constexpr size_t staticFieldsBeforeProgramFamily =
+            6u + sizeof(RVX::uint32) + sizeof(RVX::uint64);
+        if (!SkipEncodedString(bytes, layoutHashOffset) ||
+            !SkipEncodedString(bytes, layoutHashOffset) ||
+            bytes.size() - layoutHashOffset < staticFieldsBeforeProgramFamily)
+        {
+            return false;
+        }
+        layoutHashOffset += staticFieldsBeforeProgramFamily;
+        if (!SkipEncodedString(bytes, layoutHashOffset) ||
+            bytes.size() - layoutHashOffset < sizeof(RVX::uint64))
+        {
+            return false;
+        }
+
+        bytes[layoutHashOffset] ^= 1u;
+        const RVX::Hash::SHA256Digest digest = RVX::Hash::ComputeSHA256(
+            bytes.data() + payloadOffset, bytes.size() - payloadOffset);
+        const size_t digestOffset =
+            RVX::Resource::RVX_MATERIAL_ARTIFACT_MAGIC.size() +
+            sizeof(RVX::uint32) + sizeof(RVX::uint64);
+        for (size_t index = 0; index < digest.size(); ++index)
+            bytes[digestOffset + index] = digest[index];
+        return WriteBytes(path, bytes);
+    }
+
+    std::vector<RVX::ResourceId> DependencyIds(
+        const RVX::Resource::PreparedResourceBundle& bundle)
+    {
+        std::vector<RVX::Resource::ResourceId> ids;
+        for (const RVX::Resource::PreparedResourceEntry& entry : bundle.GetEntries())
+        {
+            if (!entry.isRoot)
+                ids.push_back(entry.resource.GetId());
+        }
+        return ids;
+    }
+} // namespace
+
+TEST(CookedMaterialLoaderValidation, SupportsOnlyTypedCookedMaterialProducts)
+{
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::ResourceLoaderRequest request;
+    request.type = RVX::ResourceType::Material;
+    request.domain = RVX::ResourceLoadDomain::Cooked;
+    request.resolvedPath = "Materials/Surface.rvmat";
+    EXPECT_TRUE(loader.Supports(request));
+
+    request.resolvedPath = "Materials/Surface.rva";
+    EXPECT_FALSE(loader.Supports(request));
+    request.resolvedPath = "Materials/Surface.rvmat";
+    request.type = RVX::ResourceType::Model;
+    EXPECT_FALSE(loader.Supports(request));
+    request.type = RVX::ResourceType::Material;
+    request.domain = RVX::ResourceLoadDomain::Source;
+    EXPECT_FALSE(loader.Supports(request));
+}
+
+TEST(CookedMaterialLoaderValidation, PreparesStandaloneMaterialAndStableDependencies)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "Surface.rvmat";
+    ASSERT_TRUE(WriteTexture(
+        temporary.Get() / "textures" / "albedo.rva",
+        RVX::Resource::TextureUsage::Color,
+        true));
+    const auto textureHash = HashFile(
+        temporary.Get() / "textures" / "albedo.rva");
+    ASSERT_TRUE(WriteMaterial(materialPath, MakeArtifact(
+        "textures/albedo.rva", textureHash)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    const auto context = MakeContext(materialPath);
+    RVX::Resource::PreparedResourceBundle first;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(context, first, error)) << error.message;
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(first.GetObservedContentIdentity().IsValid());
+    ASSERT_EQ(first.GetEntries().size(), 2u);
+
+    auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        first.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::Vec4 baseColor =
+        material->GetMaterialDefinition().parameters.baseColorFactor;
+    EXPECT_FLOAT_EQ(baseColor.x, 0.2f);
+    EXPECT_FLOAT_EQ(baseColor.y, 0.3f);
+    EXPECT_FLOAT_EQ(baseColor.z, 0.4f);
+    EXPECT_FLOAT_EQ(baseColor.w, 1.0f);
+    EXPECT_EQ(material->GetMaterialDefinition().descriptor.featureMask, 1ull);
+    EXPECT_EQ(material->GetMaterialDefinition().parameters.textureFlags, 1u);
+    ASSERT_TRUE(material->GetAlbedoTexture());
+    EXPECT_EQ(material->GetAlbedoTexture()->GetUsage(),
+              RVX::Resource::TextureUsage::Color);
+    EXPECT_TRUE(material->GetAlbedoTexture()->IsSRGB());
+
+    RVX::Resource::PreparedResourceBundle second;
+    ASSERT_TRUE(loader.Prepare(context, second, error)) << error.message;
+    EXPECT_EQ(first.GetRoot().GetId(), second.GetRoot().GetId());
+    EXPECT_EQ(DependencyIds(first), DependencyIds(second));
+}
+
+TEST(CookedMaterialLoaderValidation,
+     PreparesOpaqueToonMaterialWithAllAuthoredParameters)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "Toon.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "albedo.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(texturePath));
+    artifact.logicalMaterialId = "Materials/ToonLoaderValidation";
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.parameters.toonBands = 5.0f;
+    artifact.material.parameters.toonSpecularThreshold = 0.45f;
+    artifact.material.parameters.toonRimStrength = 2.0f;
+    artifact.material.parameters.toonOutlineWidth = 1.5f;
+    artifact.material.parameters.toonShadowTint = {0.2f, 0.6f, 0.9f};
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition =
+        material->GetMaterialDefinition();
+    EXPECT_EQ(definition.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ToonLit);
+    EXPECT_FLOAT_EQ(definition.parameters.toonBands, 5.0f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonSpecularThreshold, 0.45f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonRimStrength, 2.0f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonOutlineWidth, 1.5f);
+    EXPECT_EQ(definition.parameters.toonShadowTint,
+              (RVX::Vec3{0.2f, 0.6f, 0.9f}));
+}
+
+TEST(CookedMaterialLoaderValidation, RejectsUnsupportedToonTranslucency)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ToonTranslucent.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "albedo.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(texturePath));
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.descriptor.blendMode = RVX::MaterialBlendMode::AlphaBlend;
+    artifact.material.descriptor.translucencyPhase =
+        RVX::MaterialTranslucencyPhase::Standard;
+    artifact.material.descriptor.shadowPolicy = RVX::MaterialShadowPolicy::Receive;
+    artifact.material.parameters.alphaMode = RVX::MaterialSourceAlphaMode::Blend;
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
+    EXPECT_NE(error.message.find("support matrix"), std::string::npos);
+}
+
+TEST(CookedMaterialLoaderValidation,
+     PreparesThinTransmissionWithLinearTransmissionAndThicknessSlots)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ThinTransmission.rvmat";
+    const fs::path albedoPath = temporary.Get() / "textures" / "albedo.rva";
+    const fs::path transmissionPath =
+        temporary.Get() / "textures" / "transmission.rva";
+    const fs::path thicknessPath = temporary.Get() / "textures" / "thickness.rva";
+    ASSERT_TRUE(WriteTexture(albedoPath, RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(transmissionPath, RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(thicknessPath, RVX::Resource::TextureUsage::Data, false));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(albedoPath));
+    artifact.material.descriptor.shadingModel =
+        RVX::MaterialShadingModel::ThinTransmission;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(
+            RVX::MaterialShadingModel::ThinTransmission));
+    artifact.material.descriptor.blendMode = RVX::MaterialBlendMode::Premultiplied;
+    artifact.material.descriptor.translucencyPhase =
+        RVX::MaterialTranslucencyPhase::Standard;
+    artifact.material.descriptor.shadowPolicy = RVX::MaterialShadowPolicy::Receive;
+    artifact.material.parameters.alphaMode = RVX::MaterialSourceAlphaMode::Blend;
+    artifact.material.parameters.transmission = 0.7f;
+    artifact.material.parameters.indexOfRefraction = 1.33f;
+    artifact.material.parameters.thickness = 0.2f;
+    artifact.material.parameters.attenuationColor = {0.3f, 0.5f, 0.7f};
+    artifact.material.parameters.attenuationDistance = 2.0f;
+
+    for (const auto [slot, path] :
+         {std::pair{RVX::MaterialTextureSlot::Transmission, transmissionPath},
+          std::pair{RVX::MaterialTextureSlot::Thickness, thicknessPath}})
+    {
+        RVX::Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = slot;
+        binding.artifactPath = (fs::path("textures") / path.filename()).generic_string();
+        binding.expectedContentHash = HashFile(path);
+        binding.usage = RVX::Resource::TextureUsage::Data;
+        binding.isSRGB = false;
+        binding.fallbackSemantic = RVX::Resource::TextureFallbackSemantic::White;
+        artifact.textureBindings.push_back(std::move(binding));
+    }
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition = material->GetMaterialDefinition();
+    EXPECT_EQ(definition.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ThinTransmission);
+    EXPECT_EQ(definition.descriptor.blendMode,
+              RVX::MaterialBlendMode::Premultiplied);
+    EXPECT_FLOAT_EQ(definition.parameters.transmission, 0.7f);
+    EXPECT_FLOAT_EQ(definition.parameters.attenuationDistance, 2.0f);
+    EXPECT_EQ(definition.parameters.textureFlags, 0xc1u);
+    EXPECT_TRUE(material->GetTexture("transmission"));
+    EXPECT_TRUE(material->GetTexture("thickness"));
+}
+
+TEST(CookedMaterialLoaderValidation,
+     PreparesV2SpecularAndClearcoatSlotsWithoutSourceFallback)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "SpecularClearcoat.rvmat";
+    const fs::path albedoPath = temporary.Get() / "textures" / "albedo.rva";
+    const fs::path specularPath = temporary.Get() / "textures" / "specular.rva";
+    const fs::path specularColorPath =
+        temporary.Get() / "textures" / "specular_color.rva";
+    const fs::path clearcoatPath =
+        temporary.Get() / "textures" / "clearcoat.rva";
+    const fs::path clearcoatRoughnessPath =
+        temporary.Get() / "textures" / "clearcoat_roughness.rva";
+    const fs::path clearcoatNormalPath =
+        temporary.Get() / "textures" / "clearcoat_normal.rva";
+    ASSERT_TRUE(WriteTexture(albedoPath, RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(specularPath, RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(specularColorPath,
+                             RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(clearcoatPath,
+                             RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(clearcoatRoughnessPath,
+                             RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(clearcoatNormalPath,
+                             RVX::Resource::TextureUsage::Normal, false));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(albedoPath));
+    artifact.material.parameters.specularFactor = 0.65f;
+    artifact.material.parameters.specularColor = {1.2f, 0.8f, 0.6f};
+    artifact.material.parameters.clearcoatFactor = 0.9f;
+    artifact.material.parameters.clearcoatRoughness = 0.2f;
+    artifact.material.parameters.clearcoatNormalScale = 0.5f;
+
+    const auto addBinding = [&artifact](RVX::MaterialTextureSlot slot,
+                                        const fs::path& path,
+                                        RVX::Resource::TextureUsage usage,
+                                        bool isSRGB,
+                                        RVX::Resource::TextureFallbackSemantic fallback)
+    {
+        RVX::Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = slot;
+        binding.artifactPath = (fs::path("textures") / path.filename()).generic_string();
+        binding.expectedContentHash = HashFile(path);
+        binding.usage = usage;
+        binding.isSRGB = isSRGB;
+        binding.fallbackSemantic = fallback;
+        artifact.textureBindings.push_back(std::move(binding));
+    };
+    addBinding(RVX::MaterialTextureSlot::Specular, specularPath,
+               RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::SpecularColor, specularColorPath,
+               RVX::Resource::TextureUsage::Color, true,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::Clearcoat, clearcoatPath,
+               RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::ClearcoatRoughness,
+               clearcoatRoughnessPath, RVX::Resource::TextureUsage::Data, false,
+               RVX::Resource::TextureFallbackSemantic::White);
+    addBinding(RVX::MaterialTextureSlot::ClearcoatNormal, clearcoatNormalPath,
+               RVX::Resource::TextureUsage::Normal, false,
+               RVX::Resource::TextureFallbackSemantic::FlatNormal);
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition = material->GetMaterialDefinition();
+    EXPECT_FLOAT_EQ(definition.parameters.specularFactor, 0.65f);
+    EXPECT_EQ(definition.parameters.specularColor, (RVX::Vec3{1.2f, 0.8f, 0.6f}));
+    EXPECT_FLOAT_EQ(definition.parameters.clearcoatFactor, 0.9f);
+    EXPECT_NE(definition.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(definition.descriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    EXPECT_TRUE(material->GetTexture("specular"));
+    EXPECT_TRUE(material->GetTexture("specular_color"));
+    EXPECT_TRUE(material->GetTexture("clearcoat"));
+    EXPECT_TRUE(material->GetTexture("clearcoat_roughness"));
+    EXPECT_TRUE(material->GetTexture("clearcoat_normal"));
+
+    const RVX::Resource::RenderUploadRequestBuildResult upload =
+        RVX::Resource::RenderUploadRequestBuilder::Build(
+            *material,
+            RVX::RenderResourceHandle{901u, 1u},
+            7u,
+            [](RVX::AssetId, RVX::RenderResourceKind kind)
+            {
+                EXPECT_EQ(kind, RVX::RenderResourceKind::Texture);
+                return RVX::RenderResourceHandle{902u, 1u};
+            });
+    ASSERT_EQ(upload.code, RVX::Resource::RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(upload.request, nullptr);
+    const auto& uploadPayload = std::get<RVX::MaterialUploadPayload>(
+        upload.request->GetPayload());
+    EXPECT_NE(uploadPayload.staticDescriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_SPECULAR,
+              0u);
+    EXPECT_NE(uploadPayload.staticDescriptor.featureMask &
+                  RVX::RVX_MATERIAL_FEATURE_CLEARCOAT,
+              0u);
+    EXPECT_EQ(uploadPayload.textureBindings.size(), 6u);
+    const auto hasUploadSlot = [&uploadPayload](RVX::MaterialUploadTextureSlot slot)
+    {
+        return std::any_of(
+            uploadPayload.textureBindings.begin(),
+            uploadPayload.textureBindings.end(),
+            [slot](const RVX::MaterialUploadTextureBinding& binding)
+            {
+                return binding.slot == slot;
+            });
+    };
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::Specular));
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::SpecularColor));
+    EXPECT_TRUE(hasUploadSlot(RVX::MaterialUploadTextureSlot::Clearcoat));
+    EXPECT_TRUE(hasUploadSlot(
+        RVX::MaterialUploadTextureSlot::ClearcoatRoughness));
+    EXPECT_TRUE(hasUploadSlot(
+        RVX::MaterialUploadTextureSlot::ClearcoatNormal));
+}
+
+TEST(CookedMaterialLoaderValidation,
+     RejectsActiveToonRampUntilTheRuntimeDescriptorLayoutSupportsIt)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ToonRamp.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "ramp.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/ramp.rva", HashFile(texturePath));
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.descriptor.featureMask |=
+        1ull << static_cast<RVX::uint8>(RVX::MaterialTextureSlot::ToonRamp);
+    RVX::Resource::CookedMaterialTextureBinding ramp;
+    ramp.definition.slot = RVX::MaterialTextureSlot::ToonRamp;
+    ramp.artifactPath = "textures/ramp.rva";
+    ramp.expectedContentHash = HashFile(texturePath);
+    ramp.usage = RVX::Resource::TextureUsage::Color;
+    ramp.isSRGB = true;
+    ramp.fallbackSemantic = RVX::Resource::TextureFallbackSemantic::White;
+    artifact.textureBindings.push_back(std::move(ramp));
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
+    EXPECT_NE(error.message.find("ToonRamp"), std::string::npos);
+}
+
+TEST(CookedMaterialLoaderValidation,
+     SynchronizesCompatibilityMaterialSlotMasks)
+{
+    auto source = std::make_shared<RVX::Material>("slot-mask-source");
+    source->SetBaseColorTexture(RVX::TextureInfo("textures/albedo.png"));
+
+    RVX::Resource::MaterialResource material;
+    ASSERT_TRUE(material.SetMaterialData(source));
+    EXPECT_EQ(material.GetMaterialDefinition().descriptor.featureMask, 1ull);
+    EXPECT_EQ(material.GetMaterialDefinition().parameters.textureFlags, 1u);
+
+    ASSERT_TRUE(material.SetTexture(
+        "normal", RVX::Resource::ResourceHandle<RVX::Resource::TextureResource>(
+                      new RVX::Resource::TextureResource())));
+    const RVX::MaterialDefinition& definition = material.GetMaterialDefinition();
+    EXPECT_EQ(definition.descriptor.featureMask, 0x03ull);
+    EXPECT_EQ(definition.parameters.textureFlags, 0x03u);
+}
+
+TEST(CookedMaterialLoaderValidation, RejectsCorruptLayoutAndDependencies)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "Surface.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "albedo.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+    const auto originalTextureHash = HashFile(texturePath);
+    ASSERT_TRUE(WriteMaterial(materialPath, MakeArtifact(
+        "textures/albedo.rva", originalTextureHash)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    const auto context = MakeContext(materialPath);
+    RVX::Resource::ResourceLoadError error;
+    RVX::Resource::PreparedResourceBundle bundle;
+    ASSERT_TRUE(loader.Prepare(context, bundle, error)) << error.message;
+
+    std::vector<RVX::uint8> corrupt = {0x01u, 0x02u, 0x03u};
+    ASSERT_TRUE(WriteBytes(materialPath, corrupt));
+    RVX::Resource::PreparedResourceBundle corruptBundle;
+    EXPECT_FALSE(loader.Prepare(context, corruptBundle, error));
+
+    ASSERT_TRUE(WriteInvalidLayoutMaterial(materialPath));
+    RVX::Resource::PreparedResourceBundle invalidLayoutBundle;
+    EXPECT_FALSE(loader.Prepare(context, invalidLayoutBundle, error));
+
+    ASSERT_TRUE(WriteMaterial(materialPath, MakeArtifact(
+        "textures/albedo.rva", originalTextureHash)));
+    ASSERT_TRUE(WriteTexture(
+        texturePath, RVX::Resource::TextureUsage::Color, true, 17u));
+    RVX::Resource::PreparedResourceBundle replacedTextureBundle;
+    EXPECT_FALSE(loader.Prepare(context, replacedTextureBundle, error));
+    EXPECT_NE(error.message.find("content hash mismatch"), std::string::npos);
+
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Normal, false));
+    ASSERT_TRUE(WriteMaterial(materialPath, MakeArtifact(
+        "textures/albedo.rva", HashFile(texturePath))));
+    RVX::Resource::PreparedResourceBundle mismatchBundle;
+    EXPECT_FALSE(loader.Prepare(context, mismatchBundle, error));
+
+    ASSERT_TRUE(WriteMaterial(
+        materialPath, MakeArtifact("missing/outside.rva")));
+    RVX::Resource::PreparedResourceBundle missingBundle;
+    EXPECT_FALSE(loader.Prepare(context, missingBundle, error));
+}

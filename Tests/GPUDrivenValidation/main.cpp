@@ -1,3 +1,4 @@
+#include "Common/DeterministicShaderProgramProvider.h"
 #include "Core/Log.h"
 #include "Render/GPUScene/GPUSceneSchema.h"
 #include "GPUScene/GPUSceneUploader.h"
@@ -1171,13 +1172,25 @@ namespace
             const MaterialSourceData& source,
             const std::vector<MaterialUploadTextureBinding>& bindings)
         {
+            uint32 textureFeatureMask = 0;
+            for (const MaterialUploadTextureBinding& binding : bindings)
+            {
+                textureFeatureMask |= 1U << static_cast<uint8>(binding.slot);
+            }
+
+            MaterialUploadPayload payload;
+            payload.sourceData = source;
+            payload.sourceData.textureFlags = textureFeatureMask;
+            payload.textureBindings = bindings;
+            payload.staticDescriptor.featureMask = textureFeatureMask;
+
             if (!BeginUploading(handle) ||
                 !m_registry.BeginPending(handle,
                                          RenderResourceKind::Material,
                                          {},
                                          assetId) ||
                 !m_registry.SetPendingMaterialMetadata(
-                    handle, MaterialUploadPayload{source, bindings}) ||
+                    handle, payload) ||
                 !m_registry.Commit(handle))
             {
                 return false;
@@ -1362,7 +1375,7 @@ namespace
         std::filesystem::path path = std::filesystem::current_path();
         for (int i = 0; i < 8; ++i)
         {
-            if (std::filesystem::exists(path / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp"))
+            if (std::filesystem::exists(path / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp"))
             {
                 return path;
             }
@@ -1557,7 +1570,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -1732,7 +1745,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
     config.enableDistanceCulling = true;
     config.maxDrawDistance = 20.0f;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsInitialized());
 
@@ -1854,7 +1867,7 @@ TEST_F(GPUDrivenValidationFixture,
             AABB(Vec3(-0.08f, -0.08f, -0.101f),
                  Vec3(0.08f, 0.08f, -0.099f))};
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         ASSERT_TRUE(culling.IsInitialized());
         culling.BeginFrame();
@@ -2503,12 +2516,12 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string renderer = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string recordContext = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Passes" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" /
         "RenderPassRecordContext.h");
     const std::string opaque = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(recordContext.empty());
     ASSERT_FALSE(opaque.empty());
@@ -3058,7 +3071,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     const GPUInstanceData instance =
         MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36u);
@@ -3104,7 +3117,7 @@ TEST_F(GPUDrivenValidationFixture,
         captureDevice.EnableGPUScenePipelineObjects();
         RenderSubmissionTracker tracker;
         EXPECT_TRUE(tracker.Initialize(&captureDevice));
-        GPUCulling captureCulling;
+        GPUCulling captureCulling(&Tests::GetDeterministicShaderProgramProvider());
         captureCulling.Initialize(&captureDevice, config);
         captureCulling.BeginFrame();
         EXPECT_EQ(0u, captureCulling.AddInstance(
@@ -3382,7 +3395,7 @@ TEST_F(GPUDrivenValidationFixture,
     const RenderResourceHandle mesh{811u, 1u};
     ASSERT_TRUE(registry.AddReadyMesh(mesh, AssetId{0x8111u}));
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.BeginDrawGroup(
@@ -3422,7 +3435,7 @@ TEST_F(GPUDrivenValidationFixture,
               RVX::GPUCullingQualificationTestAccess::GetCanonicalVersions(
                   recorded->GetCulling()));
 
-    GPUCulling failingCulling;
+    GPUCulling failingCulling(&Tests::GetDeterministicShaderProgramProvider());
     failingCulling.Initialize(&device, config);
     failingCulling.BeginFrame();
     ASSERT_EQ(0u, failingCulling.BeginDrawGroup(
@@ -3556,7 +3569,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
     ASSERT_TRUE(culling.IsInitialized());
     ASSERT_EQ(2u, culling.GetFrameSlotCount());
@@ -3690,7 +3703,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.BeginDrawGroup(11u, 21u));
@@ -3785,7 +3798,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
         8u, 9u, 10u, 11u, 12u, 13u};
@@ -3895,7 +3908,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
@@ -3974,7 +3987,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
@@ -4062,7 +4075,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUSceneCullingCandidate candidate{};
@@ -4147,7 +4160,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4178,7 +4191,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4210,7 +4223,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4241,7 +4254,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4275,7 +4288,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4315,7 +4328,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableTimelineRetirement();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4354,7 +4367,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableTimelineRetirement();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4393,7 +4406,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4419,7 +4432,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUSceneCullingCandidate candidate{};
@@ -4466,7 +4479,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
     ASSERT_TRUE(culling.SetFrameSlot(1));
     culling.BeginFrame();
@@ -4538,7 +4551,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -4599,7 +4612,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuffersAvoidDx11InvalidGpuOnlyFlag
     GPUCullingConfig config;
     config.maxInstances = 8;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* visibilityBuffer = device.FindBuffer("GPUCulling.VisibilityBuffer");
@@ -4643,7 +4656,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionBuffersKeepStructuredUavFlags)
     GPUCullingConfig config;
     config.maxInstances = 8;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* visibilityBuffer = device.FindBuffer("GPUCulling.VisibilityBuffer");
@@ -4678,7 +4691,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
         GPUCullingConfig config;
         config.maxInstances = 8;
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
 
         GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4697,7 +4710,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
         GPUCullingConfig config;
         config.maxInstances = 8;
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
 
         GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4740,7 +4753,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
     device.capabilities.indexedIndirectExecution.supportsFirstInstance = false;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, GPUCullingConfig{});
 
     const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4812,7 +4825,7 @@ TEST_F(GPUDrivenValidationFixture,
 TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
 {
     FakeDevice device;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, GPUCullingConfig{});
 
     culling.BeginFrame();
@@ -4848,7 +4861,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     config.maxInstances = 8;
     config.enableDistanceCulling = false;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -5062,7 +5075,7 @@ TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
     config.enableDistanceCulling = true;
     config.maxDrawDistance = 30.0f;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -5117,27 +5130,39 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string featureCompositionSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultRenderComposition.cpp");
+    const std::string defaultCompositionSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultForwardComposition.cpp");
+    const std::string passBundleSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultRenderPassBundle.cpp");
+    const std::string featureAdapterSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "LegacyForwardFeatureAdapter.cpp");
     const std::string depthHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
     const std::string depthSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
     const std::string subsystemSource =
-        ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     const std::string renderCMake =
-        ReadTextFile(root / "Render" / "CMakeLists.txt");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "CMakeLists.txt");
     const std::string skyboxHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "SkyboxPass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "SkyboxPass.h");
     const std::string skyboxSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "SkyboxPass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "SkyboxPass.cpp");
     const std::string transparentHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "TransparentPass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "TransparentPass.h");
     const std::string transparentSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(featureCompositionSource.empty());
+    ASSERT_FALSE(defaultCompositionSource.empty());
+    ASSERT_FALSE(passBundleSource.empty());
+    ASSERT_FALSE(featureAdapterSource.empty());
     ASSERT_FALSE(depthHeader.empty());
     ASSERT_FALSE(depthSource.empty());
     ASSERT_FALSE(subsystemSource.empty());
@@ -5182,24 +5207,24 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_NE(prepareMeshPasses, std::string::npos);
     EXPECT_LT(prepareMeshPasses, prepareMeshDefinition - buildDrawLists);
     EXPECT_EQ(buildMaterialSegment.find("BuildGPUDrivenVisibilityInputs();"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderTargets"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetDrawItems"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetRenderScene"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetDrawItems"), std::string::npos);
 
     EXPECT_FALSE(std::filesystem::exists(
-        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
     EXPECT_FALSE(std::filesystem::exists(
-        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.cpp"));
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.cpp"));
     EXPECT_EQ(header.find("UpdatePassResources"), std::string::npos);
     EXPECT_EQ(header.find("ExecutePasses"), std::string::npos);
     EXPECT_EQ(source.find("RenderFrameResourceBinder"), std::string::npos);
     EXPECT_EQ(source.find("UpdatePassResources"), std::string::npos);
     EXPECT_EQ(source.find("ExecutePasses"), std::string::npos);
     EXPECT_EQ(renderCMake.find("RenderFrameResourceBinder"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetCubemap"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetProceduralSkyParams"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetSolidColor"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->ClearSkybox"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetCubemap"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetProceduralSkyParams"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetSolidColor"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->ClearSkybox"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetCubemap"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetProceduralSkyParams"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetSolidColor"), std::string::npos);
@@ -5306,9 +5331,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find("key.pipeline.materialVariant"), std::string::npos);
 
     const std::string opaqueHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
     const std::string opaqueSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     EXPECT_EQ(opaqueHeader.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
     EXPECT_EQ(opaqueSource.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
     EXPECT_EQ(opaqueSource.find("GetBackendType"), std::string::npos);
@@ -5319,13 +5344,32 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_NE(buildGraph, std::string::npos);
     const size_t cullGraphCall = source.find(
         "AddGPUDrivenCullingPass(passRecordContext.identity);", buildGraph);
-    const size_t passRegistryLoop = source.find("for (auto& pass : m_passRegistry->GetPasses())", buildGraph);
+    const size_t setFeatureRecordContext = source.find(
+        "FindCompositionFeature<LegacyForwardFeatureAdapter>()->SetRecordContext(passRecordContext);", buildGraph);
+    const size_t featureAddPasses = source.find(
+        "GetRenderFeatureRegistry()->AddPasses(featureGraphBuilder, blackboard);", buildGraph);
+    const size_t passRegistryLoop = featureAdapterSource.find(
+        "m_passBundle->GetRegistry().GetPasses()");
     ASSERT_NE(cullGraphCall, std::string::npos);
+    ASSERT_NE(setFeatureRecordContext, std::string::npos);
+    ASSERT_NE(featureAddPasses, std::string::npos);
     ASSERT_NE(passRegistryLoop, std::string::npos);
-    EXPECT_LT(cullGraphCall, passRegistryLoop);
-    const size_t typedPassRecord = source.find(
-        "pass->AddToGraph(*m_renderGraph, passRecordContext);", passRegistryLoop);
+    EXPECT_LT(cullGraphCall, setFeatureRecordContext);
+    EXPECT_LT(setFeatureRecordContext, featureAddPasses);
+    const size_t typedPassRecord = featureAdapterSource.find(
+        "builder.AddLegacyPass(*pass, passContext)", passRegistryLoop);
     ASSERT_NE(typedPassRecord, std::string::npos);
+    EXPECT_LT(passRegistryLoop, typedPassRecord);
+    EXPECT_NE(defaultCompositionSource.find("SetupDefaultRenderFeatures"),
+              std::string::npos);
+    EXPECT_NE(featureCompositionSource.find("m_featureRegistry = std::make_unique<RenderFeatureRegistry>()"),
+              std::string::npos);
+    EXPECT_NE(defaultCompositionSource.find("CreateDefaultRenderPassBundle(dependencies)"),
+              std::string::npos);
+    EXPECT_NE(defaultCompositionSource.find("InstallDefaultPassBundle"),
+              std::string::npos);
+    EXPECT_NE(passBundleSource.find("auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();"),
+              std::string::npos);
     EXPECT_EQ(source.find("pass->AddToGraph(*m_renderGraph, m_viewData)"),
               std::string::npos);
 
@@ -5337,9 +5381,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find("RHIResourceState::UnorderedAccess,"), std::string::npos);
     EXPECT_NE(source.find("data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess)"),
               std::string::npos);
-    EXPECT_EQ(source.find("m_depthPrepass->SetGPUDriven" "RenderGraphResources"),
+    EXPECT_EQ(source.find("FindCompositionPass<DepthPrepass>()->SetGPUDriven" "RenderGraphResources"),
               std::string::npos);
-    EXPECT_EQ(source.find("m_opaquePass->SetGPUDriven" "RenderGraphResources"),
+    EXPECT_EQ(source.find("FindCompositionPass<OpaquePass>()->SetGPUDriven" "RenderGraphResources"),
               std::string::npos);
     EXPECT_NE(source.find("RenderPassRecordContext passRecordContext"), std::string::npos);
     EXPECT_NE(source.find("passRecordContext.depthGPUDriven"), std::string::npos);
@@ -5351,7 +5395,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(source.find("owner->Cull(ctx, cullViewMatrix, cullProjectionMatrix)"),
               std::string::npos);
     EXPECT_NE(source.find("cullingStatsSink->gpuExecutionRecorded"), std::string::npos);
-    EXPECT_NE(source.find("m_opaquePass->GetDrawStats()"), std::string::npos);
+    EXPECT_NE(source.find("FindCompositionPass<OpaquePass>()->GetDrawStats()"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueIndirectRequested"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount"), std::string::npos);
     EXPECT_NE(source.find(
@@ -5373,7 +5417,7 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t buildInputs = source.find(
@@ -5406,15 +5450,15 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererFrameDiagnosticsExposeGPUDrivenE
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string diagnosticsHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
     const std::string subsystemSource =
-        ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     const std::string artifactSource =
-        ReadTextFile(root / "Render" / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(diagnosticsHeader.empty());
@@ -5487,8 +5531,8 @@ TEST_F(GPUDrivenValidationFixture,
     config.maxInstances = 8;
     config.enableDistanceCulling = false;
 
-    GPUCulling depthOwner;
-    GPUCulling opaqueOwner;
+    GPUCulling depthOwner(&Tests::GetDeterministicShaderProgramProvider());
+    GPUCulling opaqueOwner(&Tests::GetDeterministicShaderProgramProvider());
     depthOwner.Initialize(&device, config);
     opaqueOwner.Initialize(&device, config);
 
@@ -5538,7 +5582,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderObject object = MakeRenderObject(
@@ -5609,7 +5653,7 @@ TEST_F(GPUDrivenValidationFixture, OcclusionRequestRemainsExplicitlyUnavailable)
     GPUCullingConfig config;
     config.enableOcclusionCulling = true;
     config.twoPhaseOcclusion = true;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     EXPECT_TRUE(culling.WasOcclusionRequested());
@@ -5625,15 +5669,14 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::string rendererHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Renderer" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" /
         "SceneRenderer.h");
     const std::string rendererSource = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string diagnosticsHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
     const std::string subsystemSource = ReadTextFile(
-        root / "Render" / "Private" / "RenderSubsystem.cpp");
-
+        root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     EXPECT_NE(rendererHeader.find("bool hzbRequested = false;"),
               std::string::npos);
     EXPECT_NE(rendererHeader.find("bool hzbSupported = false;"),
@@ -5659,7 +5702,7 @@ TEST_F(GPUDrivenValidationFixture, ActiveRowIndirectionUsesStableComputeRowsAndD
     GPUCullingConfig config;
     config.maxInstances = 64;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* instanceIndexBuffer =
@@ -5694,7 +5737,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     RenderScene scene;
@@ -5802,7 +5845,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8u;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -5888,7 +5931,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = drawGroupCount;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
 
@@ -6000,7 +6043,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6073,7 +6116,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6163,7 +6206,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6260,7 +6303,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6334,7 +6377,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 1;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUCullingConfig grown = config;
@@ -6360,7 +6403,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     ASSERT_TRUE(culling.SetFrameSlot(0u));
@@ -6443,13 +6486,14 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
     const std::string rhiCommandContext =
-        ReadTextFile(root / "RHI" / "Include" / "RHI" / "RHICommandContext.h");
+        ReadTextFile(root / "Source" / "Runtime" / "RHI" / "Include" / "RHI" /
+                     "RHICommandContext.h");
     const std::string shader =
-        ReadTextFile(root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(rhiCommandContext.empty());
@@ -6547,33 +6591,34 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(root.empty());
 
     const std::string defaultLit =
-        ReadTextFile(root / "Render" / "Shaders" / "DefaultLit.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl");
     const std::string depthOnly =
-        ReadTextFile(root / "Render" / "Shaders" / "DepthOnly.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl");
     const std::string cullingShader =
-        ReadTextFile(root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     const std::string sharedInstance =
-        ReadTextFile(root / "Render" / "Shaders" / "Include" / "GPUInstanceData.hlsli");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "Include" / "GPUInstanceData.hlsli");
     const std::string cullingHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string rasterInstanceHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Submission" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Submission" /
         "RasterInstanceStream.h");
     const std::string pipelineHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "PipelineCache.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource =
-        ReadTextFile(root / "Render" / "Private" / "PipelineCache.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "PipelineCache.cpp");
     const std::string opaqueHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
     const std::string opaqueSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     // The GPU-driven showcase is the current pure-ECS production sample.  Keep
     // this source contract tied to the engine-owned policy/readiness path so a
     // deleted legacy ModelViewer entry point cannot become a hidden dependency.
     const std::string gpuDrivenSample = ReadTextFile(
         root / "Samples" / "RenderVerseSamples" / "Scenes" /
         "GPUDrivenShowcaseSample.cpp");
-    const std::string testsCMake = ReadTextFile(root / "Tests" / "CMakeLists.txt");
+    const std::string qualificationTestsCMake =
+        ReadTextFile(root / "Tests" / "CMake" / "QualificationTests.cmake");
     ASSERT_FALSE(defaultLit.empty());
     ASSERT_FALSE(depthOnly.empty());
     ASSERT_FALSE(cullingShader.empty());
@@ -6585,7 +6630,7 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(opaqueHeader.empty());
     ASSERT_FALSE(opaqueSource.empty());
     ASSERT_FALSE(gpuDrivenSample.empty());
-    ASSERT_FALSE(testsCMake.empty());
+    ASSERT_FALSE(qualificationTestsCMake.empty());
 
     EXPECT_EQ(opaqueSource.find("EnsureIndirectDrawCapacity"),
               std::string::npos);
@@ -6689,26 +6734,27 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
               std::string::npos);
     EXPECT_EQ(gpuDrivenSample.find("GPUCulling"), std::string::npos);
     EXPECT_EQ(gpuDrivenSample.find("RenderGraph"), std::string::npos);
-    EXPECT_NE(testsCMake.find("rvx_add_renderverse_gpu_driven_parity"),
+    EXPECT_NE(qualificationTestsCMake.find("rvx_add_renderverse_gpu_driven_parity"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("--sample gpu-driven"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--require-gpu-driven-execution"),
+    EXPECT_NE(qualificationTestsCMake.find("--sample gpu-driven"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--require-gpu-driven-execution"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("--require-direct-execution"),
+    EXPECT_NE(qualificationTestsCMake.find("--require-direct-execution"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("GPUDrivenPathRequested"), std::string::npos);
-    EXPECT_NE(testsCMake.find("DirectPathRequested"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--tolerance 0.0"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--max-different-pixels 0"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("GPUDrivenPathRequested"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("DirectPathRequested"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--tolerance 0.0"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--max-different-pixels 0"), std::string::npos);
 }
 
+#if RVX_ENABLE_DX12
 TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -6726,10 +6772,7 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -6746,7 +6789,9 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
     EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
+#endif
 
+#if RVX_ENABLE_VULKAN
 TEST_F(GPUDrivenValidationFixture,
        GPUCullingComputeShaderEntriesCompileForVulkanWithExpectedLayout)
 {
@@ -6754,7 +6799,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -6772,10 +6817,7 @@ TEST_F(GPUDrivenValidationFixture,
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -6849,6 +6891,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
     EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
+#endif
 
 TEST_F(GPUDrivenValidationFixture,
        GPUSceneCandidateAbiAndSealedInputPlumbingRemainRendererPrivate)
@@ -6864,7 +6907,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_TRUE(retirement.Initialize(&tracker));
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     EXPECT_EQ(nullptr, culling.GetGPUSceneCandidateBuffer());
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
@@ -7067,7 +7110,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
 
@@ -7195,7 +7238,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2u);
     ASSERT_TRUE(culling.SetFrameSlot(1u));
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
@@ -7366,7 +7409,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -7444,7 +7487,7 @@ TEST_F(GPUDrivenValidationFixture,
 
         GPUCullingConfig config;
         config.maxInstances = 4;
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         culling.BeginFrame();
         ASSERT_EQ(0u, culling.AddInstance(
@@ -7524,7 +7567,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -7602,7 +7645,7 @@ TEST_F(GPUDrivenValidationFixture,
 
         GPUCullingConfig config;
         config.maxInstances = 4;
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         culling.BeginFrame();
         EXPECT_EQ(0u, culling.AddInstance(
@@ -7712,7 +7755,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     // Establish the stable resident row and upload its old canonical bytes.
@@ -7788,7 +7831,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -7920,16 +7963,20 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string uploaderHeader = ReadTextFile(
-        root / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
+        root / "Source" / "Runtime" / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
     const std::string subsystemSource = ReadTextFile(
-        root / "Render" / "Private" / "RenderSubsystem.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
+    const std::string renderContextSource = ReadTextFile(
+        root / "Source" / "Runtime" / "Render" / "Private" / "Context" /
+        "RenderContext.cpp");
     const std::string sampleRunnerSource = ReadTextFile(
         root / "Samples" / "Common" / "Private" / "SampleRunner.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(uploaderHeader.empty());
     ASSERT_FALSE(subsystemSource.empty());
+    ASSERT_FALSE(renderContextSource.empty());
     ASSERT_FALSE(sampleRunnerSource.empty());
 
     size_t acquireCount = 0;
@@ -7967,13 +8014,21 @@ TEST_F(GPUDrivenValidationFixture,
     // publishing a replacement. This covers ordinary screenshots and the
     // no-screenshot final-drain path without invoking a graphics backend.
     const size_t qualificationArm = sampleRunnerSource.find(
-        "render->RequestGPUSceneCullingQualificationCapture()", 0u);
+        "gpuSceneCullingQualificationRequestAccepted =", 0u);
+    const size_t qualificationRequest = sampleRunnerSource.find(
+        "requestQualification();", qualificationArm);
     const size_t carryingTick = sampleRunnerSource.find(
-        "diagnostics = frameDriver.TickOnce(SampleDeltaTime);", qualificationArm);
+        "diagnostics = frameDriver.TickOnce(sampleDeltaTime);", qualificationRequest);
     ASSERT_NE(std::string::npos, qualificationArm);
+    ASSERT_NE(std::string::npos, qualificationRequest);
     ASSERT_NE(std::string::npos, carryingTick);
-    EXPECT_LT(qualificationArm, carryingTick);
-    EXPECT_NE(sampleRunnerSource.find("request.advanceEngine = true"),
+    EXPECT_LT(qualificationArm, qualificationRequest);
+    EXPECT_LT(qualificationRequest, carryingTick);
+    EXPECT_NE(sampleRunnerSource.find(
+                  "request.advanceEngine = !deterministicEpochActive"),
+              std::string::npos);
+    EXPECT_NE(sampleRunnerSource.find(
+                  "request.pumpRenderProgressOnly = deterministicEpochActive"),
               std::string::npos);
 
     // Qualification input accounting is diagnostic-only.  Keep an explicit
@@ -8066,15 +8121,42 @@ TEST_F(GPUDrivenValidationFixture,
     const size_t acceptedFrame = subsystemSource.find("m_sceneRenderer->RenderAcceptedFrame()");
     const size_t releaseUnsubmitted = subsystemSource.find(
         "m_sceneRenderer->ReleaseUnsubmittedFrame();", acceptedFrame);
-    const size_t abortFrame = subsystemSource.find("m_context->AbortFrame();", acceptedFrame);
+    const size_t abortFrame = subsystemSource.find("m_context->AbortFrame()", acceptedFrame);
     const size_t submitFrame = subsystemSource.find("m_context->EndFrame();", acceptedFrame);
+    const size_t acquiredImageCheck = subsystemSource.find(
+        "m_context->HasAcquiredPresentationImage();", submitFrame);
+    const size_t failClosedOwnership = subsystemSource.find(
+        "result.code = RenderRuntimeCode::OwnershipViolation;", acquiredImageCheck);
     ASSERT_NE(std::string::npos, acceptedFrame);
     ASSERT_NE(std::string::npos, releaseUnsubmitted);
     ASSERT_NE(std::string::npos, abortFrame);
     ASSERT_NE(std::string::npos, submitFrame);
+    ASSERT_NE(std::string::npos, acquiredImageCheck);
+    ASSERT_NE(std::string::npos, failClosedOwnership);
     EXPECT_LT(acceptedFrame, releaseUnsubmitted);
     EXPECT_LT(abortFrame, releaseUnsubmitted);
     EXPECT_LT(releaseUnsubmitted, submitFrame);
+    EXPECT_LT(submitFrame, acquiredImageCheck);
+    EXPECT_LT(acquiredImageCheck, failClosedOwnership);
+
+    const size_t abortImplementation = renderContextSource.find(
+        "bool RenderContext::AbortFrame()");
+    const size_t inactiveFrame = renderContextSource.find(
+        "if (!m_frameActive)", abortImplementation);
+    const size_t inactiveAcquiredImage = renderContextSource.find(
+        "if (HasAcquiredPresentationImage())", inactiveFrame);
+    const size_t inactiveAbortFailure = renderContextSource.find(
+        "return false;", inactiveAcquiredImage);
+    const size_t inactiveAbortSuccess = renderContextSource.find(
+        "return true;", inactiveAbortFailure);
+    ASSERT_NE(std::string::npos, abortImplementation);
+    ASSERT_NE(std::string::npos, inactiveFrame);
+    ASSERT_NE(std::string::npos, inactiveAcquiredImage);
+    ASSERT_NE(std::string::npos, inactiveAbortFailure);
+    ASSERT_NE(std::string::npos, inactiveAbortSuccess);
+    EXPECT_LT(inactiveFrame, inactiveAcquiredImage);
+    EXPECT_LT(inactiveAcquiredImage, inactiveAbortFailure);
+    EXPECT_LT(inactiveAbortFailure, inactiveAbortSuccess);
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -8083,14 +8165,14 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string renderer = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string recordContext = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Passes" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" /
         "RenderPassRecordContext.h");
     const std::string depthPass = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
     const std::string opaquePass = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(recordContext.empty());
     ASSERT_FALSE(depthPass.empty());
@@ -8144,15 +8226,15 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::string header = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
     const std::string sharedShader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
     const std::string shader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl");
     const std::string normalShader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(sharedShader.empty());
@@ -8165,7 +8247,10 @@ TEST_F(GPUDrivenValidationFixture,
               std::string::npos);
     EXPECT_NE(header.find("SealForGPUSceneGraph"), std::string::npos);
     EXPECT_NE(source.find("ConfigureGPUSceneRecording"), std::string::npos);
-    EXPECT_NE(source.find("FindGPUSceneCullingShaderPath"), std::string::npos);
+    EXPECT_NE(source.find("GPUDriven/GPUSceneCulling.hlsl"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_shaderProgramProvider->Load"),
+              std::string::npos);
     EXPECT_NE(source.find("GPUCulling.GPUSceneFrameSlotDescriptorSet"),
               std::string::npos);
     EXPECT_NE(source.find("inputs->gpuSceneTableBuffers = lease.buffers"),
@@ -8225,7 +8310,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -8254,13 +8339,14 @@ TEST_F(GPUDrivenValidationFixture,
               culling.GetAccessSnapshots().constants.uniformAccess.contentValidity);
 }
 
+#if RVX_ENABLE_DX12
 TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -8278,10 +8364,7 @@ TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSGPUSceneFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -8325,10 +8408,7 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8336,13 +8416,13 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     };
 
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUDriven");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUDriven");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUDriven");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUDriven");
 
     const auto compileGPUSceneVertexEntry = [&compiler](
         const std::filesystem::path& shaderPath,
@@ -8364,10 +8444,7 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8388,14 +8465,16 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     };
 
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl",
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl",
         "VSMainGPUSceneInstancedMaterial");
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
 }
+#endif
 
+#if RVX_ENABLE_VULKAN
 TEST_F(GPUDrivenValidationFixture,
        RigidVertexShaderEntriesCompileForVulkanSM60)
 {
@@ -8428,10 +8507,7 @@ TEST_F(GPUDrivenValidationFixture,
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8439,14 +8515,15 @@ TEST_F(GPUDrivenValidationFixture,
     };
 
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid", false);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid", false);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene", true);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene", true);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid", false);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid", false);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene", true);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene", true);
 }
+#endif
 
 TEST_F(GPUDrivenValidationFixture,
        GPUSceneRasterShaderUsesSharedAffineTransformAndFailClosedResolution)
@@ -8454,16 +8531,16 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string rasterInclude = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
     const std::string sharedSchema = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
     const std::string cpuSchema = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "GPUScene" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUScene" /
         "GPUSceneSchema.h");
     const std::string defaultLit = ReadTextFile(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl");
     const std::string depthOnly = ReadTextFile(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl");
     ASSERT_FALSE(rasterInclude.empty());
     ASSERT_FALSE(sharedSchema.empty());
     ASSERT_FALSE(cpuSchema.empty());

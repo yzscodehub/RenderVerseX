@@ -52,6 +52,31 @@ namespace
     }
 
     TEST(RenderCallerBoundaryValidation,
+         StylizedMaterialsSceneDoesNotReachRendererImplementation)
+    {
+        // This is intentionally a source-level check. SampleCommon still has
+        // a legacy public RHI dependency, so target-closure assertions would
+        // overstate the boundary the sample code can actually prove.
+        constexpr std::array<const char*, 7> forbidden = {
+            "RHI/",
+            "RenderGraph/",
+            "SceneRenderer",
+            "PipelineCache",
+            "RHIBackendType",
+            "RequestToonOutlineQualificationProbe",
+            "#include \"Render/Private",
+        };
+        const std::string source = ReadSource(
+            "Samples/RenderVerseSamples/Scenes/StylizedMaterialsSample.cpp");
+        for (const char* token : forbidden)
+        {
+            EXPECT_EQ(source.find(token), std::string::npos)
+                << "stylized-materials crossed the public sample boundary with "
+                << token;
+        }
+    }
+
+    TEST(RenderCallerBoundaryValidation,
          EditorBuildRequiresTheM1RuntimeAdapter)
     {
         const std::string cmake = ReadSource("Editor/CMakeLists.txt");

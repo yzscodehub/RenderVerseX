@@ -2,6 +2,7 @@
 
 #include "Samples/SampleModelLoader.h"
 
+#include "Engine/ECS/IWorldEcsRuntimeServices.h"
 #include "Scene/ECS/Fragments.h"
 #include "Scene/ECS/RenderFragments.h"
 #include "Scene/ECS/TransformMath.h"
@@ -18,6 +19,18 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] bool HasCookedModelExtension(
+        const std::filesystem::path& path)
+    {
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](const unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return extension == ".rva";
+    }
+
     [[nodiscard]] bool IsFinite(const Vec3& value)
     {
         return std::isfinite(value.x) && std::isfinite(value.y) &&
@@ -330,12 +343,29 @@ bool SampleModelLoader::RequestByAssetId(
         return false;
     }
 
+    if (lookup.entry->packageOnly &&
+        (!HasCookedModelExtension(lookup.entry->resolvedPath) ||
+         !lookup.entry->contentIdentity.IsValid() ||
+         lookup.entry->contentIdentity.domain !=
+             Resource::ResourceContentIdentityDomain::CookedArtifact))
+    {
+        outError = "Package-only sample model entry must resolve to a verified "
+                   "CookedArtifact .rva file: " + std::string(assetId);
+        return false;
+    }
+
     Resource::ResourceLoadOptions options;
     if (lookup.entry->contentIdentity.IsValid())
     {
         options.expectedContentIdentity = lookup.entry->contentIdentity;
     }
-    return RequestResolved(lookup.entry->resolvedPath,
+    std::string resourcePath;
+    if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
+    {
+        return false;
+    }
+    return RequestResolved(std::move(resourcePath),
+                           lookup.entry->resolvedPath,
                            std::move(options),
                            outModel,
                            outError);
@@ -357,7 +387,8 @@ bool SampleModelLoader::Request(const std::filesystem::path& path,
     {
         options.expectedContentIdentity = expected->second;
     }
-    return RequestResolved(path, std::move(options), outModel, outError);
+    return RequestResolved(path.generic_string(), path, std::move(options),
+                           outModel, outError);
 }
 
 bool SampleModelLoader::RequestAdditionalInstance(
@@ -388,25 +419,32 @@ bool SampleModelLoader::RequestAdditionalInstance(
         return false;
     }
 
-    return RequestResolved(sourceStatus->request.assetKey.canonicalPath,
+    if (source.resourcePath.empty())
+    {
+        outError = "Additional model instance source lacks its admitted resource path.";
+        return false;
+    }
+    return RequestResolved(source.resourcePath,
+                           source.sourcePath,
                            sourceStatus->request.options,
                            outModel,
                            outError);
 }
 
-bool SampleModelLoader::RequestResolved(const std::filesystem::path& path,
+bool SampleModelLoader::RequestResolved(std::string resourcePath,
+                                        const std::filesystem::path& sourcePath,
                                         Resource::ResourceLoadOptions resourceOptions,
                                         LoadedSampleModel& outModel,
                                         std::string& outError) const
 {
-    if (path.empty())
+    if (resourcePath.empty() || sourcePath.empty())
     {
-        outError = "Model path must not be empty";
+        outError = "Model resource and evidence paths must not be empty";
         return false;
     }
 
     ResourceSceneAdapters::EcsModelAssetLoadDesc desc;
-    desc.path = path.string();
+    desc.path = std::move(resourcePath);
     desc.resourceOptions = std::move(resourceOptions);
     desc.expectedSceneRuntimeId = m_scene.GetSceneRuntimeId();
     if (!desc.expectedSceneRuntimeId.IsValid())
@@ -415,6 +453,7 @@ bool SampleModelLoader::RequestResolved(const std::filesystem::path& path,
         return false;
     }
 
+    const std::string admittedResourcePath = desc.path;
     LoadedSampleModel requested;
     requested.request = m_runtimeServices.RequestModel(std::move(desc), outError);
     if (!requested.request.IsValid() ||
@@ -426,7 +465,8 @@ bool SampleModelLoader::RequestResolved(const std::filesystem::path& path,
         }
         return false;
     }
-    requested.sourcePath = path;
+    requested.resourcePath = admittedResourcePath;
+    requested.sourcePath = sourcePath;
     static_cast<void>(UpdateReadiness(requested));
     outModel = std::move(requested);
     return true;

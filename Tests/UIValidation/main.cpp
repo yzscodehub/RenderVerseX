@@ -1,4 +1,5 @@
 #include "RHI/RHI.h"
+#include "Render/Passes/UIPass.h"
 #include "UI/UI.h"
 
 #include <gtest/gtest.h>
@@ -478,6 +479,26 @@ namespace
         return MakeRef<FakeTextureView>(texture.Get(), viewDesc);
     }
 
+    constexpr RenderResourceHandle RVX_TEST_UI_IMAGE{1u, 1u};
+
+    class FakeUIResourceResolver final : public IUIRenderResourceResolver
+    {
+    public:
+        explicit FakeUIResourceResolver(RHITextureView* view = nullptr)
+            : m_view(view)
+        {
+        }
+
+        RHITextureView* ResolveTextureView(
+            RenderResourceHandle handle) override
+        {
+            return handle == RVX_TEST_UI_IMAGE ? m_view : nullptr;
+        }
+
+    private:
+        RHITextureView* m_view = nullptr;
+    };
+
     std::filesystem::path FindSystemFontPath()
     {
 #if defined(_WIN32)
@@ -614,23 +635,34 @@ namespace
     KerningFontSample FindKerningFontSample(float fontSize)
     {
 #if defined(_WIN32)
-        constexpr std::array<const char*, 3> candidates = {
+        constexpr std::array<const char*, 3> preferredCandidates = {
             "C:/Windows/Fonts/segoeui.ttf",
             "C:/Windows/Fonts/arial.ttf",
             "C:/Windows/Fonts/calibri.ttf",
         };
+        constexpr std::array<const char*, 1> fontRoots = {
+            "C:/Windows/Fonts",
+        };
 #elif defined(__APPLE__)
-        constexpr std::array<const char*, 3> candidates = {
+        constexpr std::array<const char*, 3> preferredCandidates = {
             "/System/Library/Fonts/SFNS.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/Library/Fonts/Arial.ttf",
         };
+        constexpr std::array<const char*, 2> fontRoots = {
+            "/System/Library/Fonts",
+            "/Library/Fonts",
+        };
 #else
-        constexpr std::array<const char*, 4> candidates = {
+        constexpr std::array<const char*, 4> preferredCandidates = {
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        };
+        constexpr std::array<const char*, 2> fontRoots = {
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
         };
 #endif
         constexpr std::array<std::pair<uint32, uint32>, 5> pairs = {
@@ -640,7 +672,41 @@ namespace
             {'W', 'a'},
             {'L', 'T'}};
 
-        for (const char* candidate : candidates)
+        std::vector<std::filesystem::path> candidates;
+        candidates.reserve(preferredCandidates.size() + 32u);
+        for (const char* candidate : preferredCandidates)
+        {
+            candidates.emplace_back(candidate);
+        }
+        for (const char* root : fontRoots)
+        {
+            std::error_code error;
+            const std::filesystem::recursive_directory_iterator end;
+            for (std::filesystem::recursive_directory_iterator iterator(
+                     root,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     error);
+                 !error && iterator != end;
+                 iterator.increment(error))
+            {
+                if (!iterator->is_regular_file(error))
+                {
+                    error.clear();
+                    continue;
+                }
+                const std::filesystem::path extension = iterator->path().extension();
+                if (extension == ".ttf" || extension == ".TTF" ||
+                    extension == ".otf" || extension == ".OTF")
+                {
+                    candidates.push_back(iterator->path());
+                }
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                         candidates.end());
+
+        for (const std::filesystem::path& candidate : candidates)
         {
             std::error_code error;
             if (!std::filesystem::exists(candidate, error))
@@ -649,7 +715,7 @@ namespace
             }
 
             UIFontMetrics font;
-            if (!font.LoadTrueTypeFile(candidate))
+            if (!font.LoadTrueTypeFile(candidate.string()))
             {
                 continue;
             }
@@ -669,27 +735,25 @@ namespace
     }
 }
 
-TEST(UIValidation, RendererInitializesRuntimeRHIAndRecordsPrimitives)
+TEST(UIValidation, RendererInitializesCPURecorderAndBuildsRenderPacket)
 {
     FakeDevice device;
     auto targetView = CreateView(RHITextureViewType::RenderTarget);
     auto imageView = CreateView(RHITextureViewType::ShaderResource);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
-    EXPECT_EQ(UIRenderBackend::RuntimeRHI, renderer.GetBackend());
+    ASSERT_TRUE(renderer.Initialize());
+    EXPECT_EQ(UIRenderBackend::CPURecorder, renderer.GetBackend());
 
     UIRenderTargetDesc target;
     target.width = 128;
     target.height = 64;
-    target.format = RHIFormat::RGBA8_UNORM;
-    target.colorTarget = targetView.Get();
-
     renderer.BeginFrame(target);
     ASSERT_TRUE(renderer.IsRecording());
     renderer.DrawRect(Rect(1.0f, 2.0f, 16.0f, 8.0f), UIColor::Red());
     renderer.DrawText("Wi\nHi", Rect(0.0f, 0.0f, 80.0f, 64.0f), 20.0f, UIColor::White());
-    renderer.DrawImage(imageView.Get(), Rect(4.0f, 6.0f, 24.0f, 24.0f));
+    renderer.DrawImage(RVX_TEST_UI_IMAGE,
+                       Rect(4.0f, 6.0f, 24.0f, 24.0f));
     renderer.EndFrame();
 
     const UIRenderStats& stats = renderer.GetStats();
@@ -702,7 +766,19 @@ TEST(UIValidation, RendererInitializesRuntimeRHIAndRecordsPrimitives)
     EXPECT_EQ(36u, stats.indexCount);
     ASSERT_EQ(3u, renderer.GetCommands().size());
     EXPECT_EQ(UIDrawCommandType::Image, renderer.GetCommands()[2].type);
-    EXPECT_EQ(imageView.Get(), renderer.GetCommands()[2].textureView);
+    EXPECT_EQ(RVX_TEST_UI_IMAGE, renderer.GetCommands()[2].texture);
+
+    const UIRenderPacket& packet = renderer.GetRenderPacket();
+    ASSERT_TRUE(packet.IsValid());
+    EXPECT_EQ(128u, packet.targetWidth);
+    EXPECT_EQ(64u, packet.targetHeight);
+    EXPECT_EQ(renderer.GetVertices().size(), packet.vertices.size());
+    EXPECT_EQ(renderer.GetIndices(), packet.indices);
+    ASSERT_EQ(3u, packet.commands.size());
+    EXPECT_EQ(UIRenderResourceKind::Texture,
+              packet.commands[2].resourceKind);
+    EXPECT_EQ(RVX_TEST_UI_IMAGE, packet.commands[2].texture);
+    EXPECT_TRUE(packet.fontAtlas.IsValid());
 }
 
 TEST(UIValidation, RendererDrawBorderEmitsFourClampedEdges)
@@ -710,7 +786,7 @@ TEST(UIValidation, RendererDrawBorderEmitsFourClampedEdges)
     FakeDevice device;
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.BeginRecordOnlyFrame(128, 96);
     renderer.DrawBorder(Rect(10.0f, 20.0f, 30.0f, 16.0f),
                         UIColor::Yellow(),
@@ -753,7 +829,7 @@ TEST(UIValidation, RendererDrawLineEmitsOrientedQuadGeometry)
     FakeDevice device;
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.BeginRecordOnlyFrame(128, 96);
     renderer.DrawLine(Vec2(10.0f, 20.0f),
                       Vec2(30.0f, 40.0f),
@@ -811,7 +887,7 @@ TEST(UIValidation, WidgetsRenderThroughUIRendererCommands)
     auto image = Image::Create();
     image->SetPosition(116.0f, 14.0f);
     image->SetSize(32.0f, 32.0f);
-    image->SetTextureView(imageView.Get());
+    image->SetTexture(RVX_TEST_UI_IMAGE);
 
     panel->AddChild(button);
     panel->AddChild(label);
@@ -819,8 +895,8 @@ TEST(UIValidation, WidgetsRenderThroughUIRendererCommands)
     canvas.AddWidget(panel);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
-    renderer.BeginFrame({320, 180, RHIFormat::RGBA8_UNORM, targetView.Get()});
+    ASSERT_TRUE(renderer.Initialize());
+    renderer.BeginFrame({320, 180});
     canvas.Render(renderer);
     renderer.EndFrame();
 
@@ -841,7 +917,7 @@ TEST(UIValidation, WidgetsRenderThroughUIRendererCommands)
     EXPECT_FLOAT_EQ(58.0f, renderer.GetCommands()[3].clipRect.y);
     EXPECT_FLOAT_EQ(96.0f, renderer.GetCommands()[3].clipRect.width);
     EXPECT_FLOAT_EQ(24.0f, renderer.GetCommands()[3].clipRect.height);
-    EXPECT_EQ(imageView.Get(), renderer.GetCommands()[4].textureView);
+    EXPECT_EQ(RVX_TEST_UI_IMAGE, renderer.GetCommands()[4].texture);
 }
 
 TEST(UIValidation, FocusedButtonRendersVisibleFocusOutline)
@@ -859,8 +935,8 @@ TEST(UIValidation, FocusedButtonRendersVisibleFocusOutline)
     canvas.SetFocusedWidget(button.get());
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
-    renderer.BeginFrame({160, 80, RHIFormat::RGBA8_UNORM, targetView.Get()});
+    ASSERT_TRUE(renderer.Initialize());
+    renderer.BeginFrame({160, 80});
     canvas.Render(renderer);
     renderer.EndFrame();
 
@@ -893,14 +969,12 @@ TEST(UIValidation, RendererRecordOnlyFrameBuildsCommandsWithoutSubmitTarget)
     FakeDevice device;
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
     renderer.BeginRecordOnlyFrame(256, 128);
     ASSERT_TRUE(renderer.IsRecording());
     EXPECT_EQ(256u, renderer.GetCurrentTarget().width);
     EXPECT_EQ(128u, renderer.GetCurrentTarget().height);
-    EXPECT_EQ(RHIFormat::RGBA8_UNORM, renderer.GetCurrentTarget().format);
-    EXPECT_EQ(nullptr, renderer.GetCurrentTarget().colorTarget);
 
     renderer.DrawRect(Rect(4.0f, 6.0f, 48.0f, 20.0f), UIColor::Red());
     renderer.DrawText("Native", Rect(8.0f, 32.0f, 96.0f, 28.0f), 16.0f, UIColor::White());
@@ -913,20 +987,25 @@ TEST(UIValidation, RendererRecordOnlyFrameBuildsCommandsWithoutSubmitTarget)
     EXPECT_EQ(1u, stats.textCount);
     EXPECT_GT(stats.vertexCount, 0u);
     EXPECT_GT(stats.indexCount, 0u);
+    EXPECT_TRUE(renderer.GetRenderPacket().IsValid());
 
-    UIRenderSubmitDesc submitDesc;
-    EXPECT_FALSE(renderer.Submit(submitDesc));
-    EXPECT_FALSE(renderer.GetSubmitStats().submitted);
+    UIPassSubmitDesc submitDesc;
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    EXPECT_FALSE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
+    EXPECT_FALSE(uiPass.GetSubmitStats().submitted);
 }
 
-TEST(UIValidation, RendererBindsRecordedFrameToMatchingSwapChainTarget)
+TEST(UIValidation, RendererPacketLeavesTargetBindingToRenderUIPass)
 {
     FakeDevice device;
+    FakeCommandContext context;
+    auto pipeline = MakeRef<FakePipeline>();
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
-    renderer.BeginRecordOnlyFrame(640, 360, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(640, 360);
     renderer.DrawRect(Rect(0.0f, 0.0f, 640.0f, 32.0f), UIColor::White());
     renderer.EndFrame();
 
@@ -942,19 +1021,18 @@ TEST(UIValidation, RendererBindsRecordedFrameToMatchingSwapChainTarget)
     viewDesc.format = RHIFormat::BGRA8_UNORM;
     auto targetView = MakeRef<FakeTextureView>(targetTexture.Get(), viewDesc);
 
-    UIRenderTargetDesc target;
-    target.width = 640;
-    target.height = 360;
-    target.format = RHIFormat::BGRA8_UNORM;
-    target.colorTarget = targetView.Get();
-
-    EXPECT_TRUE(renderer.BindRecordedFrameTarget(target));
-    EXPECT_EQ(targetView.Get(), renderer.GetCurrentTarget().colorTarget);
-    EXPECT_EQ(RHIFormat::BGRA8_UNORM, renderer.GetCurrentTarget().format);
-
-    target.width = 320;
-    EXPECT_FALSE(renderer.BindRecordedFrameTarget(target));
-    EXPECT_EQ(targetView.Get(), renderer.GetCurrentTarget().colorTarget);
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    UIPassSubmitDesc submitDesc;
+    submitDesc.commandContext = &context;
+    submitDesc.pipeline = pipeline.Get();
+    submitDesc.colorTarget = targetView.Get();
+    ASSERT_TRUE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
+    ASSERT_EQ(1u, context.renderPassDesc.colorAttachmentCount);
+    EXPECT_EQ(targetView.Get(),
+              context.renderPassDesc.colorAttachments[0].view);
+    EXPECT_EQ(640u, context.renderPassDesc.renderArea.width);
+    EXPECT_EQ(360u, context.renderPassDesc.renderArea.height);
 }
 
 TEST(UIValidation, RendererSubmitsRecordOnlyFrameToDefaultFramebufferWhenAllowed)
@@ -964,20 +1042,22 @@ TEST(UIValidation, RendererSubmitsRecordOnlyFrameToDefaultFramebufferWhenAllowed
     auto pipeline = MakeRef<FakePipeline>();
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
-    renderer.BeginRecordOnlyFrame(300, 120, RHIFormat::BGRA8_UNORM);
+    renderer.BeginRecordOnlyFrame(300, 120);
     renderer.DrawRect(Rect(0.0f, 0.0f, 300.0f, 24.0f), UIColor::White());
     renderer.DrawText("Native", Rect(8.0f, 4.0f, 96.0f, 20.0f), 14.0f, UIColor::Black());
     renderer.EndFrame();
 
-    UIRenderSubmitDesc submitDesc;
+    UIPassSubmitDesc submitDesc;
     submitDesc.commandContext = &context;
     submitDesc.pipeline = pipeline.Get();
     submitDesc.allowDefaultFramebufferTarget = true;
-    ASSERT_TRUE(renderer.Submit(submitDesc));
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    ASSERT_TRUE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
 
-    const UIRenderSubmitStats& submitStats = renderer.GetSubmitStats();
+    const UIPassSubmitStats& submitStats = uiPass.GetSubmitStats();
     EXPECT_TRUE(submitStats.submitted);
     EXPECT_TRUE(submitStats.defaultFramebufferTarget);
     EXPECT_EQ(2u, submitStats.drawCallCount);
@@ -995,8 +1075,8 @@ TEST(UIValidation, RendererSubmitsRecordOnlyFrameToDefaultFramebufferWhenAllowed
     EXPECT_EQ(300u, context.boundScissor.width);
     EXPECT_EQ(120u, context.boundScissor.height);
     EXPECT_EQ(pipeline.Get(), context.boundPipeline);
-    EXPECT_EQ(renderer.GetVertexBuffer(), context.boundVertexBuffer);
-    EXPECT_EQ(renderer.GetIndexBuffer(), context.boundIndexBuffer);
+    EXPECT_EQ(uiPass.GetVertexBuffer(), context.boundVertexBuffer);
+    EXPECT_EQ(uiPass.GetIndexBuffer(), context.boundIndexBuffer);
 }
 
 TEST(UIValidation, RendererAppliesClipRectScissorsPerDrawCommand)
@@ -1006,9 +1086,9 @@ TEST(UIValidation, RendererAppliesClipRectScissorsPerDrawCommand)
     auto pipeline = MakeRef<FakePipeline>();
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
-    renderer.BeginRecordOnlyFrame(200, 100, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(200, 100);
     renderer.DrawRect(Rect(0.0f, 0.0f, 24.0f, 24.0f), UIColor::White());
     renderer.PushClipRect(Rect(10.0f, 12.0f, 40.0f, 30.0f));
     renderer.DrawRect(Rect(0.0f, 0.0f, 80.0f, 80.0f), UIColor::Red());
@@ -1022,12 +1102,14 @@ TEST(UIValidation, RendererAppliesClipRectScissorsPerDrawCommand)
     EXPECT_FLOAT_EQ(30.0f, renderer.GetCommands()[1].clipRect.height);
     EXPECT_FLOAT_EQ(200.0f, renderer.GetCommands()[2].clipRect.width);
 
-    UIRenderSubmitDesc submitDesc;
+    UIPassSubmitDesc submitDesc;
     submitDesc.commandContext = &context;
     submitDesc.pipeline = pipeline.Get();
     submitDesc.allowDefaultFramebufferTarget = true;
-    ASSERT_TRUE(renderer.Submit(submitDesc));
-    EXPECT_EQ(3u, renderer.GetSubmitStats().drawCallCount);
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    ASSERT_TRUE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
+    EXPECT_EQ(3u, uiPass.GetSubmitStats().drawCallCount);
     ASSERT_GE(context.scissors.size(), static_cast<size_t>(3));
     EXPECT_EQ(200u, context.scissors[0].width);
     EXPECT_EQ(100u, context.scissors[0].height);
@@ -1060,7 +1142,7 @@ TEST(UIValidation, PanelClipChildrenAppliesClipRectToDescendantCommands)
     canvas.AddWidget(panel);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.BeginRecordOnlyFrame(240, 120);
     canvas.Render(renderer);
     renderer.EndFrame();
@@ -1103,7 +1185,7 @@ TEST(UIValidation, ScrollViewScrollsContentAndClipsRenderedChildren)
     EXPECT_FLOAT_EQ(20.0f, scrollView->GetScrollOffset().y);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.BeginRecordOnlyFrame(180, 120);
     canvas.Render(renderer);
     renderer.EndFrame();
@@ -1183,7 +1265,7 @@ TEST(UIValidation, ScrollViewRendersScrollbarWidgetsAndClampsOffset)
     canvas.AddWidget(scrollView);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.BeginRecordOnlyFrame(180, 120);
     canvas.Render(renderer);
     renderer.EndFrame();
@@ -1277,10 +1359,8 @@ TEST(UIValidation, TrueTypeFontMetricsAppliesKerningToMeasuredText)
 {
     constexpr float RVX_TEST_FONT_SIZE = 48.0f;
     const KerningFontSample sample = FindKerningFontSample(RVX_TEST_FONT_SIZE);
-    if (sample.path.empty())
-    {
-        GTEST_SKIP() << "No system TrueType font candidate exposes a tested kern pair";
-    }
+    ASSERT_FALSE(sample.path.empty())
+        << "No installed TrueType/OpenType font exposes a tested kern pair";
 
     UIFontMetrics font;
     ASSERT_TRUE(font.LoadTrueTypeFile(sample.path.string()));
@@ -1367,9 +1447,9 @@ TEST(UIValidation, FontAtlasBuildsGlyphPixelsAndTextUsesInsetAtlasUVs)
     auto targetView = CreateView(RHITextureViewType::RenderTarget);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
-    renderer.BeginFrame({256, 128, RHIFormat::RGBA8_UNORM, targetView.Get()});
+    renderer.BeginFrame({256, 128});
     renderer.DrawText("Wi", Rect(0.0f, 0.0f, 128.0f, 64.0f), 24.0f, UIColor::White());
     renderer.EndFrame();
 
@@ -1455,7 +1535,7 @@ TEST(UIValidation, FontAtlasBuildsLocalizedGlyphWhenFontProvidesCodepoint)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
     renderer.BeginRecordOnlyFrame(256, 128);
     renderer.DrawText(std::string("\xE4\xB8\xAD"),
@@ -1561,7 +1641,7 @@ TEST(UIValidation, FontFallbackChainBuildsAtlasAcrossPrimaryAndFallbackFonts)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
     renderer.BeginRecordOnlyFrame(320, 160);
     renderer.DrawText(std::string("A\xE4\xB8\xAD"),
@@ -1614,7 +1694,7 @@ TEST(UIValidation, DefaultFontFallbackChainCanBeConfiguredFromExplicitFontPaths)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     const UIFontAtlas* atlas = renderer.GetFontAtlas();
     ASSERT_NE(nullptr, atlas);
     EXPECT_TRUE(atlas->IsBuilt());
@@ -1631,7 +1711,7 @@ TEST(UIValidation, DefaultRendererFontAtlasUsesFallbackSmokeGlyphs)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
     const UIFontAtlas* atlas = renderer.GetFontAtlas();
     ASSERT_NE(nullptr, atlas);
@@ -1683,7 +1763,7 @@ TEST(UIValidation, RendererExpandsDefaultFontAtlasAtFrameBoundaryForMissingGlyph
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
 
     const UIFontAtlas* initialAtlas = renderer.GetFontAtlas();
     ASSERT_NE(nullptr, initialAtlas);
@@ -1742,7 +1822,7 @@ TEST(UIValidation, RendererDoesNotMutateExplicitFontAtlasForMissingGlyphs)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
 
     renderer.BeginRecordOnlyFrame(320, 160);
@@ -1779,12 +1859,12 @@ TEST(UIValidation, TextUsesPackedAtlasGlyphGeometryWhenScaled)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
 
     constexpr float RVX_TEST_FONT_SIZE = 24.0f;
     const Rect bounds(8.0f, 10.0f, 128.0f, 64.0f);
-    renderer.BeginRecordOnlyFrame(256, 128, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(256, 128);
     renderer.DrawText("H", bounds, RVX_TEST_FONT_SIZE, UIColor::White());
     renderer.EndFrame();
 
@@ -1824,10 +1904,10 @@ TEST(UIValidation, TextRendererSnapsPackedGlyphQuadsToPixelGrid)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
 
-    renderer.BeginRecordOnlyFrame(320, 160, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(320, 160);
     renderer.DrawText("H", Rect(8.35f, 10.45f, 128.0f, 64.0f), 23.5f, UIColor::White());
     renderer.EndFrame();
 
@@ -1871,12 +1951,12 @@ TEST(UIValidation, TextRendererAdvancesWithPackedAtlasGlyphScale)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
 
     constexpr float RVX_TEST_FONT_SIZE = 24.0f;
     const Rect bounds(8.0f, 10.0f, 180.0f, 64.0f);
-    renderer.BeginRecordOnlyFrame(320, 160, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(320, 160);
     renderer.DrawText("Wi", bounds, RVX_TEST_FONT_SIZE, UIColor::White());
     renderer.EndFrame();
 
@@ -1917,10 +1997,8 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
 {
     constexpr float RVX_TEST_FONT_SIZE = 48.0f;
     const KerningFontSample sample = FindKerningFontSample(RVX_TEST_FONT_SIZE);
-    if (sample.path.empty())
-    {
-        GTEST_SKIP() << "No system TrueType font candidate exposes a tested kern pair";
-    }
+    ASSERT_FALSE(sample.path.empty())
+        << "No installed TrueType/OpenType font exposes a tested kern pair";
 
     UIFontMetrics font;
     ASSERT_TRUE(font.LoadTrueTypeFile(sample.path.string()));
@@ -1949,7 +2027,7 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
 
     FakeDevice device;
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
 
     std::string text;
@@ -1957,7 +2035,7 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     text.push_back(static_cast<char>(sample.codepoint));
 
     const Rect bounds(8.0f, 10.0f, 160.0f, 64.0f);
-    renderer.BeginRecordOnlyFrame(320, 160, RHIFormat::RGBA8_UNORM);
+    renderer.BeginRecordOnlyFrame(320, 160);
     renderer.DrawText(text, bounds, RVX_TEST_FONT_SIZE, UIColor::White());
     renderer.EndFrame();
 
@@ -1996,7 +2074,7 @@ TEST(UIValidation, DefaultFontAtlasUploadsHighResolutionTextureForScaledText)
     auto targetView = CreateView(RHITextureViewType::RenderTarget);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     ASSERT_NE(nullptr, renderer.GetFontAtlas());
     EXPECT_FLOAT_EQ(64.0f, renderer.GetFontAtlas()->GetDesc().fontSize);
     EXPECT_GE(renderer.GetFontAtlas()->GetDesc().fontSize,
@@ -2004,14 +2082,17 @@ TEST(UIValidation, DefaultFontAtlasUploadsHighResolutionTextureForScaledText)
     EXPECT_GE(renderer.GetFontAtlas()->GetDesc().padding, 4u);
     EXPECT_GE(renderer.GetFontAtlas()->GetDesc().oversampleX, 3u);
     EXPECT_GE(renderer.GetFontAtlas()->GetDesc().oversampleY, 3u);
-    renderer.BeginFrame({320, 180, RHIFormat::RGBA8_UNORM, targetView.Get()});
+    renderer.BeginFrame({320, 180});
     renderer.DrawText("Scaled", Rect(8.0f, 16.0f, 260.0f, 72.0f), 54.0f, UIColor::White());
     renderer.EndFrame();
 
-    UIRenderSubmitDesc submitDesc;
+    UIPassSubmitDesc submitDesc;
     submitDesc.commandContext = &context;
     submitDesc.pipeline = pipeline.Get();
-    ASSERT_TRUE(renderer.Submit(submitDesc));
+    submitDesc.colorTarget = targetView.Get();
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    ASSERT_TRUE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
 
     ASSERT_EQ(2u, device.createdTextureDescs.size());
     EXPECT_EQ(2048u, device.createdTextureDescs[1].width);
@@ -2046,27 +2127,34 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     auto imageView = CreateView(RHITextureViewType::ShaderResource);
 
     UIRenderer renderer;
-    ASSERT_TRUE(renderer.Initialize(&device));
+    ASSERT_TRUE(renderer.Initialize());
     renderer.SetFontAtlas(&atlas);
-    renderer.BeginFrame({320, 180, RHIFormat::RGBA8_UNORM, targetView.Get()});
+    renderer.BeginFrame({320, 180});
     renderer.DrawRect(Rect(8.0f, 8.0f, 64.0f, 24.0f), UIColor::Red());
     renderer.DrawText("UI", Rect(8.0f, 40.0f, 96.0f, 32.0f), 20.0f, UIColor::White());
-    renderer.DrawImage(imageView.Get(), Rect(80.0f, 8.0f, 32.0f, 32.0f));
+    renderer.DrawImage(RVX_TEST_UI_IMAGE,
+                       Rect(80.0f, 8.0f, 32.0f, 32.0f));
     renderer.EndFrame();
 
-    UIRenderSubmitDesc submitDesc;
+    UIPassSubmitDesc submitDesc;
     submitDesc.commandContext = &context;
     submitDesc.pipeline = pipeline.Get();
+    submitDesc.colorTarget = targetView.Get();
+    FakeUIResourceResolver resourceResolver(imageView.Get());
+    submitDesc.resourceResolver = &resourceResolver;
     submitDesc.colorLoadOp = RHILoadOp::Clear;
     submitDesc.clearColor = {0.10f, 0.11f, 0.12f, 1.0f};
-    ASSERT_TRUE(renderer.Submit(submitDesc));
+    UIPass uiPass;
+    ASSERT_TRUE(uiPass.Initialize(&device));
+    ASSERT_TRUE(uiPass.Submit(renderer.GetRenderPacket(), submitDesc));
 
-    const UIRenderSubmitStats& submitStats = renderer.GetSubmitStats();
+    const UIPassSubmitStats& submitStats = uiPass.GetSubmitStats();
     EXPECT_TRUE(submitStats.submitted);
     EXPECT_TRUE(submitStats.whiteTextureUploaded);
     EXPECT_TRUE(submitStats.atlasUploaded);
     EXPECT_EQ(3u, submitStats.drawCallCount);
-    EXPECT_EQ(renderer.GetVertices().size() * sizeof(UIVertex), submitStats.vertexBytesUploaded);
+    EXPECT_EQ(renderer.GetVertices().size() * sizeof(UIRenderVertex),
+              submitStats.vertexBytesUploaded);
     EXPECT_EQ(renderer.GetIndices().size() * sizeof(uint32), submitStats.indexBytesUploaded);
     EXPECT_EQ(static_cast<uint64>(atlas.GetPixels().size() * 4u), submitStats.atlasBytesUploaded);
     EXPECT_EQ(4u, submitStats.whiteTextureBytesUploaded);
@@ -2087,7 +2175,7 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     ASSERT_EQ(2u, device.createdBufferDescs.size());
     EXPECT_EQ(RHIBufferUsage::Vertex, device.createdBufferDescs[0].usage);
     EXPECT_EQ(RHIMemoryType::Upload, device.createdBufferDescs[0].memoryType);
-    EXPECT_EQ(sizeof(UIVertex), device.createdBufferDescs[0].stride);
+    EXPECT_EQ(sizeof(UIRenderVertex), device.createdBufferDescs[0].stride);
     EXPECT_EQ(RHIBufferUsage::Index, device.createdBufferDescs[1].usage);
     EXPECT_EQ(RHIMemoryType::Upload, device.createdBufferDescs[1].memoryType);
     EXPECT_EQ(0u, device.createdBufferDescs[1].stride);
@@ -2120,10 +2208,10 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     EXPECT_NE(device.createdDescriptorSetDescs[0].bindings[1].sampler,
               device.createdDescriptorSetDescs[1].bindings[1].sampler);
 
-    EXPECT_NE(nullptr, renderer.GetWhiteTextureView());
-    EXPECT_NE(nullptr, renderer.GetFontAtlasTextureView());
-    EXPECT_NE(nullptr, renderer.GetVertexBuffer());
-    EXPECT_NE(nullptr, renderer.GetIndexBuffer());
+    EXPECT_NE(nullptr, uiPass.GetWhiteTextureView());
+    EXPECT_NE(nullptr, uiPass.GetFontAtlasTextureView());
+    EXPECT_NE(nullptr, uiPass.GetVertexBuffer());
+    EXPECT_NE(nullptr, uiPass.GetIndexBuffer());
 
     EXPECT_EQ(2u, std::count(context.calls.begin(), context.calls.end(), "CopyBufferToTexture"));
     EXPECT_EQ(1u, std::count(context.calls.begin(), context.calls.end(), "BeginRenderPass"));
@@ -2150,8 +2238,8 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     EXPECT_EQ(renderer.GetCommands()[2].indexCount, context.drawIndexedCalls[2].indexCount);
     EXPECT_EQ(renderer.GetCommands()[2].firstIndex, context.drawIndexedCalls[2].firstIndex);
     EXPECT_EQ(pipeline.Get(), context.boundPipeline);
-    EXPECT_EQ(renderer.GetVertexBuffer(), context.boundVertexBuffer);
-    EXPECT_EQ(renderer.GetIndexBuffer(), context.boundIndexBuffer);
+    EXPECT_EQ(uiPass.GetVertexBuffer(), context.boundVertexBuffer);
+    EXPECT_EQ(uiPass.GetIndexBuffer(), context.boundIndexBuffer);
     EXPECT_EQ(RHIFormat::R32_UINT, context.indexFormat);
     EXPECT_EQ(320.0f, context.boundViewport.width);
     EXPECT_EQ(180.0f, context.boundViewport.height);

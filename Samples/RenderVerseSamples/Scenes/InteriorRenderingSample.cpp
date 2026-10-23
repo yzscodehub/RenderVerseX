@@ -196,6 +196,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.92f, 0.78f),
                 .intensity = 3.5f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.0008f,
                 .castsShadows = true,
             };
@@ -208,6 +209,7 @@ namespace RVX
                 .type = SceneECS::LightType::Point,
                 .color = descriptor.color,
                 .intensity = descriptor.intensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                 .range = 5.5f,
                 .castsShadows = false,
             };
@@ -220,6 +222,7 @@ namespace RVX
                 .type = SceneECS::LightType::Spot,
                 .color = descriptor.color,
                 .intensity = descriptor.intensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                 .range = 12.0f,
                 .innerConeRadians = radians(18.0f),
                 .outerConeRadians = radians(32.0f),
@@ -325,13 +328,15 @@ namespace RVX
         context.renderSettings.shadows.shadowBias = 0.0008f;
         context.renderSettings.shadows.normalBias = 0.02f;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
-        context.renderSettings.postProcess.enableSSAO = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.exposureMode =
-            RenderExposureMode::ManualMultiplier;
-        context.renderSettings.postProcess.exposure = 1.0f;
+        context.renderSettings.postProcess.exposureSettings.mode =
+            RenderExposureMode::ManualEV100;
+        context.renderSettings.postProcess.exposureSettings.manualEV100 = 0.0f;
+        context.renderSettings.postProcess.exposureSettings.exposureCompensationEV =
+            0.0f;
         // HZB is intentionally outside the P0 interior contract. Complex
         // occlusion here is produced by Sponza geometry, depth testing, and
         // opaque/transparent ordering rather than an unavailable HZB path.

@@ -1,0 +1,326 @@
+#include "DX11SwapChain.h"
+#include "DX11Device.h"
+#include "DX11Resources.h"
+#include "DX11Conversions.h"
+
+namespace RVX
+{
+    DX11SwapChain::DX11SwapChain(DX11Device* device, const RHISwapChainDesc& desc)
+        : m_device(device)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_backBufferCount(desc.bufferCount)
+        , m_format(desc.config.format)
+        , m_vsyncEnabled(desc.config.vsync)
+    {
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::DX11) ||
+            !IsSwapChainConfigValid(desc.config))
+        {
+            RVX_RHI_ERROR("Invalid Win32 surface for DX11 swap chain");
+            return;
+        }
+
+        if (!CreateSwapChain(desc))
+        {
+            RVX_RHI_ERROR("Failed to create DX11 swap chain");
+        }
+    }
+
+    DX11SwapChain::~DX11SwapChain()
+    {
+        ReleaseBackBuffers();
+
+        // Before releasing swap chain, exit fullscreen if needed
+        BOOL isFullscreen = FALSE;
+        if (m_swapChain && SUCCEEDED(m_swapChain->GetFullscreenState(&isFullscreen, nullptr)))
+        {
+            if (isFullscreen)
+            {
+                m_swapChain->SetFullscreenState(FALSE, nullptr);
+            }
+        }
+    }
+
+    // Helper to get non-SRGB format for swap chain buffer (Flip model doesn't support SRGB)
+    static DXGI_FORMAT GetSwapChainBufferFormat(RHIFormat format)
+    {
+        DXGI_FORMAT dxgiFormat = ToDXGIFormat(format);
+        // Flip model swap chains don't support SRGB formats directly
+        // Use the non-SRGB format for the buffer, SRGB for the RTV
+        switch (dxgiFormat)
+        {
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+            default: return dxgiFormat;
+        }
+    }
+
+    bool DX11SwapChain::CreateSwapChain(const RHISwapChainDesc& desc)
+    {
+        // Store the requested format for RTV creation
+        m_requestedFormat = desc.config.format;
+
+        HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
+
+        // Check tearing support for variable refresh rate displays
+        m_tearingSupported = CheckTearingSupport();
+
+        // Try FLIP_DISCARD first (Windows 10+, better performance)
+        DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+        swapChainDesc.Width = desc.surface.width;
+        swapChainDesc.Height = desc.surface.height;
+        swapChainDesc.Stereo = FALSE;
+        swapChainDesc.SampleDesc.Count = 1;
+        swapChainDesc.SampleDesc.Quality = 0;
+        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+        swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+
+        HRESULT hr = E_FAIL;
+
+        // Try FLIP_DISCARD model first (requires Windows 10, DXGI 1.4+)
+        {
+            // FLIP model requires non-SRGB format for the buffer
+            swapChainDesc.Format = GetSwapChainBufferFormat(desc.config.format);
+            swapChainDesc.BufferCount = std::max(2u, desc.bufferCount);  // FLIP requires at least 2 buffers
+            swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+            // Enable tearing if supported
+            if (m_tearingSupported)
+            {
+                swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+            }
+
+            hr = m_device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                m_device->GetD3DDevice(),
+                hwnd,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &m_swapChain
+            );
+
+            if (SUCCEEDED(hr))
+            {
+                m_isFlipModel = true;
+                m_backBufferCount = swapChainDesc.BufferCount;
+                RVX_RHI_INFO("DX11 SwapChain using FLIP_DISCARD model (tearing: {})", 
+                    m_tearingSupported ? "enabled" : "disabled");
+            }
+        }
+
+        // Fallback to legacy DISCARD mode if FLIP failed
+        if (FAILED(hr))
+        {
+            RVX_RHI_DEBUG("FLIP_DISCARD not available, falling back to DISCARD mode");
+
+            swapChainDesc.Format = ToDXGIFormat(desc.config.format);  // DISCARD supports SRGB directly
+            swapChainDesc.BufferCount = 1;  // DISCARD mode only needs 1 buffer
+            swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+            swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            m_tearingSupported = false;  // Tearing not supported with DISCARD
+
+            hr = m_device->GetDXGIFactory()->CreateSwapChainForHwnd(
+                m_device->GetD3DDevice(),
+                hwnd,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &m_swapChain
+            );
+
+            if (SUCCEEDED(hr))
+            {
+                m_isFlipModel = false;
+                m_backBufferCount = 1;
+                RVX_RHI_INFO("DX11 SwapChain using DISCARD model");
+            }
+        }
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to create swap chain: {}", HRESULTToString(hr));
+            return false;
+        }
+
+        // Disable Alt+Enter fullscreen toggle (handle it ourselves)
+        m_device->GetDXGIFactory()->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+        CreateBackBufferViews();
+
+        RVX_RHI_INFO("DX11 SwapChain created: {}x{}, {} buffers, flip: {}", 
+            m_width, m_height, m_backBufferCount, m_isFlipModel);
+
+        return true;
+    }
+
+    bool DX11SwapChain::CheckTearingSupport()
+    {
+        // Check for tearing support (DXGI 1.5+ feature)
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(m_device->GetDXGIFactory()->QueryInterface(IID_PPV_ARGS(&factory5))))
+        {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                &allowTearing,
+                sizeof(allowTearing))))
+            {
+                return allowTearing == TRUE;
+            }
+        }
+        return false;
+    }
+
+    void DX11SwapChain::CreateBackBufferViews()
+    {
+        m_backBuffers.clear();
+        m_backBufferViews.clear();
+        
+        // For DX11 FLIP swap chains, we can only access buffer 0
+        // The buffer rotates automatically after Present
+        m_backBuffers.resize(1);
+        m_backBufferViews.resize(1);
+
+        ComPtr<ID3D11Texture2D> backBuffer;
+        HRESULT hr = m_swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to get back buffer: {}", HRESULTToString(hr));
+            return;
+        }
+
+        // Get the actual buffer format from the swap chain
+        D3D11_TEXTURE2D_DESC texDesc2D;
+        backBuffer->GetDesc(&texDesc2D);
+
+        RHITextureDesc texDesc = {};
+        texDesc.width = m_width;
+        texDesc.height = m_height;
+        texDesc.depth = 1;
+        texDesc.mipLevels = 1;
+        texDesc.arraySize = 1;
+        texDesc.format = m_format;  // Use the original format
+        texDesc.usage = RHITextureUsage::RenderTarget;
+        texDesc.dimension = RHITextureDimension::Texture2D;
+        texDesc.debugName = "SwapChainBackBuffer";
+
+        m_backBuffers[0] = MakeRef<DX11Texture>(m_device, backBuffer, texDesc);
+
+        // Create view with the originally requested format (may be SRGB)
+        // This allows SRGB gamma correction when rendering to the swap chain
+        RHITextureViewDesc viewDesc = {};
+        viewDesc.format = m_requestedFormat;  // Use requested format (SRGB if requested)
+        viewDesc.type = RHITextureViewType::RenderTarget;
+        m_backBufferViews[0] = MakeRef<DX11TextureView>(
+            m_device, m_backBuffers[0].Get(), viewDesc);
+    }
+
+    void DX11SwapChain::ReleaseBackBuffers()
+    {
+        m_backBufferViews.clear();
+        m_backBuffers.clear();
+    }
+
+    void DX11SwapChain::Resize(uint32 width, uint32 height)
+    {
+        if (width == 0 || height == 0) return;
+        if (width == m_width && height == m_height) return;
+
+        RVX_RHI_INFO("DX11 SwapChain resize: {}x{} -> {}x{}",
+            m_width, m_height, width, height);
+
+        // Release back buffers before resize
+        ReleaseBackBuffers();
+
+        // Preserve swap chain flags
+        UINT flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        if (m_tearingSupported && m_isFlipModel)
+        {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+
+        // Resize swap chain (use 0 for buffer count to keep existing count)
+        HRESULT hr = m_swapChain->ResizeBuffers(
+            0,
+            width,
+            height,
+            DXGI_FORMAT_UNKNOWN,  // Keep existing format
+            flags
+        );
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("Failed to resize swap chain: {}", HRESULTToString(hr));
+            return;
+        }
+
+        m_width = width;
+        m_height = height;
+        m_currentBackBuffer = 0;
+
+        CreateBackBufferViews();
+    }
+
+    RHITexture* DX11SwapChain::GetCurrentBackBuffer()
+    {
+        // DX11 FLIP swap chains only expose buffer 0
+        if (!m_backBuffers.empty())
+        {
+            return m_backBuffers[0].Get();
+        }
+        return nullptr;
+    }
+
+    RHITextureView* DX11SwapChain::GetCurrentBackBufferView()
+    {
+        // DX11 FLIP swap chains only expose buffer 0
+        if (!m_backBufferViews.empty())
+        {
+            return m_backBufferViews[0].Get();
+        }
+        return nullptr;
+    }
+
+    void DX11SwapChain::Present()
+    {
+        UINT syncInterval = m_vsyncEnabled ? 1 : 0;
+        UINT presentFlags = 0;
+
+        // Use tearing for variable refresh rate displays when vsync is disabled
+        if (m_tearingSupported && !m_vsyncEnabled)
+        {
+            syncInterval = 0;
+            presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+        }
+
+        HRESULT hr = m_swapChain->Present(syncInterval, presentFlags);
+
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        {
+            DX11Debug::Get().DiagnoseDeviceRemoved(m_device->GetD3DDevice());
+            m_device->ReportRuntimeFailure(
+                hr,
+                RHIDeviceFaultOperation::Present,
+                "DX11 present reported a removed or reset device");
+            return;
+        }
+
+        if (FAILED(hr))
+        {
+            RVX_RHI_ERROR("SwapChain present failed: {}", HRESULTToString(hr));
+            m_device->ReportRuntimeFailure(
+                hr,
+                RHIDeviceFaultOperation::Present,
+                "DX11 present failed terminally");
+            return;
+        }
+
+        // Note: For DX11 FLIP model, we always access buffer 0 via GetBuffer(0).
+        // The buffer rotation is handled internally by DXGI.
+        // m_currentBackBuffer is not used externally (GetCurrentBackBufferIndex always returns 0).
+    }
+
+} // namespace RVX

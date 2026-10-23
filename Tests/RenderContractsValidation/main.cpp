@@ -1,13 +1,21 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
+#include "RenderContracts/RenderAmbientOcclusion.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderFrameValidation.h"
+#include "RenderContracts/RenderExposure.h"
+#include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderMaterial.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
+#include "RenderContracts/TemporalJitter.h"
+#include "RenderContracts/TransparentTemporalHistory.h"
 #include "ResourceUploadRequestInternal.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -24,6 +32,9 @@ namespace
     static_assert(!std::is_default_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_copy_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_move_constructible_v<ResourceUploadRequest>);
+    static_assert(std::is_same_v<
+                  decltype(EffectFrameTime{}.deterministicSeed),
+                  uint32>);
     ResourceUploadRequestCreateInfo MakeValidMeshRequestInfo()
     {
         MeshUploadPayload payload;
@@ -81,12 +92,108 @@ namespace
         return info;
     }
 
+    TEST(RenderContractsValidation, UV1RangesAreValidatedAndRemainOptional)
+    {
+        auto validInfo = MakeValidMeshRequestInfo();
+        auto& validPayload = std::get<MeshUploadPayload>(validInfo.payload);
+        validPayload.bytes.resize(60U, 7U);
+        validPayload.uv1Range = UploadByteRange{36U, 24U, 8U};
+        validInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(validInfo)).code,
+                  ResourceUploadRequestCreateCode::Created);
+
+        auto invalidInfo = MakeValidMeshRequestInfo();
+        auto& invalidPayload = std::get<MeshUploadPayload>(invalidInfo.payload);
+        invalidPayload.bytes.resize(60U, 7U);
+        invalidPayload.uv1Range = UploadByteRange{36U, 12U, 8U};
+        invalidInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(invalidInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto wrongStrideInfo = MakeValidMeshRequestInfo();
+        auto& wrongStridePayload =
+            std::get<MeshUploadPayload>(wrongStrideInfo.payload);
+        wrongStridePayload.bytes.resize(60U, 7U);
+        wrongStridePayload.uv1Range = UploadByteRange{36U, 24U, 4U};
+        wrongStrideInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(wrongStrideInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto shortRangeInfo = MakeValidMeshRequestInfo();
+        auto& shortRangePayload =
+            std::get<MeshUploadPayload>(shortRangeInfo.payload);
+        shortRangePayload.bytes.resize(60U, 7U);
+        shortRangePayload.uv1Range = UploadByteRange{36U, 23U, 8U};
+        shortRangeInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(shortRangeInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto longRangeInfo = MakeValidMeshRequestInfo();
+        auto& longRangePayload =
+            std::get<MeshUploadPayload>(longRangeInfo.payload);
+        longRangePayload.bytes.resize(61U, 7U);
+        longRangePayload.uv1Range = UploadByteRange{36U, 25U, 8U};
+        longRangeInfo.declaredPayloadBytes = 61U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(longRangeInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto wrongUV0StrideInfo = MakeValidMeshRequestInfo();
+        auto& wrongUV0StridePayload =
+            std::get<MeshUploadPayload>(wrongUV0StrideInfo.payload);
+        wrongUV0StridePayload.bytes.resize(60U, 7U);
+        wrongUV0StridePayload.uvRange = UploadByteRange{36U, 24U, 4U};
+        wrongUV0StrideInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(wrongUV0StrideInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto overflowInfo = MakeValidMeshRequestInfo();
+        auto& overflowPayload = std::get<MeshUploadPayload>(overflowInfo.payload);
+        overflowPayload.createInfo.vertexCount = 1U;
+        overflowPayload.bytes.resize(12U, 7U);
+        overflowPayload.positionRange = UploadByteRange{0U, 12U, 12U};
+        overflowPayload.uv1Range = UploadByteRange{
+            std::numeric_limits<uint64>::max() - 7U, 8U, 8U};
+        overflowInfo.declaredPayloadBytes = 12U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(overflowInfo)).code,
+                  ResourceUploadRequestCreateCode::PayloadRangeOverflow);
+    }
+
     RenderViewSnapshot MakeValidView()
     {
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 71,
+            .cameraEntityPacked = 0x0000000700000004ULL,
+            .subViewIndex = 0,
+            .role = ViewRole::Main,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 1;
         view.viewportHeight = 1;
         return view;
+    }
+
+    RenderFrameHeaderV5 MakeValidFrameHeader(uint64 sequence = 1,
+                                             uint64 sceneRevision = 1)
+    {
+        RenderFrameHeaderV5 header;
+        header.sequence = sequence;
+        header.requiredSceneRevision = sceneRevision;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence - 1;
+        header.effectFixedDeltaSeconds = 1.0f / 60.0f;
+        header.effectSimulationSeconds =
+            static_cast<float64>(sequence - 1) / 60.0;
+        header.deterministicSeed =
+            0x9e3779b9U ^ static_cast<uint32>(sequence);
+        header.outputWidth = 1;
+        header.outputHeight = 1;
+        return header;
     }
 
     RenderExtractionDiagnostics MakeCompleteDiagnostics()
@@ -127,6 +234,1004 @@ namespace
                   RenderResourceHandleHash{}(handle));
         EXPECT_EQ(RenderResourceHandleHash{}(handle),
                   std::hash<uint64>{}(packed));
+    }
+
+    TEST(RenderContractsValidation,
+         LightCanonicalizationUsesOnlyExplicitPhotometricUnits)
+    {
+        constexpr float32 pi = 3.14159265358979323846f;
+
+        RenderLightSnapshot directional;
+        directional.type = RenderLightType::Directional;
+        directional.intensity = 120000.0f;
+        directional.intensityUnit = RenderLightIntensityUnit::Lux;
+        directional.colorTemperatureKelvin = 6500.0f;
+        const RenderLightCanonicalizationResult luxDirectional =
+            CanonicalizeRenderLightSnapshot(directional);
+        ASSERT_TRUE(luxDirectional.Succeeded());
+        EXPECT_EQ(luxDirectional.canonicalUnit,
+                  RenderLightIntensityUnit::Lux);
+        EXPECT_FLOAT_EQ(luxDirectional.canonicalIntensity, 120000.0f);
+        ASSERT_TRUE(luxDirectional.colorTemperatureKelvin.has_value());
+        EXPECT_FLOAT_EQ(*luxDirectional.colorTemperatureKelvin, 6500.0f);
+
+        RenderLightSnapshot point;
+        point.type = RenderLightType::Point;
+        point.intensityUnit = RenderLightIntensityUnit::Lumen;
+        point.intensity = 4.0f * pi;
+        const RenderLightCanonicalizationResult lumenPoint =
+            CanonicalizeRenderLightSnapshot(point);
+        ASSERT_TRUE(lumenPoint.Succeeded());
+        EXPECT_EQ(lumenPoint.canonicalUnit,
+                  RenderLightIntensityUnit::Candela);
+        EXPECT_NEAR(lumenPoint.canonicalIntensity, 1.0f, 1.0e-5f);
+
+        RenderLightSnapshot spot;
+        spot.type = RenderLightType::Spot;
+        spot.innerConeRadians = pi / 6.0f;
+        spot.outerConeRadians = pi / 3.0f;
+        spot.intensityUnit = RenderLightIntensityUnit::Lumen;
+        // For a pi/3 half-angle, omega is pi steradians.
+        spot.intensity = pi;
+        const RenderLightCanonicalizationResult lumenSpot =
+            CanonicalizeRenderLightSnapshot(spot);
+        ASSERT_TRUE(lumenSpot.Succeeded());
+        EXPECT_EQ(lumenSpot.canonicalUnit,
+                  RenderLightIntensityUnit::Candela);
+        EXPECT_NEAR(lumenSpot.canonicalIntensity, 1.0f, 1.0e-5f);
+    }
+
+    TEST(RenderContractsValidation,
+         LightCanonicalizationRejectsInvalidUnitsConesAndTemperatures)
+    {
+        RenderLightSnapshot unspecified;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(unspecified).code,
+                  RenderLightCanonicalizationCode::UnspecifiedIntensityUnit);
+
+        RenderLightSnapshot directional;
+        directional.type = RenderLightType::Directional;
+        directional.intensityUnit = RenderLightIntensityUnit::Lumen;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(directional).code,
+                  RenderLightCanonicalizationCode::IncompatibleIntensityUnit);
+
+        RenderLightSnapshot point;
+        point.type = RenderLightType::Point;
+        point.intensityUnit = RenderLightIntensityUnit::Lux;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(point).code,
+                  RenderLightCanonicalizationCode::IncompatibleIntensityUnit);
+
+        RenderLightSnapshot spot;
+        spot.type = RenderLightType::Spot;
+        spot.intensityUnit = RenderLightIntensityUnit::Candela;
+        spot.outerConeRadians = 0.0f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(spot).code,
+                  RenderLightCanonicalizationCode::InvalidSpotCone);
+        spot.outerConeRadians = 0.5f;
+        spot.innerConeRadians = 0.75f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(spot).code,
+                  RenderLightCanonicalizationCode::InvalidSpotCone);
+
+        RenderLightSnapshot negativeIntensity;
+        negativeIntensity.intensityUnit = RenderLightIntensityUnit::Lux;
+        negativeIntensity.intensity = -0.1f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(negativeIntensity).code,
+                  RenderLightCanonicalizationCode::InvalidIntensity);
+        negativeIntensity.intensity =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(negativeIntensity).code,
+                  RenderLightCanonicalizationCode::InvalidIntensity);
+
+        RenderLightSnapshot invalidTemperature;
+        invalidTemperature.intensityUnit = RenderLightIntensityUnit::Lux;
+        invalidTemperature.colorTemperatureKelvin = 999.0f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidTemperature).code,
+                  RenderLightCanonicalizationCode::InvalidColorTemperature);
+        invalidTemperature.colorTemperatureKelvin =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidTemperature).code,
+                  RenderLightCanonicalizationCode::InvalidColorTemperature);
+
+        RenderLightSnapshot invalidUnit;
+        invalidUnit.intensityUnit =
+            static_cast<RenderLightIntensityUnit>(255U);
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidUnit).code,
+                  RenderLightCanonicalizationCode::InvalidIntensityUnit);
+        RenderLightSnapshot invalidType;
+        invalidType.intensityUnit = RenderLightIntensityUnit::Lux;
+        invalidType.type = static_cast<RenderLightType>(255U);
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidType).code,
+                  RenderLightCanonicalizationCode::InvalidLightType);
+    }
+
+    TEST(RenderContractsValidation,
+         LightSnapshotEqualityIncludesPhotometricAuthoringContract)
+    {
+        RenderLightSnapshot baseline;
+        baseline.intensityUnit = RenderLightIntensityUnit::Lux;
+        RenderLightSnapshot equal = baseline;
+        EXPECT_TRUE(AreRenderLightSnapshotsEqual(baseline, equal));
+
+        equal.intensityUnit = RenderLightIntensityUnit::Candela;
+        EXPECT_FALSE(AreRenderLightSnapshotsEqual(baseline, equal));
+        equal = baseline;
+        equal.colorTemperatureKelvin = 5600.0f;
+        EXPECT_FALSE(AreRenderLightSnapshotsEqual(baseline, equal));
+    }
+
+    TEST(RenderContractsValidation,
+         LightMutationAccumulatorRejectsUnspecifiedAndIncompatibleUnits)
+    {
+        RenderLightSnapshot light;
+        light.lightId = 71;
+        light.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 71,
+            .entityGeneration = 0,
+        };
+        light.type = RenderLightType::Directional;
+
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        EXPECT_FALSE(accumulator.UpsertLight(light, true));
+
+        light.intensityUnit = RenderLightIntensityUnit::Lumen;
+        EXPECT_FALSE(accumulator.UpsertLight(light, true));
+
+        light.intensityUnit = RenderLightIntensityUnit::Lux;
+        EXPECT_TRUE(accumulator.UpsertLight(light, true));
+        EXPECT_TRUE(accumulator.Build(1).IsStructurallyValid());
+    }
+
+    TEST(RenderContractsValidation,
+         PipelineProfileUsesStableMachineValuesAndNonZeroHashes)
+    {
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::Minimal) == 0U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::ForwardStandard) ==
+                      1U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::DeferredQuality) ==
+                      2U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::HybridRayTracing) ==
+                      3U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::Headless) == 4U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Low) == 0U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Medium) == 1U);
+        static_assert(static_cast<uint8>(RenderQualityTier::High) == 2U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Ultra) == 3U);
+
+        constexpr RenderPipelineRecipe recipes[]{
+            RenderPipelineRecipe::Minimal,
+            RenderPipelineRecipe::ForwardStandard,
+            RenderPipelineRecipe::DeferredQuality,
+            RenderPipelineRecipe::HybridRayTracing,
+            RenderPipelineRecipe::Headless,
+        };
+        constexpr RenderQualityTier tiers[]{
+            RenderQualityTier::Low,
+            RenderQualityTier::Medium,
+            RenderQualityTier::High,
+            RenderQualityTier::Ultra,
+        };
+
+        for (RenderPipelineRecipe recipe : recipes)
+        {
+            EXPECT_TRUE(IsDeclaredRenderPipelineRecipe(recipe));
+            RenderPipelineRecipe parsed = RenderPipelineRecipe::Minimal;
+            EXPECT_TRUE(ParseRenderPipelineRecipe(
+                GetRenderPipelineRecipeName(recipe), parsed));
+            EXPECT_EQ(parsed, recipe);
+            for (RenderQualityTier tier : tiers)
+            {
+                const uint64 hash = ComputeRenderPipelineProfileHash(recipe, tier);
+                EXPECT_NE(hash, 0U);
+                EXPECT_EQ(hash, ComputeRenderPipelineProfileHash(recipe, tier));
+            }
+        }
+        for (RenderQualityTier tier : tiers)
+        {
+            EXPECT_TRUE(IsDeclaredRenderQualityTier(tier));
+            RenderQualityTier parsed = RenderQualityTier::Low;
+            EXPECT_TRUE(ParseRenderQualityTier(GetRenderQualityTierName(tier),
+                                               parsed));
+            EXPECT_EQ(parsed, tier);
+        }
+        RenderPipelineRecipe invalidRecipeParse =
+            RenderPipelineRecipe::ForwardStandard;
+        RenderQualityTier invalidTierParse = RenderQualityTier::Medium;
+        EXPECT_FALSE(ParseRenderPipelineRecipe("forward", invalidRecipeParse));
+        EXPECT_FALSE(ParseRenderQualityTier("default", invalidTierParse));
+        EXPECT_EQ(ComputeRenderPipelineProfileHash(
+                      static_cast<RenderPipelineRecipe>(99U),
+                      RenderQualityTier::Low),
+                  0U);
+    }
+
+    TEST(RenderContractsValidation,
+         PipelineRequestsAndResolutionsFailClosedAndKeepForwardCompatibility)
+    {
+        const RenderPipelineRequest defaultRequest;
+        EXPECT_TRUE(IsValidRenderPipelineRequest(defaultRequest));
+        EXPECT_EQ(defaultRequest.recipe, RenderPipelineRecipe::ForwardStandard);
+        EXPECT_EQ(defaultRequest.quality, RenderQualityTier::Medium);
+
+        const RenderPipelineResolution resolved =
+            ResolveRenderPipelineRequest(defaultRequest);
+        EXPECT_TRUE(resolved.IsSuccessful());
+        EXPECT_EQ(resolved.code, RenderPipelineResolutionCode::Resolved);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(resolved));
+        EXPECT_EQ(resolved.resolvedRecipe, defaultRequest.recipe);
+        EXPECT_EQ(resolved.resolvedQuality, defaultRequest.quality);
+        EXPECT_NE(resolved.profileHash, 0U);
+
+        RenderPipelineRequest invalidRecipe = defaultRequest;
+        invalidRecipe.recipe = static_cast<RenderPipelineRecipe>(99U);
+        EXPECT_FALSE(IsValidRenderPipelineRequest(invalidRecipe));
+        const RenderPipelineResolution rejected =
+            ResolveRenderPipelineRequest(invalidRecipe);
+        EXPECT_FALSE(rejected.IsSuccessful());
+        EXPECT_EQ(rejected.code, RenderPipelineResolutionCode::Rejected);
+        EXPECT_EQ(rejected.profileHash, 0U);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(rejected));
+
+        RenderPipelineRequest invalidSchema = defaultRequest;
+        ++invalidSchema.schemaVersion;
+        EXPECT_FALSE(IsValidRenderPipelineRequest(invalidSchema));
+
+        RenderPipelineResolution fallback = resolved;
+        fallback.code = RenderPipelineResolutionCode::Fallback;
+        EXPECT_FALSE(IsValidRenderPipelineResolution(fallback));
+        fallback.resolvedRecipe =
+            RenderPipelineRecipe::DeferredQuality;
+        fallback.profileHash = ComputeRenderPipelineProfileHash(
+            fallback.resolvedRecipe, fallback.resolvedQuality);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(fallback));
+    }
+
+    TEST(RenderContractsValidation,
+         FrameSettingsRejectInvalidPipelineRequest)
+    {
+        RenderFrameSettings settings;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.pipelineRequest.quality =
+            static_cast<RenderQualityTier>(99U);
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+    }
+
+    TEST(RenderContractsValidation,
+         PostProcessSettingsUseOneFailClosedAntiAliasingMode)
+    {
+        RenderFrameSettings settings;
+        EXPECT_FALSE(settings.postProcess.enableVelocityOutput);
+        EXPECT_EQ(settings.postProcess.antiAliasingMode,
+                  RenderAntiAliasingMode::FXAA);
+        EXPECT_TRUE(settings.postProcess.enableColorGrading);
+        EXPECT_FALSE(settings.postProcess.enableToonOutline);
+        EXPECT_FLOAT_EQ(settings.postProcess.toonOutlineDepthThreshold,
+                        0.015f);
+        EXPECT_FLOAT_EQ(settings.postProcess.toonOutlineNormalThreshold,
+                        0.20f);
+        EXPECT_FALSE(settings.postProcess.ambientOcclusion.enabled);
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionConsumerMask(
+            settings.postProcess.ambientOcclusion.consumerMask));
+        EXPECT_FALSE(settings.postProcess.enableSSR);
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.enableVelocityOutput = true;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.antiAliasingMode = RenderAntiAliasingMode::TAA;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.enableVelocityOutput = false;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.enableVelocityOutput = true;
+
+        settings.postProcess.antiAliasingMode =
+            static_cast<RenderAntiAliasingMode>(255U);
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.antiAliasingMode = RenderAntiAliasingMode::None;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.colorGradingContrast = -0.1f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingContrast = 1.0f;
+
+        settings.postProcess.colorGradingSaturation = -0.1f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingSaturation = 1.0f;
+
+        settings.postProcess.colorGradingBrightness =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingBrightness = 0.0f;
+
+        settings.postProcess.colorGradingContrast =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingContrast = 1.0f;
+
+        settings.postProcess.colorGradingSaturation =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingSaturation = 1.0f;
+
+        settings.postProcess.toonOutlineDepthThreshold = 0.0f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.toonOutlineDepthThreshold = 0.015f;
+
+        settings.postProcess.toonOutlineNormalThreshold = 2.01f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.toonOutlineNormalThreshold = 0.20f;
+
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+    }
+
+    TEST(RenderContractsValidation,
+         AmbientOcclusionSettingsAndReferenceMathFailClosed)
+    {
+        RenderAmbientOcclusionSettings settings;
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionSettings(settings));
+        const uint64 settingsHash =
+            CalculateRenderAmbientOcclusionSettingsHash(settings);
+        EXPECT_NE(settingsHash, 0U);
+        EXPECT_EQ(settingsHash,
+                  CalculateRenderAmbientOcclusionSettingsHash(settings));
+
+        const auto expectDistinctValidHash =
+            [settingsHash](const RenderAmbientOcclusionSettings& changed)
+        {
+            ASSERT_TRUE(IsValidRenderAmbientOcclusionSettings(changed));
+            const uint64 changedHash =
+                CalculateRenderAmbientOcclusionSettingsHash(changed);
+            EXPECT_NE(changedHash, 0U);
+            EXPECT_NE(changedHash, settingsHash);
+        };
+        RenderAmbientOcclusionSettings changed = settings;
+        changed.enabled = !settings.enabled;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.radiusMeters = 2.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.falloffStartMeters = 0.2f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.falloffEndMeters = 4.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.thicknessMeters = 0.25f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.directionCount = 16;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.stepCount = 8;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.spatialRadius = 4;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.bilateralDepthSigma = 2.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.bilateralNormalThreshold = 0.7f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalBlend = 0.8f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalDepthThresholdMeters = 0.1f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalNormalThreshold = 0.75f;
+        expectDistinctValidHash(changed);
+
+        RenderAmbientOcclusionSettings invalid = settings;
+        invalid.radiusMeters = 0.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.falloffEndMeters = invalid.falloffStartMeters;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.thicknessMeters =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.directionCount = 0;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.stepCount = RVX_RENDER_AMBIENT_OCCLUSION_MAX_STEP_COUNT + 1;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid.directionCount =
+            RVX_RENDER_AMBIENT_OCCLUSION_MAX_DIRECTION_COUNT;
+        invalid.stepCount = RVX_RENDER_AMBIENT_OCCLUSION_MAX_STEP_COUNT;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid.directionCount = 32;
+        invalid.stepCount = 8;
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.spatialRadius = 0;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.bilateralDepthSigma = 0.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.bilateralNormalThreshold = 1.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.temporalBlend = 1.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.temporalDepthThresholdMeters =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.consumerMask = ToMask(RenderAmbientOcclusionConsumer::IBL);
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        EXPECT_EQ(CalculateRenderAmbientOcclusionSettingsHash(invalid), 0U);
+
+        float32 linearDepth = 0.0f;
+        EXPECT_TRUE(TryLinearizeRenderAmbientOcclusionDepth(
+            0.0f, 0.1f, 100.0f, linearDepth));
+        EXPECT_NEAR(linearDepth, 0.1f, 1.0e-5f);
+        EXPECT_TRUE(TryLinearizeRenderAmbientOcclusionDepth(
+            1.0f, 0.1f, 100.0f, linearDepth));
+        EXPECT_NEAR(linearDepth, 100.0f, 1.0e-3f);
+        EXPECT_FALSE(TryLinearizeRenderAmbientOcclusionDepth(
+            -0.01f, 0.1f, 100.0f, linearDepth));
+        EXPECT_FALSE(TryLinearizeRenderAmbientOcclusionDepth(
+            0.5f, 1.0f, 1.0f, linearDepth));
+
+        float32 openVisibility = 0.0f;
+        float32 cornerVisibility = 0.0f;
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionHorizonVisibility(
+            3.0f, 3.0f, 0.5f, settings, openVisibility));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionHorizonVisibility(
+            3.0f, 1.0f, 0.5f, settings, cornerVisibility));
+        EXPECT_FLOAT_EQ(openVisibility, 1.0f);
+        EXPECT_LT(cornerVisibility, openVisibility);
+
+        float32 continuousWeight = 0.0f;
+        float32 depthDiscontinuityWeight = 0.0f;
+        float32 normalDiscontinuityWeight = 0.0f;
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 3.0f, 1.0f, 1.0f, settings, continuousWeight));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 12.0f, 1.0f, 1.0f, settings,
+            depthDiscontinuityWeight));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 3.0f, 0.0f, 1.0f, settings,
+            normalDiscontinuityWeight));
+        EXPECT_GT(continuousWeight, depthDiscontinuityWeight);
+        EXPECT_FLOAT_EQ(normalDiscontinuityWeight, 0.0f);
+
+        EXPECT_TRUE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.01f, 0.0f, 3.02f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.0f, 0.0f, 3.2f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.01f, 0.0f, 3.02f},
+            0.5f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.2f, 0.0f, 3.0f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.0f, 0.0f, 3.0f},
+            -0.9f, settings));
+        float32 clampedVisibility = 0.0f;
+        EXPECT_TRUE(TryClampRenderAmbientOcclusionTemporalHistory(
+            0.1f, 0.4f, 0.8f, clampedVisibility));
+        EXPECT_FLOAT_EQ(clampedVisibility, 0.4f);
+        EXPECT_FALSE(TryClampRenderAmbientOcclusionTemporalHistory(
+            0.1f, 0.8f, 0.4f, clampedVisibility));
+
+        const RenderAmbientOcclusionIndirectLighting input{
+            .directDiffuse = 3.0f,
+            .directSpecular = 5.0f,
+            .indirectDiffuse = 7.0f,
+            .indirectSpecular = 11.0f,
+            .iblDiffuse = 13.0f,
+            .iblSpecular = 17.0f,
+            .emissive = 19.0f,
+            .sky = 23.0f};
+        RenderAmbientOcclusionIndirectLighting composed;
+        ASSERT_TRUE(TryComposeRenderAmbientOcclusionIndirectLighting(
+            input, 0.5f,
+            RVX_RENDER_AMBIENT_OCCLUSION_INDIRECT_CONSUMER_MASK,
+            composed));
+        EXPECT_FLOAT_EQ(composed.directDiffuse, input.directDiffuse);
+        EXPECT_FLOAT_EQ(composed.directSpecular, input.directSpecular);
+        EXPECT_FLOAT_EQ(composed.indirectDiffuse, 3.5f);
+        EXPECT_FLOAT_EQ(composed.indirectSpecular, 5.5f);
+        EXPECT_FLOAT_EQ(composed.iblDiffuse, 6.5f);
+        EXPECT_FLOAT_EQ(composed.iblSpecular, 8.5f);
+        EXPECT_FLOAT_EQ(composed.emissive, input.emissive);
+        EXPECT_FLOAT_EQ(composed.sky, input.sky);
+        EXPECT_FALSE(TryComposeRenderAmbientOcclusionIndirectLighting(
+            input, 0.5f, ToMask(RenderAmbientOcclusionConsumer::IBL),
+            composed));
+    }
+
+    TEST(RenderContractsValidation,
+         TemporalJitterUsesTheFixedEightPhaseHaltonSequenceInPixelSpace)
+    {
+        const RenderOutputExtent extent{.width = 320U, .height = 180U};
+        const std::array<Vec2, RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT>
+            expectedPixels = {
+                Vec2{0.0f, -1.0f / 6.0f},
+                Vec2{-0.25f, 1.0f / 6.0f},
+                Vec2{0.25f, -7.0f / 18.0f},
+                Vec2{-0.375f, -1.0f / 18.0f},
+                Vec2{0.125f, 5.0f / 18.0f},
+                Vec2{-0.125f, -5.0f / 18.0f},
+                Vec2{0.375f, 1.0f / 18.0f},
+                Vec2{-0.4375f, 7.0f / 18.0f},
+            };
+
+        for (uint32 phase = 0U;
+             phase < RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT;
+             ++phase)
+        {
+            const RenderTemporalJitter jitter =
+                MakeRenderTemporalJitterForPhase(phase, extent);
+            EXPECT_TRUE(IsValidRenderTemporalJitter(jitter));
+            EXPECT_EQ(jitter.phaseIndex, phase);
+            EXPECT_NEAR(jitter.pixelOffset.x, expectedPixels[phase].x, 1.0e-6f);
+            EXPECT_NEAR(jitter.pixelOffset.y, expectedPixels[phase].y, 1.0e-6f);
+            EXPECT_NEAR(jitter.ndcOffset.x,
+                        2.0f * expectedPixels[phase].x / 320.0f,
+                        1.0e-7f);
+            EXPECT_NEAR(jitter.ndcOffset.y,
+                        2.0f * expectedPixels[phase].y / 180.0f,
+                        1.0e-7f);
+            EXPECT_EQ(MakeRenderTemporalJitter(static_cast<uint64>(phase) + 1U,
+                                                extent),
+                      jitter);
+        }
+
+        EXPECT_EQ(MakeRenderTemporalJitter(9U, extent),
+                  MakeRenderTemporalJitter(1U, extent));
+        EXPECT_FALSE(IsValidRenderTemporalJitter({}));
+        EXPECT_FALSE(IsValidRenderTemporalJitter(
+            MakeRenderTemporalJitterForPhase(
+                RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT, extent)));
+        EXPECT_FALSE(IsValidRenderTemporalJitter(
+            MakeRenderTemporalJitter(1U, RenderOutputExtent{})));
+    }
+
+    TEST(RenderContractsValidation,
+         TemporalJitterDoesNotMutateTheCanonicalProjectionMatrix)
+    {
+        const RenderOutputExtent extent{.width = 640U, .height = 360U};
+        const RenderTemporalJitter jitter =
+            MakeRenderTemporalJitterForPhase(1U, extent);
+        Mat4 canonical = Mat4Identity();
+        canonical[0][0] = 2.0f;
+        canonical[1][1] = 3.0f;
+
+        const Mat4 jittered = ApplyRenderTemporalJitter(canonical, jitter);
+        EXPECT_EQ(canonical[2][0], 0.0f);
+        EXPECT_EQ(canonical[2][1], 0.0f);
+        EXPECT_FLOAT_EQ(jittered[2][0], jitter.ndcOffset.x);
+        EXPECT_FLOAT_EQ(jittered[2][1], jitter.ndcOffset.y);
+        EXPECT_EQ(jittered[0][0], canonical[0][0]);
+        EXPECT_EQ(jittered[1][1], canonical[1][1]);
+
+        RenderTemporalJitter malformed = jitter;
+        malformed.ndcOffset.x += 0.001f;
+        EXPECT_FALSE(IsValidRenderTemporalJitter(malformed));
+        EXPECT_EQ(ApplyRenderTemporalJitter(canonical, malformed), canonical);
+    }
+
+    TEST(RenderContractsValidation,
+         FeatureChannelCatalogHasStableTypedEntries)
+    {
+        static_assert(RVX_RENDER_FEATURE_CHANNEL_COUNT == 3);
+        static_assert(std::is_same_v<
+                      ParticleRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<0, RenderFeatureChannelCatalog>>);
+        static_assert(std::is_same_v<
+                      WaterRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<1, RenderFeatureChannelCatalog>>);
+        static_assert(std::is_same_v<
+                      TerrainRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<2, RenderFeatureChannelCatalog>>);
+
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Particle), 1U);
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Water), 2U);
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Terrain), 3U);
+        EXPECT_FALSE(IsKnownRenderFeatureChannel(RenderFeatureChannelId::Invalid));
+        EXPECT_EQ(GetRenderFeatureChannelSchemaVersion(
+                      static_cast<RenderFeatureChannelId>(999U)),
+                  0U);
+    }
+
+    TEST(RenderContractsValidation,
+         CpuParticlePacketIsValueOwnedHashQualifiedAndSnapshotCountsAreFailClosed)
+    {
+        ParticleCpuPacket packet;
+        packet.simulationTick = 41;
+        packet.deterministicSeed = 0x51A7u;
+        packet.deterministicInstanceKey = 0xC0FFEEu;
+        packet.effectiveSimulationSeed = 0xA11CEu;
+        packet.particles.push_back({
+            .stableParticleId = 2,
+            .position = {1.0f, 2.0f, 3.0f},
+            .lifetime = 4.0f,
+            .velocity = {0.0f, 1.0f, 0.0f},
+            .age = 0.5f,
+            .color = {1.0f, 0.5f, 0.25f, 1.0f},
+            .size = {2.0f, 3.0f},
+        });
+        packet.contentHash = packet.ComputeContentHash();
+        ASSERT_TRUE(packet.IsStructurallyValid(8));
+
+        ParticleCpuPacket missingKey = packet;
+        missingKey.deterministicInstanceKey = 0;
+        missingKey.contentHash = missingKey.ComputeContentHash();
+        EXPECT_FALSE(missingKey.IsStructurallyValid(8));
+
+        ParticleRenderSnapshotItem item;
+        item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+        item.payloadStatus = ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        item.aliveParticleCount = 1;
+        item.maxParticleCount = 8;
+        item.cpuPacket = packet;
+        EXPECT_TRUE(item.IsCpuPacketReady());
+        EXPECT_TRUE(item.HasValidCpuPacket());
+        EXPECT_EQ(item.GetParticleCount(), 1U);
+
+        ParticleRenderSnapshot snapshot;
+        snapshot.BeginBuild(7);
+        snapshot.items.push_back(item);
+        snapshot.MarkComplete();
+        EXPECT_TRUE(snapshot.metadata.complete);
+        EXPECT_EQ(snapshot.GetMetadata().totalAliveParticles, 1U);
+
+        ParticleCpuPacket malformed = packet;
+        ++malformed.contentHash;
+        item.cpuPacket = std::move(malformed);
+        EXPECT_TRUE(item.IsCpuPacketReady());
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        snapshot.BeginBuild(8);
+        snapshot.items.push_back(std::move(item));
+        snapshot.MarkComplete();
+        EXPECT_TRUE(snapshot.metadata.complete);
+
+        // Packet contents are validated exactly once at publication/final
+        // consumption. Intermediate snapshot completion only verifies the
+        // sealed value/status/count shape and must not rehash all particles.
+        snapshot.items.front().payloadStatus =
+            ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+        snapshot.MarkComplete();
+        EXPECT_FALSE(snapshot.metadata.complete);
+        EXPECT_TRUE(snapshot.items.empty());
+
+        ParticleRenderSnapshot overflow;
+        overflow.BeginBuild(9);
+        ParticleRenderSnapshotItem overflowItem;
+        overflowItem.aliveParticleCount = std::numeric_limits<uint32>::max();
+        overflowItem.maxParticleCount = std::numeric_limits<uint32>::max();
+        overflow.items.push_back(overflowItem);
+        overflow.items.push_back(overflowItem);
+        overflow.MarkComplete();
+        EXPECT_FALSE(overflow.metadata.complete);
+        EXPECT_TRUE(overflow.items.empty());
+    }
+
+    TEST(RenderContractsValidation,
+         ParticleEffectDescriptorBindsPacketIdentityAndRejectsMalformedAtlasState)
+    {
+        ParticleRenderEffectDescriptor effect;
+        effect.flipbook.textureAssetId = {41U};
+        effect.flipbook.texture = {7U, 3U};
+        effect.flipbook.committedContentRevision = 9U;
+        effect.flipbook.tiles = {4U, 4U};
+        effect.flipbook.firstFrame = 4U;
+        effect.flipbook.frameCount = 8U;
+        effect.flipbook.framesPerSecond = 12.0f;
+        effect.flipbook.uvOffset = {0.25f, 0.0f};
+        effect.flipbook.uvScale = {0.25f, 0.25f};
+        effect.flipbook.required = true;
+        effect.softDepthMode = ParticleRenderSoftDepthMode::Required;
+        effect.softDepthFadeMeters = 0.5f;
+        effect.softDepthContrast = 1.5f;
+        effect.distortionStrengthPixels = 2.0f;
+        effect.reactiveContribution = 0.4f;
+        effect.lightHint.enabled = true;
+        effect.lightHint.color = {1.0f, 0.5f, 0.25f};
+        effect.lightHint.intensityCandela = 100.0f;
+        effect.lightHint.rangeMeters = 2.0f;
+        effect.lightHint.flickerFrequencyHz = 1.0f;
+        effect.contentHash = effect.ComputeContentHash();
+        ASSERT_TRUE(effect.IsStructurallyValid());
+        ASSERT_TRUE(effect.flipbook.IsBound());
+
+        ParticleCpuPacket packet;
+        packet.simulationTick = 3U;
+        packet.deterministicSeed = 0x51A7U;
+        packet.deterministicInstanceKey = 0xC0FFEEU;
+        packet.effectiveSimulationSeed = 0xA11CEU;
+        packet.fixedDeltaSeconds = 1.0f / 60.0f;
+        packet.effectDescriptorHash = effect.contentHash;
+        packet.lightHint = {
+            .enabled = true,
+            .stableLightId = 17U,
+            .sampleTick = 3U,
+            .sourceParticleId = 2U,
+            .position = {1.0f, 2.0f, 3.0f},
+            .color = {1.0f, 0.5f, 0.25f},
+            .intensityCandela = 50.0f,
+            .rangeMeters = 2.0f,
+            .modulation = 0.5f,
+        };
+        packet.particles.push_back({
+            .stableParticleId = 2U,
+            .position = {1.0f, 2.0f, 3.0f},
+            .lifetime = 2.0f,
+            .velocity = {0.0f, 1.0f, 0.0f},
+            .age = 0.25f,
+            .color = {1.0f, 1.0f, 1.0f, 1.0f},
+            .size = {1.0f, 1.0f},
+            .flipbookFrameIndex = 6U,
+        });
+        packet.contentHash = packet.ComputeContentHash();
+
+        ParticleRenderSnapshotItem item;
+        item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+        item.payloadStatus = ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        item.aliveParticleCount = 1U;
+        item.maxParticleCount = 8U;
+        item.effectDescriptor = effect;
+        item.cpuPacket = packet;
+        EXPECT_TRUE(item.HasValidCpuPacket());
+
+        ParticleRenderEffectDescriptor untexturedEffect;
+        untexturedEffect.distortionStrengthPixels = 1.0f;
+        untexturedEffect.reactiveContribution = 0.5f;
+        untexturedEffect.contentHash = untexturedEffect.ComputeContentHash();
+        ASSERT_TRUE(untexturedEffect.IsStructurallyValid());
+        ASSERT_TRUE(untexturedEffect.flipbook.IsCanonicalUntextured());
+        ParticleCpuPacket untexturedPacket = packet;
+        untexturedPacket.effectDescriptorHash = untexturedEffect.contentHash;
+        untexturedPacket.lightHint = {};
+        untexturedPacket.particles.front().flipbookFrameIndex = 0U;
+        untexturedPacket.contentHash = untexturedPacket.ComputeContentHash();
+        ParticleRenderSnapshotItem untexturedItem = item;
+        untexturedItem.effectDescriptor = untexturedEffect;
+        untexturedItem.cpuPacket = untexturedPacket;
+        EXPECT_TRUE(untexturedItem.HasValidCpuPacket());
+
+        item.cpuPacket.effectDescriptorHash ^= 1U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.particles.front().flipbookFrameIndex = 12U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.lightHint.sampleTick = packet.simulationTick + 1U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.lightHint.color.x = -0.01f;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        ParticleRenderEffectDescriptor overflow = effect;
+        overflow.flipbook.tiles = {65535U, 65535U};
+        overflow.flipbook.firstFrame = std::numeric_limits<uint32>::max();
+        overflow.contentHash = overflow.ComputeContentHash();
+        EXPECT_FALSE(overflow.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor unpackableAtlas = effect;
+        unpackableAtlas.flipbook.tiles = {65536U, 1U};
+        unpackableAtlas.flipbook.firstFrame = 0U;
+        unpackableAtlas.flipbook.frameCount = 1U;
+        unpackableAtlas.contentHash = unpackableAtlas.ComputeContentHash();
+        EXPECT_FALSE(unpackableAtlas.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor escapingUvTransform = effect;
+        escapingUvTransform.flipbook.uvOffset = {0.9f, 0.0f};
+        escapingUvTransform.flipbook.uvScale = {0.2f, 1.0f};
+        escapingUvTransform.contentHash =
+            escapingUvTransform.ComputeContentHash();
+        EXPECT_FALSE(escapingUvTransform.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidSoftDepth = effect;
+        invalidSoftDepth.softDepthFadeMeters = 0.0f;
+        invalidSoftDepth.contentHash = invalidSoftDepth.ComputeContentHash();
+        EXPECT_FALSE(invalidSoftDepth.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidReactive = effect;
+        invalidReactive.reactiveContribution = 1.1f;
+        invalidReactive.contentHash = invalidReactive.ComputeContentHash();
+        EXPECT_FALSE(invalidReactive.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidLightColor = effect;
+        invalidLightColor.lightHint.color.z = -0.01f;
+        invalidLightColor.contentHash = invalidLightColor.ComputeContentHash();
+        EXPECT_FALSE(invalidLightColor.IsStructurallyValid());
+    }
+
+    TEST(RenderContractsValidation,
+         FeatureChannelRegistryRequiresCompleteUniqueRoutesBeforeSeal)
+    {
+        const auto registrationFor = [](RenderFeatureChannelId channelId)
+        {
+            return RenderFeatureChannelRegistration{
+                .channelId = channelId,
+                .schemaVersion =
+                    GetRenderFeatureChannelSchemaVersion(channelId),
+                .producerEndpoint =
+                    RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore,
+                .consumerEndpoint =
+                    RenderFeatureConsumerEndpointId::RenderSceneDatabase,
+            };
+        };
+
+        RenderFeatureChannelRegistry incomplete;
+        EXPECT_EQ(incomplete.Register(
+                      registrationFor(RenderFeatureChannelId::Particle)),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(incomplete.Register(
+                      registrationFor(RenderFeatureChannelId::Water)),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(incomplete.Seal(),
+                  RenderFeatureChannelRegistryCode::MissingChannel);
+        EXPECT_FALSE(incomplete.IsSealed());
+
+        RenderFeatureChannelRegistry duplicate;
+        const RenderFeatureChannelRegistration particle =
+            registrationFor(RenderFeatureChannelId::Particle);
+        EXPECT_EQ(duplicate.Register(particle),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(duplicate.Register(particle),
+                  RenderFeatureChannelRegistryCode::DuplicateChannel);
+
+        RenderFeatureChannelRegistry invalid;
+        RenderFeatureChannelRegistration bad = particle;
+        ++bad.schemaVersion;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::SchemaMismatch);
+        bad = particle;
+        bad.producerEndpoint = RenderFeatureProducerEndpointId::Invalid;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::InvalidProducerEndpoint);
+        bad = particle;
+        bad.consumerEndpoint = RenderFeatureConsumerEndpointId::Invalid;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::InvalidConsumerEndpoint);
+        bad = particle;
+        bad.channelId = static_cast<RenderFeatureChannelId>(999U);
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::UnknownChannel);
+        EXPECT_EQ(invalid.GetRegistrationCount(), 0U);
+    }
+
+    TEST(RenderContractsValidation,
+         BuiltinFeatureChannelRegistrySealsExactProducerConsumerRoutes)
+    {
+        RenderFeatureChannelRegistry registry =
+            CreateBuiltinRenderFeatureChannelRegistry();
+        ASSERT_TRUE(registry.IsSealed());
+        EXPECT_EQ(registry.GetRegistrationCount(),
+                  RVX_RENDER_FEATURE_CHANNEL_COUNT);
+
+        constexpr RenderFeatureChannelId channels[]{
+            RenderFeatureChannelId::Particle,
+            RenderFeatureChannelId::Water,
+            RenderFeatureChannelId::Terrain,
+        };
+        for (RenderFeatureChannelId channelId : channels)
+        {
+            const RenderFeatureChannelRegistration* route =
+                registry.Find(channelId);
+            ASSERT_NE(route, nullptr);
+            EXPECT_EQ(route->schemaVersion,
+                      GetRenderFeatureChannelSchemaVersion(channelId));
+            EXPECT_EQ(route->producerEndpoint,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore);
+            EXPECT_EQ(route->consumerEndpoint,
+                      RenderFeatureConsumerEndpointId::RenderSceneDatabase);
+            EXPECT_EQ(registry.ValidateRoute(
+                          channelId,
+                          route->schemaVersion,
+                          route->producerEndpoint,
+                          route->consumerEndpoint),
+                      RenderFeatureChannelRegistryCode::Success);
+        }
+
+        EXPECT_EQ(registry.Seal(),
+                  RenderFeatureChannelRegistryCode::RegistrySealed);
+        EXPECT_EQ(registry.Register(*registry.Find(
+                      RenderFeatureChannelId::Particle)),
+                  RenderFeatureChannelRegistryCode::RegistrySealed);
+        EXPECT_EQ(registry.ValidateProducer(
+                      RenderFeatureChannelId::Particle,
+                      RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION + 1U,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore),
+                  RenderFeatureChannelRegistryCode::SchemaMismatch);
+        EXPECT_EQ(registry.ValidateRoute(
+                      RenderFeatureChannelId::Particle,
+                      RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore,
+                      RenderFeatureConsumerEndpointId::Invalid),
+                  RenderFeatureChannelRegistryCode::InvalidConsumerEndpoint);
+    }
+
+    TEST(RenderContractsValidation,
+         TypedFeatureChannelsRejectUnknownSchemaSequenceAndSourceFailures)
+    {
+        const RenderFeatureSourceIdentity source{
+            .sceneRuntimeId = 71,
+            .entitySlot = 4,
+            .entityGeneration = 3,
+        };
+        const RenderFeatureSourceIdentity foreignSource{
+            .sceneRuntimeId = 72,
+            .entitySlot = 4,
+            .entityGeneration = 3,
+        };
+
+        const auto verify = [&]<typename Item>()
+        {
+            Item item;
+            item.header.captureSequence = 9;
+            item.header.configurationRevision = 5;
+            item.header.source = source;
+            EXPECT_EQ(item.ValidateChannel(source, 8),
+                      RenderFeatureChannelValidationCode::Valid);
+            EXPECT_EQ(item.header.configurationRevision, 5U);
+
+            Item invalid = item;
+            invalid.header.channelId = static_cast<RenderFeatureChannelId>(999U);
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::UnknownChannel);
+
+            invalid = item;
+            invalid.header.channelId = RenderFeatureChannelId::Invalid;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::UnknownChannel);
+
+            invalid = item;
+            invalid.header.schemaVersion = Item::SchemaVersion + 1U;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::SchemaMismatch);
+
+            invalid = item;
+            invalid.header.captureSequence = 0;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::ZeroCaptureSequence);
+
+            invalid = item;
+            invalid.header.configurationRevision = 0;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::ZeroConfigurationRevision);
+
+            invalid = item;
+            EXPECT_EQ(invalid.ValidateChannel(source, 9),
+                      RenderFeatureChannelValidationCode::StaleCaptureSequence);
+
+            invalid = item;
+            invalid.header.source = {};
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::InvalidSource);
+
+            invalid = item;
+            EXPECT_EQ(invalid.ValidateChannel(foreignSource),
+                      RenderFeatureChannelValidationCode::SourceMismatch);
+        };
+
+        verify.template operator()<ParticleRenderSnapshotItem>();
+        verify.template operator()<WaterRenderSnapshotItem>();
+        verify.template operator()<TerrainRenderSnapshotItem>();
     }
 
     TEST(RenderContractsValidation, CreatesMesh)
@@ -178,10 +1283,286 @@ namespace
         EXPECT_EQ(result.request->GetDeclaredPayloadBytes(), 0U);
     }
 
+    TEST(RenderContractsValidation,
+         MaterialTextureDependenciesExactlyMatchBoundTextures)
+    {
+        auto valid = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(valid.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        valid.dependencies.push_back(binding.texture);
+        valid.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
+        ExpectCreationCode(valid, ResourceUploadRequestCreateCode::Created);
+
+        auto omitted = valid;
+        omitted.dependencies.clear();
+        omitted.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+        ExpectCreationCode(
+            omitted, ResourceUploadRequestCreateCode::InvalidDependency);
+
+        auto extraneous = valid;
+        extraneous.dependencies.push_back(RenderResourceHandle{3, 1});
+        extraneous.declaredPayloadBytes += sizeof(RenderResourceHandle);
+        ExpectCreationCode(
+            extraneous, ResourceUploadRequestCreateCode::InvalidDependency);
+    }
+
+    TEST(RenderContractsValidation,
+         MaterialUploadV2AcceptsEveryDeclaredLogicalTextureSlotWithLegalRouting)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        payload.staticDescriptor.shadingModel =
+            MaterialShadingModel::ThinTransmission;
+        payload.staticDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ThinTransmission));
+        payload.staticDescriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        payload.staticDescriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        payload.staticDescriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        payload.sourceData.alphaMode = MaterialSourceAlphaMode::Blend;
+        payload.sourceData.transmission = 0.75f;
+        payload.sourceData.clearcoatFactor = 0.5f;
+
+        std::vector<MaterialTextureSlotDefinition> slots;
+        for (uint32 slot =
+                 static_cast<uint32>(MaterialUploadTextureSlot::BaseColor);
+             slot <= static_cast<uint32>(MaterialUploadTextureSlot::ClearcoatNormal);
+             ++slot)
+        {
+            if (slot == static_cast<uint32>(MaterialUploadTextureSlot::ToonRamp))
+                continue;
+            MaterialUploadTextureBinding binding;
+            binding.slot = static_cast<MaterialUploadTextureSlot>(slot);
+            binding.texture = RenderResourceHandle{slot + 2u, 1u};
+            binding.uvSet = static_cast<int32>(slot % 2u);
+            payload.textureBindings.push_back(binding);
+            payload.sourceData.textureFlags |= 1u << slot;
+            info.dependencies.push_back(binding.texture);
+
+            MaterialTextureSlotDefinition definition;
+            definition.slot = static_cast<MaterialTextureSlot>(slot);
+            definition.uvSet = static_cast<uint8>(binding.uvSet);
+            slots.push_back(definition);
+        }
+        payload.staticDescriptor.featureMask = GetMaterialFeatureMaskV2(
+            payload.sourceData, slots);
+        info.declaredPayloadBytes =
+            static_cast<uint64>(payload.textureBindings.size()) *
+                sizeof(MaterialUploadTextureBinding) +
+            static_cast<uint64>(info.dependencies.size()) *
+                sizeof(RenderResourceHandle);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::Created);
+
+        auto toonInfo = MakeValidMaterialRequestInfo();
+        auto& toon = std::get<MaterialUploadPayload>(toonInfo.payload);
+        toon.staticDescriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.staticDescriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        MaterialUploadTextureBinding toonBinding;
+        toonBinding.slot = MaterialUploadTextureSlot::ToonRamp;
+        toonBinding.texture = RenderResourceHandle{99u, 1u};
+        toon.textureBindings.push_back(toonBinding);
+        toon.sourceData.textureFlags =
+            1u << static_cast<uint32>(MaterialUploadTextureSlot::ToonRamp);
+        const MaterialTextureSlotDefinition toonSlot{
+            MaterialTextureSlot::ToonRamp};
+        toon.staticDescriptor.featureMask = GetMaterialFeatureMaskV2(
+            toon.sourceData, std::span{&toonSlot, 1u});
+        toonInfo.dependencies.push_back(toonBinding.texture);
+        toonInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) + sizeof(RenderResourceHandle);
+        ExpectCreationCode(toonInfo, ResourceUploadRequestCreateCode::Created);
+    }
+
+    TEST(RenderContractsValidation,
+         MaterialUploadV2RejectsExtensionFeatureAndSlotContradictions)
+    {
+        auto missingFeature = MakeValidMaterialRequestInfo();
+        auto& missingFeaturePayload =
+            std::get<MaterialUploadPayload>(missingFeature.payload);
+        missingFeaturePayload.sourceData.clearcoatFactor = 0.5f;
+        ExpectCreationCode(
+            missingFeature, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto inactiveClearcoat = MakeValidMaterialRequestInfo();
+        auto& inactiveClearcoatPayload =
+            std::get<MaterialUploadPayload>(inactiveClearcoat.payload);
+        inactiveClearcoatPayload.staticDescriptor.featureMask =
+            RVX_MATERIAL_FEATURE_CLEARCOAT;
+        ExpectCreationCode(
+            inactiveClearcoat, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto standardTransmission = MakeValidMaterialRequestInfo();
+        auto& standardTransmissionPayload =
+            std::get<MaterialUploadPayload>(standardTransmission.payload);
+        standardTransmissionPayload.sourceData.transmission = 0.5f;
+        standardTransmissionPayload.staticDescriptor.featureMask =
+            RVX_MATERIAL_FEATURE_TRANSMISSION;
+        ExpectCreationCode(
+            standardTransmission, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         MaterialDefinitionV2AcceptsGlTfIorBeyondTheRetiredLegacyCap)
+    {
+        MaterialDefinition definition;
+        definition.parameters.indexOfRefraction = 12.0f;
+        definition.descriptor.featureMask = GetMaterialFeatureMaskV2(
+            definition.parameters, definition.textureSlots);
+
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+
+        definition.descriptor.parameterLayoutHash =
+            GetMaterialParameterLayoutHashV2() ^ 0x1ull;
+        EXPECT_FALSE(ValidateMaterialDefinition(definition, error));
+        EXPECT_NE(error.find("layout"), std::string::npos);
+    }
+
+    TEST(RenderContractsValidation,
+         CanonicalMaterialAllowsMirroredAndZeroTextureScale)
+    {
+        MaterialDefinition definition;
+        MaterialTextureSlotDefinition slot;
+        slot.slot = MaterialTextureSlot::Normal;
+        slot.scale = Vec2{-1.0f, 1.0f};
+        definition.textureSlots.push_back(slot);
+        definition.descriptor.featureMask =
+            1ull << static_cast<uint8>(slot.slot);
+        definition.parameters.textureFlags =
+            1u << static_cast<uint8>(slot.slot);
+
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+        definition.textureSlots.front().scale.x = 0.0f;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+
+        auto uploadInfo = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(uploadInfo.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        binding.scale = Vec2{0.0f, 1.0f};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        uploadInfo.dependencies.push_back(binding.texture);
+        uploadInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
+        ExpectCreationCode(
+            uploadInfo, ResourceUploadRequestCreateCode::Created);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorLayoutMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& descriptor =
+            std::get<MaterialUploadPayload>(info.payload).staticDescriptor;
+        descriptor.parameterLayoutHash ^= 0x1ull;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorProgramMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.programFamily = "wrong-family";
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorAlphaMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.blendMode = MaterialBlendMode::Masked;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorWorkflowMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& descriptor =
+            std::get<MaterialUploadPayload>(info.payload).staticDescriptor;
+        descriptor.shadingModel = MaterialShadingModel::Unlit;
+        descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(descriptor.shadingModel));
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorCullMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.cullMode = MaterialCullMode::NoCull;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         RejectsMaterialTextureBindingOutsideUVSetContract)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        binding.uvSet = 2;
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        info.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         RejectsMaterialTextureBindingFeatureMaskMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        info.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        payload.staticDescriptor.featureMask = 1U;
+        payload.sourceData.textureFlags = 0U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        payload.textureBindings.clear();
+        payload.sourceData.textureFlags = 0U;
+        payload.staticDescriptor.featureMask =
+            1ull << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+        info.declaredPayloadBytes = 0U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
     TEST(RenderContractsValidation, RejectsSchema)
     {
         auto info = MakeValidTextureRequestInfo();
         info.schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION + 1U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidSchema);
+    }
+
+    TEST(RenderContractsValidation, RejectsPreUV1AndMaterialDescriptorSchema)
+    {
+        auto info = MakeValidMeshRequestInfo();
+        // Version 2 has neither the UV1 mesh-stream range nor the immutable
+        // material descriptor contract. It must not cross the v3 boundary.
+        info.schemaVersion = 2U;
         ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidSchema);
     }
 
@@ -314,7 +1695,14 @@ namespace
         binding.offset = Vec2(0.25f, 0.5f);
         std::get<MaterialUploadPayload>(materialInfo.payload)
             .textureBindings.push_back(binding);
-        materialInfo.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+        std::get<MaterialUploadPayload>(materialInfo.payload)
+            .sourceData.textureFlags = 1U;
+        std::get<MaterialUploadPayload>(materialInfo.payload)
+            .staticDescriptor.featureMask = 1U;
+        materialInfo.dependencies.push_back(binding.texture);
+        materialInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
 
         const auto mesh = ResourceUploadRequest::Create(meshInfo);
         const auto texture = ResourceUploadRequest::Create(textureInfo);
@@ -767,6 +2155,257 @@ namespace
         ExpectCreationCode(arrayInfo, ResourceUploadRequestCreateCode::Created);
     }
 
+    enum class MaterialSourceValidationCase : uint8
+    {
+        FiniteHdrAndNegativeColors,
+        NormalScaleUpperBoundary,
+        NormalScaleAboveBoundary,
+        EmissiveStrengthUpperBoundary,
+        EmissiveStrengthAboveBoundary,
+        SpecularFactorAboveRange,
+        NegativeSpecularColor,
+        ClearcoatFactorAboveRange,
+        ClearcoatRoughnessAboveRange,
+        ClearcoatNormalScaleAboveRange,
+        NonFiniteBaseColor,
+        MetallicBelowRange,
+        RoughnessAboveRange,
+        OcclusionBelowRange,
+        NonFiniteEmissiveColor,
+        AlphaCutoffAboveRange,
+        InvalidAlphaMode,
+        InvalidWorkflow,
+        ToonBandsBelowRange,
+        ToonSpecularThresholdAboveRange,
+        ToonRimStrengthAboveRange,
+        ToonOutlineWidthAboveRange,
+        NonFiniteToonShadowTint,
+        TransmissionAboveRange,
+        IndexOfRefractionBelowRange,
+        LargeFiniteThickness,
+        NonFiniteAttenuationColor,
+        AttenuationColorAboveRange,
+        ZeroAttenuationDistance
+    };
+
+    struct MaterialSourceValidationParameter
+    {
+        MaterialSourceValidationCase testCase;
+        bool expectedValid;
+    };
+
+    class RenderContractsValidationMaterialSourceConsistency :
+        public testing::TestWithParam<MaterialSourceValidationParameter>
+    {
+    };
+
+    TEST_P(RenderContractsValidationMaterialSourceConsistency,
+           DefinitionAndUploadUseTheSameCanonicalParameterContract)
+    {
+        const MaterialSourceValidationParameter parameter = GetParam();
+        MaterialSourceData source;
+        const float32 nan = std::numeric_limits<float32>::quiet_NaN();
+        switch (parameter.testCase)
+        {
+            case MaterialSourceValidationCase::FiniteHdrAndNegativeColors:
+                source.baseColorFactor = Vec4{-2.0f, 4.0f, 0.5f, 1.0f};
+                source.emissiveColor = Vec3{-1.0f, 8.0f, 0.25f};
+                break;
+            case MaterialSourceValidationCase::NormalScaleUpperBoundary:
+                source.normalScale = 8.0f;
+                break;
+            case MaterialSourceValidationCase::NormalScaleAboveBoundary:
+                source.normalScale = 8.01f;
+                break;
+            case MaterialSourceValidationCase::EmissiveStrengthUpperBoundary:
+                source.emissiveStrength = 65504.0f;
+                break;
+            case MaterialSourceValidationCase::EmissiveStrengthAboveBoundary:
+                source.emissiveStrength = 65505.0f;
+                break;
+            case MaterialSourceValidationCase::SpecularFactorAboveRange:
+                source.specularFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::NegativeSpecularColor:
+                source.specularColor.x = -0.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatFactorAboveRange:
+                source.clearcoatFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatRoughnessAboveRange:
+                source.clearcoatRoughness = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ClearcoatNormalScaleAboveRange:
+                source.clearcoatNormalScale = 8.01f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteBaseColor:
+                source.baseColorFactor.x = nan;
+                break;
+            case MaterialSourceValidationCase::MetallicBelowRange:
+                source.metallicFactor = -0.01f;
+                break;
+            case MaterialSourceValidationCase::RoughnessAboveRange:
+                source.roughnessFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::OcclusionBelowRange:
+                source.occlusionStrength = -0.01f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteEmissiveColor:
+                source.emissiveColor.y = nan;
+                break;
+            case MaterialSourceValidationCase::AlphaCutoffAboveRange:
+                source.alphaCutoff = 1.01f;
+                break;
+            case MaterialSourceValidationCase::InvalidAlphaMode:
+                source.alphaMode = static_cast<MaterialSourceAlphaMode>(255);
+                break;
+            case MaterialSourceValidationCase::InvalidWorkflow:
+                source.workflow = static_cast<MaterialSourceWorkflow>(255);
+                break;
+            case MaterialSourceValidationCase::ToonBandsBelowRange:
+                source.toonBands = 0.0f;
+                break;
+            case MaterialSourceValidationCase::ToonSpecularThresholdAboveRange:
+                source.toonSpecularThreshold = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ToonRimStrengthAboveRange:
+                source.toonRimStrength = 64.01f;
+                break;
+            case MaterialSourceValidationCase::ToonOutlineWidthAboveRange:
+                source.toonOutlineWidth = 64.01f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteToonShadowTint:
+                source.toonShadowTint.z = nan;
+                break;
+            case MaterialSourceValidationCase::TransmissionAboveRange:
+                source.transmission = 1.01f;
+                break;
+            case MaterialSourceValidationCase::IndexOfRefractionBelowRange:
+                source.indexOfRefraction = 0.99f;
+                break;
+            case MaterialSourceValidationCase::LargeFiniteThickness:
+                source.alphaMode = MaterialSourceAlphaMode::Blend;
+                source.transmission = 1.0f;
+                source.thickness = 100001.0f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteAttenuationColor:
+                source.attenuationColor.x = nan;
+                break;
+            case MaterialSourceValidationCase::AttenuationColorAboveRange:
+                source.attenuationColor.y = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ZeroAttenuationDistance:
+                source.attenuationDistance = 0.0f;
+                break;
+        }
+
+        std::string sourceError;
+        const bool sourceValid = ValidateMaterialSourceData(source, sourceError);
+
+        MaterialDefinition definition;
+        definition.parameters = source;
+        definition.descriptor.featureMask =
+            GetMaterialFeatureMaskV2(
+                definition.parameters, definition.textureSlots);
+        if (parameter.testCase ==
+            MaterialSourceValidationCase::LargeFiniteThickness)
+        {
+            definition.descriptor.shadingModel =
+                MaterialShadingModel::ThinTransmission;
+            definition.descriptor.programFamily = std::string(
+                GetMaterialProgramFamily(
+                    MaterialShadingModel::ThinTransmission));
+            definition.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+            definition.descriptor.shadowPolicy =
+                MaterialShadowPolicy::Receive;
+            definition.descriptor.translucencyPhase =
+                MaterialTranslucencyPhase::Standard;
+        }
+        std::string definitionError;
+        const bool definitionValid =
+            ValidateMaterialDefinition(definition, definitionError);
+
+        auto uploadInfo = MakeValidMaterialRequestInfo();
+        MaterialUploadPayload& uploadPayload =
+            std::get<MaterialUploadPayload>(uploadInfo.payload);
+        uploadPayload.sourceData = source;
+        uploadPayload.staticDescriptor = definition.descriptor;
+        const ResourceUploadRequestCreateResult uploadResult =
+            ResourceUploadRequest::Create(std::move(uploadInfo));
+        const bool uploadValid =
+            uploadResult.code == ResourceUploadRequestCreateCode::Created;
+
+        EXPECT_EQ(sourceValid, parameter.expectedValid) << sourceError;
+        EXPECT_EQ(definitionValid, sourceValid) << definitionError;
+        EXPECT_EQ(uploadValid, sourceValid);
+    }
+
+    INSTANTIATE_TEST_SUITE_P(
+        CanonicalMaterialSourceParameters,
+        RenderContractsValidationMaterialSourceConsistency,
+        testing::Values(
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::FiniteHdrAndNegativeColors, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NormalScaleUpperBoundary, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NormalScaleAboveBoundary, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::EmissiveStrengthUpperBoundary, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::EmissiveStrengthAboveBoundary, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::SpecularFactorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NegativeSpecularColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatFactorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatRoughnessAboveRange,
+                false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ClearcoatNormalScaleAboveRange,
+                false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteBaseColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::MetallicBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::RoughnessAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::OcclusionBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteEmissiveColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::AlphaCutoffAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::InvalidAlphaMode, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::InvalidWorkflow, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonBandsBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonSpecularThresholdAboveRange,
+                false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonRimStrengthAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonOutlineWidthAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteToonShadowTint, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::TransmissionAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::IndexOfRefractionBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::LargeFiniteThickness, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteAttenuationColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::AttenuationColorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ZeroAttenuationDistance, true}));
+
     enum class MaterialRuleCase : uint8
     {
         NonFiniteBaseColor,
@@ -777,7 +2416,6 @@ namespace
         NonFiniteEmissiveColor,
         NonFiniteEmissiveStrength,
         NonFiniteAlphaCutoff,
-        BaseColorBelowRange,
         MetallicAboveRange,
         RoughnessBelowRange,
         OcclusionAboveRange,
@@ -788,8 +2426,6 @@ namespace
         InvalidWorkflow,
         InvalidBindingHandle,
         NegativeUvSet,
-        ZeroScaleX,
-        ZeroScaleY,
         NonFiniteOffset,
         NonFiniteScale,
         NonFiniteRotation,
@@ -833,7 +2469,6 @@ namespace
             case MaterialRuleCase::NonFiniteEmissiveColor: source.emissiveColor.x = nan; break;
             case MaterialRuleCase::NonFiniteEmissiveStrength: source.emissiveStrength = nan; break;
             case MaterialRuleCase::NonFiniteAlphaCutoff: source.alphaCutoff = nan; break;
-            case MaterialRuleCase::BaseColorBelowRange: source.baseColorFactor.x = -0.1f; break;
             case MaterialRuleCase::MetallicAboveRange: source.metallicFactor = 1.1f; break;
             case MaterialRuleCase::RoughnessBelowRange: source.roughnessFactor = -0.1f; break;
             case MaterialRuleCase::OcclusionAboveRange: source.occlusionStrength = 1.1f; break;
@@ -851,12 +2486,6 @@ namespace
                 break;
             case MaterialRuleCase::NegativeUvSet:
                 payload.textureBindings.front().uvSet = -1;
-                break;
-            case MaterialRuleCase::ZeroScaleX:
-                payload.textureBindings.front().scale.x = 0.0f;
-                break;
-            case MaterialRuleCase::ZeroScaleY:
-                payload.textureBindings.front().scale.y = 0.0f;
                 break;
             case MaterialRuleCase::NonFiniteOffset:
                 payload.textureBindings.front().offset.x = nan;
@@ -912,7 +2541,6 @@ namespace
             MaterialRuleCase::NonFiniteEmissiveColor,
             MaterialRuleCase::NonFiniteEmissiveStrength,
             MaterialRuleCase::NonFiniteAlphaCutoff,
-            MaterialRuleCase::BaseColorBelowRange,
             MaterialRuleCase::MetallicAboveRange,
             MaterialRuleCase::RoughnessBelowRange,
             MaterialRuleCase::OcclusionAboveRange,
@@ -923,8 +2551,6 @@ namespace
             MaterialRuleCase::InvalidWorkflow,
             MaterialRuleCase::InvalidBindingHandle,
             MaterialRuleCase::NegativeUvSet,
-            MaterialRuleCase::ZeroScaleX,
-            MaterialRuleCase::ZeroScaleY,
             MaterialRuleCase::NonFiniteOffset,
             MaterialRuleCase::NonFiniteScale,
             MaterialRuleCase::NonFiniteRotation,
@@ -953,9 +2579,7 @@ namespace
     TEST(RenderContractsValidation,
          ViewClearPolicyIsVersionedCopiedAndRejectsInvalidValues)
     {
-        RenderFrameHeaderV5 header;
-        header.sequence = 41;
-        header.requiredSceneRevision = 9;
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(41, 9);
         RenderViewSnapshot view = MakeValidView();
         view.clearPolicy = RenderViewClearPolicy::SolidColor;
         view.clearColor = {0.25f, 0.5f, 0.75f, 1.0f};
@@ -995,9 +2619,7 @@ namespace
     TEST(RenderContractsValidation,
          FrameV5RejectsIncompleteInputsAndOwnsAcceptedValues)
     {
-        RenderFrameHeaderV5 header;
-        header.sequence = 87;
-        header.requiredSceneRevision = 31;
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(87, 31);
         header.worldRevision = 12;
 
         RenderViewSnapshot view = MakeValidView();
@@ -1031,8 +2653,8 @@ namespace
         EXPECT_FLOAT_EQ(packet->GetSettings().renderScale, 0.75f);
         EXPECT_EQ(packet->GetCaptureRequest().width, 64U);
 
-        RenderFrameHeaderV5 invalidHeader;
-        invalidHeader.sequence = 1;
+        RenderFrameHeaderV5 invalidHeader = MakeValidFrameHeader();
+        invalidHeader.requiredSceneRevision = 0;
         EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
                                                MakeValidView(),
                                                RenderFrameSettings{},
@@ -1050,6 +2672,725 @@ namespace
                                                incompleteDiagnostics),
                   nullptr);
     }
+
+    TEST(RenderContractsValidation,
+         SingleViewFamilyFailsClosedOnIdentitySurfaceAndNumericValues)
+    {
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(101, 37);
+        RenderViewSnapshot view = MakeValidView();
+
+        const auto packet = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(packet, nullptr);
+        ASSERT_EQ(packet->GetViewFamily().views.size(), 1U);
+        EXPECT_EQ(packet->GetViewFamily().primaryViewIndex, 0U);
+        EXPECT_EQ(packet->GetFrameStamp().sequence, header.sequence);
+        EXPECT_EQ(packet->GetHistoryIdentity().view, view.identity);
+        EXPECT_EQ(packet->GetHistoryIdentity().surfaceGeneration,
+                  header.surfaceGeneration);
+        EXPECT_EQ(packet->GetViewFamily().identity.frameSequence,
+                  header.sequence);
+        EXPECT_EQ(packet->GetViewFamily().effectTime.simulationTick,
+                  header.simulationTick);
+        EXPECT_FLOAT_EQ(packet->GetViewFamily().effectTime.fixedDeltaSeconds,
+                        header.effectFixedDeltaSeconds);
+        EXPECT_DOUBLE_EQ(packet->GetViewFamily().effectTime.simulationSeconds,
+                         header.effectSimulationSeconds);
+
+        RenderViewFamilySnapshot unsupportedMultiView = packet->GetViewFamily();
+        unsupportedMultiView.views.push_back(view);
+        EXPECT_FALSE(IsValidSingleRenderViewFamily(unsupportedMultiView));
+
+        RenderViewSnapshot invalidView = view;
+        invalidView.identity = {};
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.cameraCutRevision = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.identity.role = static_cast<ViewRole>(255);
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        RenderFrameHeaderV5 invalidHeader = header;
+        invalidHeader.surfaceGeneration = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidHeader = header;
+        invalidHeader.temporalEpoch = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.absoluteTime =
+            std::numeric_limits<float64>::quiet_NaN();
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.viewMatrix[0].x =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+    }
+
+    TEST(RenderContractsValidation,
+         EffectTimeIsIndependentFromPresentationClock)
+    {
+        RenderFrameHeaderV5 firstHeader = MakeValidFrameHeader(301, 61);
+        firstHeader.simulationTick = 17;
+        firstHeader.effectFixedDeltaSeconds = 1.0f / 120.0f;
+        firstHeader.effectSimulationSeconds = 17.0 / 120.0;
+        firstHeader.deterministicSeed = 0x1234567U;
+        RenderViewSnapshot firstView = MakeValidView();
+        firstView.absoluteTime = 10.0;
+        firstView.deltaTime = 1.0f / 30.0f;
+
+        RenderFrameHeaderV5 secondHeader = firstHeader;
+        secondHeader.sequence = 302;
+        RenderViewSnapshot secondView = firstView;
+        secondView.absoluteTime = 9000.0;
+        secondView.deltaTime = 1.0f / 240.0f;
+
+        const auto first = RenderFramePacketV5::Create(
+            firstHeader,
+            firstView,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        const auto second = RenderFramePacketV5::Create(
+            secondHeader,
+            secondView,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+        EXPECT_EQ(first->GetViewFamily().effectTime,
+                  second->GetViewFamily().effectTime);
+        EXPECT_NE(first->GetFrameStamp().absoluteTimeSeconds,
+                  second->GetFrameStamp().absoluteTimeSeconds);
+        EXPECT_NE(first->GetFrameStamp().deltaTimeSeconds,
+                  second->GetFrameStamp().deltaTimeSeconds);
+    }
+
+    TEST(RenderContractsValidation,
+         HistoryAvailabilityExplainsEveryCompatibilityBreak)
+    {
+        const auto packet = RenderFramePacketV5::Create(
+            MakeValidFrameHeader(201, 51),
+            MakeValidView(),
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(packet, nullptr);
+        const RenderViewHistoryIdentity identity = packet->GetHistoryIdentity();
+
+        RenderHistoryAvailability decision =
+            EvaluateRenderHistoryAvailability(nullptr, identity, false);
+        EXPECT_FALSE(decision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::FirstFrame));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::HistoryUnavailable));
+
+        decision = EvaluateRenderHistoryAvailability(&identity, identity, false);
+        EXPECT_TRUE(decision.available);
+        EXPECT_EQ(decision.resetReasons, RenderHistoryResetReason::None);
+        EXPECT_TRUE(decision.IsConsistent());
+
+        RenderViewHistoryIdentity changed = identity;
+        ++changed.cameraCutRevision;
+        ++changed.temporalEpoch;
+        ++changed.worldRevision;
+        ++changed.surfaceGeneration;
+        changed.previousFrame.surfaceGeneration = changed.surfaceGeneration;
+        ++changed.extent.width;
+        ++changed.formatRevision;
+        ++changed.previousFrame.configurationRevision;
+        decision = EvaluateRenderHistoryAvailability(
+            &identity, changed, true, false);
+        EXPECT_FALSE(decision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::CameraCut));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::TemporalEpochChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::SceneDiscontinuity));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::SurfaceChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::Resize));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::FormatChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::ConfigurationChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::ExplicitDiscontinuity));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::HistoryUnavailable));
+    }
+
+    MaterialStaticDescriptor MakeSurfacePathDescriptor(
+        MaterialShadingModel shadingModel,
+        MaterialBlendMode blendMode,
+        MaterialTranslucencyPhase translucencyPhase)
+    {
+        MaterialStaticDescriptor descriptor;
+        descriptor.shadingModel = shadingModel;
+        descriptor.blendMode = blendMode;
+        descriptor.translucencyPhase = translucencyPhase;
+        descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(shadingModel));
+        return descriptor;
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityRoutesTheSupportedMaterialMatrix)
+    {
+        struct Case
+        {
+            MaterialShadingModel shadingModel;
+            MaterialBlendMode blendMode;
+            MaterialTranslucencyPhase translucencyPhase;
+            SurfacePathEligibility expected;
+        };
+
+        const std::vector<Case> cases = {
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::Opaque,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::DeferredOpaque},
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::Masked,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::DeferredOpaque},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Opaque,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::ForwardSpecialOpaque},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Masked,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::ForwardSpecialOpaque},
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::AlphaBlend,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::StandardLit,
+             MaterialBlendMode::Premultiplied,
+             MaterialTranslucencyPhase::AfterToneMap,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Additive,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission,
+             MaterialBlendMode::AlphaBlend,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission,
+             MaterialBlendMode::Premultiplied,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission, MaterialBlendMode::Additive,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+        };
+
+        for (const Case& testCase : cases)
+        {
+            const MaterialStaticDescriptor descriptor =
+                MakeSurfacePathDescriptor(testCase.shadingModel,
+                                          testCase.blendMode,
+                                          testCase.translucencyPhase);
+            std::string error;
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(descriptor, error))
+                << error;
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
+                      testCase.expected);
+        }
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityRoutesOpaqueToonAndRejectsToonTranslucency)
+    {
+        for (const auto [blendMode, translucencyPhase] :
+             {std::pair{MaterialBlendMode::Opaque,
+                        MaterialTranslucencyPhase::Opaque},
+              std::pair{MaterialBlendMode::Masked,
+                        MaterialTranslucencyPhase::Opaque},
+              std::pair{MaterialBlendMode::AlphaBlend,
+                        MaterialTranslucencyPhase::Standard},
+              std::pair{MaterialBlendMode::Premultiplied,
+                        MaterialTranslucencyPhase::Standard},
+              std::pair{MaterialBlendMode::Additive,
+                        MaterialTranslucencyPhase::Standard}})
+        {
+            const MaterialStaticDescriptor descriptor =
+                MakeSurfacePathDescriptor(MaterialShadingModel::ToonLit,
+                                          blendMode,
+                                          translucencyPhase);
+            std::string error;
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(descriptor, error))
+                << error;
+            const SurfacePathEligibility expected =
+                blendMode == MaterialBlendMode::Opaque ||
+                        blendMode == MaterialBlendMode::Masked
+                    ? SurfacePathEligibility::DeferredOpaque
+                    : SurfacePathEligibility::Unsupported;
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor), expected);
+        }
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityKeepsFactorOnlyExtensionsDeferredAndRoutesTexturedExtensionsForwardSpecial)
+    {
+        MaterialStaticDescriptor factorOnly = MakeSurfacePathDescriptor(
+            MaterialShadingModel::StandardLit,
+            MaterialBlendMode::Opaque,
+            MaterialTranslucencyPhase::Opaque);
+        factorOnly.featureMask = RVX_MATERIAL_FEATURE_SPECULAR |
+            RVX_MATERIAL_FEATURE_CLEARCOAT;
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialStaticDescriptor(factorOnly, error)) << error;
+        EXPECT_EQ(ClassifySurfacePathEligibility(factorOnly),
+                  SurfacePathEligibility::DeferredOpaque);
+
+        const std::array texturedExtensionSlots = {
+            MaterialTextureSlot::Specular,
+            MaterialTextureSlot::SpecularColor,
+            MaterialTextureSlot::Clearcoat,
+            MaterialTextureSlot::ClearcoatRoughness,
+            MaterialTextureSlot::ClearcoatNormal};
+        for (const MaterialTextureSlot slot : texturedExtensionSlots)
+        {
+            MaterialStaticDescriptor textured = factorOnly;
+            textured.featureMask |= 1ull << static_cast<uint8>(slot);
+            error.clear();
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(textured, error)) << error;
+            EXPECT_EQ(ClassifySurfacePathEligibility(textured),
+                      SurfacePathEligibility::ForwardSpecialOpaque)
+                << "textured extension slot " << static_cast<uint32>(slot)
+                << " must not be silently evaluated by DeferredLighting";
+        }
+
+        MaterialStaticDescriptor invalid = factorOnly;
+        invalid.featureMask |= 1ull << 63u;
+        EXPECT_EQ(ClassifySurfacePathEligibility(invalid),
+                  SurfacePathEligibility::Unsupported);
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityFailsClosedForInvalidOrContradictoryDescriptors)
+    {
+        const MaterialStaticDescriptor valid = MakeSurfacePathDescriptor(
+            MaterialShadingModel::StandardLit, MaterialBlendMode::Opaque,
+            MaterialTranslucencyPhase::Opaque);
+
+        std::vector<MaterialStaticDescriptor> invalidDescriptors;
+
+        MaterialStaticDescriptor unknownDomain = valid;
+        unknownDomain.domain = static_cast<MaterialDomain>(255);
+        invalidDescriptors.push_back(std::move(unknownDomain));
+
+        MaterialStaticDescriptor unknownBlend = valid;
+        unknownBlend.blendMode = static_cast<MaterialBlendMode>(255);
+        invalidDescriptors.push_back(std::move(unknownBlend));
+
+        MaterialStaticDescriptor contradictoryPhase = valid;
+        contradictoryPhase.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        invalidDescriptors.push_back(std::move(contradictoryPhase));
+
+        MaterialStaticDescriptor invalidThinTransmission =
+            MakeSurfacePathDescriptor(MaterialShadingModel::ThinTransmission,
+                                      MaterialBlendMode::Opaque,
+                                      MaterialTranslucencyPhase::Opaque);
+        invalidDescriptors.push_back(std::move(invalidThinTransmission));
+
+        MaterialStaticDescriptor wrongProgramFamily = valid;
+        wrongProgramFamily.programFamily = "unknown-program";
+        invalidDescriptors.push_back(std::move(wrongProgramFamily));
+
+        MaterialStaticDescriptor wrongLayout = valid;
+        wrongLayout.parameterLayoutHash ^= 0x1ull;
+        invalidDescriptors.push_back(std::move(wrongLayout));
+
+        MaterialStaticDescriptor unknownFeature = valid;
+        unknownFeature.featureMask = 1ull << 63u;
+        invalidDescriptors.push_back(std::move(unknownFeature));
+
+        for (const MaterialStaticDescriptor& descriptor : invalidDescriptors)
+        {
+            std::string error;
+            EXPECT_FALSE(ValidateMaterialStaticDescriptor(descriptor, error));
+            EXPECT_FALSE(error.empty());
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
+                      SurfacePathEligibility::Unsupported);
+        }
+    }
+
+    TEST(RenderContractsValidation, SurfacePathEligibilityNamesAreStable)
+    {
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::DeferredOpaque),
+                  "DeferredOpaque");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::ForwardSpecialOpaque),
+                  "ForwardSpecialOpaque");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::ForwardTranslucency),
+                  "ForwardTranslucency");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::Unsupported),
+                  "Unsupported");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      static_cast<SurfacePathEligibility>(255)),
+                  "Unknown");
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureSettingsRejectInvalidModesRangesAndFrozenDelta)
+    {
+        RenderExposureSettings settings;
+        EXPECT_TRUE(IsValidRenderExposureSettings(settings));
+        EXPECT_TRUE(IsValidRenderExposureDeltaSeconds(0.0f));
+        EXPECT_TRUE(IsValidRenderExposureDeltaSeconds(1.0f));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(-0.001f));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(
+            std::numeric_limits<float32>::infinity()));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(1.001f));
+
+        const std::array<RenderExposureSettings, 10> invalidSettings = []
+        {
+            std::array<RenderExposureSettings, 10> values{};
+            values[0].mode = static_cast<RenderExposureMode>(255);
+            values[1].manualEV100 =
+                std::numeric_limits<float32>::quiet_NaN();
+            values[2].exposureCompensationEV = 10.01f;
+            values[3].histogramLowPercentile = -0.001f;
+            values[4].histogramHighPercentile = 0.50f;
+            values[4].histogramLowPercentile = 0.50f;
+            values[5].histogramKeyValue = 0.0f;
+            values[6].minEV100 = 4.0f;
+            values[6].maxEV100 = 4.0f;
+            values[7].maxEV100 = 24.01f;
+            values[8].brighteningAdaptationSpeed = -0.001f;
+            values[9].darkeningAdaptationSpeed =
+                std::numeric_limits<float32>::infinity();
+            return values;
+        }();
+
+        for (const RenderExposureSettings& invalid : invalidSettings)
+            EXPECT_FALSE(IsValidRenderExposureSettings(invalid));
+
+        RenderFrameSettings frameSettings;
+        frameSettings.postProcess.exposureSettings = invalidSettings[0];
+        EXPECT_FALSE(IsValidRenderFrameSettings(frameSettings));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposurePhysicalScaleAndHistogramEVUseOneCalibration)
+    {
+        EXPECT_TRUE(IsValidRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_TRUE(IsValidRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MAX_SCALE));
+        EXPECT_FALSE(IsValidRenderExposureScale(std::nextafter(
+            RVX_RENDER_EXPOSURE_MIN_SCALE, 0.0f)));
+        EXPECT_FALSE(IsValidRenderExposureScale(std::nextafter(
+            RVX_RENDER_EXPOSURE_MAX_SCALE,
+            std::numeric_limits<float32>::infinity())));
+        EXPECT_FALSE(IsValidRenderExposureScale(
+            std::numeric_limits<float32>::infinity()));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MIN_SCALE,
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MAX_SCALE,
+            RVX_RENDER_EXPOSURE_MAX_SCALE));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            std::nextafter(RVX_RENDER_EXPOSURE_MIN_SCALE,
+                           RVX_RENDER_EXPOSURE_MAX_SCALE),
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_FALSE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MIN_SCALE * 2.0f,
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_FALSE(AreRenderExposureScalesEquivalent(
+            std::numeric_limits<float32>::infinity(),
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+
+        float32 exposureScale = 0.0f;
+        EXPECT_TRUE(TryCalculateRenderExposureScale(0.0f, 0.0f,
+                                                     exposureScale));
+        EXPECT_FLOAT_EQ(exposureScale,
+                        1.0f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+
+        EXPECT_TRUE(TryCalculateRenderExposureScale(2.0f, 1.0f,
+                                                     exposureScale));
+        EXPECT_FLOAT_EQ(exposureScale,
+                        0.5f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_TRUE(TryCalculateRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MAX_EV100,
+            RVX_RENDER_EXPOSURE_MIN_COMPENSATION_EV,
+            exposureScale));
+        EXPECT_FLOAT_EQ(
+            exposureScale,
+            std::exp2(RVX_RENDER_EXPOSURE_MIN_COMPENSATION_EV -
+                      RVX_RENDER_EXPOSURE_MAX_EV100) /
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_GE(exposureScale, RVX_RENDER_EXPOSURE_MIN_SCALE);
+        EXPECT_LE(exposureScale, RVX_RENDER_EXPOSURE_MAX_SCALE);
+        EXPECT_TRUE(TryCalculateRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MIN_EV100,
+            RVX_RENDER_EXPOSURE_MAX_COMPENSATION_EV,
+            exposureScale));
+        EXPECT_GE(exposureScale, RVX_RENDER_EXPOSURE_MIN_SCALE);
+        EXPECT_LE(exposureScale, RVX_RENDER_EXPOSURE_MAX_SCALE);
+        EXPECT_FALSE(TryCalculateRenderExposureScale(
+            std::numeric_limits<float32>::quiet_NaN(), 0.0f, exposureScale));
+
+        const uint64 validConfigurationHash =
+            CalculateRenderExposureSettingsHash(RenderExposureSettings{});
+        EXPECT_FALSE(MakeRenderExposureState(
+                         RenderExposureMode::ManualEV100,
+                         0.0f,
+                         0.0f,
+                         std::numeric_limits<float32>::infinity(),
+                         1.0f,
+                         validConfigurationHash)
+                         .IsValid());
+        EXPECT_FALSE(MakeRenderExposureState(
+                         RenderExposureMode::ManualEV100,
+                         0.0f,
+                         0.0f,
+                         std::nextafter(
+                             RVX_RENDER_EXPOSURE_MAX_SCALE,
+                             std::numeric_limits<float32>::infinity()),
+                         1.0f,
+                         validConfigurationHash)
+                         .IsValid());
+
+        RenderExposureSettings manualSettings;
+        manualSettings.mode = RenderExposureMode::ManualEV100;
+        manualSettings.manualEV100 = -5.0f;
+        manualSettings.minEV100 = 0.0f;
+        manualSettings.maxEV100 = 10.0f;
+        ASSERT_TRUE(IsValidRenderExposureSettings(manualSettings));
+        const RenderExposureResolveResult manual = ResolveRenderExposureState(
+            manualSettings, 0.0f, 1.0f / 60.0f);
+        ASSERT_TRUE(manual.Succeeded());
+        EXPECT_FLOAT_EQ(manual.state.GetTargetEV100(), -5.0f);
+        EXPECT_FLOAT_EQ(manual.state.GetAdaptedEV100(), -5.0f);
+
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        float32 ev100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings,
+            settings.histogramKeyValue *
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION,
+            ev100));
+        EXPECT_FLOAT_EQ(ev100, 0.0f);
+
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings,
+            settings.histogramKeyValue *
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION * 4.0f,
+            ev100));
+        EXPECT_FLOAT_EQ(ev100, 2.0f);
+
+        float32 blackEV100 = 0.0f;
+        float32 floorEV100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(settings, 0.0f,
+                                                blackEV100));
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MIN_METERED_LUMINANCE,
+            floorEV100));
+        EXPECT_FLOAT_EQ(blackEV100, floorEV100);
+
+        float32 belowFloorEV100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MIN_METERED_LUMINANCE * 0.5f,
+            belowFloorEV100));
+        EXPECT_FLOAT_EQ(belowFloorEV100, floorEV100);
+
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MAX_METERED_LUMINANCE, ev100));
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings,
+            std::nextafter(RVX_RENDER_EXPOSURE_MAX_METERED_LUMINANCE,
+                           std::numeric_limits<float32>::infinity()),
+            ev100));
+
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings, -0.001f, ev100));
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings, std::numeric_limits<float32>::infinity(), ev100));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureAdaptationUsesIndependentBrighteningAndDarkeningRates)
+    {
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        settings.brighteningAdaptationSpeed = 4.0f;
+        settings.darkeningAdaptationSpeed = 0.0f;
+
+        float32 brightenedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 2.0f, 0.25f,
+                                                 brightenedEV100));
+        EXPECT_LT(brightenedEV100, 4.0f);
+        EXPECT_GT(brightenedEV100, 2.0f);
+
+        float32 darkenedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 darkenedEV100));
+        EXPECT_FLOAT_EQ(darkenedEV100, 4.0f);
+
+        settings.darkeningAdaptationSpeed = 4.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 darkenedEV100));
+        EXPECT_GT(darkenedEV100, 4.0f);
+        EXPECT_LT(darkenedEV100, 6.0f);
+
+        float32 repeatedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 repeatedEV100));
+        EXPECT_FLOAT_EQ(darkenedEV100, repeatedEV100);
+        EXPECT_FALSE(TryAdaptRenderExposureEV100(
+            settings, 4.0f, 6.0f,
+            std::numeric_limits<float32>::quiet_NaN(), repeatedEV100));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureStateIsImmutableAndResetsIncompatibleHistory)
+    {
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        settings.brighteningAdaptationSpeed = 0.0f;
+        settings.darkeningAdaptationSpeed = 0.0f;
+        const float32 neutralLuminance =
+            settings.histogramKeyValue *
+            RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+
+        const RenderExposureResolveResult first = ResolveRenderExposureState(
+            settings, neutralLuminance, 1.0f / 60.0f);
+        ASSERT_TRUE(first.Succeeded());
+        EXPECT_FALSE(first.UsedHistory());
+        EXPECT_TRUE(first.state.IsValid());
+        EXPECT_EQ(first.state.GetMode(), RenderExposureMode::HistogramAuto);
+        EXPECT_FLOAT_EQ(first.state.GetTargetEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(first.state.GetAdaptedEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(first.state.GetExposureScale(),
+                        1.0f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_FLOAT_EQ(first.state.GetPreExposure(), 1.0f);
+        EXPECT_NE(first.state.GetConfigurationHash(), 0U);
+
+        const RenderExposureResolveResult second = ResolveRenderExposureState(
+            settings, neutralLuminance * 4.0f, 1.0f / 60.0f, &first.state);
+        ASSERT_TRUE(second.Succeeded());
+        EXPECT_TRUE(second.UsedHistory());
+        EXPECT_FLOAT_EQ(second.state.GetTargetEV100(), 2.0f);
+        EXPECT_FLOAT_EQ(second.state.GetAdaptedEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(second.state.GetPreExposure(),
+                        first.state.GetExposureScale());
+
+        RenderExposureSettings changedSettings = settings;
+        changedSettings.exposureCompensationEV = 1.0f;
+        const RenderExposureResolveResult changed = ResolveRenderExposureState(
+            changedSettings, neutralLuminance, 1.0f / 60.0f, &first.state);
+        ASSERT_TRUE(changed.Succeeded());
+        EXPECT_FALSE(changed.UsedHistory());
+        EXPECT_FLOAT_EQ(changed.state.GetPreExposure(), 1.0f);
+        EXPECT_NE(changed.state.GetConfigurationHash(),
+                  first.state.GetConfigurationHash());
+
+        const RenderExposureState invalidPrevious;
+        const RenderExposureResolveResult invalid = ResolveRenderExposureState(
+            settings, neutralLuminance, 1.0f / 60.0f, &invalidPrevious);
+        EXPECT_EQ(invalid.code, RenderExposureResolveCode::InvalidPreviousState);
+        EXPECT_FALSE(invalid.Succeeded());
+    }
+
+TEST(TransparentTemporalHistory, RequiresExactPresentedDrawAndView)
+{
+    TransparentTemporalDrawIdentity draw;
+    draw.objectId = 1; draw.mesh = {1, 2}; draw.meshRevision = 3;
+    draw.material = {4, 5}; draw.materialRevision = 6;
+    draw.descriptorKey = 7; draw.descriptorRevision = 8; draw.layoutHash = 9;
+    draw.indexCount = 3; draw.valid = true; draw.textureIdentityWords = {1, 2, 3, 4};
+    const RenderViewIdentity view{1, 1};
+    TransparentTemporalHistory history;
+    EXPECT_FALSE(history.CanReuse(11, view, draw, true));
+    history.Commit(10, view, {draw}, true);
+    EXPECT_TRUE(history.CanReuse(12, view, draw, true)); // simulation gap is valid
+    EXPECT_FALSE(history.CanReuse(10, view, draw, true));
+    EXPECT_FALSE(history.CanReuse(12, {2, 1}, draw, true));
+    EXPECT_FALSE(history.CanReuse(12, view, draw, false)); // camera/resize reset
+    const std::vector<std::function<void(TransparentTemporalDrawIdentity&)>> mutations{
+        [](auto& d){++d.mesh.generation;}, [](auto& d){++d.meshRevision;},
+        [](auto& d){++d.submeshIndex;}, [](auto& d){++d.indexOffset;},
+        [](auto& d){++d.material.generation;}, [](auto& d){++d.materialRevision;},
+        [](auto& d){++d.descriptorRevision;}, [](auto& d){++d.descriptorKey;},
+        [](auto& d){++d.textureIdentityWords[3];}, [](auto& d){++d.policy;},
+        [](auto& d){d.valid=false;}, [](auto& d){++d.layoutHash;}};
+    for (const auto& mutate : mutations)
+    {
+        auto changed = draw; mutate(changed);
+        EXPECT_FALSE(history.CanReuse(12, view, changed, true));
+    }
+    // A prepared but unpresented replacement does not alter the saved proof.
+    auto unpresented = draw; ++unpresented.materialRevision;
+    EXPECT_FALSE(history.CanReuse(13, view, unpresented, true));
+    EXPECT_TRUE(history.CanReuse(13, view, draw, true));
+    history.Commit(13, view, {draw, draw}, true);
+    EXPECT_FALSE(history.CanReuse(14, view, draw, true)); // ambiguous draw identity
+    history.Commit(14, view, {draw}, false);
+    EXPECT_FALSE(history.CanReuse(15, view, draw, true)); // failed presentation
+    history.Commit(16, view, {draw}, true);
+    history.Commit(15, view, {draw}, true);
+    EXPECT_FALSE(history.CanReuse(17, view, draw, true)); // stale commit rejected
+}
 
 } // namespace
 } // namespace RVX

@@ -3,11 +3,13 @@
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "DX11BindingRemapper.h"
 #include "DX11Device.h"
 #include "DX11Resources.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -43,6 +45,36 @@ TEST(DX11Validation, Capabilities)
     EXPECT_FALSE(caps.adapterName.empty());
 
     RVX_CORE_INFO("DX11 Adapter: {}", caps.adapterName);
+}
+
+TEST(DX11Validation, IndependentFloatBlendCapabilitiesMatchNativeQueries)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX11, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX11);
+    auto* dx11Device = dynamic_cast<DX11Device*>(device.get());
+    ASSERT_NE(dx11Device, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    EXPECT_TRUE(capabilities.supportsIndependentColorAttachmentBlend);
+
+    constexpr std::array<std::pair<RHIFormat, DXGI_FORMAT>, 2> formats = {{
+        {RHIFormat::R16_FLOAT, DXGI_FORMAT_R16_FLOAT},
+        {RHIFormat::RGBA16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT},
+    }};
+    for (const auto& [format, nativeFormat] : formats)
+    {
+        UINT nativeSupport = 0;
+        ASSERT_TRUE(SUCCEEDED(dx11Device->GetD3DDevice()->CheckFormatSupport(
+            nativeFormat, &nativeSupport)));
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachment(format),
+            (nativeSupport & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachmentBlend(format),
+            (nativeSupport & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0 &&
+                (nativeSupport & D3D11_FORMAT_SUPPORT_BLENDABLE) != 0);
+    }
 }
 
 TEST(DX11Validation, BufferCreation)
@@ -133,6 +165,47 @@ VSOutput main(VSInput input)
 
     auto shader = device->CreateShader(shaderDesc);
     ASSERT_NE(nullptr, shader.Get());
+}
+
+TEST(DX11Validation, SamplerABIRemapperIsLosslessAndFailClosed)
+{
+    const DX11BindingRemapper& remapper = DX11BindingRemapper::Get();
+
+    constexpr std::array<uint32, 8> frameLogicalBindings = {
+        0u, 1u, 2u, 5u, 7u, 9u, 13u, 19u};
+    for (uint32 physicalSlot = 0;
+         physicalSlot < frameLogicalBindings.size();
+         ++physicalSlot)
+    {
+        EXPECT_EQ(remapper.GetSamplerSlot(0u, frameLogicalBindings[physicalSlot]),
+                  physicalSlot);
+    }
+
+    for (uint32 logicalBinding = 14u; logicalBinding <= 21u; ++logicalBinding)
+    {
+        EXPECT_EQ(remapper.GetSamplerSlot(2u, logicalBinding),
+                  8u + logicalBinding - 14u);
+    }
+
+    for (uint32 frameLogicalBinding : frameLogicalBindings)
+    {
+        const uint32 framePhysical = remapper.GetSamplerSlot(
+            0u, frameLogicalBinding);
+        for (uint32 materialLogicalBinding = 14u;
+             materialLogicalBinding <= 21u;
+             ++materialLogicalBinding)
+        {
+            EXPECT_NE(framePhysical,
+                      remapper.GetSamplerSlot(2u, materialLogicalBinding));
+        }
+    }
+
+    EXPECT_EQ(remapper.GetSamplerSlot(0u, 6u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(0u, 8u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(1u, 9u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 13u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 22u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(3u, 9u), UINT32_MAX);
 }
 
 TEST(DX11Validation, UploadBuffer)

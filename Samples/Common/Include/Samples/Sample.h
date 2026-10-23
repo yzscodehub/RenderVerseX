@@ -4,6 +4,7 @@
 
 #include "Core/Types.h"
 #include "Samples/FrameworkAssessment.h"
+#include "Samples/SampleFeatureReporter.h"
 #include "Samples/SampleInfo.h"
 #include "Samples/SampleWorldRequirements.h"
 
@@ -13,7 +14,6 @@
 namespace RVX
 {
     struct SampleContext;
-    class SampleFeatureReporter;
     struct SampleRenderDiagnostics;
 
     enum class SampleReadinessState : uint8
@@ -75,6 +75,22 @@ namespace RVX
             return MakeDefaultSampleAssessmentContract();
         }
         virtual bool Setup(SampleContext& context, std::string& outError) = 0;
+        /**
+         * @brief Reset scenario-local deterministic state after host pre-roll.
+         *
+         * The host invokes this exactly once after readiness has been reached
+         * and the shared effect clock has been reset, immediately before the
+         * first deterministic Sample tick. Asset and pipeline pre-roll may
+         * call Update(), so scenarios with local timelines must restart them
+         * here instead of allowing pre-roll work to leak into qualification.
+         */
+        virtual bool BeginDeterministicEpoch(SampleContext& context,
+                                             std::string& outError)
+        {
+            static_cast<void>(context);
+            static_cast<void>(outError);
+            return true;
+        }
         virtual void Update(SampleContext& context, float deltaTime) = 0;
         virtual void OnInput(SampleContext& context) = 0;
         virtual void OnViewportResize(SampleContext& context,

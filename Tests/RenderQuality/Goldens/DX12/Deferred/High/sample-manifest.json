@@ -1,0 +1,1100 @@
+{
+  "schema": "RVX.SampleManifest",
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "id": "animation-character",
+      "domain": "animation",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "casual-female",
+        "water-bottle",
+        "casual-female-walk-root-motion"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1001
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [5.5, 3.1, 7.5],
+          "target": [0.0, 1.1, 0.0],
+          "verticalFieldOfViewDegrees": 44.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "asset-gallery",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "r7-triangle",
+        "shadow-plane-caster",
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1002
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.0, 6.0],
+          "target": [0.0, 0.0, 0.0],
+          "verticalFieldOfViewDegrees": 40.0,
+          "nearPlane": 0.05,
+          "farPlane": 10000.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "asset-streaming",
+      "domain": "systems",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "low",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "water-bottle",
+        "corset",
+        "crytek-sponza"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1003
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.5, 8.0],
+          "target": [0.0, 0.65, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 500.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120, 600],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "gpu-driven",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "low",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "water-bottle"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1004
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.0, 6.0],
+          "target": [0.0, 0.0, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 10000.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "interior-rendering",
+      "domain": "qualification",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.DIRECTIONAL_CSM",
+        "RENDER.CAPABILITY.TRANSPARENT_PASS"
+      ],
+      "optionalCapabilities": [
+        "RENDER.CAPABILITY.POINT_SHADOW",
+        "RENDER.CAPABILITY.SPOT_SHADOW",
+        "RENDER.CAPABILITY.HZB_OCCLUSION"
+      ],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "crytek-sponza",
+        "kloofendal-48d-partly-cloudy-pure-sky",
+        "interior-rendering-p0a"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1005
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.4, 6.0],
+          "target": [0.0, 2.3, -4.0],
+          "verticalFieldOfViewDegrees": 75.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "lighting-shadows",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "particle-vfx-ground-caster-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1006
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "model-rendering",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "shadow-plane-caster"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1007
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.5, 5.8],
+          "target": [0.0, 0.45, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 250.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "model-viewer",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "r7-triangle"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1008
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 0.0, 3.0],
+          "target": [0.0, 0.0, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 1000.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "pbr-materials",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid",
+        "pbr-reference-environment"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1009
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 0.0, 3.0],
+          "target": [0.0, 0.0, 0.0],
+          "verticalFieldOfViewDegrees": 40.0,
+          "nearPlane": 0.05,
+          "farPlane": 1000.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "physics-sandbox",
+      "domain": "physics",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "low",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "interior-rendering-p0a"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1010
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [9.0, 7.0, 12.0],
+          "target": [0.0, 1.0, 0.0],
+          "verticalFieldOfViewDegrees": 47.0,
+          "nearPlane": 0.05,
+          "farPlane": 80.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "render-pipeline",
+      "domain": "rendering",
+      "intent": "demonstration",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "shadow-plane-caster"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1011
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [32, 120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "post-processing",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.POST_PROCESS_BLOOM",
+        "RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING",
+        "RENDER.CAPABILITY.POST_PROCESS_COLOR_GRADING",
+        "RENDER.CAPABILITY.POST_PROCESS_FXAA",
+        "RENDER.CAPABILITY.GTAO"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "post-processing-interior-v1",
+        "pbr-reference-environment-cooked-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1014
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.4, 6.0],
+          "target": [0.0, 2.3, -4.0],
+          "verticalFieldOfViewDegrees": 75.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 4,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "subject",
+            "x": 0.2,
+            "y": 0.15,
+            "width": 0.6,
+            "height": 0.7
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "subject",
+            "minimum": 0.1,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "physical-exposure",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.PHYSICAL_MANUAL_EXPOSURE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1016
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "auto-exposure",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.HISTOGRAM_AUTO_EXPOSURE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1017
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [180],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "stylized-materials",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.TOON_LIT",
+        "RENDER.CAPABILITY.TOON_SCREEN_SPACE_OUTLINE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "stylized-materials-toon"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1018
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.2],
+          "target": [0.0, 0.9, 0.0],
+          "verticalFieldOfViewDegrees": 42.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "subject",
+            "x": 0.25,
+            "y": 0.1,
+            "width": 0.5,
+            "height": 0.75
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "subject",
+            "minimum": 0.1,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "transparent-materials",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY",
+        "RENDER.CAPABILITY.WEIGHTED_BLENDED_OIT"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "transparent-materials-v1",
+        "particle-smoke-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1019
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 5.5],
+          "target": [0.0, 1.35, 0.0],
+          "verticalFieldOfViewDegrees": 38.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 3,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "translucency-panels",
+            "x": 0.14,
+            "y": 0.18,
+            "width": 0.72,
+            "height": 0.62
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "translucency-panels",
+            "minimum": 0.1,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "temporal-aa",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.TEMPORAL_AA"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1015
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "moving-subject",
+            "x": 0.2,
+            "y": 0.15,
+            "width": 0.6,
+            "height": 0.7
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "moving-subject",
+            "minimum": 0.1,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "particle-fire",
+      "domain": "vfx",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.CPU_PARTICLE_BILLBOARD",
+        "RENDER.CAPABILITY.PARTICLE_DISTORTION",
+        "RENDER.CAPABILITY.PARTICLE_REACTIVE_MASK",
+        "RENDER.CAPABILITY.PARTICLE_LIGHT_HINT"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "particle-fire-v1",
+        "particle-vfx-ground-caster-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1701
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.10, 5.60],
+          "target": [0.0, 0.60, 0.0],
+          "verticalFieldOfViewDegrees": 38.0,
+          "nearPlane": 0.05,
+          "farPlane": 80.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {"id": "frame", "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+          {"id": "fire", "x": 0.30, "y": 0.20, "width": 0.40, "height": 0.60}
+        ],
+        "metrics": [
+          {"code": "VISUAL.METRIC.LUMA_RANGE", "regionOfInterestId": "frame", "minimum": 8.0, "maximum": null},
+          {"code": "VISUAL.METRIC.SUBJECT_CONTRAST", "regionOfInterestId": "fire", "minimum": 0.1, "maximum": 1.0}
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "particle-smoke",
+      "domain": "vfx",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.CPU_PARTICLE_BILLBOARD",
+        "RENDER.CAPABILITY.PARTICLE_SOFT_DEPTH",
+        "RENDER.CAPABILITY.PARTICLE_REACTIVE_MASK"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "particle-smoke-v1",
+        "particle-vfx-ground-caster-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1702
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 2.35, 6.20],
+          "target": [0.0, 0.75, 0.0],
+          "verticalFieldOfViewDegrees": 38.0,
+          "nearPlane": 0.05,
+          "farPlane": 80.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [180],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {"id": "frame", "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+          {"id": "smoke", "x": 0.25, "y": 0.12, "width": 0.50, "height": 0.68}
+        ],
+        "metrics": [
+          {"code": "VISUAL.METRIC.LUMA_RANGE", "regionOfInterestId": "frame", "minimum": 2.0, "maximum": null},
+          {"code": "VISUAL.METRIC.SUBJECT_CONTRAST", "regionOfInterestId": "smoke", "minimum": 0.05, "maximum": 1.0}
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "water-surface",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.GERSTNER_WATER_SURFACE",
+        "RENDER.CAPABILITY.WATER_DEPTH_THICKNESS",
+        "RENDER.CAPABILITY.WATER_BEER_LAMBERT",
+        "RENDER.CAPABILITY.WATER_REACTIVE_MASK"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "water-surface-reference-fixture-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1801
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 5.40, 10.80],
+          "target": [0.0, 0.20, 0.0],
+          "verticalFieldOfViewDegrees": 42.0,
+          "nearPlane": 0.05,
+          "farPlane": 120.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {"id": "frame", "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+          {"id": "water", "x": 0.12, "y": 0.34, "width": 0.76, "height": 0.55}
+        ],
+        "metrics": [
+          {"code": "VISUAL.METRIC.LUMA_RANGE", "regionOfInterestId": "frame", "minimum": 4.0, "maximum": null},
+          {"code": "VISUAL.METRIC.SUBJECT_CONTRAST", "regionOfInterestId": "water", "minimum": 0.04, "maximum": 1.0}
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "render-quality-lab",
+      "domain": "qualification",
+      "intent": "regression",
+      "defaultRecipe": "deferred",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING",
+        "RENDER.CAPABILITY.TEMPORAL_AA",
+        "RENDER.CAPABILITY.DIRECTIONAL_CSM",
+        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY",
+        "RENDER.CAPABILITY.CPU_PARTICLE_BILLBOARD",
+        "RENDER.CAPABILITY.GERSTNER_WATER_SURFACE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "post-processing-interior-v1",
+        "pbr-reference-environment-cooked-v1",
+        "transparent-materials-v1",
+        "particle-fire-v1",
+        "particle-smoke-v1",
+        "water-surface-reference-fixture-v1",
+        "particle-vfx-ground-caster-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 2401
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 4.0, 12.5],
+          "target": [0.0, 1.0, -1.0],
+          "verticalFieldOfViewDegrees": 44.0,
+          "nearPlane": 0.05,
+          "farPlane": 160.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [300, 360, 361],
+      "visualContractVersion": 3,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "interior",
+            "x": 0.04,
+            "y": 0.08,
+            "width": 0.44,
+            "height": 0.82
+          },
+          {
+            "id": "water-and-vfx",
+            "x": 0.34,
+            "y": 0.18,
+            "width": 0.60,
+            "height": 0.70
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 4.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "interior",
+            "minimum": 0.10,
+            "maximum": 1.0
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "water-and-vfx",
+            "minimum": 0.04,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "rendering-stress",
+      "domain": "rendering",
+      "intent": "stress",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "low",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "interior-rendering-p0a"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1012
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 4.0, 12.0],
+          "target": [0.0, 0.0, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100000.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [600],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    },
+    {
+      "id": "scene-lifecycle",
+      "domain": "systems",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "low",
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "water-bottle"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1013
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 0.65, 1.5],
+          "target": [0.0, 0.45, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 250.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [],
+        "metrics": []
+      },
+      "deterministicQualification": false
+    }
+  ]
+}

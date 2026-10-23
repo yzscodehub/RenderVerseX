@@ -41,6 +41,7 @@ namespace RVX::Tests
             result.bytecode.resize(sizeof(artifactHash));
             std::memcpy(
                 result.bytecode.data(), &artifactHash, sizeof(artifactHash));
+            result.reflection.valid = true;
 
             if (options.targetBackend == RHIBackendType::OpenGL)
             {

@@ -1,0 +1,108 @@
+{
+  "bundleId": "1",
+  "bundleSha256": "fd25f457e349fc9db23b5732c5452b0217e0798aeb94f0cc5d2f6f610507cfb6",
+  "captureTick": 300,
+  "layout": {
+    "columns": 4,
+    "height": 360,
+    "panelHeight": 180,
+    "panelWidth": 320,
+    "rows": 2,
+    "width": 1280
+  },
+  "panels": [
+    {
+      "height": 180,
+      "mapping": "rgb-clamp",
+      "semantic": "BeautyLDR",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "reinhard",
+      "semantic": "PreToneHDR",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 320,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "inverse-depth-grayscale",
+      "semantic": "LinearDepth",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 640,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "normal-remap",
+      "semantic": "Normal",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 960,
+      "y": 0
+    },
+    {
+      "height": 180,
+      "mapping": "absolute-rg",
+      "semantic": "Velocity",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 0,
+      "y": 180
+    },
+    {
+      "height": 180,
+      "mapping": "grayscale",
+      "semantic": "AmbientOcclusion",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 320,
+      "y": 180
+    },
+    {
+      "height": 180,
+      "mapping": "grayscale",
+      "semantic": "ReactiveMask",
+      "sourceHeight": 720,
+      "sourceWidth": 1280,
+      "width": 320,
+      "x": 640,
+      "y": 180
+    }
+  ],
+  "preset": "win_x64_gfx24_approved_golden_release_run",
+  "qualificationIdentity": {
+    "backend": "dx12",
+    "captureTick": 300,
+    "pipeline": "deferred",
+    "quality": "high",
+    "sampleId": "render-quality-lab",
+    "view": "hero",
+    "visualContractVersion": 3
+  },
+  "renderConfigurationIdentity": {
+    "instancingMode": "Auto",
+    "profileHash": 13488619642324636900,
+    "renderConfigurationHash": "34f39cc6f75aa8cf0b8ff52b0e224637644e89165382fb2772f7bf991b206c2f",
+    "renderPath": "direct",
+    "requestedRecipe": "deferred",
+    "resolvedRecipe": "deferred"
+  },
+  "runId": "b023532a4c654b589e96e87fa6cf1182",
+  "schema": "RVX.RenderQualityContactSheet",
+  "schemaVersion": 2,
+  "seriesSha256": "a57fadd2065cfb52785bb5b870b4da3a85b76bd12843fdc2a829f8f3ef86bfe3",
+  "sourceCommit": "88a615a0190481afb76a7b06c99c3cfe6d896e29"
+}

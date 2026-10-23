@@ -1,4 +1,4 @@
-/** @file LightingShadowShowcaseSample.cpp @brief Directional shadow scene. */
+/** @file LightingShadowShowcaseSample.cpp @brief Directional and local shadow scene. */
 
 #include "Scenes/LightingShadowShowcaseSample.h"
 
@@ -15,17 +15,25 @@ namespace RVX
 {
     namespace
     {
-        const SampleInfo LightingShadowShowcaseInfo{
-            "lighting-shadows",
-            "Lighting and Shadows",
-            "Shows engine-owned directional lighting and cascaded shadow mapping",
-            "shadow-plane-caster",
-            SampleAssetPolicy::Fixed,
-            "",
-            SampleEnvironmentPolicy::None,
-            true,
-            SampleRenderPath::Auto,
-        };
+        const SampleInfo LightingShadowShowcaseInfo = []
+        {
+            SampleInfo info;
+            info.id = "lighting-shadows";
+            info.displayName = "Lighting and Shadows";
+            info.description =
+                "Shows engine-owned cascaded, point, and spot shadow rendering";
+            info.defaultAssetId = "particle-vfx-ground-caster-v1";
+            info.assetPolicy = SampleAssetPolicy::Fixed;
+            info.environmentPolicy = SampleEnvironmentPolicy::None;
+            info.supportsRenderPathSelection = true;
+            info.defaultRenderPath = SampleRenderPath::Auto;
+            // Runtime-only composition is admitted from the SampleInfo
+            // contract, not inferred from the manifest's staged path. Keep
+            // the selected primary model bound to its verified CookManifest.
+            info.requiredCookedAssetIds = {
+                "particle-vfx-ground-caster-v1"};
+            return info;
+        }();
 
         Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
         {
@@ -64,7 +72,36 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.96f, 0.88f),
                 .intensity = 5.0f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.0008f,
+                .castsShadows = true,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakePointShadowLight()
+        {
+            return {
+                .type = SceneECS::LightType::Point,
+                .color = Vec3(1.0f, 0.52f, 0.28f),
+                .intensity = 36.0f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
+                .range = 5.5f,
+                .shadowBias = 0.001f,
+                .castsShadows = true,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakeSpotShadowLight()
+        {
+            return {
+                .type = SceneECS::LightType::Spot,
+                .color = Vec3(0.32f, 0.58f, 1.0f),
+                .intensity = 64.0f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
+                .range = 8.0f,
+                .innerConeRadians = radians(18.0f),
+                .outerConeRadians = radians(32.0f),
+                .shadowBias = 0.001f,
                 .castsShadows = true,
             };
         }
@@ -134,6 +171,34 @@ namespace RVX
         }
         m_shadowLightCreated = true;
 
+        SceneECS::RuntimeEntityDesc pointLightDesc;
+        pointLightDesc.localTransform.translation = Vec3(-1.35f, 1.45f, 1.0f);
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                pointLightDesc,
+                MakePointShadowLight(),
+                SceneECS::Visibility{}).IsValid())
+        {
+            outError = "Failed to create the shadow-casting ECS point light";
+            return false;
+        }
+        m_pointShadowLightCreated = true;
+
+        constexpr Vec3 SpotPosition(1.55f, 2.35f, 1.65f);
+        constexpr Vec3 SpotTarget(0.0f, 0.35f, 0.0f);
+        SceneECS::RuntimeEntityDesc spotLightDesc;
+        spotLightDesc.localTransform.translation = SpotPosition;
+        spotLightDesc.localTransform.rotation = MakeLookRotation(
+            SpotTarget - SpotPosition, Vec3(0.0f, 1.0f, 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                spotLightDesc,
+                MakeSpotShadowLight(),
+                SceneECS::Visibility{}).IsValid())
+        {
+            outError = "Failed to create the shadow-casting ECS spot light";
+            return false;
+        }
+        m_spotShadowLightCreated = true;
+
         m_shadowAtlasResolution = context.options.quality == "low"
                                       ? 1024u
                                       : context.options.quality == "high"
@@ -152,9 +217,9 @@ namespace RVX
         context.renderSettings.shadows.normalBias = 0.02f;
         context.renderSettings.shadows.filterRadiusTexels = 1.0f;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
         return context.models.RequestByAssetId(context.options.assetId, m_model, outError);
     }
@@ -179,6 +244,10 @@ namespace RVX
     void LightingShadowShowcaseSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
+        reporter.SetScenarioContractRevision(1);
+        reporter.SetScenarioPhase(
+            m_executionQualified ? "stable" :
+            m_modelFailure.empty() ? "pending" : "failed");
         AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
         if (m_model.status.modelMetadata.HasPublishedSource())
         {
@@ -199,10 +268,36 @@ namespace RVX
                 "shadow cascade count=" +
                 std::to_string(m_shadowCascadeCount));
         }
+        if (m_pointShadowLightCreated)
+        {
+            reporter.Enable("PointShadowRequested");
+        }
+        if (m_spotShadowLightCreated)
+        {
+            reporter.Enable("SpotShadowRequested");
+        }
+        if (m_pointShadowLightCreated && m_spotShadowLightCreated)
+        {
+            reporter.Enable("LocalShadowAtlasExecutionRequired");
+            reporter.ResourceDiagnostic("local shadow requests=2");
+        }
         if (m_skyboxCreated)
         {
             reporter.Enable("ProceduralSkyScene");
         }
+        if (m_executionQualified)
+        {
+            reporter.Enable("LightingShadowActualExecutionQualified");
+        }
+    }
+
+    void LightingShadowShowcaseSample::ObserveDiagnostics(
+        const SampleRenderDiagnostics& diagnostics,
+        SampleAssessmentChannel& assessment)
+    {
+        static_cast<void>(assessment);
+        m_executionQualified = m_executionQualified ||
+            GetReadiness(diagnostics).IsReady();
     }
 
     SampleReadiness LightingShadowShowcaseSample::GetReadiness(
@@ -220,10 +315,10 @@ namespace RVX
             return SampleReadiness::Pending(
                 "Lighting-shadow showcase is waiting for visible geometry");
         }
-        if (diagnostics.renderSceneLightCount == 0)
+        if (diagnostics.renderSceneLightCount < 3)
         {
             return SampleReadiness::Pending(
-                "Lighting-shadow showcase is waiting for its directional light");
+                "Lighting-shadow showcase is waiting for its directional, point, and spot lights");
         }
         if (!diagnostics.directionalShadowSamplingEnabled)
         {
@@ -232,6 +327,26 @@ namespace RVX
             if (!diagnostics.directionalShadowReason.empty())
             {
                 reason += ": " + diagnostics.directionalShadowReason;
+            }
+            return SampleReadiness::Pending(std::move(reason));
+        }
+        if (diagnostics.pointShadowRequestedCount != 1 ||
+            diagnostics.spotShadowRequestedCount != 1 ||
+            diagnostics.localShadowRequestCount != 2)
+        {
+            return SampleReadiness::Pending(
+                "Lighting-shadow showcase is waiting for the exact point/spot local-shadow request set");
+        }
+        if (!diagnostics.localShadowAtlasReady ||
+            !diagnostics.pointShadowSupported ||
+            !diagnostics.spotShadowSupported ||
+            !diagnostics.localShadowFallbackReason.empty())
+        {
+            std::string reason =
+                "Lighting-shadow showcase is waiting for exact local-shadow atlas execution";
+            if (!diagnostics.localShadowFallbackReason.empty())
+            {
+                reason += ": " + diagnostics.localShadowFallbackReason;
             }
             return SampleReadiness::Pending(std::move(reason));
         }
@@ -267,5 +382,8 @@ namespace RVX
         m_renderPath = SampleRenderPath::Auto;
         m_skyboxCreated = false;
         m_shadowLightCreated = false;
+        m_pointShadowLightCreated = false;
+        m_spotShadowLightCreated = false;
+        m_executionQualified = false;
     }
 } // namespace RVX

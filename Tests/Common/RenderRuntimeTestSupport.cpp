@@ -11,6 +11,8 @@
 
 namespace RVX
 {
+using HAL::NativeSurfaceDesc;
+
 namespace
 {
     class InlineRenderExecutor final : public IRenderExecutor,
@@ -320,6 +322,33 @@ namespace
             m_probe->Record(
                 RenderRuntimeTestEvent::DirectOpaqueRasterReadbackQualification);
             return m_probe->directOpaqueRasterReadbackQualificationAccepted;
+        }
+
+        bool RequestExposureQualificationProbe() override
+        {
+            m_probe->Record(RenderRuntimeTestEvent::ExposureQualificationProbe);
+            return m_probe->exposureQualificationProbeAccepted;
+        }
+
+        bool RequestAmbientOcclusionQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe);
+            return m_probe->ambientOcclusionQualificationProbeAccepted;
+        }
+
+        bool RequestToonOutlineQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::ToonOutlineQualificationProbe);
+            return m_probe->toonOutlineQualificationProbeAccepted;
+        }
+
+        bool RequestHiZReflectionQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::HiZReflectionQualificationProbe);
+            return m_probe->hiZReflectionQualificationProbeAccepted;
         }
 
         void PollCompletion() override

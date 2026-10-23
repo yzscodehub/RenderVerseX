@@ -1,18 +1,19 @@
 #include "WorldEcsRuntimeComposition.h"
 
 #include "Core/Log.h"
-#include "../../Particle/Include/Particle/ECS/ParticleEcsBridge.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "../../Source/Runtime/Particle/Include/Particle/ECS/ParticleEcsBridge.h"
+#include "AssetImport/EnvironmentLoader.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Scene/ECS/RenderFragments.h"
-#include "../../Terrain/Include/Terrain/ECS/TerrainEcsBridge.h"
-#include "../../Water/Include/Water/ECS/WaterEcsBridge.h"
+#include "../../Source/Runtime/Terrain/Include/Terrain/ECS/TerrainEcsBridge.h"
+#include "../../Source/Runtime/Water/Include/Water/ECS/WaterEcsBridge.h"
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <unordered_map>
 
 namespace
@@ -71,6 +72,15 @@ namespace
     {
         return {
             .sequence = sequence,
+            .worldRevision = 1,
+            .temporalEpoch = 1,
+            .viewFamilyId = 1,
+            .surfaceGeneration = 1,
+            .configurationRevision = 1,
+            .formatRevision = 1,
+            .simulationTick = sequence - 1,
+            .deterministicSeed =
+                (0x27d4eb2dU ^ static_cast<uint32>(sequence)) | 1U,
             .outputWidth = 1280,
             .outputHeight = 720,
             .deltaTime = 1.0f / 60.0f,
@@ -114,8 +124,12 @@ namespace
     public:
         ResourceType GetResourceType() const override { return ResourceType::Environment; }
         std::vector<std::string> GetSupportedExtensions() const override { return {".hdr"}; }
-        Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == ResourceType::Environment &&
+                request.resolvedPath.ends_with(".hdr");
+        }
 
         bool ValidatePreparationState(
             uint64 requestedImportOptionsHash,
@@ -126,6 +140,17 @@ namespace
         {
             outState.reset();
             outCanonicalImportOptionsHash = 0;
+            if (!suppliedState)
+            {
+                Resource::ResourceLoadError captureError;
+                suppliedState = Resource::EnvironmentLoader::CreatePreparationState(
+                    {}, outCanonicalImportOptionsHash, captureError);
+                if (!suppliedState)
+                {
+                    outError = std::move(captureError);
+                    return false;
+                }
+            }
             const auto environmentState =
                 std::dynamic_pointer_cast<const Resource::EnvironmentPreparationState>(
                     std::move(suppliedState));
@@ -280,10 +305,14 @@ namespace
             m_resources.SetRenderResourceGateway(&m_gateway);
             Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_resources.Initialize(config);
-            m_resources.RegisterLoader(
-                ResourceType::Environment,
-                std::make_unique<ImmediateEnvironmentLoader>());
+            Resource::ResourceManagerDependencies dependencies;
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<ImmediateEnvironmentLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceScope() { m_resources.Deinitialize(); }
@@ -302,12 +331,14 @@ namespace
         {
             m_alive = true;
             m_maxParticleCount = request.config.maxParticleCount;
+            m_simulationTicks.push_back(request.simulationTick);
             return Particle::ParticleEcsRuntimeHandle::Create(0, 1);
         }
 
         [[nodiscard]] bool Update(Particle::ParticleEcsRuntimeHandle handle,
-                                  const Particle::ParticleEcsRuntimeRequest&) override
+                                  const Particle::ParticleEcsRuntimeRequest& request) override
         {
+            m_simulationTicks.push_back(request.simulationTick);
             return IsAlive(handle);
         }
 
@@ -324,7 +355,6 @@ namespace
             outSnapshot.item.systemAssetId = AssetId{17};
             outSnapshot.item.maxParticleCount = m_maxParticleCount;
             outSnapshot.item.simulationSupported = true;
-            outSnapshot.item.renderPayloadAvailable = true;
             outSnapshot.payloadRevision = 1;
             return true;
         }
@@ -345,17 +375,24 @@ namespace
             return m_alive && handle == Particle::ParticleEcsRuntimeHandle::Create(0, 1);
         }
 
+        [[nodiscard]] const std::vector<uint64>& GetSimulationTicks() const
+        {
+            return m_simulationTicks;
+        }
+
     private:
         bool m_alive = false;
         uint32 m_maxParticleCount = 0;
+        std::vector<uint64> m_simulationTicks;
     };
 
     class WaterFeatureGateway final : public Water::IWaterEcsGateway
     {
     public:
         [[nodiscard]] Water::WaterEcsRuntimeHandle Create(
-            const Water::WaterEcsRuntimeRequest&) override
+            const Water::WaterEcsRuntimeRequest& request) override
         {
+            m_config = request.config;
             m_alive = true;
             return Water::WaterEcsRuntimeHandle::Create(0, 1);
         }
@@ -374,11 +411,35 @@ namespace
             {
                 return false;
             }
-            outSnapshot.item.resolution = 8;
-            outSnapshot.item.renderGpuPathAvailable = true;
-            outSnapshot.item.cpuSimulationAvailable = true;
-            outSnapshot.payloadRevision = 1;
-            return true;
+            WaterRenderSnapshotItem item;
+            item.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
+            item.componentId = handle.GetPackedValue();
+            item.surfaceAssetId = m_config.surfaceAssetId;
+            item.materialAssetId = m_config.materialAssetId;
+            item.worldBounds = AABB({-1.8f, -1.3f, -1.8f}, {1.8f, 0.3f, 1.8f});
+            item.size = m_config.size;
+            item.depth = m_config.depth;
+            item.surfaceType = m_config.surfaceType;
+            item.simulationType = m_config.simulationType;
+            item.gerstnerWaves = m_config.gerstnerWaves;
+            item.shallowColor = m_config.shallowColor;
+            item.deepColor = m_config.deepColor;
+            item.foamColor = m_config.foamColor;
+            item.absorptionCoefficient = m_config.absorptionCoefficient;
+            item.transparency = m_config.transparency;
+            item.reflectionStrength = m_config.reflectionStrength;
+            item.refractionStrength = m_config.refractionStrength;
+            item.roughness = m_config.roughness;
+            item.normalScale = m_config.normalScale;
+            item.foamIntensity = m_config.foamIntensity;
+            item.foamCrestThreshold = m_config.foamCrestThreshold;
+            item.reflectionEnabled = m_config.reflectionEnabled;
+            item.refractionEnabled = m_config.refractionEnabled;
+            item.foamEnabled = m_config.foamEnabled;
+            item.contentHash = item.ComputeContentHash();
+            outSnapshot.item = item;
+            outSnapshot.payloadRevision = m_config.configurationRevision;
+            return item.IsStructurallyValid();
         }
 
         [[nodiscard]] Water::WaterEcsReleaseResult Release(
@@ -399,6 +460,7 @@ namespace
 
     private:
         bool m_alive = false;
+        Water::WaterEcsConfig m_config;
     };
 
     class TerrainFeatureGateway final : public Terrain::ITerrainEcsGateway
@@ -605,10 +667,16 @@ TEST(EcsWorldRuntimeCompositionValidation,
     ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsIntent>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsState>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<SceneECS::WaterRuntimeTag>(featureEntity));
-    ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsConfig>(
-        featureEntity,
-        {.surfaceAssetId = AssetId{18}, .materialAssetId = AssetId{19},
-         .configurationRevision = 1, .resolution = 8}));
+    Water::WaterEcsConfig waterConfig{.surfaceAssetId = AssetId{18},
+                                       .materialAssetId = AssetId{19},
+                                       .configurationRevision = 1};
+    waterConfig.gerstnerWaves.waveCount = 1;
+    waterConfig.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.3f,
+        .wavelength = 8.0f, .steepness = 0.5f,
+        .speed = 1.0f, .phaseOffsetRadians = 0.0f};
+    ASSERT_TRUE(CanonicalizeWaterGerstnerWaveSet(waterConfig.gerstnerWaves));
+    ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsConfig>(featureEntity, waterConfig));
     ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsIntent>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsState>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<SceneECS::TerrainRuntimeTag>(featureEntity));
@@ -655,6 +723,60 @@ TEST(EcsWorldRuntimeCompositionValidation,
     const WorldEcsRuntimeServicesDiagnostics drained = composition.GetRuntimeDiagnostics();
     EXPECT_FALSE(drained.initialized);
     EXPECT_TRUE(drained.shutdownComplete);
+}
+
+TEST(EcsWorldRuntimeCompositionValidation,
+     ParticleGatewayUsesVariableStepSequenceAcrossRestartEpoch)
+{
+    SceneECS::SceneEcsRuntime runtime;
+    AdvancingTransport transport;
+    EcsRenderFramePipeline pipeline(transport);
+    ParticleFeatureGateway particleGateway;
+    WorldEcsRuntimeCompositionOptions options;
+    options.particleGateway = &particleGateway;
+    WorldEcsRuntimeComposition composition(runtime, pipeline, nullptr, options);
+    ASSERT_TRUE(composition.Initialize());
+
+    const ECS::EntityHandle entity = runtime.CreateEntity();
+    ASSERT_TRUE(entity.IsValid());
+    ASSERT_TRUE(runtime.AddFragment<SceneECS::ParticleRuntimeTag>(entity));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsConfig>(
+        entity,
+        {.systemAssetId = AssetId{17}, .configurationRevision = 1, .maxParticleCount = 16}));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsIntent>(entity));
+    ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsState>(entity));
+
+    WorldEcsRuntimeCompositionTickRequest request = TickRequest();
+    request.sceneTick.fixedStepCount = 0;
+    request.sceneTick.variableStepSequence = 73;
+    const WorldEcsRuntimeCompositionTickResult first = composition.Tick(request);
+    ASSERT_TRUE(first.succeeded) << composition.GetDiagnostics().lastDiagnostic;
+    ASSERT_TRUE(runtime.SetFragment<Particle::ParticleEcsIntent>(
+        entity,
+        {.command = Particle::ParticleEcsCommand::Restart, .sequence = 1}));
+    const WorldEcsRuntimeCompositionTickResult second = composition.Tick(request);
+    ASSERT_TRUE(second.succeeded) << composition.GetDiagnostics().lastDiagnostic;
+
+    EXPECT_NE(first.scene.frameSequence, second.scene.frameSequence);
+    ASSERT_FALSE(particleGateway.GetSimulationTicks().empty());
+    for (const uint64 tick : particleGateway.GetSimulationTicks())
+    {
+        EXPECT_EQ(tick, 73u);
+    }
+
+    ASSERT_EQ(runtime.RequestDestroy(
+                  entity,
+                  SceneECS::ToCleanupDomainMask(SceneECS::CleanupDomain::None)),
+              SceneECS::DestroyRequestResult::Accepted);
+    ASSERT_TRUE(composition.Tick(TickRequest()).succeeded)
+        << composition.GetDiagnostics().lastDiagnostic;
+    ASSERT_TRUE(runtime.AcknowledgeCleanup(
+        entity,
+        SceneECS::ToCleanupDomainMask(SceneECS::CleanupDomain::Render)));
+    ASSERT_TRUE(composition.Tick(TickRequest()).succeeded)
+        << composition.GetDiagnostics().lastDiagnostic;
+    EXPECT_TRUE(composition.PrepareForShutdown(TickRequest()))
+        << composition.GetDiagnostics().lastDiagnostic;
 }
 
 TEST(EcsWorldRuntimeCompositionValidation,
